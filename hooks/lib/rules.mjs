@@ -73,6 +73,16 @@ export function sessionRoot(input, project = projectDir()) {
   return root && projectWorktrees(project).includes(root) ? root : null;
 }
 
+/**
+ * The checkout whose changes are this actor's own. A subagent works where its cwd is (often its own
+ * worktree). The main session owns the checkout it was opened in, even when its shell has wandered
+ * into an agent's worktree, whose in-progress edits are that agent's, not the lead's.
+ */
+export function actorRoot(input, project = projectDir()) {
+  if (input.agent_type) return sessionRoot(input, project);
+  return worktreeRoot(project) ?? project;
+}
+
 export const relativeTo = (root, path) =>
   relative(realPath(root), realPath(resolve(root, path)))
     .split('\\')

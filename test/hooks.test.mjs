@@ -397,6 +397,18 @@ try {
   expect("the project's per-file check passes", edited('docs/a.lint', 'good'), 0);
   expect('and fails', edited('docs/b.lint', 'bad'), 2, 'grep -q good docs/b.lint');
   expect('excluded files are not checked', edited('skip/c.lint', 'bad'), 0);
+  for (const f of [
+    'packages/domain/src/a.ts',
+    'packages/domain/src/b.ts',
+    'packages/domain/src/c.ts',
+    'workers/providers/p.ts',
+    'workers/services/s.ts',
+    'docs/a.lint',
+    'docs/b.lint',
+    'skip/c.lint',
+  ])
+    rmSync(join(repo, f));
+
   // Agent worktrees live under .claude/worktrees, which projects usually lint-ignore: the check must
   // run inside the worktree, on the path relative to it, not be skipped as a .claude/ file.
   git('worktree', 'add', '-q', '.claude/worktrees/w', '-b', 'lane/w');
@@ -409,19 +421,22 @@ try {
     2,
     'grep -q good docs/w.lint',
   );
+  const worktree = join(repo, '.claude/worktrees/w');
+  mkdirSync(join(worktree, 'supabase/migrations'), { recursive: true });
+  writeFileSync(join(worktree, 'supabase/migrations/9_agent.sql'), 'select 1;');
+  expect(
+    "the lead's audit ignores an agent's work in progress, even with its shell in that worktree",
+    hook('lane-audit.mjs', { cwd: worktree }),
+    0,
+  );
+  expect('and so does its finish check', hook('stop-check.mjs', { cwd: worktree }), 0);
+  expect(
+    'the agent itself is still audited there',
+    hook('lane-audit.mjs', { cwd: worktree, agent_type: 'web-engineer' }),
+    2,
+  );
   git('worktree', 'remove', '--force', '.claude/worktrees/w');
   git('branch', '-q', '-D', 'lane/w');
-  for (const f of [
-    'packages/domain/src/a.ts',
-    'packages/domain/src/b.ts',
-    'packages/domain/src/c.ts',
-    'workers/providers/p.ts',
-    'workers/services/s.ts',
-    'docs/a.lint',
-    'docs/b.lint',
-    'skip/c.lint',
-  ])
-    rmSync(join(repo, f));
 
   // --- brownfield: a baseline of existing violations, and no specs yet ---------------------------
   const cli = (...args) =>

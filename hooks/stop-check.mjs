@@ -9,14 +9,14 @@ import { globToRegExp, matchesAny } from './lib/glob.mjs';
 import { loadBaseline, newProblems } from './lib/baseline.mjs';
 import { block, start } from './lib/hook.mjs';
 import { layerProblems } from './lib/layers.mjs';
-import { actorFor, sessionRoot } from './lib/rules.mjs';
+import { actorFor, actorRoot } from './lib/rules.mjs';
 import { auditProblems, changedFiles } from './lane-audit.mjs';
 
 const { input, project, config, error } = start();
 if (input.stop_hook_active) process.exit(0); // already re-prompted once; avoid loops
 if (error) block(error);
 
-const root = sessionRoot(input, project);
+const root = actorRoot(input, project);
 if (!root) process.exit(0);
 const actor = actorFor(input, root, config);
 if (actor.kind === 'readonly') process.exit(0);
