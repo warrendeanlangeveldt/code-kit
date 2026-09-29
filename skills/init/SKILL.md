@@ -32,15 +32,16 @@ Say which one applies and why before you start.
    - **Commands:** test, lint, typecheck, database and deploy commands, and which must never run locally.
 2. **The repository.** Map the real layout: `git ls-files | cut -d/ -f1-3 | sort | uniq -c`, package manifests (`package.json`, `pyproject.toml`, `go.mod`, `Cargo.toml`), workspace files, existing lint, format and test scripts, CI workflows and CODEOWNERS.
 3. **Existing kit.** If the project has `.claude/hooks`, agents or skills, read them. The kit replaces local hooks; agents and skills are kept and adapted, not rewritten.
+4. **Other tools.** Run `adapters --config .claude/code-kit.draft.json` once the draft exists. It lists the tools code-kit has an adapter for (such as Context Graph, found by its `.ctx/` folder), what each adds to the rules, and the setup each needs. Don't copy an adapter's paths into the config; they're added automatically while the tool is present.
 
 **Brownfield, in addition:**
 
-4. **Find the layers in the code.** Run `graph` (default depth 2, and `--depth 3` for deeper packages). It lists which folders import which, most-used first. Look for:
+5. **Find the layers in the code.** Run `graph` (default depth 2, and `--depth 3` for deeper packages). It lists which folders import which, most-used first. Look for:
    - folders nothing depends on (the edges: apps, UI, entry points);
    - folders everything depends on (the core: domain, schemas, shared types);
    - edges in both directions between two folders. These are existing tangles; record them, don't design around them.
-5. **Find the work split in the history.** Use `git log --format='%an' -- <folder> | sort | uniq -c | sort -rn | head` per top-level folder, plus CODEOWNERS. Folders that change together and are worked on by the same people make a lane.
-6. **Check the checks.** Run each candidate check command once on the current code, before proposing it. If a command already fails, that's a finding, not a check to switch on silently. Offer three options: fix first, leave it out for now, or scope `files` narrower so it guards only new work.
+6. **Find the work split in the history.** Use `git log --format='%an' -- <folder> | sort | uniq -c | sort -rn | head` per top-level folder, plus CODEOWNERS. Folders that change together and are worked on by the same people make a lane.
+7. **Check the checks.** Run each candidate check command once on the current code, before proposing it. If a command already fails, that's a finding, not a check to switch on silently. Offer three options: fix first, leave it out for now, or scope `files` narrower so it guards only new work.
 
 ## 2. Draft the config
 
@@ -101,7 +102,8 @@ Show the person:
 1. the layers and what each may depend on, and for brownfield the existing violations the baseline will record;
 2. the lanes, their agents and their paths;
 3. protected paths, blocked and restricted commands, and checks (including any left out because they fail today);
-4. every **question**: where the docs or the code are silent, ambiguous or contradictory. Don't guess; a wrong owner or layer blocks real work.
+4. the active adapters and what each adds, from `adapters`;
+5. every **question**: where the docs or the code are silent, ambiguous or contradictory. Don't guess; a wrong owner or layer blocks real work.
 
 Once they approve (with any changes):
 
@@ -109,14 +111,15 @@ Once they approve (with any changes):
 2. If there are existing violations, run `baseline --write`. This writes `.claude/code-kit.baseline.json`.
 3. If the project had local hooks in `.claude/settings.json` that the kit replaces, remove those hook entries and the local hook files. Keep the `permissions` block.
 4. Add `.claude/approvals/`, `.claude/state/` and `.claude/code-kit.draft.json` to `.gitignore`. Add `.claude/approval-log.jsonl merge=union` to `.gitattributes`: when lanes and the lead both log changes, merging keeps every entry instead of conflicting.
-5. Offer CI enforcement, since the hooks only see Claude Code sessions. On yes:
+5. Apply each active adapter's `setup` lines (ignore files, merge drivers, the CLAUDE.md note), and say which you applied.
+6. Offer CI enforcement, since the hooks only see Claude Code sessions. On yes:
    - write `.github/workflows/code-kit.yml` from `${CLAUDE_PLUGIN_ROOT}/templates/github-workflow.yml`;
    - set the version from `${CLAUDE_PLUGIN_ROOT}/.claude-plugin/plugin.json`;
    - fill in the install steps the project's checks need, from its existing CI or package manager;
    - make sure the lead owns the workflow file, and add it to `protected` (approval `ci`, why "the CI that enforces the rules"), so a lane can't switch it off;
    - tell the person to add the `CODE_KIT_TOKEN` repository secret, and to make the `code-kit` check required on the protected branches.
-6. Run `check` and `unowned` again, without `--config`.
-7. Commit on a branch. The kit records the protected files in `.claude/approval-log.jsonl`.
+7. Run `check` and `unowned` again, without `--config`.
+8. Commit on a branch. The kit records the protected files in `.claude/approval-log.jsonl`.
 
 Report what was set up, what's enforced from now on, how many existing violations the baseline holds, and the open questions.
 

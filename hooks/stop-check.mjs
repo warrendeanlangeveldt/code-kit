@@ -2,7 +2,7 @@
 // Stop / SubagentStop: before an actor finishes, run the checks that prove the work rather than
 // asking it to. Read-only agents are skipped. Order: ownership audit, layer rules on changed files,
 // then each of the project's checks whose files changed; a lane finishes with its work committed.
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { loadBaseline, newProblems } from './lib/baseline.mjs';
 import { runChecks } from './lib/checks.mjs';
@@ -12,16 +12,50 @@ import { actorFor, actorRoot } from './lib/rules.mjs';
 import { auditProblems, changedFiles } from './lane-audit.mjs';
 
 const { input, project, config, error } = start();
-if (input.stop_hook_active) process.exit(0); // already re-prompted once; avoid loops
-if (error) block(error);
+
+// Stop hooks share one `stop_hook_active` flag, so another plugin's block would make this check skip
+// itself. Instead this hook remembers its own last block per session and agent. The same problem
+// reported MAX_REPEATS times in a row means no progress: say so and let the finish through rather than
+// loop. A different problem means progress, and counts from one again.
+const MAX_REPEATS = 3;
+const memory = join(
+  project,
+  '.claude/state/stop-blocks',
+  `${input.session_id ?? 'session'}-${input.agent_id ?? 'main'}`.replace(/[^\w.-]+/g, '_'),
+);
+const lastBlock = () => {
+  try {
+    return JSON.parse(readFileSync(memory, 'utf8'));
+  } catch {
+    return { message: null, count: 0 };
+  }
+};
+const passed = () => {
+  rmSync(memory, { force: true });
+  process.exit(0);
+};
+const blockCounted = (message) => {
+  const last = lastBlock();
+  const count = last.message === message ? last.count + 1 : 1;
+  if (count > MAX_REPEATS) passed();
+  mkdirSync(join(memory, '..'), { recursive: true });
+  writeFileSync(memory, JSON.stringify({ message, count }));
+  const final =
+    count === MAX_REPEATS
+      ? `\n\n(code-kit has reported this ${count} times without progress; it won't block on it again. Tell the lead what is still failing.)`
+      : '';
+  block(`${message}${final}`);
+};
+
+if (error) blockCounted(error);
 
 const root = actorRoot(input, project);
-if (!root) process.exit(0);
+if (!root) passed();
 const actor = actorFor(input, root, config);
-if (actor.kind === 'readonly') process.exit(0);
+if (actor.kind === 'readonly') passed();
 
 const fail = (title, out = '') =>
-  block(`${title}\n\n${String(out).split('\n').slice(-60).join('\n')}`.trim());
+  blockCounted(`${title}\n\n${String(out).split('\n').slice(-60).join('\n')}`.trim());
 
 const audit = auditProblems({ ...input, cwd: root }, config);
 if (audit.length)
@@ -47,4 +81,4 @@ if (actor.kind === 'lane' && changed.length) {
     changed.join('\n'),
   );
 }
-process.exit(0);
+passed();

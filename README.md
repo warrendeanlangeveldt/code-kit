@@ -20,7 +20,7 @@ code-kit stops each of these at the moment it would happen. The hook refuses the
 ## What it enforces
 
 - **Lanes:** each lane agent writes only its own paths. The main session (the lead) writes contracts, specs and config, and delegates the rest. Any other subagent is read-only.
-- **Layers:** each layer depends only on the layers it lists, and never on packages it's denied. This is checked on every edit and again before finishing, for JavaScript and TypeScript imports. In brownfield code, existing violations can be recorded in a baseline so only new ones block.
+- **Layers:** each layer depends only on the layers it lists, and never on packages it's denied. This is checked before every write (a write that would add a violation is refused, so a layer is never broken on disk), after it, and again before finishing, for JavaScript and TypeScript imports. In brownfield code, existing violations can be recorded in a baseline so only new ones block.
 - **Protected paths and the approval log:** every committed change to the kit, registers or contracts is appended to `.claude/approval-log.jsonl`, in the same commit. Only the lead writes these paths without a person's approval, and the person reviews them in the pull request.
 - **Spec-check before code:** when the project has specs, a lane can't write code on a branch until the spec-check report for that branch exists.
 - **Designs before screens** (optional): a screen file can't be written until the design register lists it.
@@ -144,7 +144,7 @@ Requirements are headings (`### BOOK-4 Cancel a booking`). Stories are `### ST-1
 
 - **A new build:** init reads the docs in full: the architecture and layer map, the plan or work split, and the principles. It drafts the rules from them.
 - **An existing codebase (brownfield):** the docs can be thin or missing. Init works the layers out from the code: which folders import which, and who works where according to the git history. It also runs each check once and flags any that already fail, so you decide what to do with them.
-- **Either way:** you get a draft (`.claude/code-kit.draft.json`), one agent per lane, a CLAUDE.md section and a list of questions. Nothing is enforced until you approve and the draft becomes `.claude/code-kit.json`.
+- **Either way:** you get a draft (`.claude/code-kit.draft.json`), one agent per lane, any project skills you approve, a CLAUDE.md section and a list of questions (see [The agents and skills it creates](#the-agents-and-skills-it-creates)). Nothing is enforced until you approve and the draft becomes `.claude/code-kit.json`.
 
 **Existing violations.** Brownfield code usually breaks some layer rules already. On approval, `baseline --write` records them in `.claude/code-kit.baseline.json`:
 
@@ -153,6 +153,66 @@ Requirements are headings (`### BOOK-4 Cancel a booking`). Stories are `### ST-1
 - the baseline only ever shrinks: re-recording drops what's been fixed and refuses anything new.
 
 **No specs yet?** Leave `docs.specs` out, and lanes aren't held to a spec-check report. Add it once specs exist.
+
+## The agents and skills it creates
+
+code-kit ships no fixed team. Init writes one for each project, from its docs or its code, and re-running init keeps it in step as the project changes.
+
+```text
+.claude/
+├── code-kit.json          # the rules: lanes, layers, protected paths, checks
+├── agents/
+│   ├── web-engineer.md    # one lane agent per lane
+│   ├── api-engineer.md
+│   └── db-engineer.md
+└── skills/
+    └── new-migration/     # project recipes, only the ones you approve
+        └── SKILL.md
+CLAUDE.md                  # plus a section telling the lead how the rules work
+```
+
+**Who's who.** There are four kinds of actor. The hooks tell the three Claude kinds apart on every tool call; the person works outside them:
+
+| Actor              | Who it is                                                                                   | May write                                       |
+| ------------------ | ------------------------------------------------------------------------------------------- | ----------------------------------------------- |
+| The person         | You                                                                                         | Anything; you also approve and merge            |
+| The lead           | The main Claude Code session                                                                | Contracts, specs, config, the kit: `lead.paths` |
+| A lane agent       | A subagent whose name is a lane's `agent` in the config, or a session in a `.lane` worktree | Only its lane's paths, after its spec-check     |
+| Any other subagent | Explore, Plan, reviewers, anything not mapped to a lane                                     | Nothing: read-only                              |
+
+**Lane agents** (`.claude/agents/<agent>.md`, from `templates/agent.md`). Each is filled in from the project's docs, or from the code for brownfield projects:
+
+- the paths the lane owns, its layers and what they may depend on;
+- the specs it reads;
+- the skills it uses: spec-check, plus its project recipes;
+- the command that proves its work, and the lane's own rules.
+
+It also carries the working rules: start from the story's branch and spec-check, build end to end with no mocks or placeholders, name requirement IDs in test titles, and commit before finishing.
+
+The config's `lanes.<name>.agent` must match the agent file's `name`. That's how the hooks know a subagent is the web lane and not a read-only helper.
+
+**Instructions and enforcement are separate.** The agent file tells the agent the rules, so it rarely hits them. The hooks enforce them whether or not the agent follows its file:
+
+- writes outside its lane are blocked;
+- code before a spec-check report is blocked;
+- finishing with failing checks or uncommitted work is blocked.
+
+Editing an agent file can't loosen a rule. And the agent files are kit files (`.claude/**`), so only the lead changes them, and every change is logged.
+
+**Spawned per story.** Dispatch starts a fresh instance of the lane's agent for each story, in its own worktree on `<lane>/st-<n>`. Agents for different lanes run in parallel. Each starts knowing only its agent file and the story's brief, so nothing leaks between stories.
+
+**How the spec is enforced, step by step:**
+
+1. The brief names the story's requirement IDs.
+2. The agent runs the spec-check skill and saves a requirement table for its branch.
+3. The path guard blocks any code in its lane until that report exists.
+4. The agent's tests name the requirement IDs.
+5. The stop hook runs the checks before the agent can finish.
+6. Review compares the branch with the requirements and the report, and `verify` checks the rules again in CI.
+
+**Project skills** (`.claude/skills/<recipe>/SKILL.md`) are the step-by-step recipes your docs describe, like "add a migration" or "add an endpoint". Init lists the ones it finds and writes them only if you say yes, never as empty stubs. Each is listed in the owning lane agent's "Skills to use". Like the agents, they're kit files: the lead maintains them, and changes are logged.
+
+**Kept in step.** When the project changes (a new app, a new lane, moved folders), re-run `/code-kit:init`. It drafts new agents for new lanes and updates the paths of existing ones, keeping anything written by hand. You see the difference and approve it before anything changes.
 
 ## Build
 
@@ -205,6 +265,7 @@ node ~/workspace/code-kit/bin/code-kit.mjs graph [--depth N]  # which folders im
 node ~/workspace/code-kit/bin/code-kit.mjs verify [--base ref] [--branch name] [--no-checks]  # a branch's changes, for CI and review
 node ~/workspace/code-kit/bin/code-kit.mjs status [--base ref] [--json]  # stories and requirements against the spec
 node ~/workspace/code-kit/bin/code-kit.mjs next [--base ref] [--json]    # the step to take now, from the project's state
+node ~/workspace/code-kit/bin/code-kit.mjs trace <path>... [--json]      # what a file is for: requirements, lane, layer rules
 ```
 
 `verify` compares the branch with where it left `--base` (default `origin/main`, then `main`). A branch named `<lane>/…`, or given as `--branch`, is held to that lane. `--no-checks` leaves the project's checks to CI's own steps. `status` reads `docs.specs` and `docs.plan`.
@@ -230,6 +291,7 @@ node ~/workspace/code-kit/bin/code-kit.mjs next [--base ref] [--json]    # the s
 | `shell.restricted[]`           | no                | `{ pattern, lanes, why }`: only the lead and these lanes                                                                                                                                                                                                                                                                                         |
 | `postEdit[]`                   | no                | `{ files, exclude?, run }`: after each edit of a matching file. `{file}` is the file. Exit 127 (tool not installed) is skipped.                                                                                                                                                                                                                  |
 | `checks[]`                     | no                | `{ name, files, exclude?, run[], each?, owners?, ifMissing?, timeoutSeconds? }`: before finishing, when matching files changed. `each` runs the commands in every changed folder matching that glob. `owners` limits who may change the files (the lead always may). `ifMissing: "fail"` makes a missing tool an error (the default is to skip). |
+| `adapters`                     | no                | `{ "<adapter>": false }` switches off an adapter that would otherwise be detected. See [Adapters](#adapters).                                                                                                                                                                                                                                    |
 | `branches.protected`           | no                | Default `["main", "master"]`                                                                                                                                                                                                                                                                                                                     |
 
 Add `.claude/approvals/`, `.claude/state/` and `.claude/code-kit.draft.json` to `.gitignore`, and `.claude/approval-log.jsonl merge=union` to `.gitattributes`, so merging branches that both logged changes keeps every entry. Commit `.claude/code-kit.baseline.json` if the project has one.
@@ -243,6 +305,30 @@ echo "Approve the reset password screens" > .claude/approvals/design
 ```
 
 It lasts 60 minutes. Agents can't create, edit or even mention approvals or the log.
+
+## Adapters
+
+Other tools share a project with code-kit and keep files of their own. An adapter tells code-kit about one such tool, without the core knowing its name. Each adapter lives in `hooks/lib/adapters/`, and declares:
+
+- how to detect the tool;
+- what the tool adds to the rules: paths for the lead, paths any actor may write, protected paths, blocked commands;
+- the setup init should apply.
+
+While the tool is detected, its additions are merged into the effective config, like the kit's own defaults. Run `code-kit adapters` to see them, or switch one off with `"adapters": { "<name>": false }`.
+
+| Adapter         | Detected by | Adds                                                                                                                                                                                                                                                                                   |
+| --------------- | ----------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `context-graph` | `.ctx/`     | `.ctx/**` for the lead. `.ctx/decisions.ctx` and `.ctx/cards.ctx` for any actor, since every agent records decisions and file cards. `graph.ctx` and `config.toml` are protected (approval `ctx`). No Claude actor may write a `Ctx-Ratified-By` trailer: ratifying is a person's act. |
+
+Its setup:
+
+- ignore ctx's working files;
+- add `merge=union` for `decisions.ctx` and `cards.ctx`, so lanes' decisions and cards from parallel branches all survive a merge;
+- keep the two CLAUDE.md blocks pointing to each other.
+
+To add one, write `hooks/lib/adapters/<tool>.mjs` in the same shape and list it in `hooks/lib/adapters/index.mjs`.
+
+The other direction is `code-kit trace <path> --json`. It's the contract other tools read: the requirements a file delivers (from the `ST-n` stories its commits name, and the current story branch), its lane and owner, and its layer with what that layer may import. Context Graph's tool adapter calls it, so a file's card and the slice before an edit carry the spec requirement and the layer rule.
 
 ## Develop
 
