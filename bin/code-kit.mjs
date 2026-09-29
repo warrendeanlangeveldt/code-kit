@@ -10,6 +10,7 @@
 //                         the rules for everything this branch changed since base (for CI and review)
 //   status [--base ref] [--json]
 //                         each story and requirement in the plan: built, in review, ready, blocked, tested
+//   adapters              other tools detected in the project, what each adds to the rules, and its setup
 //   next [--base ref] [--json]
 //                         the step to take now (spec-design, init, dispatch, review…), from the project's state
 // --config <file> reads a draft (.claude/code-kit.draft.json) instead of .claude/code-kit.json.
@@ -17,9 +18,10 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { posix, resolve } from 'node:path';
 import { BASELINE_FILE, loadBaseline } from '../hooks/lib/baseline.mjs';
-import { CONFIG_FILE, validate, withDefaults } from '../hooks/lib/config.mjs';
+import { CONFIG_FILE, effectiveConfig, validate } from '../hooks/lib/config.mjs';
 import { diffConfigs, ownershipMoves } from '../hooks/lib/diff.mjs';
 import { CODE, importsOf, layerOf, layerProblems, targetOf } from '../hooks/lib/layers.mjs';
+import { ADAPTERS, activeAdapters } from '../hooks/lib/adapters/index.mjs';
 import { nextStep } from '../hooks/lib/next.mjs';
 import { buildStatus } from '../hooks/lib/plan.mjs';
 import { currentBranch, ownerOf } from '../hooks/lib/rules.mjs';
@@ -58,7 +60,7 @@ function load(path = file) {
   }
   const problems = validate(raw);
   if (problems.length) die(`${path} is invalid:\n  ${problems.join('\n  ')}`);
-  return { raw, config: withDefaults(raw) };
+  return { raw, config: effectiveConfig(raw, '.') };
 }
 
 function check() {
@@ -70,6 +72,7 @@ function check() {
   for (const l of raw.layers ?? []) out(`Layer ${l.name} → ${l.mayImport.join(', ') || 'nothing'}`);
   for (const c of raw.checks ?? []) out(`Check ${c.name}: ${c.run.join(' && ')}`);
   if (!raw.docs?.specs) out('No docs.specs: lanes are not held to a spec-check report.');
+  for (const name of load().config.adapters) out(`Adapter ${name}: active (see \`adapters\`)`);
 }
 
 function who(paths) {
@@ -333,8 +336,31 @@ function next() {
   for (const a of step.attention) out(`Note: ${a}`);
 }
 
+function adapters() {
+  const { raw } = load();
+  const active = activeAdapters(raw, '.').map((a) => a.name);
+  for (const a of ADAPTERS) {
+    const off = raw.adapters?.[a.name] === false;
+    const state = active.includes(a.name)
+      ? 'active'
+      : off
+        ? 'switched off in the config'
+        : 'not detected';
+    out(`${a.name}: ${state}`);
+    if (!active.includes(a.name)) continue;
+    const c = a.config ?? {};
+    if (c.lead?.length) out(`  lead writes: ${c.lead.join(', ')}`);
+    if (c.anyActor?.length) out(`  anyone writes: ${c.anyActor.join(', ')}`);
+    for (const p of c.protected ?? [])
+      out(`  protected: ${p.glob} (approval "${p.approval}": ${p.why})`);
+    for (const b of a.shell?.block ?? []) out(`  blocked command: /${b.pattern}/ — ${b.why}`);
+    for (const s of a.setup ?? []) out(`  setup: ${s}`);
+  }
+}
+
 const commands = {
   check,
+  adapters,
   next,
   verify,
   status,
@@ -348,7 +374,7 @@ function usage() {
   die(
     'Usage: code-kit check | who <path>... | unowned | diff | baseline [--write] | graph [--depth N]\n' +
       '              | verify [--base ref] [--branch name] [--no-checks] | status [--base ref] [--json]\n' +
-      '              | next [--base ref] [--json]   [--config file]',
+      '              | next [--base ref] [--json] | adapters   [--config file]',
   );
 }
 (commands[command] ?? usage)();

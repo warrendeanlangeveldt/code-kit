@@ -620,6 +620,26 @@ try {
   rmSync(join(repo, 'packages/domain/src/d.ts'));
   expect('the lead finishes with nothing changed', stop(), 0);
 
+  // --- the finish check keeps its own count, not the flag every stop hook shares ------------------
+  put('runbooks/loop.md', 'x');
+  const stopAgain = (session = 's1') =>
+    hook('stop-check.mjs', {
+      agent_type: 'platform-engineer',
+      session_id: session,
+      stop_hook_active: true,
+    });
+  expect(
+    "another plugin's block (stop_hook_active) doesn't switch the finish check off",
+    stopAgain(),
+    2,
+    'Commit your work',
+  );
+  expect('the same problem blocks again', stopAgain(), 2, 'Commit your work');
+  expect('and a third time, saying it is the last', stopAgain(), 2, "won't block on it again");
+  expect('then lets the finish through rather than loop', stopAgain(), 0);
+  expect('a new session counts from the start', stopAgain('s2'), 2, 'Commit your work');
+  rmSync(join(repo, 'runbooks/loop.md'));
+
   // --- verify: a branch's changes as a whole, for CI and review ---------------------------------
   const v = newRepo();
   cleanups.push(v.dir);
@@ -851,6 +871,60 @@ try {
     0,
   );
   expect('status prints a readable report', says(vCli('status'), 'Ready to dispatch: ST-2'), 0);
+
+  // --- adapters: another tool in the project adds its own rules ---------------------------------
+  const c = newRepo();
+  cleanups.push(c.dir);
+  c.git('checkout', '-q', '-b', 'web/st-9');
+  const cHook = (name, input) =>
+    spawnSync('node', [join(hooks, name)], {
+      input: JSON.stringify({ cwd: c.dir, ...input }),
+      env: { ...process.env, CLAUDE_PROJECT_DIR: c.dir },
+      encoding: 'utf8',
+    });
+  const cWrite = (rel, agent) =>
+    cHook('guard-paths.mjs', { tool_input: { file_path: join(c.dir, rel) }, ...as(agent) });
+  const cBash = (command) => cHook('guard-bash.mjs', { tool_input: { command } });
+  const cCli = (...args) =>
+    spawnSync('node', [join(here, '..', 'bin', 'code-kit.mjs'), ...args], {
+      cwd: c.dir,
+      encoding: 'utf8',
+    });
+  expect(
+    'without .ctx/, a lane may not write Context Graph decisions',
+    cWrite('.ctx/decisions.ctx', 'web-engineer'),
+    2,
+  );
+  mkdirSync(join(c.dir, '.ctx'));
+  expect('with .ctx/, any lane records decisions', cWrite('.ctx/decisions.ctx', 'web-engineer'), 0);
+  expect(
+    "but a lane may not change ctx's rules without approval",
+    cWrite('.ctx/graph.ctx', 'web-engineer'),
+    2,
+    "Context Graph's rules",
+  );
+  expect("the lead owns ctx's rules", cWrite('.ctx/graph.ctx'), 0);
+  expect(
+    'no Claude actor writes a ratification trailer',
+    cBash('git commit -m "ratify" --trailer "Ctx-Ratified-By: someone"'),
+    2,
+    "a person's act",
+  );
+  expect('other commits are untouched', cBash('git commit -m "ST-9 cancel"'), 0);
+  const listed = cCli('adapters');
+  expect(
+    'adapters lists what the active adapter adds, and its setup',
+    truth(
+      listed.stdout.includes('context-graph: active') && listed.stdout.includes('merge=union'),
+      listed.stdout + listed.stderr,
+    ),
+    0,
+  );
+  const off = JSON.parse(fixture);
+  off.adapters = { 'context-graph': false };
+  writeFileSync(join(c.dir, '.claude/code-kit.json'), JSON.stringify(off));
+  expect('the config can switch an adapter off', cWrite('.ctx/decisions.ctx', 'web-engineer'), 2);
+  expect('and says so', says(cCli('adapters'), 'context-graph: switched off in the config'), 0);
 
   // --- next: the step to take, from the project's state -----------------------------------------
   const nextIn = (dir) => {

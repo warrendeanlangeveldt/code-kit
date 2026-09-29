@@ -2,6 +2,7 @@
 // was opened in; a project without one is not governed by the kit, and an invalid one fails closed.
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { ADAPTERS, applyAdapters } from './adapters/index.mjs';
 
 export const CONFIG_FILE = '.claude/code-kit.json';
 // Claude's own memory and session scratchpad, which the lead always writes.
@@ -24,8 +25,11 @@ export function loadConfig(projectDir) {
   }
   const problems = validate(raw);
   if (problems.length) return { error: `${CONFIG_FILE} is invalid:\n  ${problems.join('\n  ')}` };
-  return { config: withDefaults(raw) };
+  return { config: effectiveConfig(raw, projectDir) };
 }
+
+/** The rules the hooks enforce: the project's config, the kit's defaults, and any active adapters. */
+export const effectiveConfig = (raw, root) => applyAdapters(withDefaults(raw), raw, root);
 
 /** The engine's fixed rules, merged into the project's: the kit and Claude's own files belong to the lead. */
 export function withDefaults(c) {
@@ -103,6 +107,13 @@ export function validate(c) {
     need(e.exclude === undefined || isList(e.exclude), `${at}.exclude must be a list of globs`);
   });
   each('checks', (e, at) => validateCheck(e, at, lanes, need));
+  const known = ADAPTERS.map((a) => a.name);
+  need(
+    c.adapters === undefined ||
+      (isObj(c.adapters) &&
+        Object.entries(c.adapters).every(([k, v]) => known.includes(k) && typeof v === 'boolean')),
+    `"adapters" must map adapter names (${known.join(', ')}) to true or false`,
+  );
   need(
     c.branches === undefined || isList(c.branches?.protected),
     '"branches.protected" must be a list of branch names',

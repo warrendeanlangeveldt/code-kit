@@ -176,3 +176,13 @@ test('the baseline excuses only what it recorded', () => {
   assert.deepEqual(newProblems('a.ts', ['old problem', 'new problem'], baseline), ['new problem']);
   assert.deepEqual(newProblems('b.ts', ['old problem'], baseline), ['old problem']);
 });
+
+test('adapters switch is validated', () => {
+  const c = clone();
+  c.adapters = { 'context-graph': false };
+  assert.deepEqual(validate(c), []);
+  c.adapters = { 'no-such-tool': true };
+  assert.match(validate(c).join(' '), /"adapters" must map adapter names/);
+  c.adapters = { 'context-graph': 'yes' };
+  assert.match(validate(c).join(' '), /"adapters" must map adapter names/);
+});

@@ -1,6 +1,6 @@
 {
   "name": "code-kit",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "From idea to merged code under enforced rules: spec design, lanes, layer rules, protected paths with an approval log, spec-check and design gates, proof-before-finish checks, dispatch, review, build status and CI verification, configured per project from its docs",
   "author": {
     "name": "Warren Langeveldt"
