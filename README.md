@@ -1,6 +1,21 @@
 # code-kit
 
-A Claude Code plugin that makes a project's engineering rules enforced rather than advised. Each project writes its rules once, in `.claude/code-kit.json`. The plugin's hooks enforce them on every tool call, for the main session and every subagent.
+A Claude Code plugin that turns a project's engineering rules into hard guarantees. You write the rules once, per project, in `.claude/code-kit.json`. The plugin's hooks enforce them on every tool call, for the main session and every subagent. A rule Claude would otherwise only be _asked_ to follow becomes one it _can't_ break.
+
+## Why
+
+Rules in `CLAUDE.md` and agent prompts are advice. Over a long session, or across a dozen parallel subagents, advice drifts:
+
+- a backend agent "quickly fixes" a frontend file, and two agents overwrite each other's work;
+- a domain module starts importing the database client, and the layering the architecture doc describes stops being true;
+- a contract or schema changes with no record of who changed it or why;
+- code gets written before anyone checked it against the spec, or a screen before it was designed;
+- an agent declares "done" with failing type checks, or with work nobody committed;
+- someone force-pushes, commits to `main`, adds a dependency, or runs a deploy nobody asked for.
+
+code-kit stops each of these at the moment it would happen. The hook refuses the tool call and tells the agent why and what to do instead. The rules live in one reviewed file, not in every prompt, so they hold for every agent and every session.
+
+## What it enforces
 
 - **Lanes:** each lane agent writes only its own paths. The main session (the lead) writes contracts, specs and config, and delegates the rest. Any other subagent is read-only.
 - **Layers:** each layer depends only on the layers it lists, and never on packages it's denied. This is checked on every edit and again before finishing, for JavaScript and TypeScript imports. In brownfield code, existing violations can be recorded in a baseline so only new ones block.
@@ -21,7 +36,46 @@ A Claude Code plugin that makes a project's engineering rules enforced rather th
 
 A project without `.claude/code-kit.json` isn't governed at all. An invalid config fails closed: nothing but the config itself can be written until it's fixed.
 
+## When to use it
+
+Use it when:
+
+- **Several agents work on one codebase at once**, such as a lead delegating to frontend, backend and data lanes, possibly in separate worktrees. Lanes are what keep them out of each other's files.
+- **The architecture has layers worth protecting**, like domain, services, adapters and UI, or a shared package that mustn't reach into apps.
+- **Some files need an audit trail:** API contracts, schemas, registers, the kit's own config.
+- **The project has specs or designs** that code should follow rather than improvise.
+- **"Done" has to mean done:** checks passing and work committed, not an agent's say-so.
+
+It's overkill for a throwaway script, a spike, or a single-file change. In those, just don't add `.claude/code-kit.json`: the plugin stays installed and does nothing.
+
+Set it up at the start of a new build, straight from the architecture docs, or bring it into an existing codebase at any point (init works the rules out from the code). Re-run init whenever the shape of the project changes: new apps or packages, moved folders, a changed plan.
+
+## Where it runs
+
+- **In Claude Code**, as a plugin. It's installed once per machine and governs only projects that have `.claude/code-kit.json`.
+- **On every tool call** in those projects, through Claude Code hooks:
+
+  | Hook                     | Runs                        | Enforces                                                          |
+  | ------------------------ | --------------------------- | ----------------------------------------------------------------- |
+  | `PreToolUse` Edit/Write  | `hooks/guard-paths.mjs`     | lanes, protected paths, spec-check and design gates               |
+  | `PreToolUse` Bash        | `hooks/guard-bash.mjs`      | shell rules, dependencies, approval log and secret scan on commit |
+  | `PostToolUse` Edit/Write | `hooks/post-edit-check.mjs` | layer rules and the project's `postEdit` commands                 |
+  | `PostToolUse` Bash       | `hooks/lane-audit.mjs`      | ownership of files written by shell commands                      |
+  | `Stop`, `SubagentStop`   | `hooks/stop-check.mjs`      | proof before finishing                                            |
+
+- **For the main session and every subagent**, including agents in worktrees under `.claude/worktrees/`.
+- **Locally, with Node 22 or later.** Nothing is sent anywhere. The CLI in `bin/` runs the same rules from a terminal.
+
 ## Install
+
+From GitHub (the repository is private, so `gh auth login` or git credentials for it are needed):
+
+```text
+/plugin marketplace add warrendeanlangeveldt/code-kit
+/plugin install code-kit@code-kit
+```
+
+Or from a local checkout:
 
 ```text
 /plugin marketplace add ~/workspace/code-kit
