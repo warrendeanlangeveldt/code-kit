@@ -20,7 +20,7 @@ code-kit stops each of these at the moment it would happen. The hook refuses the
 ## What it enforces
 
 - **Lanes:** each lane agent writes only its own paths. The main session (the lead) writes contracts, specs and config, and delegates the rest. Any other subagent is read-only.
-- **Layers:** each layer depends only on the layers it lists, and never on packages it's denied. This is checked on every edit and again before finishing, for JavaScript and TypeScript imports. In brownfield code, existing violations can be recorded in a baseline so only new ones block.
+- **Layers:** each layer depends only on the layers it lists, and never on packages it's denied. This is checked before every write (a write that would add a violation is refused, so a layer is never broken on disk), after it, and again before finishing, for JavaScript and TypeScript imports. In brownfield code, existing violations can be recorded in a baseline so only new ones block.
 - **Protected paths and the approval log:** every committed change to the kit, registers or contracts is appended to `.claude/approval-log.jsonl`, in the same commit. Only the lead writes these paths without a person's approval, and the person reviews them in the pull request.
 - **Spec-check before code:** when the project has specs, a lane can't write code on a branch until the spec-check report for that branch exists.
 - **Designs before screens** (optional): a screen file can't be written until the design register lists it.
@@ -265,6 +265,7 @@ node ~/workspace/code-kit/bin/code-kit.mjs graph [--depth N]  # which folders im
 node ~/workspace/code-kit/bin/code-kit.mjs verify [--base ref] [--branch name] [--no-checks]  # a branch's changes, for CI and review
 node ~/workspace/code-kit/bin/code-kit.mjs status [--base ref] [--json]  # stories and requirements against the spec
 node ~/workspace/code-kit/bin/code-kit.mjs next [--base ref] [--json]    # the step to take now, from the project's state
+node ~/workspace/code-kit/bin/code-kit.mjs trace <path>... [--json]      # what a file is for: requirements, lane, layer rules
 ```
 
 `verify` compares the branch with where it left `--base` (default `origin/main`, then `main`). A branch named `<lane>/…`, or given as `--branch`, is held to that lane. `--no-checks` leaves the project's checks to CI's own steps. `status` reads `docs.specs` and `docs.plan`.
@@ -315,17 +316,19 @@ Other tools share a project with code-kit and keep files of their own. An adapte
 
 While the tool is detected, its additions are merged into the effective config, like the kit's own defaults. Run `code-kit adapters` to see them, or switch one off with `"adapters": { "<name>": false }`.
 
-| Adapter         | Detected by | Adds                                                                                                                                                                                                                                               |
-| --------------- | ----------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `context-graph` | `.ctx/`     | `.ctx/**` for the lead. `.ctx/decisions.ctx` for any actor, since every agent records decisions. `graph.ctx` and `config.toml` are protected (approval `ctx`). No Claude actor may write a `Ctx-Ratified-By` trailer: ratifying is a person's act. |
+| Adapter         | Detected by | Adds                                                                                                                                                                                                                                                                                   |
+| --------------- | ----------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `context-graph` | `.ctx/`     | `.ctx/**` for the lead. `.ctx/decisions.ctx` and `.ctx/cards.ctx` for any actor, since every agent records decisions and file cards. `graph.ctx` and `config.toml` are protected (approval `ctx`). No Claude actor may write a `Ctx-Ratified-By` trailer: ratifying is a person's act. |
 
 Its setup:
 
 - ignore ctx's working files;
-- add `merge=union` for `decisions.ctx`, so lanes' decisions from parallel branches all survive a merge;
+- add `merge=union` for `decisions.ctx` and `cards.ctx`, so lanes' decisions and cards from parallel branches all survive a merge;
 - keep the two CLAUDE.md blocks pointing to each other.
 
 To add one, write `hooks/lib/adapters/<tool>.mjs` in the same shape and list it in `hooks/lib/adapters/index.mjs`.
+
+The other direction is `code-kit trace <path> --json`. It's the contract other tools read: the requirements a file delivers (from the `ST-n` stories its commits name, and the current story branch), its lane and owner, and its layer with what that layer may import. Context Graph's tool adapter calls it, so a file's card and the slice before an edit carry the spec requirement and the layer rule.
 
 ## Develop
 

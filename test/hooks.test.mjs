@@ -4,6 +4,7 @@
 import { spawnSync, execFileSync } from 'node:child_process';
 import {
   appendFileSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -920,6 +921,53 @@ try {
     ),
     0,
   );
+  expect('with .ctx/, any lane writes file cards too', cWrite('.ctx/cards.ctx', 'web-engineer'), 0);
+
+  // --- layer rules before the write --------------------------------------------------------------
+  const cEdit = (tool, rel, toolInput) =>
+    cHook('guard-paths.mjs', {
+      tool_name: tool,
+      tool_input: { file_path: join(c.dir, rel), ...toolInput },
+    });
+  expect(
+    'a write that would break a layer is refused before it reaches disk',
+    cEdit('Write', 'packages/schemas/src/order.ts', {
+      content: "import { rule } from '../../domain/src/rule';\nexport type Order = {};\n",
+    }),
+    2,
+    'would break the layer rules',
+  );
+  expect(
+    'nothing was written',
+    truth(!existsSync(join(c.dir, 'packages/schemas/src/order.ts'))),
+    0,
+  );
+  expect(
+    'a write within the rules goes through',
+    cEdit('Write', 'packages/schemas/src/order.ts', { content: 'export type Order = {};\n' }),
+    0,
+  );
+  mkdirSync(join(c.dir, 'packages/schemas/src'), { recursive: true });
+  writeFileSync(
+    join(c.dir, 'packages/schemas/src/legacy.ts'),
+    "import { rule } from '../../domain/src/rule';\nexport const a = 1;\n",
+  );
+  expect(
+    'an edit that adds no violation is allowed in a file that already has one',
+    cEdit('Edit', 'packages/schemas/src/legacy.ts', { old_string: 'a = 1', new_string: 'a = 2' }),
+    0,
+  );
+  expect(
+    'but one that adds a violation is not',
+    cEdit('Edit', 'packages/schemas/src/legacy.ts', {
+      old_string: 'export const a = 1;',
+      new_string: "import { svc } from '../../../workers/services/s';\nexport const a = 1;",
+    }),
+    2,
+    'would break the layer rules',
+  );
+  rmSync(join(c.dir, 'packages'), { recursive: true, force: true });
+
   const off = JSON.parse(fixture);
   off.adapters = { 'context-graph': false };
   writeFileSync(join(c.dir, '.claude/code-kit.json'), JSON.stringify(off));
@@ -1008,6 +1056,39 @@ try {
   vPut('docs/spec/01-booking.md', '# 01. Booking\n\n### BOOK-1 Request\n\n### BOOK-2 Cancel\n');
   vCommit('all done');
   nextIs('when every story is done, next says so', v.dir, 'done');
+
+  // --- trace: what a file is for, in the project's terms ------------------------------------------
+  const traced = JSON.parse(vCli('trace', 'apps/office/e2e/booking.spec.ts', '--json').stdout);
+  expect(
+    'trace finds the requirement a file delivers through the story its commit names',
+    truth(
+      traced.requirements.length === 1 &&
+        traced.requirements[0].id === 'BOOK-1' &&
+        traced.requirements[0].spec === 'docs/spec/01-booking.md' &&
+        traced.requirements[0].stories[0] === 'ST-1',
+      JSON.stringify(traced),
+    ),
+    0,
+  );
+  expect(
+    'with its lane and owner (the first lane whose paths match)',
+    truth(
+      traced.lane?.name === 'web' && traced.owner === 'web lane / web-engineer',
+      JSON.stringify(traced),
+    ),
+    0,
+  );
+  const layered = JSON.parse(vCli('trace', 'packages/domain/src/x.ts', '--json').stdout);
+  expect(
+    'and its layer, with what that layer may import',
+    truth(
+      layered.layer?.name === 'domain' &&
+        layered.layer.mayImport.join() === 'schemas' &&
+        layered.layer.denyPackages.includes('node:*'),
+      JSON.stringify(layered),
+    ),
+    0,
+  );
 } finally {
   for (const d of cleanups) rmSync(d, { recursive: true, force: true });
 }

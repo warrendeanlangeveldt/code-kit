@@ -11,6 +11,7 @@
 //   status [--base ref] [--json]
 //                         each story and requirement in the plan: built, in review, ready, blocked, tested
 //   adapters              other tools detected in the project, what each adds to the rules, and its setup
+//   trace <path> [--json] what a file is for: the requirements it delivers, its lane, its layer rules
 //   next [--base ref] [--json]
 //                         the step to take now (spec-design, init, dispatch, review…), from the project's state
 // --config <file> reads a draft (.claude/code-kit.draft.json) instead of .claude/code-kit.json.
@@ -23,6 +24,7 @@ import { diffConfigs, ownershipMoves } from '../hooks/lib/diff.mjs';
 import { CODE, importsOf, layerOf, layerProblems, targetOf } from '../hooks/lib/layers.mjs';
 import { ADAPTERS, activeAdapters } from '../hooks/lib/adapters/index.mjs';
 import { nextStep } from '../hooks/lib/next.mjs';
+import { traceFile } from '../hooks/lib/trace.mjs';
 import { buildStatus } from '../hooks/lib/plan.mjs';
 import { currentBranch, ownerOf } from '../hooks/lib/rules.mjs';
 import { laneOfBranch, verifyBranch } from '../hooks/lib/verify.mjs';
@@ -358,8 +360,24 @@ function adapters() {
   }
 }
 
+function trace(paths) {
+  const { config } = load();
+  const traces = paths.map((p) => traceFile(resolve('.'), p.replace(/^\.\//, ''), config));
+  if (flag('--json')) return out(JSON.stringify(traces.length === 1 ? traces[0] : traces, null, 2));
+  for (const t of traces) {
+    out(t.path);
+    out(
+      `  owner: ${t.owner ?? 'nobody'}${t.layer ? ` · layer ${t.layer.name} → ${t.layer.mayImport.join(', ') || 'only itself'}` : ''}`,
+    );
+    if (!t.requirements.length) out('  no requirements traced (no commit names a story)');
+    for (const r of t.requirements)
+      out(`  ${r.id} ${r.title}  (${r.spec}; ${r.stories.join(', ')})`);
+  }
+}
+
 const commands = {
   check,
+  trace: () => (rest.length ? trace(rest) : usage()),
   adapters,
   next,
   verify,
@@ -374,7 +392,7 @@ function usage() {
   die(
     'Usage: code-kit check | who <path>... | unowned | diff | baseline [--write] | graph [--depth N]\n' +
       '              | verify [--base ref] [--branch name] [--no-checks] | status [--base ref] [--json]\n' +
-      '              | next [--base ref] [--json] | adapters   [--config file]',
+      '              | next [--base ref] [--json] | adapters | trace <path>... [--json]   [--config file]',
   );
 }
 (commands[command] ?? usage)();
