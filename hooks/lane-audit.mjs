@@ -5,7 +5,7 @@
 import { readFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { join } from 'node:path';
-import { APPROVAL_LOG, actorFor, actorRoot, writeProblem } from './lib/rules.mjs';
+import { APPROVAL_LOG, LANE_FILE, actorFor, actorRoot, writeProblem } from './lib/rules.mjs';
 
 // The commit hook appends to the approval log and stages it; if that commit then fails, the
 // appended lines are left uncommitted. That is the only change to the log that is not a problem.
@@ -28,7 +28,8 @@ export function changedFiles(root) {
     .split('\n')
     .filter(Boolean)
     .map((l) => l.slice(3).replace(/^"|"$/g, ''))
-    .filter((f) => !f.endsWith('/')); // a nested repository or worktree: its changes are its own
+    .filter((f) => !f.endsWith('/')) // a nested repository or worktree: its changes are its own
+    .filter((f) => f !== LANE_FILE);
 }
 
 export function auditProblems(input, config) {

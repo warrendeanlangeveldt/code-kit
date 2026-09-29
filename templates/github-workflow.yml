@@ -1,0 +1,31 @@
+# code-kit verify: the project's rules for every pull request, including work done outside Claude Code.
+# Needs a repository secret CODE_KIT_TOKEN: a fine-grained token with read access to the code-kit
+# repository (it is private).
+name: code-kit
+
+on:
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # verify compares the branch with where it left the base
+      - uses: actions/checkout@v4
+        with:
+          repository: warrendeanlangeveldt/code-kit
+          ref: v{{code-kit version}}
+          token: ${{ secrets.CODE_KIT_TOKEN }}
+          path: .code-kit
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      # {{init replaces this line with the steps that install what the project's checks need,
+      #   e.g. pnpm/action-setup and `pnpm install --frozen-lockfile`}}
+      - name: Verify
+        run: >
+          node .code-kit/bin/code-kit.mjs verify
+          --base origin/${{ github.base_ref }}
+          --branch ${{ github.head_ref }}

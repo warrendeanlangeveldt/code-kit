@@ -121,7 +121,7 @@ function committedFiles() {
     l.slice(3),
   );
   const commitAll = /\bgit\s+commit\b[^;&|]*\s(-a|--all|-[b-zB-Z]*a[a-zA-Z]*)(\s|$)/.test(cmd);
-  const addAll = /\bgit\s+add\s+[^;&|]*(\s|^)(-A|--all|\.)(\s|$)/.test(cmd);
+  const addAll = /\bgit\s+add\b[^;&|]*\s(-A|--all|\.)(\s|$)/.test(cmd);
   const addArgs = [...cmd.matchAll(/\bgit\s+add\s+([^;&|]+)/g)]
     .flatMap((m) => m[1].trim().split(/\s+/))
     .filter((a) => a && !a.startsWith('-'));
