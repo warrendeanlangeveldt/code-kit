@@ -2,7 +2,15 @@
 // The hooks end to end, run against throwaway git repositories in the OS temp folder with
 // test/fixture.json as their config. Exit 0 = allowed, 2 = blocked.
 import { spawnSync, execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
+import {
+  appendFileSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  utimesSync,
+  writeFileSync,
+} from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -156,6 +164,13 @@ try {
   put('.lane', 'web');
   expect('a .lane worktree acts as that lane', write('apps/office/lib/x.ts'), 0);
   expect('a .lane worktree cannot write other lanes', write('supabase/migrations/1_x.sql'), 2);
+  expect('nor rewrite its .lane file', write('.lane'), 2);
+  const laneStop = stop();
+  expect(
+    "its .lane file isn't work: the finish check doesn't report it",
+    truth(!laneStop.stderr.includes('.lane:'), laneStop.stderr),
+    0,
+  );
   rmSync(join(repo, '.lane'));
 
   // --- secrets, approvals, outside the repository ------------------------------------------------
@@ -604,6 +619,321 @@ try {
   );
   rmSync(join(repo, 'packages/domain/src/d.ts'));
   expect('the lead finishes with nothing changed', stop(), 0);
+
+  // --- verify: a branch's changes as a whole, for CI and review ---------------------------------
+  const v = newRepo();
+  cleanups.push(v.dir);
+  const vPut = (rel, body = '') => {
+    mkdirSync(dirname(join(v.dir, rel)), { recursive: true });
+    writeFileSync(join(v.dir, rel), body);
+  };
+  const vCommit = (m) => {
+    v.git('add', '-A');
+    v.git('commit', '-q', '-m', m);
+  };
+  const vCli = (...args) =>
+    spawnSync('node', [join(here, '..', 'bin', 'code-kit.mjs'), ...args], {
+      cwd: v.dir,
+      encoding: 'utf8',
+    });
+  const verify = (...args) => vCli('verify', '--base', 'main', ...args);
+  const says = (res, text) =>
+    truth(res.stdout.includes(text) || res.stderr.includes(text), res.stdout + res.stderr);
+  const failsWith = (res, text) =>
+    truth(res.status === 1 && (res.stdout + res.stderr).includes(text), res.stdout + res.stderr);
+  vPut('design/approved-screens.json', JSON.stringify({ screens: [] }));
+  vPut('packages/schemas/src/s.ts', 'export const S = 1;\n');
+  vCommit('base');
+
+  v.git('checkout', '-q', '-b', 'web/st-1');
+  vPut('apps/office/lib/a.ts', 'export const a = 1;\n');
+  vCommit('web work');
+  expect('verify passes a lane branch that stays in its paths', verify('--no-checks'), 0);
+  expect(
+    'and holds it to the lane named by the branch',
+    says(verify('--no-checks'), 'held to the web lane'),
+    0,
+  );
+  vPut('workers/x.ts', 'export const x = 1;\n');
+  vCommit('strays');
+  expect(
+    "verify fails a lane branch that changes another lane's files",
+    failsWith(verify('--no-checks'), "workers/x.ts: the web lane doesn't own it"),
+    0,
+  );
+  expect(
+    '--branch names the lane when CI checks out a merge commit',
+    failsWith(
+      verify('--no-checks', '--branch', 'backend/st-2'),
+      "apps/office/lib/a.ts: the backend lane doesn't own it",
+    ),
+    0,
+  );
+  vPut('apps/office/app/home/page.tsx', 'export default function P() {}\n');
+  vCommit('screen');
+  expect(
+    'verify fails a screen whose design is not approved',
+    failsWith(verify('--no-checks', '--branch', 'x'), 'apps/office/app/home/page.tsx is a screen'),
+    0,
+  );
+  vPut('.env.local', 'KEY=1');
+  vCommit('secret');
+  expect(
+    'verify fails committed secrets',
+    failsWith(verify('--no-checks'), '.env.local may hold secrets'),
+    0,
+  );
+
+  v.git('checkout', '-q', 'main');
+  v.git('checkout', '-q', '-b', 'lead/contracts');
+  vPut(
+    'design/approved-screens.json',
+    JSON.stringify({ screens: [{ file: 'apps/office/app/home/page.tsx' }] }),
+  );
+  vCommit('registered by hand');
+  expect(
+    'verify fails a protected change with no approval-log entry',
+    failsWith(verify('--no-checks'), 'no approval-log entry records this change'),
+    0,
+  );
+  v.git('reset', '-q', '--hard', 'main');
+  vPut(
+    'design/approved-screens.json',
+    JSON.stringify({ screens: [{ file: 'apps/office/app/home/page.tsx' }] }),
+  );
+  const viaHook = spawnSync('node', [join(hooks, 'guard-bash.mjs')], {
+    input: JSON.stringify({
+      cwd: v.dir,
+      tool_input: { command: 'git add -A && git commit -m register' },
+    }),
+    env: { ...process.env, CLAUDE_PROJECT_DIR: v.dir },
+    encoding: 'utf8',
+  });
+  expect(
+    'the commit hook logs a protected file staged by `git add -A && git commit`',
+    truth(
+      viaHook.status === 0 &&
+        readFileSync(join(v.dir, '.claude/approval-log.jsonl'), 'utf8').includes(
+          '"file":"design/approved-screens.json"',
+        ),
+      viaHook.stderr,
+    ),
+    0,
+  );
+  vCommit('registered through the hook');
+  expect('verify passes a protected change the hook logged', verify('--no-checks'), 0);
+  v.git('branch', '-q', '-f', 'main', 'HEAD'); // merged: main now has a log
+  const log = readFileSync(join(v.dir, '.claude/approval-log.jsonl'), 'utf8');
+  vPut('.claude/approval-log.jsonl', log.replace('design/approved-screens.json', 'forged'));
+  vCommit('rewrite the log');
+  expect(
+    'verify fails a rewritten approval log',
+    failsWith(verify('--no-checks'), 'append-only'),
+    0,
+  );
+  v.git('reset', '-q', '--hard', 'HEAD~1');
+  v.git('checkout', '-q', 'main');
+  appendFileSync(
+    join(v.dir, '.claude/approval-log.jsonl'),
+    '{"file":"elsewhere","approval":"lead"}\n',
+  );
+  vCommit('main moves on');
+  v.git('checkout', '-q', 'lead/contracts');
+  expect(
+    "verify compares with where the branch left the base, not the base's tip",
+    verify('--no-checks'),
+    0,
+  );
+  vPut('packages/domain/src/d.ts', "import { S } from '../../../workers/services/s';\n");
+  vPut('workers/services/s.ts', 'export const S = 1;\n');
+  vCommit('domain reaches into services');
+  expect(
+    'verify fails new layer violations',
+    failsWith(verify('--no-checks', '--branch', 'x'), 'Layer rules'),
+    0,
+  );
+  vPut(
+    '.claude/code-kit.baseline.json',
+    JSON.stringify({
+      layers: {
+        'packages/domain/src/d.ts': [
+          'packages/domain/src/d.ts: domain may not import services (../../../workers/services/s)',
+        ],
+      },
+    }),
+  );
+  vCommit('excuse it');
+  expect(
+    'verify fails a baseline that grew',
+    failsWith(verify('--no-checks', '--branch', 'x'), 'only shrinks'),
+    0,
+  );
+
+  v.git('checkout', '-q', 'main');
+  v.git('checkout', '-q', '-b', 'backend/st-3');
+  vPut('workers/jobs/j.ts', 'export const j = 1;\n');
+  vCommit('backend work');
+  expect(
+    'verify runs the checks for changed files',
+    failsWith(verify(), 'workers: `test -f workers/ok` fails'),
+    0,
+  );
+  expect('--no-checks leaves them to CI', verify('--no-checks'), 0);
+
+  // --- status: stories and requirements, from the plan, the specs, git and the tests ------------
+  v.git('checkout', '-q', 'main');
+  v.git('branch', '-q', '-D', 'web/st-1');
+  vPut(
+    'docs/spec/01-booking.md',
+    '# 01. Booking\n\n### BOOK-1 Request a booking\n\nx\n\n### BOOK-2 Cancel\n\nx\n\n### BOOK-3 Waitlist (removed)\n\nx\n\n### BOOK-4 Reminders\n\nx\n',
+  );
+  const plan = (st1) =>
+    `# Plan\n\n## M1\n\n### ST-1 Booking form\n\n**Lane:** web\n**Requirements:** BOOK-1\n**Status:** ${st1}\n\n` +
+    '### ST-2 Cancel\n\n**Lane:** web\n**Requirements:** BOOK-2\n**Depends on:** ST-1\n**Status:** todo\n\n' +
+    '### ST-3 Stray\n\n**Lane:** nope\n**Requirements:** BOOK-9\n';
+  vPut('docs/spec/plan.md', plan('todo'));
+  vCommit('specs and plan');
+  v.git('checkout', '-q', '-b', 'web/st-1');
+  vPut(
+    'apps/office/e2e/booking.spec.ts',
+    "test('BOOK-1 a customer requests a booking', () => {});\n",
+  );
+  vCommit('ST-1');
+  v.git('checkout', '-q', 'main');
+  const st = JSON.parse(vCli('status', '--json').stdout);
+  const story = (id) => st.stories.find((s) => s.id === id);
+  const req = (id) => st.requirements.find((r) => r.id === id);
+  expect(
+    'status: a story with commits on its branch is in review',
+    truth(story('ST-1').state === 'review', JSON.stringify(story('ST-1'))),
+    0,
+  );
+  expect(
+    'a story waits on an unfinished dependency',
+    truth(story('ST-2').state === 'blocked' && story('ST-2').waitingOn[0] === 'ST-1'),
+    0,
+  );
+  expect(
+    'the plan is flagged as out of date',
+    truth(st.drift.some((d) => d.story === 'ST-1' && d.actual === 'review')),
+    0,
+  );
+  expect(
+    'gaps are listed: unknown requirement, unknown lane, requirement in no story',
+    truth(
+      ['cites BOOK-9', 'unknown lane "nope"', 'BOOK-4 is in no story'].every((t) =>
+        st.problems.some((p) => p.includes(t)),
+      ) && !st.problems.some((p) => p.includes('BOOK-3')),
+      st.problems.join(' / '),
+    ),
+    0,
+  );
+  expect('a removed requirement needs no story', truth(req('BOOK-3').state === 'removed'), 0);
+  v.git('merge', '-q', '--ff-only', 'web/st-1');
+  vPut('docs/spec/plan.md', plan('review'));
+  vCommit('ST-1 reviewed');
+  const after = JSON.parse(vCli('status', '--json').stdout);
+  expect(
+    'once merged, a reviewed story is done and the next is ready',
+    truth(
+      after.stories.find((s) => s.id === 'ST-1').state === 'done' &&
+        after.stories.find((s) => s.id === 'ST-2').state === 'ready',
+    ),
+    0,
+  );
+  const book1 = after.requirements.find((r) => r.id === 'BOOK-1');
+  expect(
+    'a requirement is done with its stories, and tested when a test names it',
+    truth(
+      book1.state === 'done' && book1.tests[0] === 'apps/office/e2e/booking.spec.ts',
+      JSON.stringify(book1),
+    ),
+    0,
+  );
+  expect('status prints a readable report', says(vCli('status'), 'Ready to dispatch: ST-2'), 0);
+
+  // --- next: the step to take, from the project's state -----------------------------------------
+  const nextIn = (dir) => {
+    const res = spawnSync('node', [join(here, '..', 'bin', 'code-kit.mjs'), 'next', '--json'], {
+      cwd: dir,
+      encoding: 'utf8',
+    });
+    try {
+      return JSON.parse(res.stdout);
+    } catch {
+      return { step: `unreadable: ${res.stdout}${res.stderr}` };
+    }
+  };
+  const nextIs = (label, dir, step, args) => {
+    const n = nextIn(dir);
+    expect(
+      label,
+      truth(n.step === step && (args === undefined || n.args === args), JSON.stringify(n)),
+      0,
+    );
+    return n;
+  };
+  const blank = mkdtempSync(join(tmpdir(), 'code-kit-blank-'));
+  cleanups.push(blank);
+  const blankNext = nextIs('next: a blank folder starts with spec-design', blank, 'spec-design');
+  expect(
+    'and says git is needed before init',
+    truth(blankNext.attention.some((a) => a.includes('git init'))),
+    0,
+  );
+  const idea = newRepo(false);
+  cleanups.push(idea.dir);
+  const brief = (status, question = '') =>
+    `# X\n\n**Status:** ${status}\n\n## Open questions\n\n| Question | Owner | Blocks |\n| --- | --- | --- |\n${question}`;
+  mkdirSync(join(idea.dir, 'docs'));
+  writeFileSync(
+    join(idea.dir, 'docs/brief.md'),
+    brief('scoped', '| Which payment provider? | Lead | PAY-1 |\n'),
+  );
+  const scoped = nextIs(
+    'a spec still being shaped goes back to spec-design',
+    idea.dir,
+    'spec-design',
+  );
+  expect(
+    'with its open questions noted',
+    truth(scoped.attention.some((a) => a.includes('1 open question(s) in docs/brief.md'))),
+    0,
+  );
+  writeFileSync(join(idea.dir, 'docs/brief.md'), brief('ready'));
+  nextIs('a ready spec goes to init, with its docs', idea.dir, 'init', 'docs');
+  mkdirSync(join(idea.dir, '.claude'));
+  writeFileSync(join(idea.dir, '.claude/code-kit.draft.json'), '{}');
+  nextIs('a waiting draft goes to init for approval', idea.dir, 'init');
+  writeFileSync(join(idea.dir, '.claude/code-kit.json'), '{ "version": 2 }');
+  nextIs('an invalid config goes to check', idea.dir, 'check');
+  const legacyRepo = newRepo(false);
+  cleanups.push(legacyRepo.dir);
+  mkdirSync(join(legacyRepo.dir, 'src'));
+  writeFileSync(join(legacyRepo.dir, 'src/app.ts'), 'export {};\n');
+  legacyRepo.git('add', '-A');
+  nextIs('existing code without code-kit goes to init', legacyRepo.dir, 'init');
+
+  const ready = nextIs('with the kit on: ready stories go to dispatch', v.dir, 'dispatch', 'ST-2');
+  expect(
+    'a ready story with a gap in the plan is held back',
+    truth(ready.attention.some((a) => a.includes("ST-3 can't be dispatched"))),
+    0,
+  );
+  v.git('checkout', '-q', '-b', 'web/st-2');
+  vPut('apps/office/lib/cancel.ts', 'export const cancel = 1;\n');
+  vCommit('ST-2');
+  v.git('checkout', '-q', 'main');
+  nextIs('finished stories go to review', v.dir, 'review', 'ST-2');
+  vPut(
+    'docs/spec/plan.md',
+    plan('done')
+      .replace('**Depends on:** ST-1\n**Status:** todo', '**Depends on:** ST-1\n**Status:** done')
+      .replace('### ST-3 Stray\n\n**Lane:** nope\n**Requirements:** BOOK-9\n', ''),
+  );
+  vPut('docs/spec/01-booking.md', '# 01. Booking\n\n### BOOK-1 Request\n\n### BOOK-2 Cancel\n');
+  vCommit('all done');
+  nextIs('when every story is done, next says so', v.dir, 'done');
 } finally {
   for (const d of cleanups) rmSync(d, { recursive: true, force: true });
 }

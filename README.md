@@ -1,6 +1,8 @@
 # code-kit
 
-A Claude Code plugin that turns a project's engineering rules into hard guarantees. You write the rules once, per project, in `.claude/code-kit.json`. The plugin's hooks enforce them on every tool call, for the main session and every subagent. A rule Claude would otherwise only be _asked_ to follow becomes one it _can't_ break.
+A Claude Code plugin that turns a project's engineering rules into hard guarantees. You write the rules once, per project, in `.claude/code-kit.json`. The plugin's hooks enforce them on every tool call, for the main session and every subagent. A rule Claude would otherwise only be _asked_ to follow becomes one it _can't_ break. The same rules run in CI for every pull request.
+
+It also carries the work from idea to merged code: spec an idea into requirements, hand stories to lanes, review each branch against its requirements, and track the build against the spec.
 
 ## Why
 
@@ -34,6 +36,13 @@ code-kit stops each of these at the moment it would happen. The hook refuses the
 
   A lane also has to commit its work first.
 
+- **The same rules in CI:** `code-kit verify` checks a pull request as a whole, including commits made outside Claude Code:
+  - a `<lane>/…` branch stays in that lane's paths;
+  - every protected change is in the approval log, and the log is append-only;
+  - no new layer violations, and the baseline doesn't grow;
+  - no screens without an approved design, and no committed secrets;
+  - the project's checks pass.
+
 A project without `.claude/code-kit.json` isn't governed at all. An invalid config fails closed: nothing but the config itself can be written until it's fixed.
 
 ## When to use it
@@ -45,6 +54,7 @@ Use it when:
 - **Some files need an audit trail:** API contracts, schemas, registers, the kit's own config.
 - **The project has specs or designs** that code should follow rather than improvise.
 - **"Done" has to mean done:** checks passing and work committed, not an agent's say-so.
+- **You're starting from an idea**, and want the specification worked out before anyone writes code.
 
 It's overkill for a throwaway script, a spike, or a single-file change. In those, just don't add `.claude/code-kit.json`: the plugin stays installed and does nothing.
 
@@ -64,6 +74,7 @@ Set it up at the start of a new build, straight from the architecture docs, or b
   | `Stop`, `SubagentStop`   | `hooks/stop-check.mjs`      | proof before finishing                                            |
 
 - **For the main session and every subagent**, including agents in worktrees under `.claude/worktrees/`.
+- **In CI**, through `code-kit verify` in a GitHub Actions workflow that init can install (`templates/github-workflow.yml`).
 - **Locally, with Node 22 or later.** Nothing is sent anywhere. The CLI in `bin/` runs the same rules from a terminal.
 
 ## Install
@@ -84,6 +95,47 @@ Or from a local checkout:
 
 Needs Node 22 or later. `gitleaks` is recommended, for the secret scan on commit.
 
+## One command: `/code-kit:next`
+
+Don't want to remember which skill comes when? Run `/code-kit:next`, from a blank folder or at any point in a build:
+
+```text
+/code-kit:next a booking app for mobile dog groomers
+```
+
+It reads where the project stands and runs the right skill. It carries on to the following step until something needs you: questions to answer, a draft to approve, a pull request to merge, or lanes still building.
+
+| The project has                                | `next` runs                                      |
+| ---------------------------------------------- | ------------------------------------------------ |
+| Nothing                                        | spec-design                                      |
+| A spec still being shaped                      | spec-design, picking up where it stopped         |
+| A ready spec, existing code, or a draft config | init                                             |
+| Stories finished on their branches             | review, then dispatch                            |
+| Stories ready                                  | dispatch                                         |
+| Stories being built                            | nothing: it tells you what's running             |
+| Everything done                                | a status summary, then offers the next milestone |
+
+`code-kit next` on the command line shows the same decision without running anything.
+
+## Start from an idea
+
+```text
+/code-kit:spec-design a booking app for mobile dog groomers
+```
+
+spec-design works an idea into a specification with you before any code exists. It asks the questions that decide the build, a few at a time with a recommended answer, and writes every decision down:
+
+1. **Frame:** the problem, the users, the outcome, the constraints and the non-goals.
+2. **Explore:** two or three different shapes of solution, the main user journeys, and the riskiest assumptions. You choose.
+3. **Scope:** capability areas, and what the first release has to deliver end to end.
+4. **Specify:** one spec per area, with numbered, testable requirements covering data, states, rules, permissions, errors and acceptance criteria.
+5. **Architecture, principles and plan:** the layers, contracts, definition of done, and stories split into lanes.
+6. **Check:** every journey maps to requirements and every requirement to a story, with no gaps left as "TBD".
+
+It writes `docs/brief.md` (with the decision log and open questions), `docs/specs/NN-<area>.md`, `docs/architecture.md`, `docs/principles.md` and `docs/plan.md`. Those are exactly what `/code-kit:init docs/` turns into lanes and layers, and what lanes spec-check against. Run it again to resume where it left off, to change a decision, or to spec a new feature in an existing codebase.
+
+Requirements are headings (`### BOOK-4 Cancel a booking`). Stories are `### ST-12` headings in the plan with `**Lane:**`, `**Requirements:**`, `**Depends on:**` and `**Status:**` lines (`templates/plan.md`). Those two formats are what the build loop below runs on.
+
 ## Set up a project
 
 ```text
@@ -102,6 +154,30 @@ Needs Node 22 or later. `gitleaks` is recommended, for the secret scan on commit
 
 **No specs yet?** Leave `docs.specs` out, and lanes aren't held to a spec-check report. Add it once specs exist.
 
+## Build
+
+Once init has switched the rules on, the lead runs the build in a loop:
+
+```text
+/code-kit:dispatch next      # start every ready story on its lane
+/code-kit:review ST-12       # check a finished branch, then merge or send it back
+/code-kit:status             # where the build stands against the spec
+```
+
+- **Dispatch** picks the stories whose dependencies are done. It checks that no open question blocks them and that their contracts exist, then starts each lane agent in its own worktree on the branch `<lane>/st-<n>`, in parallel. Each brief names the story's requirements and acceptance criteria. Lanes spec-check first, build end to end, name requirement IDs in their test titles, and commit.
+- **Review** runs `verify` on the branch, then checks each requirement: built end to end, proved by a test, matching the spec-check report, and nothing beyond the story. It ends with merge, send back with the list of problems, or a question for you.
+- **Status** traces every requirement to its story, branch and tests. It shows what's done, in review, ready and blocked, which requirements no test names, and where the plan's status lines are out of date.
+
+## Enforce it in CI
+
+The hooks only see Claude Code sessions. For everything else, init offers `.github/workflows/code-kit.yml` (from `templates/github-workflow.yml`). It runs `verify` on every pull request and needs:
+
+- a `CODE_KIT_TOKEN` repository secret with read access to this repository, which is private;
+- a `v<version>` tag of code-kit to check out;
+- the `code-kit` check set as required on the protected branches.
+
+`verify` can't see spec-check reports, because `.claude/state/` isn't committed. Review covers those.
+
 ## Keep it up to date
 
 Re-run `/code-kit:init` whenever the build moves on: new apps or packages, moved folders, a changed plan, or files `unowned` keeps listing. It drafts the whole config again, then shows you the difference before anything changes:
@@ -117,7 +193,7 @@ Lanes never change silently: only when you approve the diff.
 
 ## The CLI
 
-Run from the project root. Add `--config .claude/code-kit.draft.json` to any command to read a draft instead. In a session, the `/code-kit:check` skill runs `check` and `unowned` for you.
+Run from the project root. Add `--config .claude/code-kit.draft.json` to any command to read a draft instead. In a session, the `/code-kit:check` skill runs `check` and `unowned` for you. `next` also works in a project without code-kit, or outside a git repository.
 
 ```bash
 node ~/workspace/code-kit/bin/code-kit.mjs check              # validate and summarise
@@ -126,7 +202,12 @@ node ~/workspace/code-kit/bin/code-kit.mjs unowned            # tracked files no
 node ~/workspace/code-kit/bin/code-kit.mjs diff --config .claude/code-kit.draft.json  # what a draft changes
 node ~/workspace/code-kit/bin/code-kit.mjs baseline [--write] # layer violations in the code as it is
 node ~/workspace/code-kit/bin/code-kit.mjs graph [--depth N]  # which folders import which
+node ~/workspace/code-kit/bin/code-kit.mjs verify [--base ref] [--branch name] [--no-checks]  # a branch's changes, for CI and review
+node ~/workspace/code-kit/bin/code-kit.mjs status [--base ref] [--json]  # stories and requirements against the spec
+node ~/workspace/code-kit/bin/code-kit.mjs next [--base ref] [--json]    # the step to take now, from the project's state
 ```
+
+`verify` compares the branch with where it left `--base` (default `origin/main`, then `main`). A branch named `<lane>/…`, or given as `--branch`, is held to that lane. `--no-checks` leaves the project's checks to CI's own steps. `status` reads `docs.specs` and `docs.plan`.
 
 ## Config
 
@@ -151,7 +232,7 @@ node ~/workspace/code-kit/bin/code-kit.mjs graph [--depth N]  # which folders im
 | `checks[]`                     | no                | `{ name, files, exclude?, run[], each?, owners?, ifMissing?, timeoutSeconds? }`: before finishing, when matching files changed. `each` runs the commands in every changed folder matching that glob. `owners` limits who may change the files (the lead always may). `ifMissing: "fail"` makes a missing tool an error (the default is to skip). |
 | `branches.protected`           | no                | Default `["main", "master"]`                                                                                                                                                                                                                                                                                                                     |
 
-Add `.claude/approvals/`, `.claude/state/` and `.claude/code-kit.draft.json` to `.gitignore`. Commit `.claude/code-kit.baseline.json` if the project has one.
+Add `.claude/approvals/`, `.claude/state/` and `.claude/code-kit.draft.json` to `.gitignore`, and `.claude/approval-log.jsonl merge=union` to `.gitattributes`, so merging branches that both logged changes keeps every entry. Commit `.claude/code-kit.baseline.json` if the project has one.
 
 ## Approvals
 

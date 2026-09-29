@@ -16,6 +16,8 @@ import { globToRegExp, matchesAny } from './glob.mjs';
 export const APPROVAL_LOG = '.claude/approval-log.jsonl';
 export const APPROVALS_DIR = '.claude/approvals';
 export const APPROVAL_MINUTES = 60;
+// Marks a worktree as a lane's, for a person running that lane; the lead creates it, and it is never work.
+export const LANE_FILE = '.lane';
 const NEVER_WRITABLE = [`${APPROVALS_DIR}/**`, APPROVAL_LOG];
 
 export const approvalHowTo = (name) =>
@@ -104,7 +106,7 @@ export function actorFor(input, root, config) {
       ? { kind: 'lane', lane, label: `${agent} (${lane} lane)` }
       : { kind: 'readonly', label: agent };
   }
-  const laneFile = join(root, '.lane');
+  const laneFile = join(root, LANE_FILE);
   if (existsSync(laneFile)) {
     const lane = readFileSync(laneFile, 'utf8').trim();
     return { kind: 'lane', lane, label: `${lane} lane worktree` };
@@ -134,7 +136,7 @@ export function protectedEntry(rel, config) {
   return config.protected.find((p) => globToRegExp(p.glob).test(rel));
 }
 
-const SECRETS = (rel) =>
+export const SECRETS = (rel) =>
   /(^|\/)\.env(\.|$)/.test(rel) ||
   /(^|\/)secrets?\//.test(rel) ||
   /\.(pem|p8|p12|keystore|jks)$/.test(rel);
@@ -208,7 +210,7 @@ function specCheckProblem(rel, root) {
 }
 
 // Screens are designed first: a screen file can be written once the register lists it.
-function screenProblem(rel, root, config) {
+export function screenProblem(rel, root, config) {
   const gate = config.designGate;
   if (!gate) return null;
   const isScreen = gate.screens.some(

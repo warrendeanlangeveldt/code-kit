@@ -17,6 +17,8 @@ The CLI is `node "${CLAUDE_PLUGIN_ROOT}/bin/code-kit.mjs"`, run from the project
 - **No config, and the docs describe the architecture** → **New from docs** (sections 1–3).
 - **No config, and the docs are thin or missing** → **Brownfield** (sections 1–3, with the brownfield steps). The code is the main source, and the docs fill in what they can.
 
+- **No config, no code and no docs** (just an idea) → stop and suggest `/code-kit:spec-design` first. It writes the brief, specs, architecture, principles and plan this skill works from.
+
 Say which one applies and why before you start.
 
 ## 1. Read everything first
@@ -45,7 +47,7 @@ Say which one applies and why before you start.
 Write `.claude/code-kit.draft.json`. Follow `${CLAUDE_PLUGIN_ROOT}/README.md` › Config for every field.
 
 - **`docs`:**
-  - `specs`, `principles` and `plan` as found. Leave `specs` out if the project has no specs: without it, lanes aren't held to a spec-check report.
+  - `specs`, `principles` and `plan` as found. `plan` is the plan file itself; with stories in the `### ST-n` form, the dispatch, review and status skills work from it. Leave `specs` out if the project has no specs: without it, lanes aren't held to a spec-check report.
   - Brownfield: if there are no specs, say so, and offer the spec-check gate for later, once specs exist.
 - **`layers`:** one entry per layer, documented or found in the graph. Each needs:
   - `paths`: globs matching where that layer's code really lives;
@@ -106,9 +108,15 @@ Once they approve (with any changes):
 1. Rename the draft to `.claude/code-kit.json`. From then on, every hook enforces it.
 2. If there are existing violations, run `baseline --write`. This writes `.claude/code-kit.baseline.json`.
 3. If the project had local hooks in `.claude/settings.json` that the kit replaces, remove those hook entries and the local hook files. Keep the `permissions` block.
-4. Add `.claude/approvals/`, `.claude/state/` and `.claude/code-kit.draft.json` to `.gitignore`.
-5. Run `check` and `unowned` again, without `--config`.
-6. Commit on a branch. The kit records the protected files in `.claude/approval-log.jsonl`.
+4. Add `.claude/approvals/`, `.claude/state/` and `.claude/code-kit.draft.json` to `.gitignore`. Add `.claude/approval-log.jsonl merge=union` to `.gitattributes`: when lanes and the lead both log changes, merging keeps every entry instead of conflicting.
+5. Offer CI enforcement, since the hooks only see Claude Code sessions. On yes:
+   - write `.github/workflows/code-kit.yml` from `${CLAUDE_PLUGIN_ROOT}/templates/github-workflow.yml`;
+   - set the version from `${CLAUDE_PLUGIN_ROOT}/.claude-plugin/plugin.json`;
+   - fill in the install steps the project's checks need, from its existing CI or package manager;
+   - make sure the lead owns the workflow file, and add it to `protected` (approval `ci`, why "the CI that enforces the rules"), so a lane can't switch it off;
+   - tell the person to add the `CODE_KIT_TOKEN` repository secret, and to make the `code-kit` check required on the protected branches.
+6. Run `check` and `unowned` again, without `--config`.
+7. Commit on a branch. The kit records the protected files in `.claude/approval-log.jsonl`.
 
 Report what was set up, what's enforced from now on, how many existing violations the baseline holds, and the open questions.
 
