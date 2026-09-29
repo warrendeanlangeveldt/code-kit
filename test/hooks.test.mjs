@@ -397,6 +397,20 @@ try {
   expect("the project's per-file check passes", edited('docs/a.lint', 'good'), 0);
   expect('and fails', edited('docs/b.lint', 'bad'), 2, 'grep -q good docs/b.lint');
   expect('excluded files are not checked', edited('skip/c.lint', 'bad'), 0);
+  // Agent worktrees live under .claude/worktrees, which projects usually lint-ignore: the check must
+  // run inside the worktree, on the path relative to it, not be skipped as a .claude/ file.
+  git('worktree', 'add', '-q', '.claude/worktrees/w', '-b', 'lane/w');
+  const inWorktree = join(repo, '.claude/worktrees/w/docs/w.lint');
+  mkdirSync(dirname(inWorktree), { recursive: true });
+  writeFileSync(inWorktree, 'bad');
+  expect(
+    'edits in an agent worktree get the per-file checks, relative to that worktree',
+    hook('post-edit-check.mjs', { tool_input: { file_path: inWorktree } }),
+    2,
+    'grep -q good docs/w.lint',
+  );
+  git('worktree', 'remove', '--force', '.claude/worktrees/w');
+  git('branch', '-q', '-D', 'lane/w');
   for (const f of [
     'packages/domain/src/a.ts',
     'packages/domain/src/b.ts',
