@@ -1,0 +1,110 @@
+{
+  "version": 1,
+  "docs": {
+    "specs": "docs/spec",
+    "principles": "docs/spec/principles.md",
+    "plan": "docs/spec/plan.md"
+  },
+  "lead": {
+    "paths": [
+      "packages/schemas/**",
+      "docs/**",
+      "design/**",
+      "CLAUDE.md",
+      "package.json",
+      ".gitignore"
+    ],
+    "outside": ["../code-kit/**"]
+  },
+  "anyActor": ["pnpm-lock.yaml"],
+  "lanes": {
+    "data": { "agent": "db-engineer", "paths": ["supabase/migrations/**", "supabase/tests/**"] },
+    "mobile": {
+      "agent": "mobile-engineer",
+      "paths": ["apps/field/**"],
+      "exclude": ["apps/field/e2e/**"]
+    },
+    "backend": {
+      "agent": "backend-engineer",
+      "paths": ["supabase/functions/**", "workers/**"],
+      "exclude": ["workers/ai/**"]
+    },
+    "ai": { "agent": "ai-engineer", "paths": ["workers/ai/**", "packages/domain/**"] },
+    "web": { "agent": "web-engineer", "paths": ["apps/office/**"] },
+    "platform": { "agent": "platform-engineer", "paths": ["runbooks/**", "infra/**"] },
+    "qa": { "agent": "qa-engineer", "paths": ["tests/**", "apps/*/e2e/**"] }
+  },
+  "protected": [
+    {
+      "glob": "design/approved-screens.json",
+      "approval": "design",
+      "why": "the register of approved designs"
+    }
+  ],
+  "designGate": {
+    "register": "design/approved-screens.json",
+    "screens": [
+      { "glob": "apps/field/app/**/*.tsx", "not": "(^|/)(_layout|\\+[^/]*)\\.tsx$" },
+      { "glob": "apps/office/app/**/page.tsx" }
+    ],
+    "howTo": "Design it first, in light and dark mode."
+  },
+  "layers": [
+    { "name": "schemas", "paths": ["packages/schemas/**"], "mayImport": [] },
+    {
+      "name": "domain",
+      "paths": ["packages/domain/**", "**/domain/**"],
+      "mayImport": ["schemas"],
+      "denyPackages": ["node:*", "@supabase/*"]
+    },
+    { "name": "services", "paths": ["**/services/**"], "mayImport": ["domain", "schemas"] },
+    {
+      "name": "providers",
+      "paths": ["**/providers/**"],
+      "mayImport": ["services", "domain", "schemas"]
+    }
+  ],
+  "importAliases": { "@kit/schemas": "packages/schemas/src", "@kit/domain": "packages/domain/src" },
+  "shell": {
+    "block": [
+      {
+        "pattern": "\\bsupabase\\s+(db\\s+push|link)\\b",
+        "why": "Deploying is done by CI after approval."
+      }
+    ],
+    "restricted": [
+      {
+        "pattern": "\\bsupabase\\s+(db\\s+reset|start|stop)\\b",
+        "lanes": ["data", "qa"],
+        "why": "The local database is shared."
+      }
+    ]
+  },
+  "postEdit": [{ "files": ["**/*.lint"], "exclude": ["skip/**"], "run": "grep -q good {file}" }],
+  "checks": [
+    { "name": "workers", "files": ["workers/**"], "run": ["test -f workers/ok"] },
+    {
+      "name": "functions",
+      "files": ["supabase/functions/**"],
+      "each": "supabase/functions/*",
+      "run": ["test -f ok"]
+    },
+    {
+      "name": "database",
+      "files": ["supabase/migrations/**", "tests/db/**"],
+      "owners": ["data"],
+      "run": ["true"]
+    },
+    {
+      "name": "missing tool",
+      "files": ["runbooks/tool/**"],
+      "run": ["no-such-tool-xyz --version"]
+    },
+    {
+      "name": "required tool",
+      "files": ["runbooks/required/**"],
+      "run": ["no-such-tool-xyz --version"],
+      "ifMissing": "fail"
+    }
+  ]
+}

@@ -1,0 +1,14 @@
+{
+  "name": "code-kit",
+  "description": "Warren Langeveldt's Claude Code plugins",
+  "owner": {
+    "name": "Warren Langeveldt"
+  },
+  "plugins": [
+    {
+      "name": "code-kit",
+      "source": "./",
+      "description": "Lanes, layer rules, protected paths with an approval log, spec-check and design gates, and proof-before-finish checks, configured per project from its docs"
+    }
+  ]
+}
