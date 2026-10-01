@@ -1,0 +1,101 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 920" width="1280" height="920" role="img" aria-labelledby="title desc">
+  <title id="title">How code-kit works</title>
+  <desc id="desc">The specs, architecture and principles create the agents, skills and rules. The lead agent delegates stories to lane agents, each with its own paths, specs and skills, and takes decisions and approvals to you. Lanes send scope and dependency requests back to the lead. Hooks enforce ownership, layers, approvals and spec-check while each lane implements, tests and commits. The lead reviews the work against the requirements, and CI runs code-kit verify.</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 z" fill="#4b5563"/>
+    </marker>
+    <style>
+      text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; fill: #1f2937; }
+      .title { font-size: 54px; font-weight: 800; fill: #111827; }
+      .subtitle { font-size: 25px; font-weight: 600; fill: #4b5563; }
+      .label { font-size: 20px; font-weight: 600; }
+      .lead { font-size: 30px; font-weight: 700; }
+      .lane { font-size: 22px; font-weight: 700; }
+      .item { font-size: 18px; fill: #374151; }
+      .note { font-size: 17px; font-weight: 600; fill: #374151; }
+      .caption { font-size: 20px; fill: #4b5563; }
+      .box { fill: #f3f8fe; stroke: #3b82c4; stroke-width: 2; }
+      .strong { fill: #cfe4fb; stroke: #2f6fae; stroke-width: 2.5; }
+      .person { fill: #eceef1; stroke: #6b7280; stroke-width: 2; }
+      .band { fill: #dbeafc; }
+      .line { fill: none; stroke: #4b5563; stroke-width: 2; }
+    </style>
+  </defs>
+  <rect width="1280" height="920" rx="24" fill="#ffffff"/>
+
+  <text class="title" x="623" y="78" text-anchor="middle">CodeKit</text>
+  <text class="subtitle" x="623" y="122" text-anchor="middle">Creates the engineering team and governs delivery</text>
+
+  <g transform="translate(-40 0)">
+  <!-- set-up -->
+  <rect class="box" x="90" y="160" width="350" height="56" rx="8"/>
+  <text class="label" x="265" y="195" text-anchor="middle">Specs, architecture &amp; principles</text>
+  <path class="line" d="M440 188 H492" marker-end="url(#arrow)"/>
+  <rect class="box" x="498" y="160" width="330" height="56" rx="8"/>
+  <text class="label" x="663" y="195" text-anchor="middle">Create agents, skills &amp; rules</text>
+  <path class="line" d="M663 216 V252" marker-end="url(#arrow)"/>
+
+  <!-- the lead and the person -->
+  <rect class="strong" x="503" y="258" width="320" height="68" rx="10"/>
+  <text class="lead" x="663" y="303" text-anchor="middle">Lead agent</text>
+  <path class="line" d="M829 286 H1003" marker-start="url(#arrow)" marker-end="url(#arrow)"/>
+  <text class="note" x="916" y="270" text-anchor="middle">Decisions &amp; approvals</text>
+  <rect class="person" x="1009" y="258" width="170" height="68" rx="10"/>
+  <text class="lead" x="1094" y="303" text-anchor="middle">You</text>
+
+  <!-- delegation -->
+  <path class="line" d="M663 326 V384"/>
+  <text class="note" x="650" y="362" text-anchor="end">Delegate stories</text>
+  <path class="line" d="M335 384 H991"/>
+  <path class="line" d="M335 384 V414" marker-end="url(#arrow)"/>
+  <path class="line" d="M663 384 V414" marker-end="url(#arrow)"/>
+  <path class="line" d="M991 384 V414" marker-end="url(#arrow)"/>
+
+  <!-- lanes -->
+  <g>
+    <rect class="box" x="190" y="420" width="290" height="146" rx="8"/>
+    <path class="band" d="M191 460 V429 a8 8 0 0 1 8 -8 H471 a8 8 0 0 1 8 8 V460 z"/>
+    <text class="lane" x="335" y="449" text-anchor="middle">Web lane</text>
+    <text class="item" x="335" y="489" text-anchor="middle">Own paths</text>
+    <text class="item" x="335" y="517" text-anchor="middle">Assigned specs</text>
+    <text class="item" x="335" y="545" text-anchor="middle">Required skills</text>
+  </g>
+  <g>
+    <rect class="box" x="518" y="420" width="290" height="146" rx="8"/>
+    <path class="band" d="M519 460 V429 a8 8 0 0 1 8 -8 H799 a8 8 0 0 1 8 8 V460 z"/>
+    <text class="lane" x="663" y="449" text-anchor="middle">API lane</text>
+    <text class="item" x="663" y="489" text-anchor="middle">Own paths</text>
+    <text class="item" x="663" y="517" text-anchor="middle">Assigned specs</text>
+    <text class="item" x="663" y="545" text-anchor="middle">Required skills</text>
+  </g>
+  <g>
+    <rect class="box" x="846" y="420" width="290" height="146" rx="8"/>
+    <path class="band" d="M847 460 V429 a8 8 0 0 1 8 -8 H1127 a8 8 0 0 1 8 8 V460 z"/>
+    <text class="lane" x="991" y="449" text-anchor="middle">Data lane</text>
+    <text class="item" x="991" y="489" text-anchor="middle">Own paths</text>
+    <text class="item" x="991" y="517" text-anchor="middle">Assigned specs</text>
+    <text class="item" x="991" y="545" text-anchor="middle">Required skills</text>
+  </g>
+
+  <!-- scope and dependency requests go back to the lead -->
+  <path class="line" d="M1136 493 H1196 V354 H760 V332" marker-end="url(#arrow)"/>
+  <text class="note" x="1210" y="420">Scope &amp;</text>
+  <text class="note" x="1210" y="442">dependency</text>
+  <text class="note" x="1210" y="464">requests</text>
+
+  <!-- enforcement and delivery -->
+  <path class="line" d="M335 566 V592 H991 V566"/>
+  <path class="line" d="M663 566 V616" marker-end="url(#arrow)"/>
+  <rect class="strong" x="190" y="622" width="946" height="58" rx="8"/>
+  <text class="label" x="663" y="658" text-anchor="middle">Hooks enforce ownership, layers, approvals &amp; spec-check</text>
+  <path class="line" d="M663 680 V710" marker-end="url(#arrow)"/>
+  <rect class="box" x="428" y="716" width="470" height="56" rx="8"/>
+  <text class="label" x="663" y="751" text-anchor="middle">Implement → Test → Commit</text>
+  <path class="line" d="M663 772 V802" marker-end="url(#arrow)"/>
+  <rect class="box" x="353" y="808" width="620" height="56" rx="8"/>
+  <text class="label" x="663" y="843" text-anchor="middle">Lead reviews against requirements · CI runs verify</text>
+  </g>
+
+  <text class="caption" x="623" y="902" text-anchor="middle">Lane agents implement. The lead coordinates, resolves scope and reviews.</text>
+</svg>
