@@ -1,6 +1,6 @@
 # code-kit
 
-A Claude Code plugin that turns a project's engineering rules into hard guarantees. You write the rules once, per project, in `.claude/code-kit.json`. The plugin's hooks enforce them on every tool call, for the main session and every subagent. A rule Claude would otherwise only be _asked_ to follow becomes one it _can't_ break. The same rules run in CI for every pull request.
+A Claude Code plugin that keeps AI coding agents inside a project's engineering rules, as hard guarantees rather than requests. You write the rules once, per project, in `.claude/code-kit.json`. The plugin's hooks enforce them on every tool call, for the main session and every subagent. A rule Claude would otherwise only be _asked_ to follow becomes one it _can't_ break. The same rules run in CI for every pull request.
 
 It also carries the work from idea to merged code: spec an idea into requirements, hand stories to lanes, review each branch against its requirements, and track the build against the spec.
 

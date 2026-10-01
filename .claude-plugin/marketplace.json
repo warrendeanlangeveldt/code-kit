@@ -1,6 +1,6 @@
 {
   "name": "code-kit",
-  "description": "code-kit: per-project engineering rules for Claude Code, enforced by hooks and in CI, from idea to merged code",
+  "description": "code-kit: keeps AI coding agents inside each project's rules, enforced by Claude Code hooks and in CI, from idea to merged code",
   "owner": {
     "name": "Warren Langeveldt"
   },
@@ -8,8 +8,8 @@
     {
       "name": "code-kit",
       "source": "./",
-      "description": "From idea to merged code under enforced rules: spec design, lanes, layer rules, protected paths with an approval log, spec-check and design gates, proof-before-finish checks, dispatch, review, build status and CI verification, configured per project from its docs",
-      "version": "0.3.2",
+      "description": "Keeps AI coding agents inside your project's rules, from idea to merged code: spec design, lanes, layer rules, protected paths with an approval log, spec-check and design gates, proof-before-finish checks, dispatch, review, build status and CI verification, configured per project from its docs",
+      "version": "0.3.3",
       "category": "development",
       "tags": ["guardrails", "architecture", "lanes", "layers", "spec-driven", "ci", "multi-agent"],
       "license": "MIT"

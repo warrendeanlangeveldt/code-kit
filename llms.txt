@@ -1,6 +1,6 @@
 # code-kit
 
-> A Claude Code plugin that turns a project's engineering rules into hard guarantees. You write the rules once, per project, in `.claude/code-kit.json`. Its hooks enforce them on every tool call, for the main session and every subagent, and `code-kit verify` enforces them again in CI. It also carries work from an idea to merged code: spec design, dispatching stories to lane agents, review against requirements, and build status. MIT licensed.
+> A Claude Code plugin that keeps AI coding agents inside a project's engineering rules, as hard guarantees rather than requests. You write the rules once, per project, in `.claude/code-kit.json`. Its hooks enforce them on every tool call, for the main session and every subagent, and `code-kit verify` enforces them again in CI. It also carries work from an idea to merged code: spec design, dispatching stories to lane agents, review against requirements, and build status. MIT licensed.
 
 Install in Claude Code with `/plugin marketplace add warrendeanlangeveldt/code-kit`, then `/plugin install code-kit@code-kit`. Start with `/code-kit:next`, which works out where a project stands and runs the right skill. A project without `.claude/code-kit.json` isn't governed at all. Requires Node 22 or later, and git.
 
