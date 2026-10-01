@@ -114,8 +114,8 @@ To update later, run `/plugin marketplace update code-kit` and restart Claude Co
 **The command line** is optional: the skills run it for you in a session. Use it for CI, or from a terminal:
 
 ```sh
-npx code-kit check          # no install
-npm i -g code-kit           # or install it, then: code-kit check
+npx @warren-dean/code-kit check          # no install
+npm i -g @warren-dean/code-kit           # or install it, then: code-kit check
 ```
 
 **From a clone**, for working on code-kit itself: `/plugin marketplace add <path to the clone>`.
@@ -255,7 +255,7 @@ Once init has switched the rules on, the lead runs the build in a loop:
 
 ## Enforce it in CI
 
-The hooks only see Claude Code sessions. For everything else, init offers `.github/workflows/code-kit.yml` (from `templates/github-workflow.yml`). It runs `verify` on every pull request, through `npx code-kit@<version>`, pinned so CI doesn't change under you. It needs no secret. The one setting to make is marking the `code-kit` check as required on the protected branches.
+The hooks only see Claude Code sessions. For everything else, init offers `.github/workflows/code-kit.yml` (from `templates/github-workflow.yml`). It runs `verify` on every pull request, through `npx @warren-dean/code-kit@<version>`, pinned so CI doesn't change under you. It needs no secret. The one setting to make is marking the `code-kit` check as required on the protected branches.
 
 `verify` can't see spec-check reports, because `.claude/state/` isn't committed. Review covers those.
 
@@ -274,7 +274,7 @@ Lanes never change silently: only when you approve the diff.
 
 ## The CLI
 
-Run from the project root, as `code-kit <command>` once installed (`npm i -g code-kit`), or `npx code-kit <command>`. Add `--config .claude/code-kit.draft.json` to any command to read a draft instead. In a session, the `/code-kit:check` skill runs `check` and `unowned` for you. `next` also works in a project without code-kit, or outside a git repository.
+Run from the project root, as `code-kit <command>` once installed (`npm i -g @warren-dean/code-kit`), or `npx @warren-dean/code-kit <command>`. Add `--config .claude/code-kit.draft.json` to any command to read a draft instead. In a session, the `/code-kit:check` skill runs `check` and `unowned` for you. `next` also works in a project without code-kit, or outside a git repository.
 
 ```bash
 code-kit check              # validate and summarise

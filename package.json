@@ -1,6 +1,6 @@
 {
-  "name": "code-kit",
-  "version": "0.3.1",
+  "name": "@warren-dean/code-kit",
+  "version": "0.3.2",
   "description": "Claude Code plugin: per-project lanes, layer rules, protected paths and proof-before-finish, enforced by hooks and in CI",
   "license": "MIT",
   "author": "Warren Langeveldt",

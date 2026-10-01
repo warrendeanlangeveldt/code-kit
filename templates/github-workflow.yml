@@ -18,6 +18,6 @@ jobs:
       #   e.g. pnpm/action-setup and `pnpm install --frozen-lockfile`}}
       - name: Verify
         run: >
-          npx --yes code-kit@{{code-kit version}} verify
+          npx --yes @warren-dean/code-kit@{{code-kit version}} verify
           --base origin/${{ github.base_ref }}
           --branch ${{ github.head_ref }}
