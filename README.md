@@ -4,6 +4,18 @@ A Claude Code plugin that turns a project's engineering rules into hard guarante
 
 It also carries the work from idea to merged code: spec an idea into requirements, hand stories to lanes, review each branch against its requirements, and track the build against the spec.
 
+## Quick start
+
+You need Claude Code, Node 22 or later, and git. Then, in Claude Code:
+
+```text
+/plugin marketplace add warrendeanlangeveldt/code-kit
+/plugin install code-kit@code-kit
+/code-kit:next
+```
+
+`/code-kit:next` works out where your project stands and takes you through the next step. A blank folder starts with speccing an idea; an existing codebase starts with drafting its rules. Nothing is enforced until you approve the rules it drafts. In a project without `.claude/code-kit.json`, the plugin does nothing.
+
 ## Why
 
 Rules in `CLAUDE.md` and agent prompts are advice. Over a long session, or across a dozen parallel subagents, advice drifts:
@@ -79,21 +91,34 @@ Set it up at the start of a new build, straight from the architecture docs, or b
 
 ## Install
 
-From GitHub (the repository is private, so `gh auth login` or git credentials for it are needed):
+**Requirements:** Claude Code, Node 22 or later, and git. [gitleaks](https://github.com/gitleaks/gitleaks) is optional: when it's installed, every commit gets a secret scan.
+
+**The plugin**, from this repository's marketplace:
 
 ```text
 /plugin marketplace add warrendeanlangeveldt/code-kit
 /plugin install code-kit@code-kit
 ```
 
-Or from a local checkout:
+To update later, run `/plugin marketplace update code-kit` and restart Claude Code; sessions started before an update keep the old hooks. To pin it for a whole team, add it to the project's `.claude/settings.json`:
 
-```text
-/plugin marketplace add ~/workspace/code-kit
-/plugin install code-kit@code-kit
+```json
+{
+  "extraKnownMarketplaces": {
+    "code-kit": { "source": { "source": "github", "repo": "warrendeanlangeveldt/code-kit" } }
+  },
+  "enabledPlugins": { "code-kit@code-kit": true }
+}
 ```
 
-Needs Node 22 or later. `gitleaks` is recommended, for the secret scan on commit.
+**The command line** is optional: the skills run it for you in a session. Use it for CI, or from a terminal:
+
+```sh
+npx code-kit check          # no install
+npm i -g code-kit           # or install it, then: code-kit check
+```
+
+**From a clone**, for working on code-kit itself: `/plugin marketplace add <path to the clone>`.
 
 ## One command: `/code-kit:next`
 
@@ -230,11 +255,7 @@ Once init has switched the rules on, the lead runs the build in a loop:
 
 ## Enforce it in CI
 
-The hooks only see Claude Code sessions. For everything else, init offers `.github/workflows/code-kit.yml` (from `templates/github-workflow.yml`). It runs `verify` on every pull request and needs:
-
-- a `CODE_KIT_TOKEN` repository secret with read access to this repository, which is private;
-- a `v<version>` tag of code-kit to check out;
-- the `code-kit` check set as required on the protected branches.
+The hooks only see Claude Code sessions. For everything else, init offers `.github/workflows/code-kit.yml` (from `templates/github-workflow.yml`). It runs `verify` on every pull request, through `npx code-kit@<version>`, pinned so CI doesn't change under you. It needs no secret. The one setting to make is marking the `code-kit` check as required on the protected branches.
 
 `verify` can't see spec-check reports, because `.claude/state/` isn't committed. Review covers those.
 
@@ -253,19 +274,19 @@ Lanes never change silently: only when you approve the diff.
 
 ## The CLI
 
-Run from the project root. Add `--config .claude/code-kit.draft.json` to any command to read a draft instead. In a session, the `/code-kit:check` skill runs `check` and `unowned` for you. `next` also works in a project without code-kit, or outside a git repository.
+Run from the project root, as `code-kit <command>` once installed (`npm i -g code-kit`), or `npx code-kit <command>`. Add `--config .claude/code-kit.draft.json` to any command to read a draft instead. In a session, the `/code-kit:check` skill runs `check` and `unowned` for you. `next` also works in a project without code-kit, or outside a git repository.
 
 ```bash
-node ~/workspace/code-kit/bin/code-kit.mjs check              # validate and summarise
-node ~/workspace/code-kit/bin/code-kit.mjs who <path>...      # owner and layer of each path
-node ~/workspace/code-kit/bin/code-kit.mjs unowned            # tracked files nobody may write
-node ~/workspace/code-kit/bin/code-kit.mjs diff --config .claude/code-kit.draft.json  # what a draft changes
-node ~/workspace/code-kit/bin/code-kit.mjs baseline [--write] # layer violations in the code as it is
-node ~/workspace/code-kit/bin/code-kit.mjs graph [--depth N]  # which folders import which
-node ~/workspace/code-kit/bin/code-kit.mjs verify [--base ref] [--branch name] [--no-checks]  # a branch's changes, for CI and review
-node ~/workspace/code-kit/bin/code-kit.mjs status [--base ref] [--json]  # stories and requirements against the spec
-node ~/workspace/code-kit/bin/code-kit.mjs next [--base ref] [--json]    # the step to take now, from the project's state
-node ~/workspace/code-kit/bin/code-kit.mjs trace <path>... [--json]      # what a file is for: requirements, lane, layer rules
+code-kit check              # validate and summarise
+code-kit who <path>...      # owner and layer of each path
+code-kit unowned            # tracked files nobody may write
+code-kit diff --config .claude/code-kit.draft.json  # what a draft changes
+code-kit baseline [--write] # layer violations in the code as it is
+code-kit graph [--depth N]  # which folders import which
+code-kit verify [--base ref] [--branch name] [--no-checks]  # a branch's changes, for CI and review
+code-kit status [--base ref] [--json]  # stories and requirements against the spec
+code-kit next [--base ref] [--json]    # the step to take now, from the project's state
+code-kit trace <path>... [--json]      # what a file is for: requirements, lane, layer rules
 ```
 
 `verify` compares the branch with where it left `--base` (default `origin/main`, then `main`). A branch named `<lane>/…`, or given as `--branch`, is held to that lane. `--no-checks` leaves the project's checks to CI's own steps. `status` reads `docs.specs` and `docs.plan`.
@@ -335,3 +356,7 @@ The other direction is `code-kit trace <path> --json`. It's the contract other t
 ```bash
 npm test        # unit tests, then the hooks end to end in throwaway repositories
 ```
+
+## Licence
+
+MIT. See [LICENSE](LICENSE). To report a security problem, see [SECURITY.md](SECURITY.md).

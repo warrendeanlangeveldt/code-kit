@@ -1,8 +1,37 @@
 {
   "name": "code-kit",
-  "version": "0.3.0",
-  "private": true,
+  "version": "0.3.1",
+  "description": "Claude Code plugin: per-project lanes, layer rules, protected paths and proof-before-finish, enforced by hooks and in CI",
+  "license": "MIT",
+  "author": "Warren Langeveldt",
   "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/warrendeanlangeveldt/code-kit.git"
+  },
+  "homepage": "https://github.com/warrendeanlangeveldt/code-kit#readme",
+  "bugs": "https://github.com/warrendeanlangeveldt/code-kit/issues",
+  "keywords": [
+    "claude-code",
+    "claude-code-plugin",
+    "ai-agents",
+    "guardrails",
+    "architecture",
+    "ci"
+  ],
+  "bin": {
+    "code-kit": "bin/code-kit.mjs"
+  },
+  "files": [
+    "bin",
+    "hooks",
+    "skills",
+    "templates",
+    ".claude-plugin",
+    "README.md",
+    "LICENSE",
+    "SECURITY.md"
+  ],
   "engines": {
     "node": ">=22"
   },
