@@ -1,5 +1,5 @@
-// The pure parts: globs, config validation and defaults, import parsing, layer rules, config diffs
-// and the baseline.
+// The pure parts: globs, config validation and defaults, import parsing, layer rules, config diffs,
+// the baseline and the packages a command adds.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -11,6 +11,7 @@ import { loadConfig, validate, withDefaults } from '../hooks/lib/config.mjs';
 import { importsOf, layerProblems } from '../hooks/lib/layers.mjs';
 import { diffConfigs, ownershipMoves } from '../hooks/lib/diff.mjs';
 import { newProblems } from '../hooks/lib/baseline.mjs';
+import { addedPackages, dependencyApproval, isDependencyFile } from '../hooks/lib/dependencies.mjs';
 
 const fixture = JSON.parse(
   readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'fixture.json'), 'utf8'),
@@ -185,4 +186,53 @@ test('adapters switch is validated', () => {
   assert.match(validate(c).join(' '), /"adapters" must map adapter names/);
   c.adapters = { 'context-graph': 'yes' };
   assert.match(validate(c).join(' '), /"adapters" must map adapter names/);
+});
+
+test('the packages a command adds', () => {
+  const cases = [
+    ['pnpm install && pnpm test', []],
+    ['npm ci', []],
+    ['pnpm install --frozen-lockfile', []],
+    ['npm i', []],
+    ['npm install lodash', ['lodash']],
+    ['npm install -D lodash@^4 @types/lodash', ['lodash', '@types/lodash']],
+    ['npm i --save-dev @scope/pkg@1.2.3', ['@scope/pkg']],
+    ['npm -w apps/api install zod', ['zod']],
+    ['pnpm --filter office add lodash', ['lodash']],
+    ['pnpm add -w zod', ['zod']],
+    ['pnpm exec playwright install chromium', []],
+    ['npx playwright install', []],
+    ['yarn add react', ['react']],
+    ['yarn workspace api add zod', ['zod']],
+    ['yarn install', []],
+    ['bun add hono', ['hono']],
+    ['pip install requests', ['requests']],
+    ['pip install -U "requests[socks]>=2.31"', ['requests']],
+    ['python -m pip install httpx==0.27', ['httpx']],
+    ['pip install -r requirements.txt', []],
+    ['pip install -e .', []],
+    ['pip install .', []],
+    ['uv pip install rich', ['rich']],
+    ['uv add httpx --group dev', ['httpx']],
+    ['uv sync', []],
+    ['poetry add pendulum@^2', ['pendulum']],
+    ['cargo add serde --features derive', ['serde']],
+    ['cargo build', []],
+    ['go get github.com/x/y@v1.2.0', ['github.com/x/y']],
+    ['go build ./...', []],
+    ['bundle add rails --version 7', ['rails']],
+    ['git bundle create repo.bundle', []],
+    ['npm install lodash > out.log 2>&1', ['lodash']],
+    ['cd apps/api; npm install zod', ['zod']],
+  ];
+  for (const [cmd, want] of cases) assert.deepEqual(addedPackages(cmd), want, cmd);
+});
+
+test('dependency approvals and files', () => {
+  assert.equal(dependencyApproval('lodash'), 'dep-lodash');
+  assert.equal(dependencyApproval('@scope/pkg'), 'dep-@scope+pkg');
+  assert.equal(dependencyApproval('github.com/x/y'), 'dep-github.com+x+y');
+  assert.ok(isDependencyFile('apps/api/package.json'));
+  assert.ok(isDependencyFile('pnpm-lock.yaml'));
+  assert.ok(!isDependencyFile('apps/api/src/package.ts'));
 });

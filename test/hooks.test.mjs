@@ -378,6 +378,111 @@ try {
   expect('so the log stays absent', truth(logLines().length === 0), 0);
   rmSync(join(repo, 'docs/note.md'));
 
+  // --- new dependencies: a person approves each package, for one lane or for everyone ------------
+  const approveFor = (lane, name, minutesAgo = 0) =>
+    approve(`${lane}/${name}`, minutesAgo, `${name} for ST-1`);
+  const addLodash = 'pnpm --filter office add lodash';
+  expect(
+    'a lane is refused a new package, and told the exact approval for its lane',
+    bash(addLodash, 'web-engineer'),
+    2,
+    '! echo "<what you are approving>" > .claude/approvals/web/dep-lodash',
+  );
+  expect(
+    'and to send the lead a change request',
+    bash(addLodash, 'web-engineer'),
+    2,
+    'change request',
+  );
+  expect('flags before the package no longer slip through', bash('npm install -D lodash'), 2);
+  approveFor('web', 'dep-lodash');
+  expect('with its approval the lane installs it', bash(addLodash, 'web-engineer'), 0);
+  expect('another lane may not use it', bash(addLodash, 'backend-engineer'), 2);
+  expect('nor may the lead', bash('pnpm add lodash'), 2);
+  expect(
+    'it covers that package only',
+    bash('pnpm --filter office add zod', 'web-engineer'),
+    2,
+    'zod',
+  );
+  expect('a read-only agent never installs', bash(addLodash, 'Explore'), 2, 'read-only');
+  put('package.json', '{ "dependencies": { "lodash": "4" } }\n');
+  put('apps/office/package.json', '{ "dependencies": { "lodash": "4" } }\n');
+  expect(
+    "the install's manifest and lockfile changes pass the ownership audit",
+    audit('web-engineer'),
+    0,
+  );
+  expect(
+    'the lane commits them, and the log records the approval',
+    bash('git add package.json apps/office/package.json && git commit -m deps', 'web-engineer'),
+    0,
+  );
+  const depEntries = logLines();
+  expect(
+    'for the manifest outside its paths only, with the package and reason',
+    truth(
+      depEntries.length === 1 &&
+        depEntries[0].file === 'package.json' &&
+        depEntries[0].approval === 'dependency' &&
+        depEntries[0].packages.join() === 'dep-lodash' &&
+        depEntries[0].reason === 'dep-lodash for ST-1',
+      JSON.stringify(depEntries),
+    ),
+    0,
+  );
+  git('reset', '-q');
+  rmSync(logFile);
+  put('apps/field/package.json', '{}\n');
+  expect("but never another lane's manifest", audit('web-engineer'), 2, 'apps/field/package.json');
+  rmSync(join(repo, 'apps/field/package.json'));
+  approveFor('web', 'dep-lodash', 61);
+  expect(
+    'once it expires, the manifest change is an ownership problem again',
+    audit('web-engineer'),
+    2,
+  );
+  approve('dep-zod', 0, 'zod for validation');
+  expect('an approval without a lane serves the lead', bash('pnpm add zod'), 0);
+  expect('and every lane', bash('pnpm --filter office add zod', 'web-engineer'), 0);
+  rmSync(join(repo, 'package.json'));
+  rmSync(join(repo, 'apps/office/package.json'));
+  rmSync(join(repo, '.claude/approvals'), { recursive: true });
+
+  // --- approvals reach lanes in their own worktrees ----------------------------------------------
+  git('worktree', 'add', '-q', '.claude/worktrees/dep', '-b', 'web/st-7');
+  const laneTree = join(repo, '.claude/worktrees/dep');
+  const inLaneTree = (command, agent = 'web-engineer') =>
+    hook('guard-bash.mjs', { cwd: laneTree, tool_input: { command }, agent_type: agent });
+  expect(
+    "a lane in its own worktree is told the approval in the lead's checkout",
+    inLaneTree('pnpm add dayjs'),
+    2,
+    '> .claude/approvals/web/dep-dayjs',
+  );
+  approveFor('web', 'dep-dayjs');
+  expect(
+    "an approval given at the lead's terminal reaches the lane's worktree",
+    inLaneTree('pnpm add dayjs'),
+    0,
+  );
+  writeFileSync(
+    join(laneTree, 'design/approved-screens.json'),
+    JSON.stringify({ screens: [{ file: screen }] }, null, 2),
+  );
+  const commitRegister = 'git add design/approved-screens.json && git commit -m d';
+  expect('a protected commit in the worktree needs approval', inLaneTree(commitRegister), 2);
+  approveFor('web', 'design');
+  expect('and the approval in the main checkout is found', inLaneTree(commitRegister), 0);
+  expect(
+    'it serves only the lane it was given to',
+    inLaneTree(commitRegister, 'backend-engineer'),
+    2,
+  );
+  rmSync(join(repo, '.claude/approvals'), { recursive: true });
+  git('worktree', 'remove', '--force', '.claude/worktrees/dep');
+  git('branch', '-q', '-D', 'web/st-7');
+
   // --- layers and per-file checks after an edit --------------------------------------------------
   expect(
     'domain may import schemas',
@@ -800,6 +905,38 @@ try {
     0,
   );
   expect('--no-checks leaves them to CI', verify('--no-checks'), 0);
+
+  v.git('checkout', '-q', 'main');
+  v.git('checkout', '-q', '-b', 'web/st-8');
+  const baseLog = existsSync(join(v.dir, '.claude/approval-log.jsonl'))
+    ? readFileSync(join(v.dir, '.claude/approval-log.jsonl'), 'utf8')
+    : '';
+  vPut('package.json', '{ "dependencies": { "dayjs": "1" } }\n');
+  vCommit('add dayjs');
+  expect(
+    "verify fails a lane's manifest change outside its paths with no dependency approval",
+    failsWith(verify('--no-checks'), "package.json: the web lane doesn't own it"),
+    0,
+  );
+  vPut(
+    '.claude/approval-log.jsonl',
+    `${baseLog}{"approval":"dependency","packages":["dep-dayjs"],"reason":"dates","file":"package.json"}\n`,
+  );
+  vCommit('logged by the commit hook');
+  expect('and passes it once the dependency approval is logged', verify('--no-checks'), 0);
+  vPut('apps/field/package.json', '{}\n');
+  vPut(
+    '.claude/approval-log.jsonl',
+    `${readFileSync(join(v.dir, '.claude/approval-log.jsonl'), 'utf8')}{"approval":"dependency","file":"apps/field/package.json"}\n`,
+  );
+  vCommit("another lane's manifest");
+  expect(
+    "a dependency approval never covers another lane's manifest",
+    failsWith(verify('--no-checks'), "apps/field/package.json: the web lane doesn't own it"),
+    0,
+  );
+  v.git('checkout', '-q', 'main');
+  v.git('branch', '-q', '-D', 'web/st-8');
 
   // --- status: stories and requirements, from the plan, the specs, git and the tests ------------
   v.git('checkout', '-q', 'main');

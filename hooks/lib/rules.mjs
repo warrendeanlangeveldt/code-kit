@@ -7,10 +7,15 @@
 // - the main session otherwise is the lead, who writes the lead's paths and delegates the rest.
 // Protected paths are recorded in the approval log whenever they are committed; only the lead may
 // write them without a person's approval.
-import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
+//
+// Approvals live in the project's main checkout, so a lane working in its own worktree sees the ones a
+// person gives at the lead's terminal. One for a lane (`<lane>/<name>`) serves that lane only; one
+// without a lane serves every actor.
+import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, statSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { homedir } from 'node:os';
 import { dirname, join, relative, resolve } from 'node:path';
+import { DEPENDENCY_APPROVAL, isDependencyFile } from './dependencies.mjs';
 import { globToRegExp, matchesAny } from './glob.mjs';
 
 export const APPROVAL_LOG = '.claude/approval-log.jsonl';
@@ -20,9 +25,27 @@ export const APPROVAL_MINUTES = 60;
 export const LANE_FILE = '.lane';
 const NEVER_WRITABLE = [`${APPROVALS_DIR}/**`, APPROVAL_LOG];
 
-export const approvalHowTo = (name) =>
-  `  ! echo "<what you are approving>" > ${APPROVALS_DIR}/${name}\n` +
-  `(a person runs it; the reason is recorded in ${APPROVAL_LOG}, and it allows these edits for ${APPROVAL_MINUTES} minutes)`;
+/**
+ * The commands a person runs to approve `names` for `actor`, and what that allows. For a lane the
+ * approval is that lane's; the folder is created here so the command works as written.
+ */
+export function approvalHowTo(names, actor, root, allows = 'these edits') {
+  const dir = approvalsDir(root);
+  const scoped = actor?.kind === 'lane' ? join(dir, actor.lane) : dir;
+  try {
+    mkdirSync(scoped, { recursive: true });
+  } catch {
+    // the command then fails visibly for the person, which says the same thing
+  }
+  const shown = relativeTo(projectDir(), scoped);
+  const where = shown.startsWith('..') ? scoped : shown;
+  const lines = [names].flat().map((n) => `  ! echo "<what you are approving>" > ${where}/${n}`);
+  const whom = actor?.kind === 'lane' ? `the ${actor.lane} lane` : 'any agent';
+  return (
+    `${lines.join('\n')}\n` +
+    `(a person runs it; the reason is recorded in ${APPROVAL_LOG}, and it allows ${allows} for ${whom}, for ${APPROVAL_MINUTES} minutes)`
+  );
+}
 
 /** `path` with symlinks resolved, even if it doesn't exist yet (macOS /var → /private/var). */
 export function realPath(path) {
@@ -114,20 +137,70 @@ export function actorFor(input, root, config) {
   return { kind: 'lead', label: 'lead session' };
 }
 
+/** Where approvals live: the main checkout's approvals folder, shared by all of its worktrees. */
+const approvalDirs = new Map();
+export function approvalsDir(root) {
+  if (!approvalDirs.has(root))
+    approvalDirs.set(root, join(projectWorktrees(root)[0] ?? root, APPROVALS_DIR));
+  return approvalDirs.get(root);
+}
+
 function ownedPaths(actor, config) {
   if (actor.kind === 'lead') return config.lead.paths;
   if (actor.kind === 'lane') return config.lanes[actor.lane]?.paths ?? [];
   return [];
 }
 
-/** The approval in force for `name`: { reason, grantedAt } while fresh and explained, else null. */
-export function approval(root, name) {
-  const file = join(root, APPROVALS_DIR, name);
-  if (!existsSync(file)) return null;
+/** Whether `rel` is the actor's own to write: its paths, or the paths any actor may write. */
+export function owns(actor, rel, config) {
+  if (actor.kind === 'readonly') return false;
+  if (matchesAny(rel, config.anyActor)) return true;
+  const excluded = actor.kind === 'lane' ? config.lanes[actor.lane]?.exclude : [];
+  return matchesAny(rel, ownedPaths(actor, config)) && !matchesAny(rel, excluded);
+}
+
+/** An approval file's { reason, grantedAt } while fresh and explained, else null. */
+function inForce(file) {
+  if (!existsSync(file) || !statSync(file).isFile()) return null;
   const { mtimeMs } = statSync(file);
   if (Date.now() - mtimeMs >= APPROVAL_MINUTES * 60_000) return null;
   const reason = readFileSync(file, 'utf8').trim();
   return reason ? { reason, grantedAt: new Date(mtimeMs).toISOString() } : null;
+}
+
+/** The approval in force for `name` and `actor` (the actor's lane's own, or one for everyone), or null. */
+export function approval(root, name, actor) {
+  const dir = approvalsDir(root);
+  const lane = actor?.kind === 'lane' ? inForce(join(dir, actor.lane, name)) : null;
+  return lane ?? inForce(join(dir, name));
+}
+
+/** The dependency approvals in force for `actor`: [{ name, reason, grantedAt }]. */
+export function dependencyGrants(root, actor) {
+  if (actor?.kind === 'readonly') return [];
+  const dir = approvalsDir(root);
+  const names = (d) => {
+    try {
+      return readdirSync(d).filter((n) => n.startsWith(DEPENDENCY_APPROVAL));
+    } catch {
+      return [];
+    }
+  };
+  const scoped = actor?.kind === 'lane' ? names(join(dir, actor.lane)) : [];
+  return [...new Set([...scoped, ...names(dir)])]
+    .map((name) => ({ name, ...approval(root, name, actor) }))
+    .filter((g) => g.reason);
+}
+
+/**
+ * Whether a dependency approval lets `actor` change `rel`: a manifest or lockfile no other lane owns,
+ * changed while the actor has a dependency approval in force. Installing a package rewrites them.
+ */
+export function dependencyChange(actor, rel, root, config) {
+  if (!isDependencyFile(rel) || actor.kind === 'readonly') return false;
+  const owner = laneOf(rel, config);
+  if (owner && !(actor.kind === 'lane' && owner === actor.lane)) return false;
+  return dependencyGrants(root, actor).length > 0;
 }
 
 /** The protected entry a repo-relative path falls under, or undefined. The log and state are not. */
@@ -143,6 +216,10 @@ export const SECRETS = (rel) =>
 
 /** Why `actor` may not write `rel` (relative to worktree `root`), or null if allowed. */
 export function writeProblem(actor, rel, root, config) {
+  const approvals = approvalsDir(root);
+  const target = realPath(resolve(root, rel));
+  if (target === approvals || target.startsWith(`${approvals}/`))
+    return `${rel} is an approval. Only a person creates approvals, with a \`!\` shell command.`;
   if (rel.startsWith('..'))
     return outsideAllowed(actor, rel, root, config) ? null : `${rel} is outside the repository.`;
   if (SECRETS(rel))
@@ -151,17 +228,17 @@ export function writeProblem(actor, rel, root, config) {
     return `${rel} is the approval audit log. Only the commit hook appends to it; nobody edits it.`;
   if (matchesAny(rel, NEVER_WRITABLE))
     return `${rel} is an approval. Only a person creates approvals, with a \`!\` shell command.`;
+  // A package a person approved may change the manifests and lockfiles its install rewrites.
+  if (dependencyChange(actor, rel, root, config)) return null;
   const guarded = protectedEntry(rel, config);
   // The lead writes protected files without an approval: the person reviews them in the pull request,
   // and every committed change is in the audit log. Anyone else needs a person's approval as well.
-  if (guarded && actor.kind !== 'lead' && !approval(root, guarded.approval)) {
-    return `${rel} is ${guarded.why} and needs a person's approval. Ask the lead (a person) to run\n${approvalHowTo(guarded.approval)}`;
+  if (guarded && actor.kind !== 'lead' && !approval(root, guarded.approval, actor)) {
+    return `${rel} is ${guarded.why} and needs a person's approval. Ask the lead (a person) to run\n${approvalHowTo(guarded.approval, actor, root)}`;
   }
   if (actor.kind === 'readonly') return `${actor.label} is read-only; it may not write ${rel}.`;
   if (matchesAny(rel, config.anyActor)) return null;
-  const excluded = actor.kind === 'lane' ? config.lanes[actor.lane]?.exclude : [];
-  if (!matchesAny(rel, ownedPaths(actor, config)) || matchesAny(rel, excluded))
-    return ownershipProblem(actor, rel, config);
+  if (!owns(actor, rel, config)) return ownershipProblem(actor, rel, config);
   const specs = actor.kind === 'lane' && config.docs?.specs;
   return (specs && specCheckProblem(rel, root)) || screenProblem(rel, root, config);
 }
@@ -184,10 +261,18 @@ function ownershipProblem(actor, rel, config) {
   return `The ${actor.label} may not write ${rel}${where}${next}`;
 }
 
+/** The lane whose paths hold `rel`, or null. */
+export function laneOf(rel, config) {
+  return (
+    Object.entries(config.lanes).find(
+      ([, { paths, exclude }]) => matchesAny(rel, paths) && !matchesAny(rel, exclude),
+    )?.[0] ?? null
+  );
+}
+
 export function ownerOf(rel, config) {
-  for (const [lane, { paths, exclude, agent }] of Object.entries(config.lanes)) {
-    if (matchesAny(rel, paths) && !matchesAny(rel, exclude)) return `${lane} lane / ${agent}`;
-  }
+  const lane = laneOf(rel, config);
+  if (lane) return `${lane} lane / ${config.lanes[lane].agent}`;
   return matchesAny(rel, config.lead.paths) ? 'lead' : null;
 }
 

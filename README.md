@@ -1,6 +1,6 @@
 # code-kit
 
-A Claude Code plugin that keeps AI coding agents inside a project's engineering rules, as hard guarantees rather than requests. You write the rules once, per project, in `.claude/code-kit.json`. The plugin's hooks enforce them on every tool call, for the main session and every subagent. A rule Claude would otherwise only be _asked_ to follow becomes one it _can't_ break. The same rules run in CI for every pull request.
+A Claude Code plugin that keeps AI coding agents inside a project's engineering rules. You write the rules once, per project, in `.claude/code-kit.json`. The plugin's hooks enforce them on every tool call, for the main session and every subagent. A rule Claude would otherwise only be _asked_ to follow becomes one the hooks refuse to let it break. The same rules run in CI for every pull request.
 
 It also carries the work from idea to merged code: spec an idea into requirements, hand stories to lanes, review each branch against its requirements, and track the build against the spec.
 
@@ -38,7 +38,7 @@ code-kit stops each of these at the moment it would happen. The hook refuses the
 - **Designs before screens** (optional): a screen file can't be written until the design register lists it.
 - **Shell rules:**
   - no force-push, pushing to or committing on protected branches, `--no-verify`, destructive deletes, or piping downloads into a shell;
-  - no new dependencies without the lead;
+  - no new dependency without a person's approval, for that package and that lane; the approval also covers the manifest and lockfile changes the install makes;
   - no forged approvals;
   - the project's own blocked commands (deploys, releases) and lane-restricted commands (shared local services).
 - **Proof before finishing:** before any agent finishes, the plugin runs:
@@ -49,13 +49,15 @@ code-kit stops each of these at the moment it would happen. The hook refuses the
   A lane also has to commit its work first.
 
 - **The same rules in CI:** `code-kit verify` checks a pull request as a whole, including commits made outside Claude Code:
-  - a `<lane>/…` branch stays in that lane's paths;
+  - a `<lane>/…` branch stays in that lane's paths, apart from manifest and lockfile changes logged under a dependency approval;
   - every protected change is in the approval log, and the log is append-only;
   - no new layer violations, and the baseline doesn't grow;
   - no screens without an approved design, and no committed secrets;
   - the project's checks pass.
 
 A project without `.claude/code-kit.json` isn't governed at all. An invalid config fails closed: nothing but the config itself can be written until it's fixed.
+
+The hooks are guard rails, not a sandbox ([SECURITY.md](SECURITY.md)): they refuse the actions they recognise. Two limits are deliberate. The finish check stops blocking once it has reported the same problem three times without progress, and says so, for the lead to take up. A check whose tool isn't installed is skipped unless it sets `ifMissing: "fail"`.
 
 ## When to use it
 
@@ -304,7 +306,7 @@ code-kit trace <path>... [--json]      # what a file is for: requirements, lane,
 | `lead.outside`                 | no                | Paths outside the repository the lead may write, e.g. `../shared-lib/**`. Claude's memory and scratchpad are always included.                                                                                                                                                                                                                    |
 | `anyActor`                     | no                | Paths every writer may change (e.g. the lockfile). `.claude/state/**` is always included.                                                                                                                                                                                                                                                        |
 | `lanes.<name>`                 | yes (may be `{}`) | `{ agent, paths, exclude? }`: the agent name maps a subagent to its lane. A worktree with a `.lane` file holding the lane name makes the main session that lane.                                                                                                                                                                                 |
-| `protected[]`                  | no                | `{ glob, approval, why }`: logged on every commit. Anyone but the lead needs `.claude/approvals/<approval>` from a person. `.claude/**` is always protected as `kit`.                                                                                                                                                                            |
+| `protected[]`                  | no                | `{ glob, approval, why }`: logged on every commit. Anyone but the lead needs a person's approval (see [Approvals](#approvals)). `.claude/**` is always protected as `kit`.                                                                                                                                                                       |
 | `designGate`                   | no                | `{ register, screens: [{ glob, not? }], howTo }`: screen files wait until the register (`{ "screens": [{ "file": … }] }`) lists them                                                                                                                                                                                                             |
 | `layers[]`                     | no                | `{ name, paths, mayImport, denyPackages? }`: the first layer whose paths match a file owns it. A layer may always import itself.                                                                                                                                                                                                                 |
 | `importAliases`                | no                | `{ "@app/domain": "packages/domain/src" }`: resolves non-relative imports to repository paths                                                                                                                                                                                                                                                    |
@@ -319,13 +321,18 @@ Add `.claude/approvals/`, `.claude/state/` and `.claude/code-kit.draft.json` to 
 
 ## Approvals
 
-The lead edits protected paths directly. The audit log records every committed change as `lead`, and the person reviews it in the pull request. To attach a reason, or to let a lane commit a protected file, a person runs this at the terminal (the `!` prefix in Claude Code runs it; hooks never see it):
+The lead edits protected paths directly. The audit log records every committed change as `lead`, and the person reviews it in the pull request. To attach a reason, to let a lane commit a protected file, or to allow a new dependency, a person runs a command at the terminal (the `!` prefix in Claude Code runs it; hooks never see it). The refusal an agent gets names the exact command.
 
 ```bash
-echo "Approve the reset password screens" > .claude/approvals/design
+echo "Approve the reset password screens" > .claude/approvals/design          # anyone
+echo "Approve the reset password screens" > .claude/approvals/web/design      # the web lane only
+echo "Date formatting for ST-12" > .claude/approvals/web/dep-dayjs             # the web lane adds dayjs
 ```
 
-It lasts 60 minutes. Agents can't create, edit or even mention approvals or the log.
+- **Scope:** an approval in a lane's folder serves that lane only; one directly in `.claude/approvals/` serves every agent. The refusal a lane gets names its own folder.
+- **Dependencies:** each new package needs its own approval, `dep-<package>` (`/` becomes `+`, so `@scope/pkg` is `dep-@scope+pkg`). It allows the install, and the changes the install makes to manifests and lockfiles that no other lane owns. When the lane commits a manifest or lockfile outside its own paths, the commit hook logs it as a `dependency` approval, with the packages and reasons, and `code-kit verify` accepts it.
+- **Worktrees:** approvals live in the main checkout, so a lane working in its own worktree sees the ones given at the lead's terminal.
+- **Lifetime:** 60 minutes. Agents can't create, edit or even mention approvals or the log.
 
 ## Adapters
 

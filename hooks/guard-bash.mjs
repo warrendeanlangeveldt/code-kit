@@ -1,11 +1,13 @@
 #!/usr/bin/env node
 // PreToolUse (Bash): blocks destructive and hook-skipping commands, work on protected branches, new
-// dependencies, approval forgery, kit edits through the shell by anyone but the lead, the project's
-// own blocked and lane-restricted commands; records protected files in the approval log on commit
-// and scans commits for secrets. Shell writes are also checked afterwards by lane-audit.mjs.
+// dependencies a person hasn't approved, approval forgery, kit edits through the shell by anyone but
+// the lead, the project's own blocked and lane-restricted commands; records protected files in the
+// approval log on commit and scans commits for secrets. Shell writes are also checked afterwards by
+// lane-audit.mjs.
 import { appendFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { join, resolve } from 'node:path';
+import { addedPackages, dependencyApproval } from './lib/dependencies.mjs';
 import { block, start } from './lib/hook.mjs';
 import {
   APPROVAL_LOG,
@@ -13,6 +15,9 @@ import {
   approval,
   approvalHowTo,
   currentBranch,
+  dependencyChange,
+  dependencyGrants,
+  owns,
   protectedEntry,
   sessionRoot,
 } from './lib/rules.mjs';
@@ -28,28 +33,20 @@ const ALWAYS = [
     'Refusing a destructive delete of a root, home or parent directory.',
   ],
   [/\b(curl|wget)\b[^|]*\|\s*(sh|bash|zsh)\b/, 'Piping downloads into a shell is not allowed.'],
-  // a package name starts with a letter or @; flags, `&&` and redirects after a bare install are fine
-  [
-    /\b(pnpm|npm|yarn|bun)\b[^;&|]*?\s(add|i|install)\s+[a-z@]/i,
-    'New dependencies need lead approval.',
-  ],
-  [/\b(uv|poetry|cargo|bundle)\s+add\s+[a-z@]/i, 'New dependencies need lead approval.'],
-  [/\bpip3?\s+install\s+[a-z]/i, 'New dependencies need lead approval.'],
-  [/\bgo\s+get\s+[a-z]/i, 'New dependencies need lead approval.'],
   [/\.claude\/approvals/, 'Approvals are created only by a person, with a `!` shell command.'],
   [
     /approval-log\.jsonl/,
     'The approval audit log is appended only by the commit hook; nobody edits it.',
   ],
 ];
-// Downloading Playwright's browser build is not adding a dependency.
-const browserDownload = /\bplaywright\s+install\b/.test(cmd);
 for (const [re, why] of ALWAYS) {
-  if (browserDownload && why.startsWith('New dependencies')) continue;
   if (re.test(cmd)) block(`Blocked: ${why}\nCommand: ${cmd}`);
 }
+const packages = addedPackages(cmd);
 if (error) {
   if (/\bgit\s+commit\b/.test(cmd)) block(`Blocked: ${error}\nFix the config before committing.`);
+  if (packages.length)
+    block(`Blocked: ${error}\nNew dependencies wait until the config is valid.\nCommand: ${cmd}`);
   process.exit(0);
 }
 
@@ -67,6 +64,30 @@ for (const { pattern, why } of config.shell.block) {
 
 const sessionIn = sessionRoot(input, project);
 const actor = actorFor(input, sessionIn ?? project, config);
+
+// Each new package needs a person's approval, for this actor; it also covers the manifest and lockfile
+// changes the install makes (lib/rules.mjs › dependencyChange).
+if (packages.length) {
+  if (actor.kind === 'readonly')
+    block(`Blocked: ${actor.label} is read-only; it may not add dependencies.\nCommand: ${cmd}`);
+  const unapproved = packages.filter(
+    (p) => !approval(sessionIn ?? project, dependencyApproval(p), actor),
+  );
+  if (unapproved.length) {
+    const ask =
+      actor.kind === 'lead'
+        ? 'Ask the person to approve it by running'
+        : "Write a short change request for the lead (the package, why, and the lane's story), and stop. The lead asks the person to run";
+    block(
+      `Blocked: a new dependency (${unapproved.join(', ')}) needs a person's approval. ${ask}\n${approvalHowTo(
+        unapproved.map(dependencyApproval),
+        actor,
+        sessionIn ?? project,
+        'installing it, and the manifest and lockfile changes that makes,',
+      )}\nCommand: ${cmd}`,
+    );
+  }
+}
 for (const { pattern, lanes, why } of config.shell.restricted) {
   const allowed = actor.kind === 'lead' || (actor.kind === 'lane' && lanes.includes(actor.lane));
   if (!allowed && new RegExp(pattern).test(cmd))
@@ -104,9 +125,9 @@ const writes =
   /((?<![0-9&])>>?\s*(?!&|\/dev\/null)\S|\btee\b|\bsed\s+-i|\bperl\s+-i|\bmv\b|\bcp\b|\brm\b|\bpython3?\b|\bnode\s+-e|\btruncate\b|\bchmod\b|\bln\b)/.test(
     cmd,
   );
-if (touchesKit && writes && actor.kind !== 'lead' && !approval(root, 'kit')) {
+if (touchesKit && writes && actor.kind !== 'lead' && !approval(root, 'kit', actor)) {
   block(
-    `Blocked: the .claude kit is changed only by the lead or with a person's approval. Ask the lead to run\n${approvalHowTo('kit')}`,
+    `Blocked: the .claude kit is changed only by the lead or with a person's approval. Ask the lead to run\n${approvalHowTo('kit', actor, root)}`,
   );
 }
 
@@ -135,30 +156,52 @@ function committedFiles() {
 }
 
 // Every committed protected file is recorded in the audit log, with the person's reason when an
-// approval is in force. The log is staged into the same commit, so record and change land together.
+// approval is in force. So is a lane's manifest or lockfile change, outside its own paths, made under a
+// dependency approval: that entry is how `code-kit verify` accepts it. The log is staged into the same
+// commit, so record and change land together.
 function recordApprovals() {
   const { files, git } = committedFiles();
   const lines = [];
-  for (const file of files.filter((f) => protectedEntry(f, config))) {
-    const entry = protectedEntry(file, config);
-    const granted = approval(root, entry.approval);
-    if (!granted && actor.kind !== 'lead') {
-      block(
-        `Blocked: ${file} is ${entry.why}; committing it needs a person's approval in force. Ask the lead to run\n${approvalHowTo(entry.approval)}`,
-      );
-    }
+  const record = (file, fields) =>
     lines.push(
       JSON.stringify({
         at: new Date().toISOString(),
-        approval: granted ? entry.approval : 'lead',
-        reason: granted ? granted.reason : 'Lead change; reviewed in the pull request',
-        grantedAt: granted ? granted.grantedAt : null,
+        ...fields,
         file,
         branch,
         actor: actor.label,
         session: input.session_id ?? null,
       }),
     );
+  for (const file of files) {
+    const entry = protectedEntry(file, config);
+    const granted = entry && approval(root, entry.approval, actor);
+    const byDependency = actor.kind === 'lane' && dependencyChange(actor, file, root, config);
+    if (entry && !granted && actor.kind !== 'lead' && !byDependency) {
+      block(
+        `Blocked: ${file} is ${entry.why}; committing it needs a person's approval in force. Ask the lead to run\n${approvalHowTo(entry.approval, actor, root)}`,
+      );
+    }
+    if (granted)
+      record(file, {
+        approval: entry.approval,
+        reason: granted.reason,
+        grantedAt: granted.grantedAt,
+      });
+    else if (byDependency && (entry || !owns(actor, file, config))) {
+      const grants = dependencyGrants(root, actor);
+      record(file, {
+        approval: 'dependency',
+        packages: grants.map((g) => g.name),
+        reason: grants.map((g) => g.reason).join('; '),
+        grantedAt: grants[0].grantedAt,
+      });
+    } else if (entry)
+      record(file, {
+        approval: 'lead',
+        reason: 'Lead change; reviewed in the pull request',
+        grantedAt: null,
+      });
   }
   if (lines.length === 0) return;
   appendFileSync(join(root, APPROVAL_LOG), `${lines.join('\n')}\n`);
