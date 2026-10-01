@@ -117,7 +117,7 @@ Once they approve (with any changes):
    - set the version from `${CLAUDE_PLUGIN_ROOT}/.claude-plugin/plugin.json`;
    - fill in the install steps the project's checks need, from its existing CI or package manager;
    - make sure the lead owns the workflow file, and add it to `protected` (approval `ci`, why "the CI that enforces the rules"), so a lane can't switch it off;
-   - tell the person to add the `CODE_KIT_TOKEN` repository secret, and to make the `code-kit` check required on the protected branches.
+   - tell the person to make the `code-kit` check required on the protected branches.
 7. Run `check` and `unowned` again, without `--config`.
 8. Commit on a branch. The kit records the protected files in `.claude/approval-log.jsonl`.
 
