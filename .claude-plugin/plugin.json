@@ -7,5 +7,17 @@
   },
   "license": "MIT",
   "repository": "https://github.com/warrendeanlangeveldt/code-kit",
-  "homepage": "https://github.com/warrendeanlangeveldt/code-kit#readme"
+  "homepage": "https://github.com/warrendeanlangeveldt/code-kit#readme",
+  "keywords": [
+    "claude-code",
+    "guardrails",
+    "architecture",
+    "lanes",
+    "layers",
+    "spec-driven-development",
+    "ci",
+    "multi-agent",
+    "hooks",
+    "skills"
+  ]
 }

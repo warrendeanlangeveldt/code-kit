@@ -1,0 +1,31 @@
+# code-kit
+
+> A Claude Code plugin that turns a project's engineering rules into hard guarantees. You write the rules once, per project, in `.claude/code-kit.json`. Its hooks enforce them on every tool call, for the main session and every subagent, and `code-kit verify` enforces them again in CI. It also carries work from an idea to merged code: spec design, dispatching stories to lane agents, review against requirements, and build status. MIT licensed.
+
+Install in Claude Code with `/plugin marketplace add warrendeanlangeveldt/code-kit`, then `/plugin install code-kit@code-kit`. Start with `/code-kit:next`, which works out where a project stands and runs the right skill. A project without `.claude/code-kit.json` isn't governed at all. Requires Node 22 or later, and git.
+
+What it enforces: lanes (each lane agent writes only its own paths), layers (allowed imports, checked before every write), protected paths with an approval log, spec-check before code, designs before screens, shell rules (no force-push, no new dependencies without the lead), and proof before finishing (ownership audit, layer rules, the project's checks).
+
+## Docs
+
+- [README](https://raw.githubusercontent.com/warrendeanlangeveldt/code-kit/main/README.md): why, when to use it, what it enforces, every skill, the config reference, adapters
+- [Config template: CLAUDE.md section](https://raw.githubusercontent.com/warrendeanlangeveldt/code-kit/main/templates/claude-md.md): what an agent is told in a governed project
+- [Lane agent template](https://raw.githubusercontent.com/warrendeanlangeveldt/code-kit/main/templates/agent.md): the per-lane agent init writes
+- [CI workflow template](https://raw.githubusercontent.com/warrendeanlangeveldt/code-kit/main/templates/github-workflow.yml): `code-kit verify` on every pull request
+
+## Skills
+
+- [next](https://raw.githubusercontent.com/warrendeanlangeveldt/code-kit/main/skills/next/SKILL.md): the one command; picks and runs the next step
+- [spec-design](https://raw.githubusercontent.com/warrendeanlangeveldt/code-kit/main/skills/spec-design/SKILL.md): turn an idea into a brief, specs, architecture, principles and a plan
+- [init](https://raw.githubusercontent.com/warrendeanlangeveldt/code-kit/main/skills/init/SKILL.md): draft the rules from docs or code; nothing is enforced until approved
+- [spec-check](https://raw.githubusercontent.com/warrendeanlangeveldt/code-kit/main/skills/spec-check/SKILL.md): a task's requirement table, required before lane code
+- [dispatch](https://raw.githubusercontent.com/warrendeanlangeveldt/code-kit/main/skills/dispatch/SKILL.md): start ready stories on their lane agents, in parallel worktrees
+- [review](https://raw.githubusercontent.com/warrendeanlangeveldt/code-kit/main/skills/review/SKILL.md): check a finished branch against its requirements, then merge or send back
+- [status](https://raw.githubusercontent.com/warrendeanlangeveldt/code-kit/main/skills/status/SKILL.md): requirements traced to stories, branches and tests
+- [check](https://raw.githubusercontent.com/warrendeanlangeveldt/code-kit/main/skills/check/SKILL.md): validate the config and show who owns what
+
+## Optional
+
+- [Hooks](https://raw.githubusercontent.com/warrendeanlangeveldt/code-kit/main/hooks/hooks.json): which hook runs on which event
+- [Security policy](https://raw.githubusercontent.com/warrendeanlangeveldt/code-kit/main/SECURITY.md)
+- [Context Graph](https://github.com/warrendeanlangeveldt/context-graph): the companion plugin for context and decisions; each has an adapter for the other
