@@ -1,6 +1,6 @@
 {
   "name": "@warren-dean/code-kit",
-  "version": "0.3.3",
+  "version": "0.3.4",
   "description": "Keeps AI coding agents inside your project's rules: lanes, layer rules, protected paths and proof before finish, enforced by Claude Code hooks and in CI",
   "license": "MIT",
   "author": "Warren Langeveldt",

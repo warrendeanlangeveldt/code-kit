@@ -7,9 +7,10 @@ import { join } from 'node:path';
 import { BASELINE_FILE, loadBaseline, newProblems } from './baseline.mjs';
 import { runChecks } from './checks.mjs';
 import { CONFIG_FILE } from './config.mjs';
+import { isDependencyFile } from './dependencies.mjs';
 import { matchesAny } from './glob.mjs';
 import { layerProblems } from './layers.mjs';
-import { APPROVAL_LOG, SECRETS, ownerOf, protectedEntry, screenProblem } from './rules.mjs';
+import { APPROVAL_LOG, SECRETS, laneOf, ownerOf, protectedEntry, screenProblem } from './rules.mjs';
 
 const git = (root, ...args) =>
   execFileSync('git', ['-C', root, ...args], {
@@ -89,7 +90,13 @@ export function verifyBranch({ root, base, config, lane = null, checks = true })
     if (lane) {
       const { paths, exclude } = config.lanes[lane];
       const own = matchesAny(f, paths) && !matchesAny(f, exclude);
-      const approved = guarded && logged.get(f)?.approval === guarded.approval;
+      const entry = logged.get(f);
+      // A manifest or lockfile no other lane owns, logged under a person's dependency approval.
+      const dependency =
+        isDependencyFile(f) &&
+        entry?.approval === 'dependency' &&
+        [null, lane].includes(laneOf(f, config));
+      const approved = (guarded && entry?.approval === guarded.approval) || dependency;
       if (!own && !approved)
         found.ownership.push(
           `${f}: the ${lane} lane doesn't own it (owner: ${ownerOf(f, config) ?? 'nobody'}).`,

@@ -6,6 +6,7 @@ The code-kit plugin enforces the rules in `.claude/code-kit.json` on every tool 
 - the layer rules ({{layer names, in order}});
 - spec-check before lane code{{; designs approved before screens}};
 - an audit log of every change to protected paths (`.claude/approval-log.jsonl`), which the person reviews in the pull request;
+- a person's approval for every new dependency, per package and per lane. When a lane asks for one, give the person the package, the reason and the approval command from the refusal, and resume the lane once they've run it;
 - the project's checks before any agent finishes.
 
 If a hook blocks you, fix the cause; never work around it.

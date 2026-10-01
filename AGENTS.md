@@ -9,6 +9,7 @@ code-kit is a Claude Code plugin: hooks (`hooks/`), skills (`skills/<name>/SKILL
   - `rules.mjs`: who may write where;
   - `config.mjs`: loading and validation;
   - `layers.mjs`: imports;
+  - `dependencies.mjs`: the packages a command adds, and the files installing them changes;
   - `checks.mjs`, `verify.mjs`, `plan.mjs`, `trace.mjs`, `next.mjs`;
   - `adapters/`: tools that share a project, such as Context Graph.
 - `bin/code-kit.mjs`: the CLI (`check`, `who`, `unowned`, `diff`, `baseline`, `graph`, `verify`, `status`, `next`, `adapters`, `trace`).
