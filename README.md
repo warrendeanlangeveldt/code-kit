@@ -11,6 +11,8 @@ A Claude Code plugin that keeps AI coding agents inside a project's engineering 
 
 It also carries the work from idea to merged code: spec an idea into requirements, hand stories to lanes, review each branch against its requirements, and track the build against the spec.
 
+**Pairs with [Context Graph](https://github.com/warrendeanlangeveldt/context-graph).** code-kit decides who may change what, and what has to be proved. Context Graph gives each agent the why behind a file before it edits it: the file's card, its rules and the decisions made on it, kept in git. Each detects the other: Context Graph's cards and slices then carry the file's spec requirement and layer rule. Install both for agents that stay in their lane and know why the code is the way it is.
+
 <p align="center">
   <img src="https://raw.githubusercontent.com/warrendeanlangeveldt/code-kit/main/assets/workflow.svg" alt="How code-kit works: the specs create the agents, skills and rules; the lead agent delegates stories to lane agents and takes decisions and approvals to you; lanes send scope and dependency requests back to the lead; hooks enforce ownership, layers, approvals and spec-check while each lane implements, tests and commits; the lead reviews against the requirements and CI runs verify." width="820">
 </p>
@@ -132,6 +134,13 @@ npm i -g @warren-dean/code-kit           # or install it, then: code-kit check
 ```
 
 **From a clone**, for working on code-kit itself: `/plugin marketplace add <path to the clone>`.
+
+**Its companion, [Context Graph](https://github.com/warrendeanlangeveldt/context-graph)**, installs the same way. Nothing needs configuring between the two:
+
+```text
+/plugin marketplace add warrendeanlangeveldt/context-graph
+/plugin install context-graph@context-graph
+```
 
 ## One command: `/code-kit:next`
 
