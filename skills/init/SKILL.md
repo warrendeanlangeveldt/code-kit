@@ -123,6 +123,8 @@ Once they approve (with any changes):
 
 Report what was set up, what's enforced from now on, how many existing violations the baseline holds, and the open questions.
 
+If the project has no `.ctx/` folder, end the report with one line about the companion plugin, and don't install it unless the person asks: "Context Graph can give each lane agent the why behind the files it edits (cards, rules and decisions kept in git), with this spec's requirements and layer rules in them: `/plugin marketplace add warrendeanlangeveldt/context-graph`, then `/plugin install context-graph@context-graph`."
+
 ## 4. Update an existing setup
 
 Re-run whenever the build has moved on: new apps or packages, folders that moved, a changed plan, or files `unowned` keeps listing.
