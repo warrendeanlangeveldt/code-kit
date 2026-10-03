@@ -17,7 +17,7 @@ The CLI is `node "${CLAUDE_PLUGIN_ROOT}/bin/code-kit.mjs"`, run from the project
 node "${CLAUDE_PLUGIN_ROOT}/bin/code-kit.mjs" status
 ```
 
-A story is **ready** when its dependencies are done and nobody has started it. `status` also lists gaps between the specs and the plan; a story with a gap (an unknown lane, a requirement no spec defines) isn't dispatched until the lead fixes the plan.
+A story is **ready** when its dependencies are done and nobody has started it. `status` also lists gaps between the specs and the plan; a story with a gap (an unknown lane, a requirement no spec defines) isn't dispatched until the lead fixes the plan. Stories in the `lead` lane are never dispatched: the lead builds them itself.
 
 If the project has no `docs.plan`, or the plan has no stories in the `### ST-n` form (`${CLAUDE_PLUGIN_ROOT}/templates/plan.md`), stop and suggest the spec-design skill.
 

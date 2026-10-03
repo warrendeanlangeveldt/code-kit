@@ -5,7 +5,7 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join, posix } from 'node:path';
 import { loadConfig } from './config.mjs';
-import { buildStatus, readStories } from './plan.mjs';
+import { buildStatus, readStories, LEAD } from './plan.mjs';
 
 export const DRAFT_FILE = '.claude/code-kit.draft.json';
 export const BRIEF_STATES = ['framed', 'explored', 'scoped', 'specified', 'planned', 'ready'];
@@ -154,11 +154,13 @@ export function nextStep(root, base) {
   // A ready story with a gap (unknown lane, a requirement no spec defines) waits for the plan's fix.
   const defined = new Set(status.requirements.map((r) => r.id));
   const buildable = (s) =>
-    Boolean(config.lanes[s.lane]) &&
-    s.requirements.length > 0 &&
+    (Boolean(config.lanes[s.lane]) || s.lane === LEAD) &&
+    (s.requirements.length > 0 || s.noRequirements) &&
     s.requirements.every((r) => defined.has(r));
   const readyStories = status.stories.filter((s) => s.state === 'ready');
-  const ready = readyStories.filter(buildable).map((s) => s.id);
+  // The lead's own stories are built by the lead, not dispatched to a lane agent.
+  const forLead = readyStories.filter((s) => buildable(s) && s.lane === LEAD).map((s) => s.id);
+  const ready = readyStories.filter((s) => buildable(s) && s.lane !== LEAD).map((s) => s.id);
   const unbuildable = readyStories.filter((s) => !buildable(s)).map((s) => s.id);
   if (unbuildable.length)
     attention.push(
@@ -166,6 +168,7 @@ export function nextStep(root, base) {
     );
   const then = [];
   if (review.length && ready.length) then.push({ step: 'dispatch', args: ready.join(' ') });
+  if (forLead.length) then.push({ step: 'lead', args: forLead.join(' ') });
   if (review.length)
     return result('review', `${review.join(', ')} finished and wait for review.`, {
       args: review.join(' '),
@@ -174,7 +177,14 @@ export function nextStep(root, base) {
   if (ready.length)
     return result('dispatch', `${ready.join(', ')} can start: their dependencies are done.`, {
       args: ready.join(' '),
+      then,
     });
+  if (forLead.length)
+    return result(
+      'lead',
+      `${forLead.join(', ')} ${forLead.length === 1 ? 'is' : 'are'} the lead's own: build ${forLead.length === 1 ? 'it' : 'them'} on ${forLead.map((id) => `lead/${id.toLowerCase()}`).join(', ')}, then review like any branch.`,
+      { args: forLead.join(' ') },
+    );
   if (building.length)
     return result(
       'wait',

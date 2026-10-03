@@ -1250,15 +1250,27 @@ try {
   vCommit('ST-2');
   v.git('checkout', '-q', 'main');
   nextIs('finished stories go to review', v.dir, 'review', 'ST-2');
-  vPut(
-    'docs/spec/plan.md',
-    plan('done')
-      .replace('**Depends on:** ST-1\n**Status:** todo', '**Depends on:** ST-1\n**Status:** done')
-      .replace('### ST-3 Stray\n\n**Lane:** nope\n**Requirements:** BOOK-9\n', ''),
-  );
+  const donePlan = plan('done')
+    .replace('**Depends on:** ST-1\n**Status:** todo', '**Depends on:** ST-1\n**Status:** done')
+    .replace('### ST-3 Stray\n\n**Lane:** nope\n**Requirements:** BOOK-9\n', '');
+  vPut('docs/spec/plan.md', donePlan);
   vPut('docs/spec/01-booking.md', '# 01. Booking\n\n### BOOK-1 Request\n\n### BOOK-2 Cancel\n');
   vCommit('all done');
   nextIs('when every story is done, next says so', v.dir, 'done');
+  vPut(
+    'docs/spec/plan.md',
+    `${donePlan}\n### ST-4 Contracts\n\n**Lane:** lead\n**Requirements:** none\n**Status:** todo\n`,
+  );
+  vCommit('a story for the lead');
+  nextIs("the lead's own story goes to the lead, not to dispatch", v.dir, 'lead', 'ST-4');
+  const withLead = JSON.parse(vCli('status', '--json').stdout);
+  expect(
+    'a lead story that delivers no requirement is not a gap in the plan',
+    truth(!withLead.problems.some((p) => p.includes('ST-4')), withLead.problems.join(' / ')),
+    0,
+  );
+  vPut('docs/spec/plan.md', donePlan);
+  vCommit('lead story removed');
 
   // --- trace: what a file is for, in the project's terms ------------------------------------------
   const traced = JSON.parse(vCli('trace', 'apps/office/e2e/booking.spec.ts', '--json').stdout);

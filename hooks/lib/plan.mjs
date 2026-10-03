@@ -1,7 +1,9 @@
 // Requirements and stories, read from the project's docs. Specs (docs.specs) hold requirements as
 // headings `### BOOK-4 Short name` (`(removed)` at the end drops one); the plan (docs.plan) holds
 // stories as `### ST-12 Title` followed by `**Lane:**`, `**Requirements:**`, `**Depends on:**` and
-// `**Status:**` lines. A lane builds a story on the branch `<lane>/st-12`.
+// `**Status:**` lines. A lane builds a story on the branch `<lane>/st-12`. The lane `lead` marks the
+// lead's own stories (contracts, foundations, spikes), which the lead builds rather than dispatches;
+// `**Requirements:** none` marks a story that delivers no requirement, such as a spike.
 import { execFileSync } from 'node:child_process';
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
@@ -10,6 +12,7 @@ export const REQUIREMENT = /\b(?!ST-)([A-Z][A-Z0-9]*-\d+)\b/g;
 const STORY_HEADING = /^###\s+(ST-\d+)\b\s*(.*)$/;
 const REQUIREMENT_HEADING = /^###\s+((?!ST-)[A-Z][A-Z0-9]*-\d+)\b\s*(.*)$/;
 export const STATES = ['todo', 'in progress', 'review', 'done'];
+export const LEAD = 'lead';
 // Test files, by the usual conventions. Tests name the requirement IDs they prove.
 const TEST =
   /(^|\/)(tests?|__tests__|e2e)\/|\.(test|spec)\.[^/]+$|_test\.(go|py)$|(^|\/)test_[^/]+\.py$/;
@@ -60,6 +63,7 @@ export function readStories(root, planPath) {
         file,
         lane: field(body, 'Lane'),
         requirements: [...field(body, 'Requirements').matchAll(REQUIREMENT)].map((r) => r[1]),
+        noRequirements: /^none\b/i.test(field(body, 'Requirements')),
         dependsOn: [...field(body, 'Depends on').matchAll(/\bST-\d+\b/g)].map((r) => r[0]),
         status: STATES.includes(status) ? status : 'todo',
       });
@@ -168,8 +172,10 @@ export function traceProblems(requirements, stories, lanes) {
     if (storyIds.has(s.id)) problems.push(`${s.id} is in the plan more than once`);
     storyIds.add(s.id);
     if (!s.lane) problems.push(`${s.id} has no **Lane:**`);
-    else if (!lanes.includes(s.lane)) problems.push(`${s.id} names an unknown lane "${s.lane}"`);
-    if (!s.requirements.length) problems.push(`${s.id} cites no requirements`);
+    else if (s.lane !== LEAD && !lanes.includes(s.lane))
+      problems.push(`${s.id} names an unknown lane "${s.lane}"`);
+    if (!s.requirements.length && !s.noRequirements)
+      problems.push(`${s.id} cites no requirements (write "none" if it delivers none)`);
     for (const r of s.requirements)
       if (!ids.has(r)) problems.push(`${s.id} cites ${r}, which no spec defines`);
     for (const d of s.dependsOn)
