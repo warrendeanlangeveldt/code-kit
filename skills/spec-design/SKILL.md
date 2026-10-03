@@ -104,8 +104,8 @@ These are what `/code-kit:init` turns into enforced rules, so be concrete.
 - **`docs/plan.md`**, from `${CLAUDE_PLUGIN_ROOT}/templates/plan.md`:
   - the **work split**: lanes (for example web, api, data), the paths each will own, the agent name for it and the command that proves its work, so work can run in parallel without overlap;
   - milestones, each a usable increment;
-  - stories, each small enough for one lane to finish on one branch. Each story is a `### ST-<n> Title` heading with `**Lane:**`, `**Requirements:**` (the IDs it delivers), `**Depends on:**` and `**Status:** todo` lines. `code-kit status` and the dispatch skill read them. A story that needs two lanes is two stories, with a dependency between them;
-  - sequencing: contracts and shared foundations first (the lead's own stories), then work that can run in parallel.
+  - stories, each small enough for one lane to finish on one branch. Each story is a `### ST-<n> Title` heading with `**Lane:**`, `**Requirements:**` (the IDs it delivers, or `none` for a spike or a foundation that delivers none), `**Depends on:**` and `**Status:** todo` lines. `code-kit status` and the dispatch skill read them. A story that needs two lanes is two stories, with a dependency between them;
+  - sequencing: contracts and shared foundations first, as the lead's own stories (`**Lane:** lead`, built by the lead rather than dispatched), then work that can run in parallel.
 
 `Status: planned`.
 

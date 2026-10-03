@@ -26,6 +26,7 @@ It returns `step`, `why`, `args`, `then` (steps that can follow straight after) 
 | Config, but no specs, plan or stories                      | `spec-design`                                             |
 | Stories finished on their branches                         | `review`, then `dispatch` what's ready                    |
 | Stories ready                                              | `dispatch`                                                |
+| The lead's own stories ready (`**Lane:** lead`)            | `lead`: the lead builds them itself                       |
 | Stories being built, nothing else can start                | wait                                                      |
 | Ready stories with gaps in the plan, or a dependency cycle | `spec-design`, to fix the plan                            |
 | Every story done                                           | done: `status`, then `spec-design` for the next milestone |
@@ -36,6 +37,7 @@ Tell the person in one or two lines what you found and what you're about to run,
 
 Run the named skill with the Skill tool: `code-kit:<step>`, with `args` (and the person's argument, if they gave one). Follow that skill in full. This skill only chooses; it never does a step's work itself.
 
+- **`lead`:** there's no skill to run. Build each story yourself, on the branch `lead/st-<n>`: spec-check it first if it cites requirements, do the work, commit, then run `code-kit:review` on the branch like any other. A spike's result goes in the docs it names.
 - **`wait`:** say which stories are being built and on which branches, then stop. When a lane agent finishes, its notification arrives in this session; run this skill again then. If a story has been in progress with no agent running (the session ended, or the agent stopped without committing), dispatch it again.
 - **`done`:** give the `status` summary in a few lines, then offer to run spec-design for the next milestone or feature.
 

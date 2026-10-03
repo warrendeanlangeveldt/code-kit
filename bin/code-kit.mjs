@@ -32,6 +32,11 @@ import { APPROVAL_MINUTES, currentBranch, grantApprovals, ownerOf } from '../hoo
 import { laneOfBranch, verifyBranch } from '../hooks/lib/verify.mjs';
 
 const out = (s) => process.stdout.write(`${s}\n`);
+// Piped into `head` and the like: stop quietly when the reader closes.
+process.stdout.on('error', (e) => {
+  if (e.code === 'EPIPE') process.exit(0);
+  throw e;
+});
 const die = (s) => {
   process.stderr.write(`${s}\n`);
   process.exit(1);

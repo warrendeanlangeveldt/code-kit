@@ -181,7 +181,7 @@ spec-design works an idea into a specification with you before any code exists. 
 
 It writes `docs/brief.md` (with the decision log and open questions), `docs/specs/NN-<area>.md`, `docs/architecture.md`, `docs/principles.md` and `docs/plan.md`. Those are exactly what `/code-kit:init docs/` turns into lanes and layers, and what lanes spec-check against. Run it again to resume where it left off, to change a decision, or to spec a new feature in an existing codebase.
 
-Requirements are headings (`### BOOK-4 Cancel a booking`). Stories are `### ST-12` headings in the plan with `**Lane:**`, `**Requirements:**`, `**Depends on:**` and `**Status:**` lines (`templates/plan.md`). Those two formats are what the build loop below runs on.
+Requirements are headings (`### BOOK-4 Cancel a booking`). Stories are `### ST-12` headings in the plan with `**Lane:**`, `**Requirements:**`, `**Depends on:**` and `**Status:**` lines (`templates/plan.md`). The lane `lead` marks the lead's own stories, such as contracts and spikes, which the lead builds itself instead of dispatching; `**Requirements:** none` marks a story that delivers no requirement. Those two formats are what the build loop below runs on.
 
 ## Set up a project
 
