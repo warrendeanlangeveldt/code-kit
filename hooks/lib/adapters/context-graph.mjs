@@ -3,7 +3,8 @@
 // each file's card (its why) in cards.ctx. Every agent records decisions and cards for the files it
 // edits, so those two files are writable by any actor; the rules and settings
 // are the lead's, and changes to them go through the approval log. Ratifying a rule is a person's act,
-// signed with a commit trailer, so no Claude actor may write that trailer.
+// signed with a commit trailer, so no Claude actor may write that trailer, unless the project lets the
+// lead act on what the person says in chat (`approvals.lead`).
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -23,6 +24,7 @@ export default {
       {
         pattern: 'Ctx-Ratified-By\\s*[:=]',
         why: "Ratifying a Context Graph rule is a person's act: they add the Ctx-Ratified-By trailer themselves, with a `!` git command.",
+        person: true,
       },
     ],
   },

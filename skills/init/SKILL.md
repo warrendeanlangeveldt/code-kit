@@ -67,6 +67,7 @@ Write `.claude/code-kit.draft.json`. Follow `${CLAUDE_PLUGIN_ROOT}/README.md` â€
 - **`shell.restricted`:** commands that affect a shared local service, limited to the lanes that own it.
 - **`postEdit`:** the project's existing per-file linters and formatters, with `{file}`.
 - **`checks`:** the typecheck, test, architecture and database commands, each scoped by `files`. Only include commands that pass on the current code, or ones the person chose to keep.
+- **`approvals.lead`:** ask the person whether they'll ever approve from a phone or another chat-only client, where a `!` command arrives as plain text. If so, set it to `true`: the lead then records approvals they give in chat (`code-kit approve`), and runs the `shell.block` commands marked `person: true` when they say so. Mark a `shell.block` command `person: true` only if the person wants to be able to have the lead run it on their say-so. Leave the setting out if the lead will run unattended.
 
 Prove the draft:
 
@@ -102,6 +103,7 @@ Show the person:
 1. the layers and what each may depend on, and for brownfield the existing violations the baseline will record;
 2. the lanes, their agents and their paths;
 3. protected paths, blocked and restricted commands, and checks (including any left out because they fail today);
+   and whether the lead may record approvals given in chat (`approvals.lead`);
 4. the active adapters and what each adds, from `adapters`;
 5. every **question**: where the docs or the code are silent, ambiguous or contradictory. Don't guess; a wrong owner or layer blocks real work.
 

@@ -19,6 +19,9 @@ import { fileURLToPath } from 'node:url';
 const here = dirname(fileURLToPath(import.meta.url));
 const hooks = join(here, '..', 'hooks');
 const fixture = readFileSync(join(here, 'fixture.json'), 'utf8');
+// The same rules, with the lead allowed to record approvals the person gives in chat.
+const relayFixture = JSON.stringify({ ...JSON.parse(fixture), approvals: { lead: true } });
+const kitCli = join(here, '..', 'bin', 'code-kit.mjs');
 
 function newRepo(withConfig = true) {
   const dir = mkdtempSync(join(tmpdir(), 'code-kit-test-'));
@@ -447,6 +450,62 @@ try {
   expect('and every lane', bash('pnpm --filter office add zod', 'web-engineer'), 0);
   rmSync(join(repo, 'package.json'));
   rmSync(join(repo, 'apps/office/package.json'));
+  rmSync(join(repo, '.claude/approvals'), { recursive: true });
+
+  // --- approvals from chat: with approvals.lead on, the lead records what the person says --------
+  const kit = (...args) => spawnSync('node', [kitCli, ...args], { cwd: repo, encoding: 'utf8' });
+  const relayZod = `node "${kitCli}" approve dep-zod --reason "yes, add zod"`;
+  expect(
+    'by default the lead may not record approvals',
+    bash(relayZod),
+    2,
+    '"approvals.lead" is off',
+  );
+  expect(
+    "and refusals offer only the person's ! command",
+    truth(!bash('pnpm add zod').stderr.includes(' approve dep-zod')),
+    0,
+  );
+  put('.claude/code-kit.json', relayFixture);
+  expect(
+    "with it on, the lead's refusal names the command that records the person's words",
+    bash('pnpm add zod'),
+    2,
+    `approve dep-zod --reason "<the person's words>"`,
+  );
+  expect(
+    "a lane's refusal names its own lane",
+    bash(addLodash, 'web-engineer'),
+    2,
+    'approve dep-lodash --lane web --reason',
+  );
+  expect('a lane never records approvals', bash(relayZod, 'web-engineer'), 2, 'only the lead');
+  expect('nor does a read-only agent', bash(relayZod, 'Explore'), 2, 'only the lead');
+  expect('the lead may', bash(relayZod), 0);
+  expect('approve needs a reason', kit('approve', 'dep-zod'), 1);
+  expect('and a real lane', kit('approve', 'dep-zod', '--lane', 'nope', '--reason', 'x'), 1);
+  expect('and an approval name, not a path', kit('approve', '../kit', '--reason', 'x'), 1);
+  expect('recording it', kit('approve', 'dep-zod', '--reason', 'yes, add zod'), 0);
+  expect('allows the install', bash('pnpm add zod'), 0);
+  expect(
+    'and says how it was given',
+    truth(
+      readFileSync(join(repo, '.claude/approvals/dep-zod'), 'utf8').includes(
+        'yes, add zod (given in chat, recorded by the lead)',
+      ),
+    ),
+    0,
+  );
+  expect(
+    'a lane approval from chat',
+    kit('approve', 'dep-lodash', '--lane', 'web', '--reason', 'lodash for ST-1'),
+    0,
+  );
+  expect('serves that lane', bash(addLodash, 'web-engineer'), 0);
+  expect('and no other', bash(addLodash, 'backend-engineer'), 2);
+  put('.claude/code-kit.json', '{ "version": 2 }');
+  expect('an invalid config records no approvals', bash(relayZod), 2, 'is invalid');
+  put('.claude/code-kit.json', fixture);
   rmSync(join(repo, '.claude/approvals'), { recursive: true });
 
   // --- approvals reach lanes in their own worktrees ----------------------------------------------
@@ -1049,6 +1108,13 @@ try {
     "a person's act",
   );
   expect('other commits are untouched', cBash('git commit -m "ST-9 cancel"'), 0);
+  writeFileSync(join(c.dir, '.claude/code-kit.json'), relayFixture);
+  expect(
+    'with approvals.lead on, the lead adds the trailer the person gives in chat',
+    cBash('git commit -m "ratify" --trailer "Ctx-Ratified-By: someone"'),
+    0,
+  );
+  writeFileSync(join(c.dir, '.claude/code-kit.json'), fixture);
   const listed = cCli('adapters');
   expect(
     'adapters lists what the active adapter adds, and its setup',

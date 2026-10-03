@@ -47,6 +47,7 @@ export function withDefaults(c) {
     postEdit: c.postEdit ?? [],
     checks: c.checks ?? [],
     branches: { protected: c.branches?.protected ?? ['main', 'master'] },
+    approvals: { lead: c.approvals?.lead === true },
   };
 }
 
@@ -115,6 +116,11 @@ export function validate(c) {
     `"adapters" must map adapter names (${known.join(', ')}) to true or false`,
   );
   need(
+    c.approvals === undefined ||
+      (isObj(c.approvals) && [undefined, true, false].includes(c.approvals.lead)),
+    '"approvals.lead" must be true or false',
+  );
+  need(
     c.branches === undefined || isList(c.branches?.protected),
     '"branches.protected" must be a list of branch names',
   );
@@ -176,9 +182,10 @@ function validateLayers(c, need, each) {
 function validateShell(s, lanes, need) {
   if (!need(isObj(s), '"shell" must be an object')) return;
   const rule = (r) => isObj(r) && isRegExp(r.pattern) && isStr(r.why);
+  const blockRule = (r) => rule(r) && [undefined, true, false].includes(r.person);
   need(
-    s.block === undefined || (Array.isArray(s.block) && s.block.every(rule)),
-    '"shell.block" must be a list of { pattern, why }',
+    s.block === undefined || (Array.isArray(s.block) && s.block.every(blockRule)),
+    '"shell.block" must be a list of { pattern, why, person? }',
   );
   const restricted =
     s.restricted === undefined ||

@@ -3,7 +3,8 @@
 // dependencies a person hasn't approved, approval forgery, kit edits through the shell by anyone but
 // the lead, the project's own blocked and lane-restricted commands; records protected files in the
 // approval log on commit and scans commits for secrets. Shell writes are also checked afterwards by
-// lane-audit.mjs.
+// lane-audit.mjs. With `approvals.lead` on, the lead may act for the person on what they say in chat:
+// record their approvals (`code-kit approve`) and run blocked commands marked `person`.
 import { appendFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { join, resolve } from 'node:path';
@@ -43,8 +44,10 @@ for (const [re, why] of ALWAYS) {
   if (re.test(cmd)) block(`Blocked: ${why}\nCommand: ${cmd}`);
 }
 const packages = addedPackages(cmd);
+const approves = /\bcode-kit(\.mjs)?["']?\s+approve\b/.test(cmd);
 if (error) {
   if (/\bgit\s+commit\b/.test(cmd)) block(`Blocked: ${error}\nFix the config before committing.`);
+  if (approves) block(`Blocked: ${error}\nApprovals wait until the config is valid.`);
   if (packages.length)
     block(`Blocked: ${error}\nNew dependencies wait until the config is valid.\nCommand: ${cmd}`);
   process.exit(0);
@@ -58,12 +61,29 @@ if (new RegExp(`\\bgit\\s+push\\b.*\\b(${branches})\\b`).test(cmd)) {
     `Blocked: push to your own branch; a person merges to ${config.branches.protected[0]} after review.\nCommand: ${cmd}`,
   );
 }
-for (const { pattern, why } of config.shell.block) {
-  if (new RegExp(pattern).test(cmd)) block(`Blocked: ${why}\nCommand: ${cmd}`);
-}
 
 const sessionIn = sessionRoot(input, project);
 const actor = actorFor(input, sessionIn ?? project, config);
+// The lead acts for the person only where the config says the person may approve from chat.
+const forPerson = actor.kind === 'lead' && config.approvals.lead;
+
+for (const { pattern, why, person } of config.shell.block) {
+  if (!new RegExp(pattern).test(cmd) || (person && forPerson)) continue;
+  const hint =
+    person && actor.kind === 'lead'
+      ? '\nTo let the lead run it when the person says so in chat, a person sets "approvals": { "lead": true } in the config.'
+      : '';
+  block(`Blocked: ${why}${hint}\nCommand: ${cmd}`);
+}
+
+if (approves && actor.kind !== 'lead')
+  block(
+    `Blocked: only the lead records an approval a person gives in chat. Write a short change request for the lead (what needs approving, and why), and stop.\nCommand: ${cmd}`,
+  );
+if (approves && !forPerson)
+  block(
+    `Blocked: this project doesn't let the lead record approvals ("approvals.lead" is off). Ask the person to run the \`!\` command from the refusal, or to turn "approvals": { "lead": true } on in the config.\nCommand: ${cmd}`,
+  );
 
 // Each new package needs a person's approval, for this actor; it also covers the manifest and lockfile
 // changes the install makes (lib/rules.mjs › dependencyChange).
@@ -84,6 +104,7 @@ if (packages.length) {
         actor,
         sessionIn ?? project,
         'installing it, and the manifest and lockfile changes that makes,',
+        config,
       )}\nCommand: ${cmd}`,
     );
   }
@@ -127,7 +148,7 @@ const writes =
   );
 if (touchesKit && writes && actor.kind !== 'lead' && !approval(root, 'kit', actor)) {
   block(
-    `Blocked: the .claude kit is changed only by the lead or with a person's approval. Ask the lead to run\n${approvalHowTo('kit', actor, root)}`,
+    `Blocked: the .claude kit is changed only by the lead or with a person's approval. Ask the lead to run\n${approvalHowTo('kit', actor, root, undefined, config)}`,
   );
 }
 
@@ -179,7 +200,7 @@ function recordApprovals() {
     const byDependency = actor.kind === 'lane' && dependencyChange(actor, file, root, config);
     if (entry && !granted && actor.kind !== 'lead' && !byDependency) {
       block(
-        `Blocked: ${file} is ${entry.why}; committing it needs a person's approval in force. Ask the lead to run\n${approvalHowTo(entry.approval, actor, root)}`,
+        `Blocked: ${file} is ${entry.why}; committing it needs a person's approval in force. Ask the lead to run\n${approvalHowTo(entry.approval, actor, root, undefined, config)}`,
       );
     }
     if (granted)

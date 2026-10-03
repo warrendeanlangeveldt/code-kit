@@ -10,11 +10,22 @@
 //
 // Approvals live in the project's main checkout, so a lane working in its own worktree sees the ones a
 // person gives at the lead's terminal. One for a lane (`<lane>/<name>`) serves that lane only; one
-// without a lane serves every actor.
-import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, statSync } from 'node:fs';
+// without a lane serves every actor. A person gives one with a `!` shell command, or, where the config
+// sets `approvals.lead` (a person on a phone has no `!`), by saying so in chat for the lead to record
+// with `code-kit approve`.
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  realpathSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { homedir } from 'node:os';
 import { dirname, join, relative, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { DEPENDENCY_APPROVAL, isDependencyFile } from './dependencies.mjs';
 import { globToRegExp, matchesAny } from './glob.mjs';
 
@@ -24,12 +35,20 @@ export const APPROVAL_MINUTES = 60;
 // Marks a worktree as a lane's, for a person running that lane; the lead creates it, and it is never work.
 export const LANE_FILE = '.lane';
 const NEVER_WRITABLE = [`${APPROVALS_DIR}/**`, APPROVAL_LOG];
+export const CLI = fileURLToPath(new URL('../../bin/code-kit.mjs', import.meta.url));
+// Marks an approval the lead recorded from chat, so the log shows how it was given.
+export const RELAYED = '(given in chat, recorded by the lead)';
+
+/** The command the lead runs to record approvals a person gave in chat. */
+export const relayCommand = (names, lane) =>
+  `node "${CLI}" approve ${[names].flat().join(' ')}${lane ? ` --lane ${lane}` : ''} --reason "<the person's words>"`;
 
 /**
  * The commands a person runs to approve `names` for `actor`, and what that allows. For a lane the
- * approval is that lane's; the folder is created here so the command works as written.
+ * approval is that lane's; the folder is created here so the command works as written. With
+ * `approvals.lead` on, the lead may record it instead, once the person approves in chat.
  */
-export function approvalHowTo(names, actor, root, allows = 'these edits') {
+export function approvalHowTo(names, actor, root, allows = 'these edits', config) {
   const dir = approvalsDir(root);
   const scoped = actor?.kind === 'lane' ? join(dir, actor.lane) : dir;
   try {
@@ -41,10 +60,24 @@ export function approvalHowTo(names, actor, root, allows = 'these edits') {
   const where = shown.startsWith('..') ? scoped : shown;
   const lines = [names].flat().map((n) => `  ! echo "<what you are approving>" > ${where}/${n}`);
   const whom = actor?.kind === 'lane' ? `the ${actor.lane} lane` : 'any agent';
+  const relay = config?.approvals?.lead
+    ? `\nOr, if the person approves in chat (no \`!\` on a phone), the lead records their words:\n  ${relayCommand(names, actor?.kind === 'lane' ? actor.lane : undefined)}`
+    : '';
   return (
     `${lines.join('\n')}\n` +
-    `(a person runs it; the reason is recorded in ${APPROVAL_LOG}, and it allows ${allows} for ${whom}, for ${APPROVAL_MINUTES} minutes)`
+    `(a person runs it; the reason is recorded in ${APPROVAL_LOG}, and it allows ${allows} for ${whom}, for ${APPROVAL_MINUTES} minutes)${relay}`
   );
+}
+
+/** Records approvals a person gave in chat: the same files a `!` command writes, marked as relayed. */
+export function grantApprovals(root, names, lane, reason) {
+  const dir = lane ? join(approvalsDir(root), lane) : approvalsDir(root);
+  mkdirSync(dir, { recursive: true });
+  return names.map((name) => {
+    const file = join(dir, name);
+    writeFileSync(file, `${reason.trim()} ${RELAYED}\n`);
+    return file;
+  });
 }
 
 /** `path` with symlinks resolved, even if it doesn't exist yet (macOS /var → /private/var). */
@@ -234,7 +267,7 @@ export function writeProblem(actor, rel, root, config) {
   // The lead writes protected files without an approval: the person reviews them in the pull request,
   // and every committed change is in the audit log. Anyone else needs a person's approval as well.
   if (guarded && actor.kind !== 'lead' && !approval(root, guarded.approval, actor)) {
-    return `${rel} is ${guarded.why} and needs a person's approval. Ask the lead (a person) to run\n${approvalHowTo(guarded.approval, actor, root)}`;
+    return `${rel} is ${guarded.why} and needs a person's approval. Ask the lead (a person) to run\n${approvalHowTo(guarded.approval, actor, root, undefined, config)}`;
   }
   if (actor.kind === 'readonly') return `${actor.label} is read-only; it may not write ${rel}.`;
   if (matchesAny(rel, config.anyActor)) return null;

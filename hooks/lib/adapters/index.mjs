@@ -4,7 +4,8 @@
 //   name      the tool, and the key that switches it off in the config: "adapters": { "<name>": false }
 //   detect    (root) => true when the tool is in use in this project
 //   config    { lead?, anyActor?, protected? } merged into the effective config, like the kit's defaults
-//   shell     { block? } commands refused for every Claude actor, merged into shell.block
+//   shell     { block? } commands refused for every Claude actor, merged into shell.block; `person: true`
+//             marks a person's act the lead may do for them under approvals.lead
 //   setup     lines for init to apply or tell the person: ignore files, merge drivers, instructions
 //
 // The core only ever calls applyAdapters() and activeAdapters(); it never names a tool.

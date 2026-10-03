@@ -309,6 +309,7 @@ code-kit verify [--base ref] [--branch name] [--no-checks]  # a branch's changes
 code-kit status [--base ref] [--json]  # stories and requirements against the spec
 code-kit next [--base ref] [--json]    # the step to take now, from the project's state
 code-kit trace <path>... [--json]      # what a file is for: requirements, lane, layer rules
+code-kit approve <name>... --reason "…" [--lane name]  # record approvals a person gave in chat
 ```
 
 `verify` compares the branch with where it left `--base` (default `origin/main`, then `main`). A branch named `<lane>/…`, or given as `--branch`, is held to that lane. `--no-checks` leaves the project's checks to CI's own steps. `status` reads `docs.specs` and `docs.plan`.
@@ -330,11 +331,12 @@ code-kit trace <path>... [--json]      # what a file is for: requirements, lane,
 | `designGate`                   | no                | `{ register, screens: [{ glob, not? }], howTo }`: screen files wait until the register (`{ "screens": [{ "file": … }] }`) lists them                                                                                                                                                                                                             |
 | `layers[]`                     | no                | `{ name, paths, mayImport, denyPackages? }`: the first layer whose paths match a file owns it. A layer may always import itself.                                                                                                                                                                                                                 |
 | `importAliases`                | no                | `{ "@app/domain": "packages/domain/src" }`: resolves non-relative imports to repository paths                                                                                                                                                                                                                                                    |
-| `shell.block[]`                | no                | `{ pattern, why }`: never run                                                                                                                                                                                                                                                                                                                    |
+| `shell.block[]`                | no                | `{ pattern, why, person? }`: never run. `person: true` marks a person's act, which the lead may do for them with `approvals.lead` on                                                                                                                                                                                                             |
 | `shell.restricted[]`           | no                | `{ pattern, lanes, why }`: only the lead and these lanes                                                                                                                                                                                                                                                                                         |
 | `postEdit[]`                   | no                | `{ files, exclude?, run }`: after each edit of a matching file. `{file}` is the file. Exit 127 (tool not installed) is skipped.                                                                                                                                                                                                                  |
 | `checks[]`                     | no                | `{ name, files, exclude?, run[], each?, owners?, ifMissing?, timeoutSeconds? }`: before finishing, when matching files changed. `each` runs the commands in every changed folder matching that glob. `owners` limits who may change the files (the lead always may). `ifMissing: "fail"` makes a missing tool an error (the default is to skip). |
 | `adapters`                     | no                | `{ "<adapter>": false }` switches off an adapter that would otherwise be detected. See [Adapters](#adapters).                                                                                                                                                                                                                                    |
+| `approvals.lead`               | no                | `true` lets the lead act on what the person says in chat, for when `!` isn't available (on a phone, say): it records their approvals with `code-kit approve`, and runs `shell.block` commands marked `person`. Default `false`. See [Approvals](#approvals).                                                                                     |
 | `branches.protected`           | no                | Default `["main", "master"]`                                                                                                                                                                                                                                                                                                                     |
 
 Add `.claude/approvals/`, `.claude/state/` and `.claude/code-kit.draft.json` to `.gitignore`, and `.claude/approval-log.jsonl merge=union` to `.gitattributes`, so merging branches that both logged changes keeps every entry. Commit `.claude/code-kit.baseline.json` if the project has one.
@@ -354,6 +356,20 @@ echo "Date formatting for ST-12" > .claude/approvals/web/dep-dayjs             #
 - **Worktrees:** approvals live in the main checkout, so a lane working in its own worktree sees the ones given at the lead's terminal.
 - **Lifetime:** 60 minutes. Agents can't create, edit or even mention approvals or the log.
 
+### From chat
+
+On a phone, or anywhere the `!` prefix arrives as plain text, a person can't run the command. With `"approvals": { "lead": true }` in the config (init asks), the person says what they approve in chat, and the lead records it:
+
+```bash
+code-kit approve dep-dayjs --lane web --reason "Yes, add dayjs for ST-12"
+```
+
+- It writes the same approval a `!` command would, for the same 60 minutes, with `(given in chat, recorded by the lead)` after the reason, so the log shows how it was given.
+- Only the lead may run it. A lane or read-only agent is refused, and so is the lead while the setting is off or the config is invalid.
+- With the setting on, refusals name this command alongside the `!` one.
+- The lead may also run `shell.block` commands marked `person: true`, such as Context Graph's ratification trailer.
+- It trusts the lead to act only on the person's own words. Leave it off when the lead runs without a person watching.
+
 ## Adapters
 
 Other tools share a project with code-kit and keep files of their own. An adapter tells code-kit about one such tool, without the core knowing its name. Each adapter lives in `hooks/lib/adapters/`, and declares:
@@ -364,9 +380,9 @@ Other tools share a project with code-kit and keep files of their own. An adapte
 
 While the tool is detected, its additions are merged into the effective config, like the kit's own defaults. Run `code-kit adapters` to see them, or switch one off with `"adapters": { "<name>": false }`.
 
-| Adapter         | Detected by | Adds                                                                                                                                                                                                                                                                                   |
-| --------------- | ----------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `context-graph` | `.ctx/`     | `.ctx/**` for the lead. `.ctx/decisions.ctx` and `.ctx/cards.ctx` for any actor, since every agent records decisions and file cards. `graph.ctx` and `config.toml` are protected (approval `ctx`). No Claude actor may write a `Ctx-Ratified-By` trailer: ratifying is a person's act. |
+| Adapter         | Detected by | Adds                                                                                                                                                                                                                                                                                                                                                                |
+| --------------- | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `context-graph` | `.ctx/`     | `.ctx/**` for the lead. `.ctx/decisions.ctx` and `.ctx/cards.ctx` for any actor, since every agent records decisions and file cards. `graph.ctx` and `config.toml` are protected (approval `ctx`). No Claude actor may write a `Ctx-Ratified-By` trailer: ratifying is a person's act (with `approvals.lead`, the lead may add it when the person says so in chat). |
 
 Its setup:
 

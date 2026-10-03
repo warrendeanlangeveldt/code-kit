@@ -44,7 +44,7 @@ Run the named skill with the Skill tool: `code-kit:<step>`, with `args` (and the
 After a step finishes, run `next --json` again and carry on with the new step, without asking, as long as nothing needs the person. Stop and hand over when:
 
 - a skill asks the person questions (spec-design's rounds, spec-check's blocking questions, review's scope questions);
-- something needs the person's approval (init's draft, an approval for a protected path);
+- something needs the person's approval (init's draft, an approval for a protected path). If the config has `approvals.lead`, ask for it in chat: when they approve in their own message, record it with the `code-kit approve` command the refusal names (their words as the reason) and carry on;
 - a person has to act: merge a pull request to a protected branch, add a CI secret;
 - the step is `wait` or `done`;
 - the same step comes back twice in a row with nothing changed. Report what's stuck instead of looping.
