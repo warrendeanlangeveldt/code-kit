@@ -236,3 +236,15 @@ test('dependency approvals and files', () => {
   assert.ok(isDependencyFile('pnpm-lock.yaml'));
   assert.ok(!isDependencyFile('apps/api/src/package.ts'));
 });
+
+test('approvals from chat and person-only commands are switches', () => {
+  const c = structuredClone(fixture);
+  c.approvals = { lead: 'yes' };
+  c.shell.block[0].person = 'yes';
+  const problems = validate(c).join(' ');
+  assert.match(problems, /"approvals.lead" must be true or false/);
+  assert.match(problems, /"shell.block" must be a list of \{ pattern, why, person\? \}/);
+  c.approvals.lead = true;
+  c.shell.block[0].person = true;
+  assert.deepEqual(validate(c), []);
+});

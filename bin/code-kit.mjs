@@ -14,6 +14,8 @@
 //   trace <path> [--json] what a file is for: the requirements it delivers, its lane, its layer rules
 //   next [--base ref] [--json]
 //                         the step to take now (spec-design, init, dispatch, review…), from the project's state
+//   approve <name>... --reason "…" [--lane name]
+//                         record approvals a person gave in chat (with approvals.lead on, the lead runs it)
 // --config <file> reads a draft (.claude/code-kit.draft.json) instead of .claude/code-kit.json.
 import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
@@ -26,7 +28,7 @@ import { ADAPTERS, activeAdapters } from '../hooks/lib/adapters/index.mjs';
 import { nextStep } from '../hooks/lib/next.mjs';
 import { traceFile } from '../hooks/lib/trace.mjs';
 import { buildStatus } from '../hooks/lib/plan.mjs';
-import { currentBranch, ownerOf } from '../hooks/lib/rules.mjs';
+import { APPROVAL_MINUTES, currentBranch, grantApprovals, ownerOf } from '../hooks/lib/rules.mjs';
 import { laneOfBranch, verifyBranch } from '../hooks/lib/verify.mjs';
 
 const out = (s) => process.stdout.write(`${s}\n`);
@@ -44,6 +46,8 @@ const file = option('--config') ?? CONFIG_FILE;
 const depth = Number(option('--depth') ?? 2);
 const baseRef = option('--base');
 const branchName = option('--branch');
+const reason = option('--reason');
+const laneName = option('--lane');
 const FLAGS = ['--write', '--no-checks', '--json'];
 const flag = (name) => args.includes(name);
 const writeBaseline = flag('--write');
@@ -375,8 +379,27 @@ function trace(paths) {
   }
 }
 
+// Each name is an approval a refusal named: a protected path's, `kit`, or `dep-<package>`.
+function approve(names) {
+  const { config } = load();
+  if (!reason?.trim()) die('approve needs --reason "<what the person approved, in their words>".');
+  if (laneName !== undefined && !config.lanes[laneName])
+    die(`There is no lane "${laneName}". Lanes: ${Object.keys(config.lanes).join(', ')}.`);
+  const bad = names.filter((n) => !/^[a-z0-9@][a-z0-9@+._-]*$/.test(n));
+  if (bad.length)
+    die(
+      `Not an approval name: ${bad.join(', ')}. Use the name the refusal gave, e.g. kit or dep-zod.`,
+    );
+  grantApprovals(resolve('.'), names, laneName, reason);
+  const whom = laneName ? `the ${laneName} lane` : 'any agent';
+  out(
+    `Approved ${names.join(', ')} for ${whom}, for ${APPROVAL_MINUTES} minutes: ${reason.trim()}`,
+  );
+}
+
 const commands = {
   check,
+  approve: () => (rest.length ? approve(rest) : usage()),
   trace: () => (rest.length ? trace(rest) : usage()),
   adapters,
   next,
@@ -392,7 +415,8 @@ function usage() {
   die(
     'Usage: code-kit check | who <path>... | unowned | diff | baseline [--write] | graph [--depth N]\n' +
       '              | verify [--base ref] [--branch name] [--no-checks] | status [--base ref] [--json]\n' +
-      '              | next [--base ref] [--json] | adapters | trace <path>... [--json]   [--config file]',
+      '              | next [--base ref] [--json] | adapters | trace <path>... [--json]\n' +
+      '              | approve <name>... --reason "…" [--lane name]   [--config file]',
   );
 }
 (commands[command] ?? usage)();
