@@ -24,3 +24,4 @@ code-kit is a Claude Code plugin: hooks (`hooks/`), skills (`skills/<name>/SKILL
 - The core never names another tool: tool-specific rules belong in `hooks/lib/adapters/`.
 - Refusals say why, and what to do instead, in plain sentences an agent can act on.
 - Keep the README's config table and CLI list in step with the code.
+- Every release adds an entry at the top of `CHANGELOG.md`: the version, the date, and what changed for someone using code-kit, in plain sentences. The GitHub Release notes use the same text.
