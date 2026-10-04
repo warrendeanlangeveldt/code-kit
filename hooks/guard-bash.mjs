@@ -45,9 +45,11 @@ for (const [re, why] of ALWAYS) {
 }
 const packages = addedPackages(cmd);
 const approves = /\bcode-kit(\.mjs)?["']?\s+approve\b/.test(cmd);
+const delegatedMerge = /\bcode-kit(\.mjs)?["']?\s+merge\b/.test(cmd);
 if (error) {
   if (/\bgit\s+commit\b/.test(cmd)) block(`Blocked: ${error}\nFix the config before committing.`);
   if (approves) block(`Blocked: ${error}\nApprovals wait until the config is valid.`);
+  if (delegatedMerge) block(`Blocked: ${error}\nMerges wait until the config is valid.`);
   if (packages.length)
     block(`Blocked: ${error}\nNew dependencies wait until the config is valid.\nCommand: ${cmd}`);
   process.exit(0);
@@ -56,6 +58,25 @@ if (error) {
 const branches = config.branches.protected
   .map((b) => b.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
   .join('|');
+// The branch is read before the command runs, so a command that switches to a protected branch and then
+// commits or merges in the same breath is judged by what it does, not by where it starts. Moving a
+// protected branch directly (branch -f, update-ref) is a commit on it by another name.
+const writesHistory = /\bgit\s+(commit|merge|cherry-pick|rebase|revert|am)\b/.test(cmd);
+const switchesToProtected = new RegExp(
+  `\\bgit\\s+(?:switch|checkout)\\s+(?:-[^\\s]+\\s+)*(${branches})(?![\\w./-])(?!\\s+--)`,
+).test(cmd);
+const movesProtected =
+  new RegExp(
+    `\\bgit\\s+branch\\s+(?:\\S+\\s+)*(?:-f|--force|-M|-C)\\b.*\\b(${branches})(?![\\w./-])`,
+  ).test(cmd) ||
+  new RegExp(
+    `\\bgit\\s+update-ref\\s+(?:-\\S+\\s+)*(?:refs/heads/)?(${branches})(?![\\w./-])`,
+  ).test(cmd);
+if ((switchesToProtected && writesHistory) || movesProtected) {
+  block(
+    `Blocked: never commit to, merge into or move ${config.branches.protected.join(' or ')}, even by switching to it first. Work on a branch; a person merges after review${config.approvals.delegate?.merge ? ', or the lead merges a verified branch with `code-kit merge <branch> --delegated`' : ''}.\nCommand: ${cmd}`,
+  );
+}
 if (new RegExp(`\\bgit\\s+push\\b.*\\b(${branches})\\b`).test(cmd)) {
   block(
     `Blocked: push to your own branch; a person merges to ${config.branches.protected[0]} after review.\nCommand: ${cmd}`,
@@ -79,6 +100,14 @@ for (const { pattern, why, person } of config.shell.block) {
 if (approves && actor.kind !== 'lead')
   block(
     `Blocked: only the lead records or grants approvals. Write a short change request for the lead (what needs approving, and why), and stop.\nCommand: ${cmd}`,
+  );
+if (delegatedMerge && actor.kind !== 'lead')
+  block(
+    `Blocked: only the lead merges into a protected branch. Finish your story and commit it on your branch; the lead reviews and merges it.\nCommand: ${cmd}`,
+  );
+if (delegatedMerge && !config.approvals.delegate?.merge)
+  block(
+    `Blocked: this project doesn't delegate merges to the lead ("approvals.delegate.merge" isn't true). A person merges after review.\nCommand: ${cmd}`,
   );
 // The lead approves on its own only with --delegated, and only where the config delegates; the
 // command itself refuses anything outside the rules.

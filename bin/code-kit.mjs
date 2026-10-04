@@ -15,12 +15,15 @@
 //   next [--base ref] [--json]
 //                         the step to take now (spec-design, init, dispatch, review…), from the project's state
 //   approve <name>... --reason "…" [--lane name]
+//   merge <branch> --delegated [--into branch]  the lead merges a branch that passes verify (approvals.delegate.merge)
 //                         record approvals a person gave in chat (with approvals.lead on, the lead runs it)
 // --config <file> reads a draft (.claude/code-kit.draft.json) instead of .claude/code-kit.json.
 import { execFileSync } from 'node:child_process';
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
-import { posix, resolve } from 'node:path';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, posix, resolve } from 'node:path';
 import { BASELINE_FILE, loadBaseline } from '../hooks/lib/baseline.mjs';
+import { matchesAny } from '../hooks/lib/glob.mjs';
 import { CONFIG_FILE, effectiveConfig, validate } from '../hooks/lib/config.mjs';
 import { diffConfigs, ownershipMoves } from '../hooks/lib/diff.mjs';
 import { CODE, importsOf, layerOf, layerProblems, targetOf } from '../hooks/lib/layers.mjs';
@@ -61,6 +64,7 @@ const baseRef = option('--base');
 const branchName = option('--branch');
 const reason = option('--reason');
 const laneName = option('--lane');
+const intoName = option('--into');
 const FLAGS = ['--write', '--no-checks', '--json', '--delegated'];
 const flag = (name) => args.includes(name);
 const writeBaseline = flag('--write');
@@ -105,7 +109,9 @@ function who(paths) {
 function unowned() {
   const { config } = load();
   const files = tracked();
-  const nobody = files.filter((p) => !ownerOf(p, config) && !p.startsWith('.claude/'));
+  const nobody = files.filter(
+    (p) => !ownerOf(p, config) && !p.startsWith('.claude/') && !matchesAny(p, config.anyActor),
+  );
   nobody.forEach(out);
   out(`${nobody.length} of ${files.length} tracked files have no owner.`);
 }
@@ -244,6 +250,112 @@ const VERIFY_GROUPS = {
   design: 'Designs before screens',
   checks: 'Checks',
 };
+
+// The lead merges a reviewed branch into a protected branch on its own, only where the config delegates
+// merges, and only when `verify` passes on that branch, checks included. A person merges with git.
+function merge(branch) {
+  const { config } = load();
+  if (!flag('--delegated'))
+    die(
+      "code-kit merge is the lead's delegated merge: code-kit merge <branch> --delegated. A person merges with git as usual.",
+    );
+  if (!config.approvals.delegate?.merge)
+    die(
+      'This project doesn\'t delegate merges to the lead ("approvals.delegate.merge" isn\'t true). A person merges after review.',
+    );
+  const into = intoName ?? config.branches.protected[0];
+  if (!config.branches.protected.includes(into))
+    die(`${into} isn't a protected branch; merge into it with git.`);
+  if (config.branches.protected.includes(branch)) die(`${branch} is itself a protected branch.`);
+  const root = resolve('.');
+  const g = (cwd, ...a) =>
+    execFileSync('git', ['-C', cwd, ...a], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+  try {
+    g(root, 'rev-parse', '--verify', '--quiet', `refs/heads/${branch}`);
+  } catch {
+    die(`There is no branch ${branch}.`);
+  }
+  const checkedOut = (b) =>
+    g(root, 'worktree', 'list', '--porcelain')
+      .split('\n\n')
+      .map((w) => ({ path: w.match(/^worktree (.+)$/m)?.[1], ref: w.match(/^branch (.+)$/m)?.[1] }))
+      .find((w) => w.ref === `refs/heads/${b}`)?.path;
+  const clean = (dir, b) => {
+    if (g(dir, 'status', '--porcelain', '--untracked-files=no').trim())
+      fail(`${b} has uncommitted changes in ${dir}; commit or stash them first.`);
+  };
+  const temporary = [];
+  // die() exits at once, so every way out of here removes the temporary worktrees first.
+  const cleanup = () => {
+    for (const dir of temporary.splice(0)) {
+      try {
+        g(root, 'worktree', 'remove', '--force', dir);
+      } catch {
+        // already gone
+      }
+    }
+  };
+  const fail = (message) => {
+    cleanup();
+    die(message);
+  };
+  const worktree = (b, detach) => {
+    const dir = mkdtempSync(join(tmpdir(), 'code-kit-merge-'));
+    rmSync(dir, { recursive: true });
+    g(root, 'worktree', 'add', '--quiet', ...(detach ? ['--detach'] : []), dir, b);
+    temporary.push(dir);
+    return dir;
+  };
+  try {
+    // Verify where the branch is checked out (its dependencies are installed there), else in a
+    // temporary worktree, where checks that need an install fail rather than being skipped.
+    const verifyIn = checkedOut(branch) ?? worktree(branch, true);
+    clean(verifyIn, branch);
+    const lane = laneOfBranch(branch, config);
+    const { changed, found } = verifyBranch({
+      root: verifyIn,
+      base: into,
+      config,
+      lane,
+      checks: true,
+    });
+    const problems = Object.entries(VERIFY_GROUPS).flatMap(([key, title]) =>
+      found[key].map((p) => `${title}: ${p.split('\n').join('\n    ')}`),
+    );
+    if (problems.length)
+      fail(
+        `Nothing was merged. code-kit verify found ${problems.length} problem(s) on ${branch} (checked in ${verifyIn}):\n  ${problems.join('\n  ')}\nSend it back to its lane, or fix it, then merge again.`,
+      );
+    const mergeIn = checkedOut(into) ?? worktree(into, false);
+    clean(mergeIn, into);
+    try {
+      g(
+        mergeIn,
+        'merge',
+        '--no-ff',
+        '-m',
+        `Merge ${branch} into ${into}`,
+        '-m',
+        `Verified with code-kit verify (${changed.length} file(s)${lane ? `, held to the ${lane} lane` : ''}) and merged by the lead within the delegated rules.`,
+        branch,
+      );
+    } catch (e) {
+      try {
+        g(mergeIn, 'merge', '--abort');
+      } catch {
+        // nothing to abort
+      }
+      fail(
+        `Nothing was merged: ${branch} doesn't merge cleanly into ${into}. Merge ${into} into ${branch} and resolve it there, then merge again.\n${String(e.stderr ?? e.message).trim()}`,
+      );
+    }
+    out(
+      `Merged ${branch} into ${into}: verify passed on ${changed.length} file(s)${lane ? `, held to the ${lane} lane` : ''}.`,
+    );
+  } finally {
+    cleanup();
+  }
+}
 
 function verify() {
   const { config } = load();
@@ -456,6 +568,7 @@ async function approve(given) {
 const commands = {
   check,
   approve: () => (rest.length ? approve(rest) : usage()),
+  merge: () => (rest.length === 1 ? merge(rest[0]) : usage()),
   trace: () => (rest.length ? trace(rest) : usage()),
   adapters,
   next,
@@ -473,6 +586,7 @@ function usage() {
       '              | verify [--base ref] [--branch name] [--no-checks] | status [--base ref] [--json]\n' +
       '              | next [--base ref] [--json] | adapters | trace <path>... [--json]\n' +
       '              | approve <name>... --reason "…" [--lane name]   [--config file]',
+    '              | merge <branch> --delegated [--into branch]',
   );
 }
 await (commands[command] ?? usage)();
