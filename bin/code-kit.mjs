@@ -28,7 +28,15 @@ import { ADAPTERS, activeAdapters } from '../hooks/lib/adapters/index.mjs';
 import { nextStep } from '../hooks/lib/next.mjs';
 import { traceFile } from '../hooks/lib/trace.mjs';
 import { buildStatus } from '../hooks/lib/plan.mjs';
-import { APPROVAL_MINUTES, currentBranch, grantApprovals, ownerOf } from '../hooks/lib/rules.mjs';
+import {
+  APPROVAL_MINUTES,
+  currentBranch,
+  delegatedMark,
+  grantApprovals,
+  ownerOf,
+} from '../hooks/lib/rules.mjs';
+import { DEPENDENCY_APPROVAL, dependencyApproval } from '../hooks/lib/dependencies.mjs';
+import { dependencyRuleProblems, npmFacts, packageOf } from '../hooks/lib/registry.mjs';
 import { laneOfBranch, verifyBranch } from '../hooks/lib/verify.mjs';
 
 const out = (s) => process.stdout.write(`${s}\n`);
@@ -53,7 +61,7 @@ const baseRef = option('--base');
 const branchName = option('--branch');
 const reason = option('--reason');
 const laneName = option('--lane');
-const FLAGS = ['--write', '--no-checks', '--json'];
+const FLAGS = ['--write', '--no-checks', '--json', '--delegated'];
 const flag = (name) => args.includes(name);
 const writeBaseline = flag('--write');
 const [command, ...rest] = args.filter((a) => !FLAGS.includes(a));
@@ -384,21 +392,64 @@ function trace(paths) {
   }
 }
 
-// Each name is an approval a refusal named: a protected path's, `kit`, or `dep-<package>`.
-function approve(names) {
+// Each name is an approval a refusal named: a protected path's, `kit`, or `dep-<package>`. A package
+// name (`zod`, `@scope/pkg`) stands for its `dep-` approval. With --delegated, the lead approves on its
+// own authority, and only what the project's delegated rules allow.
+async function approve(given) {
   const { config } = load();
-  if (!reason?.trim()) die('approve needs --reason "<what the person approved, in their words>".');
+  const delegated = flag('--delegated');
+  if (!reason?.trim())
+    die(
+      delegated
+        ? 'approve needs --reason "<why it\'s needed, for which story>".'
+        : 'approve needs --reason "<what the person approved, in their words>".',
+    );
   if (laneName !== undefined && !config.lanes[laneName])
     die(`There is no lane "${laneName}". Lanes: ${Object.keys(config.lanes).join(', ')}.`);
+  const known = new Set(['kit', ...config.protected.map((p) => p.approval)]);
+  const isPackage = (n) => /^(@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/.test(n);
+  const names = given.map((n) =>
+    n.startsWith(DEPENDENCY_APPROVAL) || known.has(n) || !isPackage(n) ? n : dependencyApproval(n),
+  );
   const bad = names.filter((n) => !/^[a-z0-9@][a-z0-9@+._-]*$/.test(n));
   if (bad.length)
     die(
-      `Not an approval name: ${bad.join(', ')}. Use the name the refusal gave, e.g. kit or dep-zod.`,
+      `Not an approval or package name: ${bad.join(', ')}. Use the name the refusal gave, e.g. kit or dep-zod, or the package's name.`,
     );
-  grantApprovals(resolve('.'), names, laneName, reason);
+  const marks = {};
+  if (delegated) {
+    const rules = config.approvals.delegate;
+    if (!rules)
+      die(
+        'This project delegates no approvals to the lead ("approvals.delegate" isn\'t set). Ask the person.',
+      );
+    const outside = [];
+    for (const name of names) {
+      if (name.startsWith(DEPENDENCY_APPROVAL)) {
+        if (!rules.dependencies) {
+          outside.push(`${name}: dependencies aren't delegated`);
+          continue;
+        }
+        const pkg = packageOf(name);
+        const problems = dependencyRuleProblems(await npmFacts(pkg), rules.dependencies);
+        if (problems.length) outside.push(`${name}: ${problems.join('; ')}`);
+        else marks[name] = delegatedMark(`dependencies (${pkg})`);
+      } else if (rules.protected.includes(name)) marks[name] = delegatedMark(`protected: ${name}`);
+      else
+        outside.push(
+          `${name}: not among the delegated approvals (${rules.protected.join(', ') || 'none'})`,
+        );
+    }
+    if (outside.length)
+      die(
+        `Nothing was approved. These are outside the project's delegated rules, so the person decides:\n  ${outside.join('\n  ')}\nAsk the person, with the \`!\` command from the refusal.`,
+      );
+  }
+  grantApprovals(resolve('.'), names, laneName, reason, marks);
   const whom = laneName ? `the ${laneName} lane` : 'any agent';
+  const renamed = given.flatMap((g, i) => (g === names[i] ? [] : [`${g} → ${names[i]}`]));
   out(
-    `Approved ${names.join(', ')} for ${whom}, for ${APPROVAL_MINUTES} minutes: ${reason.trim()}`,
+    `Approved ${names.join(', ')} for ${whom}, for ${APPROVAL_MINUTES} minutes${delegated ? ', within the delegated rules' : ''}: ${reason.trim()}${renamed.length ? `\n(${renamed.join(', ')})` : ''}`,
   );
 }
 
@@ -424,4 +475,4 @@ function usage() {
       '              | approve <name>... --reason "…" [--lane name]   [--config file]',
   );
 }
-(commands[command] ?? usage)();
+await (commands[command] ?? usage)();

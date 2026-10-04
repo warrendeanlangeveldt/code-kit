@@ -248,3 +248,60 @@ test('approvals from chat and person-only commands are switches', () => {
   c.shell.block[0].person = true;
   assert.deepEqual(validate(c), []);
 });
+
+test('delegated dependency rule', async () => {
+  const { dependencyRuleProblems, packageOf } = await import('../hooks/lib/registry.mjs');
+  const rule = {
+    licences: ['MIT', 'ISC'],
+    minWeeklyDownloads: 10_000,
+    maxMonthsSinceRelease: 18,
+    allowInstallScripts: false,
+  };
+  const now = Date.parse('2026-10-04T00:00:00Z');
+  const ok = {
+    licence: 'MIT',
+    weeklyDownloads: 20_000,
+    lastRelease: '2026-09-01T00:00:00Z',
+    installScripts: false,
+  };
+  assert.deepEqual(dependencyRuleProblems(ok, rule, now), []);
+  assert.equal(dependencyRuleProblems({ ...ok, licence: 'GPL-3.0' }, rule, now).length, 1);
+  assert.equal(dependencyRuleProblems({ ...ok, weeklyDownloads: 5 }, rule, now).length, 1);
+  assert.equal(
+    dependencyRuleProblems({ ...ok, lastRelease: '2024-01-01T00:00:00Z' }, rule, now).length,
+    1,
+  );
+  assert.equal(dependencyRuleProblems({ ...ok, lastRelease: null }, rule, now).length, 1);
+  assert.equal(dependencyRuleProblems({ ...ok, installScripts: true }, rule, now).length, 1);
+  assert.deepEqual(
+    dependencyRuleProblems(
+      { ...ok, installScripts: true },
+      { ...rule, allowInstallScripts: true },
+      now,
+    ),
+    [],
+  );
+  assert.deepEqual(dependencyRuleProblems({ error: 'offline' }, rule, now), ['offline']);
+  assert.equal(packageOf('dep-@scope+pkg'), '@scope/pkg');
+});
+
+test('approvals.delegate is validated, with defaults for the dependency rule', () => {
+  const c = clone();
+  c.approvals = { delegate: { protected: ['design'], dependencies: { minWeeklyDownloads: 500 } } };
+  assert.deepEqual(validate(c), []);
+  const d = withDefaults(c).approvals.delegate;
+  assert.deepEqual(d.protected, ['design']);
+  assert.equal(d.dependencies.minWeeklyDownloads, 500);
+  assert.deepEqual(d.dependencies.licences, [
+    'MIT',
+    'Apache-2.0',
+    'BSD-2-Clause',
+    'BSD-3-Clause',
+    'ISC',
+  ]);
+  assert.equal(withDefaults(clone()).approvals.delegate, null);
+  c.approvals = { delegate: { protected: 'design' } };
+  assert.ok(validate(c).some((p) => p.includes('approvals.delegate')));
+  c.approvals = { delegate: { dependencies: { minWeeklyDownloads: -1 } } };
+  assert.ok(validate(c).some((p) => p.includes('approvals.delegate')));
+});

@@ -40,6 +40,13 @@ export const CLI = fileURLToPath(new URL('../../bin/code-kit.mjs', import.meta.u
 export const RELAYED = '(given in chat, recorded by the lead)';
 
 /** The command the lead runs to record approvals a person gave in chat. */
+/** Marks an approval the lead granted on its own, within `approvals.delegate`; `rule` names the rule. */
+export const delegatedMark = (rule) => `(approved by the lead within the delegated rules: ${rule})`;
+
+/** The command the lead runs to approve `names` itself, within the delegated rules. */
+export const delegateCommand = (names, lane) =>
+  `node "${CLI}" approve ${[names].flat().join(' ')}${lane ? ` --lane ${lane}` : ''} --delegated --reason "<why, for this story>"`;
+
 export const relayCommand = (names, lane) =>
   `node "${CLI}" approve ${[names].flat().join(' ')}${lane ? ` --lane ${lane}` : ''} --reason "<the person's words>"`;
 
@@ -63,19 +70,22 @@ export function approvalHowTo(names, actor, root, allows = 'these edits', config
   const relay = config?.approvals?.lead
     ? `\nOr, if the person approves in chat (no \`!\` on a phone), the lead records their words:\n  ${relayCommand(names, actor?.kind === 'lane' ? actor.lane : undefined)}`
     : '';
+  const delegated = config?.approvals?.delegate
+    ? `\nOr the lead approves it itself, if it's within the project's delegated rules (the command refuses anything outside them):\n  ${delegateCommand(names, actor?.kind === 'lane' ? actor.lane : undefined)}`
+    : '';
   return (
     `${lines.join('\n')}\n` +
-    `(a person runs it; the reason is recorded in ${APPROVAL_LOG}, and it allows ${allows} for ${whom}, for ${APPROVAL_MINUTES} minutes)${relay}`
+    `(a person runs it; the reason is recorded in ${APPROVAL_LOG}, and it allows ${allows} for ${whom}, for ${APPROVAL_MINUTES} minutes)${relay}${delegated}`
   );
 }
 
 /** Records approvals a person gave in chat: the same files a `!` command writes, marked as relayed. */
-export function grantApprovals(root, names, lane, reason) {
+export function grantApprovals(root, names, lane, reason, marks = {}) {
   const dir = lane ? join(approvalsDir(root), lane) : approvalsDir(root);
   mkdirSync(dir, { recursive: true });
   return names.map((name) => {
     const file = join(dir, name);
-    writeFileSync(file, `${reason.trim()} ${RELAYED}\n`);
+    writeFileSync(file, `${reason.trim()} ${marks[name] ?? RELAYED}\n`);
     return file;
   });
 }

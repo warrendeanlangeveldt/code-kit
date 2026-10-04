@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // The hooks end to end, run against throwaway git repositories in the OS temp folder with
 // test/fixture.json as their config. Exit 0 = allowed, 2 = blocked.
-import { spawnSync, execFileSync } from 'node:child_process';
+import { spawn, spawnSync, execFileSync } from 'node:child_process';
 import {
   appendFileSync,
   existsSync,
@@ -21,6 +21,37 @@ const hooks = join(here, '..', 'hooks');
 const fixture = readFileSync(join(here, 'fixture.json'), 'utf8');
 // The same rules, with the lead allowed to record approvals the person gives in chat.
 const relayFixture = JSON.stringify({ ...JSON.parse(fixture), approvals: { lead: true } });
+const delegateFixture = JSON.stringify({
+  ...JSON.parse(fixture),
+  approvals: { delegate: { protected: ['design'], dependencies: {} } },
+});
+
+// A stand-in for the npm registry and its download counts, so delegated approvals are tested
+// through the real HTTP path without the network.
+const REGISTRY_SERVER = `
+const http = require('node:http');
+const now = Date.now(), day = 86400000;
+const pkg = (license, daysAgo, downloads, scripts = {}) => ({ license, daysAgo, downloads, scripts });
+const pkgs = {
+  'good-pkg': pkg('MIT', 30, 50000),
+  '@scope/fine': pkg('ISC', 10, 20000),
+  'gpl-pkg': pkg('GPL-3.0', 30, 50000),
+  'old-pkg': pkg('MIT', 900, 50000),
+  'tiny-pkg': pkg('MIT', 30, 12),
+  'scripted-pkg': pkg('MIT', 30, 50000, { postinstall: 'node fetch-binary.js' }),
+};
+http.createServer((req, res) => {
+  const url = decodeURIComponent(req.url);
+  const dl = url.match(/^\\/downloads\\/point\\/last-week\\/(.+)$/);
+  const name = dl ? dl[1] : url.slice(1);
+  const p = pkgs[name];
+  if (!p) { res.writeHead(404); return res.end('{}'); }
+  res.setHeader('content-type', 'application/json');
+  if (dl) return res.end(JSON.stringify({ downloads: p.downloads }));
+  const released = new Date(now - p.daysAgo * day).toISOString();
+  res.end(JSON.stringify({ 'dist-tags': { latest: '1.0.0' }, time: { '1.0.0': released }, versions: { '1.0.0': { license: p.license, scripts: p.scripts } } }));
+}).listen(0, '127.0.0.1', function () { console.log(this.address().port); });
+`;
 const kitCli = join(here, '..', 'bin', 'code-kit.mjs');
 
 function newRepo(withConfig = true) {
@@ -507,6 +538,142 @@ try {
   expect('an invalid config records no approvals', bash(relayZod), 2, 'is invalid');
   put('.claude/code-kit.json', fixture);
   rmSync(join(repo, '.claude/approvals'), { recursive: true });
+
+  // --- approve takes a package's name for its dependency approval ---------------------------------
+  put('.claude/code-kit.json', relayFixture);
+  expect(
+    'a package name stands for its dep- approval',
+    truth(
+      kit('approve', '@scope/fine', '--lane', 'web', '--reason', 'yes').status === 0 &&
+        existsSync(join(repo, '.claude/approvals/web/dep-@scope+fine')),
+    ),
+    0,
+  );
+  expect(
+    "a protected approval's own name is kept",
+    truth(
+      kit('approve', 'design', '--reason', 'yes').status === 0 &&
+        existsSync(join(repo, '.claude/approvals/design')),
+    ),
+    0,
+  );
+  rmSync(join(repo, '.claude/approvals'), { recursive: true });
+
+  // --- delegated approvals: the lead approves on its own, within the project's rules -------------
+  const registry = spawn('node', ['-e', REGISTRY_SERVER]);
+  const port = await new Promise((r) => registry.stdout.once('data', (d) => r(String(d).trim())));
+  const registryEnv = {
+    ...process.env,
+    CODE_KIT_NPM_REGISTRY: `http://127.0.0.1:${port}`,
+    CODE_KIT_NPM_DOWNLOADS: `http://127.0.0.1:${port}`,
+  };
+  const delegate = (...args) =>
+    spawnSync('node', [kitCli, 'approve', ...args, '--delegated'], {
+      cwd: repo,
+      encoding: 'utf8',
+      env: registryEnv,
+    });
+  const approved = (rel) => existsSync(join(repo, '.claude/approvals', rel));
+  try {
+    put('.claude/code-kit.json', fixture);
+    const delegateGood = `node "${kitCli}" approve dep-good-pkg --lane web --delegated --reason "x"`;
+    expect(
+      'without approvals.delegate the lead may not approve on its own',
+      bash(delegateGood),
+      2,
+      '"approvals.delegate" isn\'t set',
+    );
+    expect('nor does the command', delegate('good-pkg', '--lane', 'web', '--reason', 'x'), 1);
+    put('.claude/code-kit.json', delegateFixture);
+    expect(
+      "with it set, a lane's refusal names the lead's delegated command",
+      bash(addLodash, 'web-engineer'),
+      2,
+      'approve dep-lodash --lane web --delegated',
+    );
+    expect('a lane never approves', bash(delegateGood, 'web-engineer'), 2, 'only the lead');
+    expect('the lead may run it', bash(delegateGood), 0);
+    expect(
+      'AUT-2 a package within the rules is approved, marked with its rule',
+      truth(
+        delegate('good-pkg', '--lane', 'web', '--reason', 'tables for ST-4').status === 0 &&
+          readFileSync(join(repo, '.claude/approvals/web/dep-good-pkg'), 'utf8').includes(
+            'tables for ST-4 (approved by the lead within the delegated rules: dependencies (good-pkg))',
+          ),
+      ),
+      0,
+    );
+    expect(
+      'and it allows the install',
+      bash('pnpm --filter office add good-pkg', 'web-engineer'),
+      0,
+    );
+    expect('a scoped package too', delegate('@scope/fine', '--lane', 'web', '--reason', 'x'), 0);
+    expect(
+      'AUT-4 a copyleft licence goes to the person',
+      delegate('gpl-pkg', '--lane', 'web', '--reason', 'x'),
+      1,
+      'licence (GPL-3.0)',
+    );
+    expect('so does an old package', delegate('old-pkg', '--reason', 'x'), 1, 'last release');
+    expect('a little-used one', delegate('tiny-pkg', '--reason', 'x'), 1, 'downloads');
+    expect(
+      'one whose install runs scripts',
+      delegate('scripted-pkg', '--reason', 'x'),
+      1,
+      'runs scripts',
+    );
+    expect(
+      'and one the registry has never heard of',
+      delegate('nowhere-pkg', '--reason', 'x'),
+      1,
+      "isn't on the npm registry",
+    );
+    expect(
+      'it is all or nothing',
+      truth(
+        delegate('good-pkg', 'gpl-pkg', '--lane', 'qa', '--reason', 'x').status === 1 &&
+          !approved('qa/dep-good-pkg'),
+      ),
+      0,
+    );
+    expect(
+      'a delegated protected approval',
+      delegate('design', '--lane', 'web', '--reason', 'register the screen'),
+      0,
+    );
+    expect(
+      'one the rules leave out goes to the person',
+      delegate('kit', '--reason', 'x'),
+      1,
+      'not among the delegated approvals',
+    );
+    put('design/approved-screens.json', JSON.stringify({ screens: [{ file: screen }] }, null, 3));
+    expect(
+      'a lane commits under the delegated approval',
+      bash('git add design/approved-screens.json && git commit -m d', 'web-engineer'),
+      0,
+    );
+    expect(
+      'and the log names the lead and the rule',
+      truth(
+        logLines().some(
+          (e) =>
+            e.file === 'design/approved-screens.json' &&
+            e.reason.includes('approved by the lead within the delegated rules: protected: design'),
+        ),
+        JSON.stringify(logLines()),
+      ),
+      0,
+    );
+  } finally {
+    registry.kill();
+    git('reset', '-q');
+    git('checkout', '-q', '--', 'design/approved-screens.json');
+    rmSync(logFile, { force: true });
+    rmSync(join(repo, '.claude/approvals'), { recursive: true, force: true });
+    put('.claude/code-kit.json', fixture);
+  }
 
   // --- approvals reach lanes in their own worktrees ----------------------------------------------
   git('worktree', 'add', '-q', '.claude/worktrees/dep', '-b', 'web/st-7');
