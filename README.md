@@ -419,6 +419,10 @@ The other direction is `code-kit trace <path> --json`. It's the contract other t
 npm test        # unit tests, then the hooks end to end in throwaway repositories
 ```
 
+## Changes
+
+What changed in each release is in [CHANGELOG.md](https://github.com/warrendeanlangeveldt/code-kit/blob/main/CHANGELOG.md), and on [GitHub Releases](https://github.com/warrendeanlangeveldt/code-kit/releases).
+
 ## Licence
 
 MIT. See [LICENSE](LICENSE). To report a security problem, see [SECURITY.md](SECURITY.md).
