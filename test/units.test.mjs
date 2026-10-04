@@ -300,6 +300,11 @@ test('approvals.delegate is validated, with defaults for the dependency rule', (
     'ISC',
   ]);
   assert.equal(withDefaults(clone()).approvals.delegate, null);
+  c.approvals = { delegate: { merge: true } };
+  assert.deepEqual(validate(c), []);
+  assert.equal(withDefaults(c).approvals.delegate.merge, true);
+  c.approvals = { delegate: { merge: 'yes' } };
+  assert.ok(validate(c).some((p) => p.includes('approvals.delegate')));
   c.approvals = { delegate: { protected: 'design' } };
   assert.ok(validate(c).some((p) => p.includes('approvals.delegate')));
   c.approvals = { delegate: { dependencies: { minWeeklyDownloads: -1 } } };

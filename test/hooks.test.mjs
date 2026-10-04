@@ -297,6 +297,30 @@ try {
   );
   expect('commit on a lane branch allowed', bash('git commit -m x'), 0);
   expect('push to a protected branch blocked', bash('git push origin main'), 2);
+  expect(
+    'switching to a protected branch and merging in one command is blocked',
+    bash('git switch main && git merge lane/x'),
+    2,
+    'even by switching to it first',
+  );
+  expect('so is checkout then commit', bash('git checkout main; git commit -m x'), 2);
+  expect('and forcing a protected branch to move', bash('git branch -f main HEAD'), 2);
+  expect('or updating its ref', bash('git update-ref refs/heads/main HEAD'), 2);
+  expect(
+    'restoring a file from main is not switching to it',
+    bash('git checkout main -- docs/x.md && git commit -m x'),
+    0,
+  );
+  expect(
+    'a branch named after main is not main',
+    bash('git switch main-fixes && git commit -m x'),
+    0,
+  );
+  expect(
+    'creating a branch from main is fine',
+    bash('git checkout -b next main && git commit -m x'),
+    0,
+  );
   git('checkout', '-q', 'main');
   expect('commit on main blocked', bash('git commit -m x'), 2);
   const other = newRepo(false);
@@ -675,6 +699,87 @@ try {
     put('.claude/code-kit.json', fixture);
   }
 
+  // --- delegated merges: the lead merges a branch that passes verify --------------------------------
+  {
+    const mergeFixture = (merge) =>
+      JSON.stringify({ ...JSON.parse(fixture), approvals: { delegate: { merge } } });
+    const m = newRepo(false);
+    cleanups.push(m.dir);
+    mkdirSync(join(m.dir, '.claude'), { recursive: true });
+    writeFileSync(join(m.dir, '.claude/code-kit.json'), mergeFixture(true));
+    writeFileSync(join(m.dir, '.gitignore'), '.claude/approvals/\n.claude/state/\n');
+    m.git('add', '-A');
+    m.git('commit', '-q', '-m', 'kit');
+    const mPut = (rel, body) => {
+      mkdirSync(dirname(join(m.dir, rel)), { recursive: true });
+      writeFileSync(join(m.dir, rel), body);
+    };
+    const mHook = (command, agent) =>
+      spawnSync('node', [join(hooks, 'guard-bash.mjs')], {
+        input: JSON.stringify({
+          cwd: m.dir,
+          tool_input: { command },
+          ...(agent ? { agent_type: agent } : {}),
+        }),
+        env: { ...process.env, CLAUDE_PROJECT_DIR: m.dir },
+        encoding: 'utf8',
+      });
+    const mKit = (...args) =>
+      spawnSync('node', [kitCli, ...args], { cwd: m.dir, encoding: 'utf8' });
+    m.git('checkout', '-q', '-b', 'web/st-1');
+    mPut('apps/office/lib/a.ts', 'export const a = 1;\n');
+    m.git('add', '-A');
+    m.git('commit', '-q', '-m', 'ST-1');
+    m.git('checkout', '-q', '-b', 'web/st-2', 'main');
+    mPut('workers/stray.ts', 'export const s = 1;\n');
+    m.git('add', '-A');
+    m.git('commit', '-q', '-m', 'ST-2 strays');
+    m.git('checkout', '-q', 'main');
+    const mergeCmd = `node "${kitCli}" merge web/st-1 --delegated`;
+    expect('a lane never merges', mHook(mergeCmd, 'web-engineer'), 2, 'only the lead merges');
+    expect('the lead may run the delegated merge', mHook(mergeCmd), 0);
+    expect(
+      'a branch that fails verify is not merged',
+      mKit('merge', 'web/st-2', '--delegated'),
+      1,
+      "workers/stray.ts: the web lane doesn't own it",
+    );
+    expect(
+      'and main is unchanged',
+      truth(!m.git('log', '--oneline', 'main').includes('strays')),
+      0,
+    );
+    expect(
+      'AUT-5 a branch that passes verify is merged',
+      mKit('merge', 'web/st-1', '--delegated'),
+      0,
+    );
+    expect(
+      'with a merge commit that says it was verified and delegated',
+      truth(
+        m
+          .git('log', '-1', '--format=%B', 'main')
+          .includes('merged by the lead within the delegated rules') &&
+          existsSync(join(m.dir, 'apps/office/lib/a.ts')),
+      ),
+      0,
+    );
+    expect(
+      'temporary worktrees are cleaned up',
+      truth(m.git('worktree', 'list').trim().split('\n').length === 1),
+      0,
+    );
+    expect('the merge needs --delegated', mKit('merge', 'web/st-1'), 1);
+    writeFileSync(join(m.dir, '.claude/code-kit.json'), mergeFixture(false));
+    expect(
+      'without approvals.delegate.merge the command refuses',
+      mKit('merge', 'web/st-1', '--delegated'),
+      1,
+      "doesn't delegate merges",
+    );
+    expect('and so does the hook', mHook(mergeCmd), 2, "doesn't delegate merges");
+  }
+
   // --- approvals reach lanes in their own worktrees ----------------------------------------------
   git('worktree', 'add', '-q', '.claude/worktrees/dep', '-b', 'web/st-7');
   const laneTree = join(repo, '.claude/worktrees/dep');
@@ -877,12 +982,23 @@ try {
     truth(graph.stdout.includes('workers/jobs → workers/services'), graph.stdout),
     0,
   );
+  put('pnpm-lock.yaml', 'lockfileVersion: 9\n');
+  put('random/orphan.ts', 'export {};\n');
+  git('add', 'pnpm-lock.yaml', 'random/orphan.ts');
   const unowned = cli('unowned');
   expect(
     'unowned lists files nobody may write',
-    truth(unowned.stdout.includes('have no owner'), unowned.stderr),
+    truth(unowned.stdout.includes('random/orphan.ts'), unowned.stdout + unowned.stderr),
     0,
   );
+  expect(
+    'but not files any actor may write',
+    truth(!unowned.stdout.includes('pnpm-lock.yaml'), unowned.stdout),
+    0,
+  );
+  git('rm', '-q', '--cached', 'pnpm-lock.yaml', 'random/orphan.ts');
+  rmSync(join(repo, 'pnpm-lock.yaml'));
+  rmSync(join(repo, 'random/orphan.ts'));
   expect('an invalid draft is reported', cli('check', '--config', 'nope.json'), 1);
   git('rm', '-q', '-f', 'workers/jobs/run.ts', 'workers/services/s.ts');
   rmSync(join(repo, '.claude/code-kit.draft.json'));

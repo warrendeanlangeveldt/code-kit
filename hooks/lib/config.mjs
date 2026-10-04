@@ -59,6 +59,7 @@ function delegateRules(d) {
   if (!d) return null;
   return {
     protected: d.protected ?? [],
+    merge: d.merge === true,
     dependencies: d.dependencies
       ? {
           licences: d.dependencies.licences ?? [
@@ -152,13 +153,14 @@ export function validate(c) {
     d === undefined ||
       (isObj(d) &&
         (d.protected === undefined || isList(d.protected)) &&
+        [undefined, true, false].includes(d.merge) &&
         (dep === undefined ||
           (isObj(dep) &&
             (dep.licences === undefined || isList(dep.licences)) &&
             isCount(dep.minWeeklyDownloads) &&
             isCount(dep.maxMonthsSinceRelease) &&
             [undefined, true, false].includes(dep.allowInstallScripts)))),
-    '"approvals.delegate" must be { protected?: [approval names], dependencies?: { licences?, minWeeklyDownloads?, maxMonthsSinceRelease?, allowInstallScripts? } }',
+    '"approvals.delegate" must be { protected?: [approval names], merge?: true|false, dependencies?: { licences?, minWeeklyDownloads?, maxMonthsSinceRelease?, allowInstallScripts? } }',
   );
   need(
     c.branches === undefined || isList(c.branches?.protected),
