@@ -41,18 +41,36 @@ export function branchChanges(root, base) {
     .filter(Boolean);
 }
 
+/**
+ * The lines added to the log between `before` and `after`, or null if any earlier line was changed,
+ * removed or reordered. Every earlier line must still be there, in order; new lines may sit between
+ * them, because `merge=union` (see the README) puts a branch's own entries before the ones the base
+ * gained after the branch left it.
+ */
+export function addedLogLines(before, after) {
+  const old = before.split('\n').filter(Boolean);
+  const added = [];
+  let i = 0;
+  for (const line of after.split('\n').filter(Boolean)) {
+    if (i < old.length && line === old[i]) i++;
+    else added.push(line);
+  }
+  return i === old.length ? added : null;
+}
+
 /** Entries appended to the approval log since commit `from`, plus problems if it was rewritten. */
 function logEntries(root, base) {
   const before = showAt(root, base, APPROVAL_LOG) ?? '';
   const after = showAt(root, 'HEAD', APPROVAL_LOG) ?? '';
-  if (!after.startsWith(before))
+  const added = addedLogLines(before, after);
+  if (added === null)
     return {
       entries: [],
       problems: [`${APPROVAL_LOG} was edited, not appended to; it is append-only.`],
     };
   const entries = [];
   const problems = [];
-  for (const line of after.slice(before.length).split('\n').filter(Boolean)) {
+  for (const line of added) {
     try {
       entries.push(JSON.parse(line));
     } catch {

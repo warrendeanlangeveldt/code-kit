@@ -1096,6 +1096,33 @@ try {
     verify('--no-checks'),
     0,
   );
+  // The README's `merge=union` puts the branch's own entries before the base's newer ones.
+  writeFileSync(join(v.dir, '.git/info/attributes'), '.claude/approval-log.jsonl merge=union\n');
+  const branchEntry = '{"file":"design/approved-screens.json","approval":"design","note":"again"}';
+  appendFileSync(join(v.dir, '.claude/approval-log.jsonl'), `${branchEntry}\n`);
+  vCommit('the branch logs another change');
+  v.git('merge', '-q', '--no-edit', 'main');
+  const merged = readFileSync(join(v.dir, '.claude/approval-log.jsonl'), 'utf8');
+  expect(
+    'verify reads a union-merged approval log as appended to, keeping the branch entries',
+    truth(
+      merged.indexOf(branchEntry) < merged.indexOf('"file":"elsewhere"') &&
+        verify('--no-checks').status === 0,
+      merged,
+    ),
+    0,
+  );
+  const lines = merged.split('\n').filter(Boolean);
+  const elsewhere = lines.findIndex((l) => l.includes('"file":"elsewhere"'));
+  [lines[0], lines[elsewhere]] = [lines[elsewhere], lines[0]];
+  vPut('.claude/approval-log.jsonl', `${lines.join('\n')}\n`);
+  vCommit('reorder the log');
+  expect(
+    'verify still fails a log whose earlier lines were reordered',
+    failsWith(verify('--no-checks'), 'append-only'),
+    0,
+  );
+  v.git('reset', '-q', '--hard', 'HEAD~1');
   vPut('packages/domain/src/d.ts', "import { S } from '../../../workers/services/s';\n");
   vPut('workers/services/s.ts', 'export const S = 1;\n');
   vCommit('domain reaches into services');
