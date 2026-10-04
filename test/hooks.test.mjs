@@ -1275,6 +1275,22 @@ try {
     "a person's act",
   );
   expect('other commits are untouched', cBash('git commit -m "ST-9 cancel"'), 0);
+  expect(
+    'the lead commits a delegated ratification',
+    cBash('git commit -m "ratify" --trailer "Ctx-Ratified-By: sidequest-lead (delegated)"'),
+    0,
+  );
+  expect(
+    'a lane never does',
+    cHook('guard-bash.mjs', {
+      tool_input: {
+        command: 'git commit -m "ratify" --trailer "Ctx-Ratified-By: sidequest-lead (delegated)"',
+      },
+      agent_type: 'web-engineer',
+    }),
+    2,
+    "Context Graph's [delegate] rules",
+  );
   writeFileSync(join(c.dir, '.claude/code-kit.json'), relayFixture);
   expect(
     'with approvals.lead on, the lead adds the trailer the person gives in chat',
