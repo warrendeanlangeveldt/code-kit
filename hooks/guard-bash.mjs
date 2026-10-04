@@ -78,11 +78,18 @@ for (const { pattern, why, person } of config.shell.block) {
 
 if (approves && actor.kind !== 'lead')
   block(
-    `Blocked: only the lead records an approval a person gives in chat. Write a short change request for the lead (what needs approving, and why), and stop.\nCommand: ${cmd}`,
+    `Blocked: only the lead records or grants approvals. Write a short change request for the lead (what needs approving, and why), and stop.\nCommand: ${cmd}`,
   );
-if (approves && !forPerson)
+// The lead approves on its own only with --delegated, and only where the config delegates; the
+// command itself refuses anything outside the rules.
+const delegating = /\s--delegated\b/.test(cmd);
+if (approves && delegating && !config.approvals.delegate)
   block(
-    `Blocked: this project doesn't let the lead record approvals ("approvals.lead" is off). Ask the person to run the \`!\` command from the refusal, or to turn "approvals": { "lead": true } on in the config.\nCommand: ${cmd}`,
+    `Blocked: this project doesn't delegate approvals to the lead ("approvals.delegate" isn't set). Ask the person to approve it with the \`!\` command from the refusal.\nCommand: ${cmd}`,
+  );
+if (approves && !delegating && !forPerson)
+  block(
+    `Blocked: this project doesn't let the lead record approvals ("approvals.lead" is off).${config.approvals.delegate ? ' Within the delegated rules, approve it yourself with --delegated;' : ''} Ask the person to run the \`!\` command from the refusal, or to turn "approvals": { "lead": true } on in the config.\nCommand: ${cmd}`,
   );
 
 // Each new package needs a person's approval, for this actor; it also covers the manifest and lockfile
@@ -97,7 +104,9 @@ if (packages.length) {
     const ask =
       actor.kind === 'lead'
         ? 'Ask the person to approve it by running'
-        : "Write a short change request for the lead (the package, why, and the lane's story), and stop. The lead asks the person to run";
+        : config.approvals.delegate
+          ? "Write a short change request for the lead (the package, why, and the lane's story), and stop. The lead approves it within the project's delegated rules, or asks the person to run"
+          : "Write a short change request for the lead (the package, why, and the lane's story), and stop. The lead asks the person to run";
     block(
       `Blocked: a new dependency (${unapproved.join(', ')}) needs a person's approval. ${ask}\n${approvalHowTo(
         unapproved.map(dependencyApproval),

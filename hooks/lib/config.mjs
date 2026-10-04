@@ -47,7 +47,32 @@ export function withDefaults(c) {
     postEdit: c.postEdit ?? [],
     checks: c.checks ?? [],
     branches: { protected: c.branches?.protected ?? ['main', 'master'] },
-    approvals: { lead: c.approvals?.lead === true },
+    approvals: { lead: c.approvals?.lead === true, delegate: delegateRules(c.approvals?.delegate) },
+  };
+}
+
+/**
+ * The rules within which the lead approves on its own (`approvals.delegate`), or null when it may not:
+ * the protected approvals it may grant, and the dependency rule packages must meet.
+ */
+function delegateRules(d) {
+  if (!d) return null;
+  return {
+    protected: d.protected ?? [],
+    dependencies: d.dependencies
+      ? {
+          licences: d.dependencies.licences ?? [
+            'MIT',
+            'Apache-2.0',
+            'BSD-2-Clause',
+            'BSD-3-Clause',
+            'ISC',
+          ],
+          minWeeklyDownloads: d.dependencies.minWeeklyDownloads ?? 10_000,
+          maxMonthsSinceRelease: d.dependencies.maxMonthsSinceRelease ?? 18,
+          allowInstallScripts: d.dependencies.allowInstallScripts === true,
+        }
+      : null,
   };
 }
 
@@ -119,6 +144,21 @@ export function validate(c) {
     c.approvals === undefined ||
       (isObj(c.approvals) && [undefined, true, false].includes(c.approvals.lead)),
     '"approvals.lead" must be true or false',
+  );
+  const d = c.approvals?.delegate;
+  const dep = d?.dependencies;
+  const isCount = (v) => v === undefined || (Number.isInteger(v) && v >= 0);
+  need(
+    d === undefined ||
+      (isObj(d) &&
+        (d.protected === undefined || isList(d.protected)) &&
+        (dep === undefined ||
+          (isObj(dep) &&
+            (dep.licences === undefined || isList(dep.licences)) &&
+            isCount(dep.minWeeklyDownloads) &&
+            isCount(dep.maxMonthsSinceRelease) &&
+            [undefined, true, false].includes(dep.allowInstallScripts)))),
+    '"approvals.delegate" must be { protected?: [approval names], dependencies?: { licences?, minWeeklyDownloads?, maxMonthsSinceRelease?, allowInstallScripts? } }',
   );
   need(
     c.branches === undefined || isList(c.branches?.protected),
