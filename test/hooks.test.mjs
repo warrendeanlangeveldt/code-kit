@@ -1525,6 +1525,24 @@ try {
     "a person's act",
   );
   expect('other commits are untouched', cBash('git commit -m "ST-9 cancel"'), 0);
+  for (const act of [
+    'ctx ratify C:events --commit',
+    'cd src && ' + 'ctx drop src.small --reason no',
+    'node "/x/adapters/claude-code/ctx.mjs" drop src.small --reason no',
+    'npx @warren-dean/context-graph ratify C:events --commit',
+  ])
+    expect(
+      `no Claude actor runs the person's ctx act: ${act}`,
+      cBash(act),
+      2,
+      "the person's own acts",
+    );
+  expect('ratifying without a commit is untouched', cBash('ctx ratify C:events'), 0);
+  expect(
+    'text that only mentions the act is untouched',
+    cBash("echo 'ctx ratify C:events --commit'"),
+    0,
+  );
   expect(
     'the lead commits a delegated ratification',
     cBash('git commit -m "ratify" --trailer "Ctx-Ratified-By: sidequest-lead (delegated)"'),
