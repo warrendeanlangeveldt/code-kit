@@ -563,6 +563,80 @@ try {
   put('.claude/code-kit.json', fixture);
   rmSync(join(repo, '.claude/approvals'), { recursive: true });
 
+  // --- approval requests, and the pane's acts (the code-kit mod) -----------------------------------
+  {
+    put('.claude/code-kit.json', fixture);
+    const requestsFile = join(repo, '.claude/state/requests.jsonl');
+    rmSync(requestsFile, { force: true });
+    const reqs = () => JSON.parse(kit('requests', '--json').stdout);
+    bash(addLodash, 'web-engineer');
+    bash(addLodash, 'web-engineer');
+    const after = reqs();
+    expect(
+      'BAND-1 a refusal an approval would allow records one request, not one per attempt',
+      truth(
+        after.open.length === 1 &&
+          after.open[0].lane === 'web' &&
+          after.open[0].names.join() === 'dep-lodash' &&
+          after.open[0].what === addLodash,
+        JSON.stringify(after),
+      ),
+      0,
+    );
+    write('design/approved-screens.json', 'web-engineer');
+    expect(
+      'a protected write records its approval too',
+      truth(
+        reqs().open.some(
+          (r) => r.names.join() === 'design' && r.what === 'design/approved-screens.json',
+        ),
+      ),
+      0,
+    );
+    expect(
+      'ACT-1 an approval from the pane is marked as given there',
+      truth(
+        kit(
+          'approve',
+          'dep-lodash',
+          '--lane',
+          'web',
+          '--reason',
+          'yes, lodash for ST-1',
+          '--via',
+          'pane',
+        ).status === 0 &&
+          readFileSync(join(repo, '.claude/approvals/web/dep-lodash'), 'utf8').includes(
+            'yes, lodash for ST-1 (approved in the code-kit pane)',
+          ),
+      ),
+      0,
+    );
+    const now = reqs();
+    expect(
+      'CARD-2 the answered request closes, and the approval shows as in force',
+      truth(
+        !now.open.some((r) => r.names.join() === 'dep-lodash') &&
+          now.inForce.some(
+            (a) => a.name === 'dep-lodash' && a.lane === 'web' && a.minutesLeft >= 59,
+          ),
+        JSON.stringify(now),
+      ),
+      0,
+    );
+    expect('--via takes only pane', kit('approve', 'dep-x', '--reason', 'y', '--via', 'chat'), 1);
+    put('.claude/code-kit.json', relayFixture);
+    expect(
+      'ACT-2 no agent approves as the person, even with chat approvals on',
+      bash(`node "${kitCli}" approve dep-zod --reason "yes" --via pane`),
+      2,
+      "the person's own act",
+    );
+    put('.claude/code-kit.json', fixture);
+    rmSync(requestsFile, { force: true });
+    rmSync(join(repo, '.claude/approvals'), { recursive: true, force: true });
+  }
+
   // --- approve takes a package's name for its dependency approval ---------------------------------
   put('.claude/code-kit.json', relayFixture);
   expect(
@@ -770,7 +844,27 @@ try {
       0,
     );
     expect('the merge needs --delegated', mKit('merge', 'web/st-1'), 1);
+    m.git('checkout', '-q', '-b', 'web/st-3', 'main');
+    mPut('apps/office/lib/c.ts', 'export const c = 3;\n');
+    m.git('add', 'apps/office/lib/c.ts');
+    m.git('commit', '-q', '-m', 'ST-3');
+    m.git('checkout', '-q', 'main');
+    m.git('update-index', '--assume-unchanged', '.claude/code-kit.json');
     writeFileSync(join(m.dir, '.claude/code-kit.json'), mergeFixture(false));
+    expect(
+      'ACT-4 the person merges a verified branch with --person, no delegation needed',
+      truth(
+        mKit('merge', 'web/st-3', '--person').status === 0 &&
+          m.git('log', '-1', '--format=%B', 'main').includes('merged by the person'),
+      ),
+      0,
+    );
+    expect(
+      'no agent merges as the person',
+      mHook(`node "${kitCli}" merge web/st-3 --person`),
+      2,
+      "the person's own act",
+    );
     expect(
       'without approvals.delegate.merge the command refuses',
       mKit('merge', 'web/st-1', '--delegated'),
@@ -1117,6 +1211,19 @@ try {
   vPut('apps/office/lib/a.ts', 'export const a = 1;\n');
   vCommit('web work');
   expect('verify passes a lane branch that stays in its paths', verify('--no-checks'), 0);
+  const asJson = verify('--no-checks', '--json');
+  expect(
+    'CARD-3 verify --json reports the branch, its lane and the problems by group',
+    truth(
+      asJson.status === 0 &&
+        (() => {
+          const j = JSON.parse(asJson.stdout);
+          return j.lane === 'web' && j.problems === 0 && Array.isArray(j.found.ownership);
+        })(),
+      asJson.stdout + asJson.stderr,
+    ),
+    0,
+  );
   expect(
     'and holds it to the lane named by the branch',
     says(verify('--no-checks'), 'held to the web lane'),

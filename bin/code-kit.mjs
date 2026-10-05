@@ -15,7 +15,9 @@
 //   next [--base ref] [--json]
 //                         the step to take now (spec-design, init, dispatch, review…), from the project's state
 //   approve <name>... --reason "…" [--lane name]
-//   merge <branch> --delegated [--into branch]  the lead merges a branch that passes verify (approvals.delegate.merge)
+//   merge <branch> --delegated|--person [--into branch]  merge a branch that passes verify: the lead
+//                                    (approvals.delegate.merge) or the person (the code-kit pane)
+//   requests [--json]                 open approval requests and approvals in force
 //                         record approvals a person gave in chat (with approvals.lead on, the lead runs it)
 // --config <file> reads a draft (.claude/code-kit.draft.json) instead of .claude/code-kit.json.
 import { execFileSync } from 'node:child_process';
@@ -34,8 +36,11 @@ import { buildStatus } from '../hooks/lib/plan.mjs';
 import {
   APPROVAL_MINUTES,
   currentBranch,
+  PANE,
+  approvalsInForce,
   delegatedMark,
   grantApprovals,
+  openRequests,
   ownerOf,
 } from '../hooks/lib/rules.mjs';
 import { DEPENDENCY_APPROVAL, dependencyApproval } from '../hooks/lib/dependencies.mjs';
@@ -65,7 +70,8 @@ const branchName = option('--branch');
 const reason = option('--reason');
 const laneName = option('--lane');
 const intoName = option('--into');
-const FLAGS = ['--write', '--no-checks', '--json', '--delegated'];
+const via = option('--via');
+const FLAGS = ['--write', '--no-checks', '--json', '--delegated', '--person'];
 const flag = (name) => args.includes(name);
 const writeBaseline = flag('--write');
 const [command, ...rest] = args.filter((a) => !FLAGS.includes(a));
@@ -253,13 +259,18 @@ const VERIFY_GROUPS = {
 
 // The lead merges a reviewed branch into a protected branch on its own, only where the config delegates
 // merges, and only when `verify` passes on that branch, checks included. A person merges with git.
+// With --person, the person merges (the mod passes it for a press in its pane): the same verify first,
+// with no delegation needed. The hooks refuse --person from every agent.
 function merge(branch) {
   const { config } = load();
-  if (!flag('--delegated'))
+  const byPerson = flag('--person');
+  if (!flag('--delegated') && !byPerson)
     die(
-      "code-kit merge is the lead's delegated merge: code-kit merge <branch> --delegated. A person merges with git as usual.",
+      'code-kit merge needs --delegated (the lead, within the delegated rules) or --person (the person, as from the code-kit pane).',
     );
-  if (!config.approvals.delegate?.merge)
+  if (flag('--delegated') && byPerson)
+    die("A merge is either the lead's (--delegated) or the person's (--person), not both.");
+  if (!byPerson && !config.approvals.delegate?.merge)
     die(
       'This project doesn\'t delegate merges to the lead ("approvals.delegate.merge" isn\'t true). A person merges after review.',
     );
@@ -336,7 +347,7 @@ function merge(branch) {
         '-m',
         `Merge ${branch} into ${into}`,
         '-m',
-        `Verified with code-kit verify (${changed.length} file(s)${lane ? `, held to the ${lane} lane` : ''}) and merged by the lead within the delegated rules.`,
+        `Verified with code-kit verify (${changed.length} file(s)${lane ? `, held to the ${lane} lane` : ''}) and merged ${byPerson ? 'by the person' : 'by the lead within the delegated rules'}.`,
         branch,
       );
     } catch (e) {
@@ -355,6 +366,24 @@ function merge(branch) {
   } finally {
     cleanup();
   }
+}
+
+// Open approval requests and the approvals in force, for the person and the mod's band.
+function requests() {
+  load();
+  const open = openRequests(resolve('.'));
+  const granted = approvalsInForce(resolve('.'));
+  if (flag('--json')) return out(JSON.stringify({ open, inForce: granted }, null, 2));
+  out(open.length ? `${open.length} approval request(s) open:` : 'No approval requests open.');
+  for (const r of open)
+    out(
+      `  ${r.names.join(', ')} for ${r.lane ? `the ${r.lane} lane` : r.actor}: ${r.what}  (${r.why})`,
+    );
+  out(granted.length ? `\n${granted.length} approval(s) in force:` : '\nNo approvals in force.');
+  for (const a of granted)
+    out(
+      `  ${a.name} for ${a.lane ? `the ${a.lane} lane` : 'any agent'}, ${a.minutesLeft} min left: ${a.reason}`,
+    );
 }
 
 function verify() {
@@ -376,6 +405,18 @@ function verify() {
     lane,
     checks: !flag('--no-checks'),
   });
+  if (flag('--json')) {
+    const count = Object.values(found).reduce((n, list) => n + list.length, 0);
+    out(
+      JSON.stringify(
+        { base: from, branch, lane, changed: changed.length, found, problems: count },
+        null,
+        2,
+      ),
+    );
+    if (count) process.exit(1);
+    return;
+  }
   out(
     `${changed.length} file(s) changed since ${from}${lane ? `, held to the ${lane} lane (branch ${branch})` : ''}.`,
   );
@@ -529,6 +570,11 @@ async function approve(given) {
       `Not an approval or package name: ${bad.join(', ')}. Use the name the refusal gave, e.g. kit or dep-zod, or the package's name.`,
     );
   const marks = {};
+  if (via !== undefined && via !== 'pane')
+    die('--via takes only "pane": the code-kit mod passes it for a press in its pane.');
+  if (via === 'pane' && delegated)
+    die("An approval is either the person's (--via pane) or the lead's (--delegated), not both.");
+  if (via === 'pane') for (const n of names) marks[n] = PANE;
   if (delegated) {
     const rules = config.approvals.delegate;
     if (!rules)
@@ -569,6 +615,7 @@ const commands = {
   check,
   approve: () => (rest.length ? approve(rest) : usage()),
   merge: () => (rest.length === 1 ? merge(rest[0]) : usage()),
+  requests,
   trace: () => (rest.length ? trace(rest) : usage()),
   adapters,
   next,
@@ -586,7 +633,7 @@ function usage() {
       '              | verify [--base ref] [--branch name] [--no-checks] | status [--base ref] [--json]\n' +
       '              | next [--base ref] [--json] | adapters | trace <path>... [--json]\n' +
       '              | approve <name>... --reason "…" [--lane name]   [--config file]',
-    '              | merge <branch> --delegated [--into branch]',
+    '              | merge <branch> --delegated|--person [--into branch] | requests [--json]',
   );
 }
 await (commands[command] ?? usage)();

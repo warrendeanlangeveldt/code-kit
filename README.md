@@ -305,12 +305,13 @@ code-kit unowned            # tracked files nobody may write
 code-kit diff --config .claude/code-kit.draft.json  # what a draft changes
 code-kit baseline [--write] # layer violations in the code as it is
 code-kit graph [--depth N]  # which folders import which
-code-kit verify [--base ref] [--branch name] [--no-checks]  # a branch's changes, for CI and review
+code-kit verify [--base ref] [--branch name] [--no-checks] [--json]  # a branch's changes, for CI and review
 code-kit status [--base ref] [--json]  # stories and requirements against the spec
 code-kit next [--base ref] [--json]    # the step to take now, from the project's state
 code-kit trace <path>... [--json]      # what a file is for: requirements, lane, layer rules
-code-kit merge <branch> --delegated [--into branch]  # the lead merges a branch that passes verify, where approvals.delegate.merge is on
-code-kit approve <name>... --reason "…" [--lane name] [--delegated]  # record a person's approval from chat, or (--delegated) grant one within the delegated rules; a package name stands for its dep- approval
+code-kit merge <branch> --delegated|--person [--into branch]  # merge a branch that passes verify: the lead where approvals.delegate.merge is on, or the person
+code-kit requests [--json]                                   # approval requests the hooks refused, still open, and the approvals in force
+code-kit approve <name>... --reason "…" [--lane name] [--delegated | --via pane]  # record a person's approval from chat, or (--delegated) grant one within the delegated rules; a package name stands for its dep- approval
 ```
 
 `verify` compares the branch with where it left `--base` (default `origin/main`, then `main`). A branch named `<lane>/…`, or given as `--branch`, is held to that lane. `--no-checks` leaves the project's checks to CI's own steps. `status` reads `docs.specs` and `docs.plan`.
@@ -371,6 +372,12 @@ code-kit approve dep-dayjs --lane web --reason "Yes, add dayjs for ST-12"
 - With the setting on, refusals name this command alongside the `!` one.
 - The lead may also run `shell.block` commands marked `person: true`, such as Context Graph's ratification trailer.
 - It trusts the lead to act only on the person's own words. Leave it off when the lead runs without a person watching.
+
+### Requests
+
+Every refusal that a person's approval would allow is recorded as a request in `.claude/state/requests.jsonl` in the main checkout: who was refused, the approvals that would allow it, the command or file, and why. A request stays open until approvals for all its names are in force, or for 60 minutes. `code-kit requests` lists the open ones and the approvals in force, with minutes left, and the code-kit mod shows them above the prompt.
+
+`--via pane` and `merge --person` are the person's own acts, which the code-kit mod uses for a press in its pane. The hooks refuse both from every agent.
 
 ### Delegated
 

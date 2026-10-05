@@ -2,6 +2,16 @@
 
 What changed in each release of code-kit, newest first. Versions follow the plugin manifest and the npm package `@warren-dean/code-kit`. Each release is also on [GitHub Releases](https://github.com/warrendeanlangeveldt/code-kit/releases).
 
+## 0.3.13 (2026-10-06)
+
+The command-line groundwork for the coming code-kit mod (`docs/brief.md`), useful on its own:
+
+- **Approval requests:** every refusal that a person's approval would allow is now recorded as a request, once per actor and command. `code-kit requests [--json]` lists the open requests and the approvals in force, with minutes left. A request closes when its approvals are given.
+- **`code-kit approve … --via pane`** marks an approval as given in the code-kit pane.
+- **`code-kit merge <branch> --person`:** the person merges a branch after `verify` passes, with no delegation needed.
+- **Agents:** the hooks refuse `--via` and `--person` from every agent.
+- **`code-kit verify --json`** prints the branch, its lane and the problems by group.
+
 ## 0.3.12 (2026-10-05)
 
 - **Delegated merges:** with `"approvals": { "delegate": { "merge": true } }`, the lead can merge a reviewed branch into a protected branch with `code-kit merge <branch> --delegated`. This is for an autonomous lead.

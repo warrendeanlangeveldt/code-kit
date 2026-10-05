@@ -9,7 +9,7 @@
       "name": "code-kit",
       "source": "./",
       "description": "Keeps AI coding agents inside your project's rules, from idea to merged code: spec design, lanes, layer rules, protected paths with an approval log, spec-check and design gates, proof-before-finish checks, dispatch, review, build status and CI verification, configured per project from its docs",
-      "version": "0.3.12",
+      "version": "0.3.13",
       "category": "development",
       "tags": ["guardrails", "architecture", "lanes", "layers", "spec-driven", "ci", "multi-agent"],
       "license": "MIT"
