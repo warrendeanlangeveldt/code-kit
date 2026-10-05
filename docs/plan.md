@@ -15,7 +15,7 @@
 **Lane:** lead
 **Requirements:** BAND-1, CARD-2
 **Depends on:** none
-**Status:** todo
+**Status:** done
 
 Every refusal a person's approval would allow writes one request to `.claude/state/requests.jsonl` in the main checkout, without duplicates. `code-kit requests [--json]` lists open requests and approvals in force, with minutes left.
 
@@ -24,7 +24,7 @@ Every refusal a person's approval would allow writes one request to `.claude/sta
 **Lane:** lead
 **Requirements:** ACT-2, CARD-3
 **Depends on:** none
-**Status:** todo
+**Status:** done
 
 - **`approve --via pane`:** marks approvals "(approved in the code-kit pane)".
 - **`merge <branch> --person`:** verifies, then merges, as in `--delegated`, but without delegation. The hooks refuse it for every agent.

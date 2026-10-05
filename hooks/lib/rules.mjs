@@ -14,6 +14,7 @@
 // sets `approvals.lead` (a person on a phone has no `!`), by saying so in chat for the lead to record
 // with `code-kit approve`.
 import {
+  appendFileSync,
   existsSync,
   mkdirSync,
   readFileSync,
@@ -38,6 +39,10 @@ const NEVER_WRITABLE = [`${APPROVALS_DIR}/**`, APPROVAL_LOG];
 export const CLI = fileURLToPath(new URL('../../bin/code-kit.mjs', import.meta.url));
 // Marks an approval the lead recorded from chat, so the log shows how it was given.
 export const RELAYED = '(given in chat, recorded by the lead)';
+/** Marks an approval the person gave with a button in the code-kit pane (the mod). */
+export const PANE = '(approved in the code-kit pane)';
+/** Refusals a person's approval would allow, for the mod's band and `code-kit requests`. */
+export const REQUESTS_FILE = '.claude/state/requests.jsonl';
 
 /** The command the lead runs to record approvals a person gave in chat. */
 /** Marks an approval the lead granted on its own, within `approvals.delegate`; `rule` names the rule. */
@@ -218,6 +223,102 @@ export function approval(root, name, actor) {
   return lane ?? inForce(join(dir, name));
 }
 
+const requestsFile = (root) => join(projectWorktrees(root)[0] ?? root, REQUESTS_FILE);
+const sameRequest = (a, b) =>
+  a.actor === b.actor &&
+  a.what === b.what &&
+  [...a.names].sort().join() === [...b.names].sort().join();
+
+/** Every request recorded, oldest first; unreadable lines are skipped. */
+export function readRequests(root) {
+  try {
+    return readFileSync(requestsFile(root), 'utf8')
+      .split('\n')
+      .filter(Boolean)
+      .flatMap((l) => {
+        try {
+          return [JSON.parse(l)];
+        } catch {
+          return [];
+        }
+      });
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Records that `actor` was refused something the approvals `names` would allow, once: the same
+ * actor, names and command or file within the approval lifetime count as one request. Recording
+ * never changes the refusal, so any failure here is ignored.
+ */
+export function recordRequest(root, actor, names, what, why, now = Date.now()) {
+  try {
+    const request = {
+      at: new Date(now).toISOString(),
+      actor: actor?.label ?? 'unknown',
+      ...(actor?.kind === 'lane' ? { lane: actor.lane } : {}),
+      names: [names].flat(),
+      what: String(what).slice(0, 200),
+      why: String(why).slice(0, 300),
+    };
+    const fresh = readRequests(root).filter(
+      (r) => now - Date.parse(r.at) < APPROVAL_MINUTES * 60_000,
+    );
+    if (fresh.some((r) => sameRequest(r, request))) return;
+    const file = requestsFile(root);
+    mkdirSync(dirname(file), { recursive: true });
+    appendFileSync(file, `${JSON.stringify(request)}\n`);
+  } catch {
+    // the refusal stands either way
+  }
+}
+
+/** Requests from the last 60 minutes that an approval in force doesn't yet answer, newest first. */
+export function openRequests(root, now = Date.now()) {
+  const open = [];
+  for (const r of readRequests(root).reverse()) {
+    if (now - Date.parse(r.at) >= APPROVAL_MINUTES * 60_000) continue;
+    if (open.some((o) => sameRequest(o, r))) continue;
+    const actor = r.lane ? { kind: 'lane', lane: r.lane } : { kind: 'lead' };
+    if (r.names.every((n) => approval(root, n, actor))) continue;
+    open.push(r);
+  }
+  return open;
+}
+
+/** Approvals in force now: [{ name, lane?, reason, grantedAt, minutesLeft }]. */
+export function approvalsInForce(root, now = Date.now()) {
+  const dir = approvalsDir(root);
+  const found = [];
+  const look = (folder, lane) => {
+    let names = [];
+    try {
+      names = readdirSync(folder);
+    } catch {
+      return;
+    }
+    for (const name of names) {
+      const file = join(folder, name);
+      if (statSync(file).isDirectory()) {
+        if (!lane) look(file, name);
+        continue;
+      }
+      const a = inForce(file);
+      if (!a) continue;
+      const left = APPROVAL_MINUTES - (now - Date.parse(a.grantedAt)) / 60_000;
+      found.push({
+        name,
+        ...(lane ? { lane } : {}),
+        ...a,
+        minutesLeft: Math.max(0, Math.floor(left)),
+      });
+    }
+  };
+  look(dir);
+  return found;
+}
+
 /** The dependency approvals in force for `actor`: [{ name, reason, grantedAt }]. */
 export function dependencyGrants(root, actor) {
   if (actor?.kind === 'readonly') return [];
@@ -277,6 +378,7 @@ export function writeProblem(actor, rel, root, config) {
   // The lead writes protected files without an approval: the person reviews them in the pull request,
   // and every committed change is in the audit log. Anyone else needs a person's approval as well.
   if (guarded && actor.kind !== 'lead' && !approval(root, guarded.approval, actor)) {
+    recordRequest(root, actor, guarded.approval, rel, guarded.why);
     return `${rel} is ${guarded.why} and needs a person's approval. Ask the lead (a person) to run\n${approvalHowTo(guarded.approval, actor, root, undefined, config)}`;
   }
   if (actor.kind === 'readonly') return `${actor.label} is read-only; it may not write ${rel}.`;

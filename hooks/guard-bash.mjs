@@ -20,6 +20,7 @@ import {
   dependencyGrants,
   owns,
   protectedEntry,
+  recordRequest,
   sessionRoot,
 } from './lib/rules.mjs';
 
@@ -101,6 +102,11 @@ if (approves && actor.kind !== 'lead')
   block(
     `Blocked: only the lead records or grants approvals. Write a short change request for the lead (what needs approving, and why), and stop.\nCommand: ${cmd}`,
   );
+// The pane's acts are the person's: no agent passes --person or --via, whatever its other permissions.
+if ((delegatedMerge && /\s--person\b/.test(cmd)) || (approves && /\s--via\b/.test(cmd)))
+  block(
+    `Blocked: merging or approving as the person is the person's own act, from the code-kit pane or their terminal. Ask them, and stop.\nCommand: ${cmd}`,
+  );
 if (delegatedMerge && actor.kind !== 'lead')
   block(
     `Blocked: only the lead merges into a protected branch. Finish your story and commit it on your branch; the lead reviews and merges it.\nCommand: ${cmd}`,
@@ -130,6 +136,13 @@ if (packages.length) {
     (p) => !approval(sessionIn ?? project, dependencyApproval(p), actor),
   );
   if (unapproved.length) {
+    recordRequest(
+      sessionIn ?? project,
+      actor,
+      unapproved.map(dependencyApproval),
+      cmd,
+      "A new dependency needs a person's approval.",
+    );
     const ask =
       actor.kind === 'lead'
         ? 'Ask the person to approve it by running'
@@ -185,6 +198,13 @@ const writes =
     cmd,
   );
 if (touchesKit && writes && actor.kind !== 'lead' && !approval(root, 'kit', actor)) {
+  recordRequest(
+    root,
+    actor,
+    'kit',
+    cmd,
+    "The .claude kit is changed only by the lead or with a person's approval.",
+  );
   block(
     `Blocked: the .claude kit is changed only by the lead or with a person's approval. Ask the lead to run\n${approvalHowTo('kit', actor, root, undefined, config)}`,
   );
@@ -237,6 +257,7 @@ function recordApprovals() {
     const granted = entry && approval(root, entry.approval, actor);
     const byDependency = actor.kind === 'lane' && dependencyChange(actor, file, root, config);
     if (entry && !granted && actor.kind !== 'lead' && !byDependency) {
+      recordRequest(root, actor, entry.approval, file, entry.why);
       block(
         `Blocked: ${file} is ${entry.why}; committing it needs a person's approval in force. Ask the lead to run\n${approvalHowTo(entry.approval, actor, root, undefined, config)}`,
       );
