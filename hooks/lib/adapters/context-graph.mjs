@@ -7,8 +7,13 @@
 // lead act on what the person says in chat (`approvals.lead`). A delegated ratification, signed
 // `Ctx-Ratified-By: <ratifier> (delegated)`, is the lead's own act under the repository's [delegate]
 // rules: only the lead may write that trailer, and Context Graph's gate checks the kinds it covers.
+// Ratifying with `--commit`, and dropping a proposal, are the person's acts in ctx too, so no actor runs
+// them; only a command in command position counts, so text that mentions one isn't refused.
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
+
+const CTX = String.raw`(?:ctx|node\s+["']?[^\s"']*ctx\.mjs["']?|npx\s+(?:--yes\s+)?@warren-dean/context-graph(?:@\S+)?)`;
+const PERSONS_ACT = String.raw`(?:^|[;&|\n])\s*${CTX}\s+(?:ratify\b[^;&|\n]*\s--commit\b|drop\b)`;
 
 export default {
   name: 'context-graph',
@@ -27,6 +32,10 @@ export default {
         pattern: 'Ctx-Ratified-By\\s*[:=](?![^\\n"\']*\\(delegated\\))',
         why: "Ratifying a Context Graph rule is a person's act: they add the Ctx-Ratified-By trailer themselves, with a `!` git command.",
         person: true,
+      },
+      {
+        pattern: PERSONS_ACT,
+        why: "Ratifying a Context Graph proposal with --commit, and dropping one, are the person's own acts: they run them themselves, with a `!` command, or from the Context Graph pane.",
       },
     ],
     restricted: [
