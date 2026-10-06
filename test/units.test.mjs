@@ -18,6 +18,7 @@ import {
   bandLines,
   lanesPane,
   parseJson,
+  commandItself,
   prefilledReason,
   projectState,
 } from '../hooks/mod/view.mjs';
@@ -455,4 +456,19 @@ test('the mod: BAND-2 and BAND-4, the band lines and their hotkeys, and ACT-1 th
     ['1 approve', '2 review', '3 merge', '4 lanes'],
   );
   assert.equal(bandLines({ state: null, notice: 'Nothing was approved: x' })[0].kind, 'notice');
+});
+
+test("the mod: ACT-1 a prefilled reason names the command itself, not the agent's pipes", () => {
+  assert.equal(commandItself('npm install dayjs 2>&1 | tail -20'), 'npm install dayjs');
+  assert.equal(commandItself('pnpm add zod && pnpm test'), 'pnpm add zod');
+  assert.equal(commandItself('pip install requests > /dev/null'), 'pip install requests');
+  assert.equal(commandItself('npm install dayjs'), 'npm install dayjs');
+  assert.equal(
+    prefilledReason({
+      lane: null,
+      names: ['dep-dayjs'],
+      what: 'npm install dayjs 2>&1 | tail -20',
+    }),
+    'Approve dayjs for any agent: npm install dayjs',
+  );
 });

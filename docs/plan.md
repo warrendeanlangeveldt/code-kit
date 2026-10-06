@@ -77,6 +77,6 @@ One line per kind of thing waiting, with counts, actions and digit hotkeys. Abse
 **Lane:** lead
 **Requirements:** CARD-1, CARD-2, CARD-3
 **Depends on:** ST-6
-**Status:** review
+**Status:** done
 
 code-kit refusals redrawn as cards, with Approve… where an approval would allow them, and the raw text a press away. `/approvals` and `/verify-branch` print without a model call.

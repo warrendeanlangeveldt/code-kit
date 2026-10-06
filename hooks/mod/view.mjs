@@ -157,11 +157,18 @@ export function approvalLabel(name) {
   return name.startsWith('dep-') ? name.slice(4).replaceAll('+', '/') : name;
 }
 
+/** A command as a person reads it: the part before its pipes, redirects and chained commands. */
+export function commandItself(command) {
+  return String(command)
+    .split(/\s+(?:\d?>>?&?\d*|\|\|?|&&|;)(?:\s|$)/)[0]
+    .trim();
+}
+
 /** The reason an Approve… confirmation starts with (ACT-1). */
 export function prefilledReason(request) {
   return `Approve ${request.names.map(approvalLabel).join(', ')} for ${
     request.lane ? `the ${request.lane} lane` : 'any agent'
-  }: ${request.what}`;
+  }: ${commandItself(request.what)}`;
 }
 
 const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
