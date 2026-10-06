@@ -331,11 +331,14 @@ export function register(on) {
     lanesPane(model.state, $.ui.resolve(e)),
   );
 
-  // BAND-2: absent when nothing waits.
+  // BAND-2: absent when nothing waits. Its lines go above whatever else the band holds (another
+  // plugin's lines, such as Context Graph's, or Claude Code's own), which it keeps.
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     const lines = bandLines({ ...model, reviewing, notice });
     if (!lines.length || !act) return next(e);
-    return band(lines, $.ui.resolve(e), (id, line) => act[id](line));
+    const ours = band(lines, $.ui.resolve(e), (id, line) => act[id](line));
+    const below = await next(e);
+    return below ? $.ui.resolve(e).Box({ flexDirection: 'column', children: [ours, below] }) : ours;
   });
 
   on('ui.render', { component: 'Pane', requestId: APPROVE_ID }, async ($, e) => {

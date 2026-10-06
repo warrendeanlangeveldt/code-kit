@@ -683,3 +683,32 @@ test('CARD-4 a command whose name is taken is left out; the rest of the mod stil
   expect(await ui.find({ type: 'Text', text: '1 approval waiting' })).toBeDefined();
   await ui.unmount();
 });
+
+/** Another plugin drawing its own line in the band, as Context Graph's mod does. */
+const neighbour = {
+  name: 'neighbour',
+  register(on: any) {
+    on('ui.render', { component: 'AbovePrompt' }, async ($: any, e: any, next: any) => {
+      const { Box, Text } = $.ui.resolve(e);
+      const below = await next(e);
+      return Box({
+        flexDirection: 'column',
+        children: [Text({ children: ['2 proposals to ratify'] }), ...(below ? [below] : [])],
+      });
+    });
+  },
+};
+
+test(
+  "BAND-2 code-kit's lines and another plugin's stand together",
+  { plugins: [neighbour] },
+  async ($, on) => {
+    const w = project();
+    w.requests = [dayjs];
+    await start($, on, w);
+    const ui = await bandUi($);
+    expect(await ui.find({ type: 'Text', text: '1 approval waiting' })).toBeDefined();
+    expect(await ui.find({ type: 'Text', text: '2 proposals to ratify' })).toBeDefined();
+    await ui.unmount();
+  },
+);
