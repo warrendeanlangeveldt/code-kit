@@ -1628,6 +1628,41 @@ try {
   expect('the config can switch an adapter off', cWrite('.ctx/decisions.ctx', 'web-engineer'), 2);
   expect('and says so', says(cCli('adapters'), 'context-graph: switched off in the config'), 0);
 
+  // A person's ratification from their terminal is signed with the trailer, not logged by the hooks.
+  const r = newRepo();
+  cleanups.push(r.dir);
+  mkdirSync(join(r.dir, '.ctx'));
+  writeFileSync(join(r.dir, '.ctx/graph.ctx'), 'L L:repo Repo\n');
+  r.git('add', '-A');
+  r.git('commit', '-q', '-m', 'graph');
+  r.git('checkout', '-q', '-b', 'ratify');
+  const rVerify = () =>
+    spawnSync(
+      'node',
+      [join(here, '..', 'bin', 'code-kit.mjs'), 'verify', '--base', 'main', '--no-checks'],
+      { cwd: r.dir, encoding: 'utf8' },
+    );
+  const rCommit = (line, trailer) => {
+    writeFileSync(join(r.dir, '.ctx/graph.ctx'), `L L:repo Repo\n${line}\n`);
+    r.git('add', '-A');
+    r.git('commit', '-q', '-m', 'ratify', ...(trailer ? ['--trailer', trailer] : []));
+  };
+  rCommit('C C:events Events', 'Ctx-Ratified-By: warren');
+  expect("verify accepts a graph change signed with a person's ratification trailer", rVerify(), 0);
+  rCommit('C C:jobs Jobs', 'Ctx-Ratified-By: sidequest-lead (delegated)');
+  expect(
+    'but not a delegated one, which the hooks log',
+    failsWith(rVerify(), 'no approval-log entry records this change'),
+    0,
+  );
+  r.git('reset', '-q', '--hard', 'HEAD~1');
+  rCommit('C C:jobs Jobs');
+  expect(
+    'nor a later unsigned commit to the same file',
+    failsWith(rVerify(), 'no approval-log entry records this change'),
+    0,
+  );
+
   // --- next: the step to take, from the project's state -----------------------------------------
   const nextIn = (dir) => {
     const res = spawnSync('node', [join(here, '..', 'bin', 'code-kit.mjs'), 'next', '--json'], {

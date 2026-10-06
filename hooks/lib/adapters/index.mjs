@@ -3,7 +3,10 @@
 //
 //   name      the tool, and the key that switches it off in the config: "adapters": { "<name>": false }
 //   detect    (root) => true when the tool is in use in this project
-//   config    { lead?, anyActor?, protected? } merged into the effective config, like the kit's defaults
+//   config    { lead?, anyActor?, protected? } merged into the effective config, like the kit's defaults.
+//             A protected entry may name `signedBy`, a pattern for a commit-message line that only a
+//             person may write (the hooks block it for every actor); verify accepts a change whose
+//             commits all carry it in place of an approval-log entry
 //   shell     { block?, restricted? } block: commands refused for every Claude actor, merged into
 //             shell.block (`person: true` marks a person's act the lead may do for them under
 //             approvals.lead); restricted: commands only the lead and the listed lanes may run
