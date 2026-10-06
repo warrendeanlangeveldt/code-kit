@@ -72,11 +72,11 @@ One line per kind of thing waiting, with counts, actions and digit hotkeys. Abse
 - **Review:** a prompt to the lead to run the review skill.
 - **Merge:** a confirmation, then `merge --person`, with failures shown.
 
-### ST-7 Refusal cards and `/approvals`, `/verify`
+### ST-7 Refusal cards and `/approvals`, `/verify-branch`
 
 **Lane:** lead
 **Requirements:** CARD-1, CARD-2, CARD-3
 **Depends on:** ST-6
 **Status:** review
 
-code-kit refusals redrawn as cards, with Approve… where an approval would allow them, and the raw text a press away. `/approvals` and `/verify` print without a model call.
+code-kit refusals redrawn as cards, with Approve… where an approval would allow them, and the raw text a press away. `/approvals` and `/verify-branch` print without a model call.

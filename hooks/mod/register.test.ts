@@ -64,6 +64,8 @@ function project() {
     verifyOut: 'No problems.',
     verifyExit: 0,
     refusal: '',
+    drawn: [] as any[],
+    taken: [] as string[], // command names another command already holds
     stops: [] as any[],
     refs: ' aaa refs/heads/main\n bbb refs/heads/web/st-4\n',
     agents: [] as { type: string; status: string }[],
@@ -121,7 +123,10 @@ function stub(on: any, w: World) {
   });
   on('session.start', () => ({ cwd: '/work' }));
   // Claude Code's own drawing, beneath the mod: nothing of code-kit's.
-  on('ui.render', () => ({ type: 'Box', props: {}, children: [] }));
+  on('ui.render', ($: any, e: any) => {
+    w.drawn.push(e);
+    return { type: 'Box', props: {}, children: [] };
+  });
   // What the settings hooks beneath answer a Write or a Bash call with.
   on('tool.call', { tool: 'Write' }, () =>
     w.refusal ? { deny: w.refusal } : { result: { type: 'create' } },
@@ -134,7 +139,9 @@ function stub(on: any, w: World) {
   on('fs.list', () => ({ value: [] }));
   on('session.cwd', () => ({ value: '/work' }));
   on('session.id', () => ({ value: 's1' }));
-  on('command.register', () => ({ value: undefined }));
+  on('command.register', ($: any, e: any) =>
+    w.taken.includes(e.name) ? { deny: `/${e.name} is taken` } : { value: undefined },
+  );
   on('prompt.submit', ($: any, e: any) => {
     w.prompts.push(e.text);
     return { text: e.text };
@@ -497,7 +504,25 @@ test('ACT-3 the story shows as being reviewed until the lead has reported', asyn
 
 // --- refusal cards and the commands -------------------------------------------------------------
 
-const toolResult = ($: any, id: string, tool: string) =>
+/** The refused call's row, as an unfolded group or a standalone call draws it. */
+const toolResult = ($: any, id: string, tool: string, output: unknown = null) =>
+  $.ui.mount({
+    plugin: 'code-kit',
+    component: 'ToolUse',
+    requestId: id,
+    surface: 'terminal',
+    viewport: { columns: 120, rows: 40 },
+    props: {
+      tool_use_id: id,
+      tool,
+      input: {},
+      isRunning: false,
+      isErrored: true,
+      isInterrupted: false,
+      output,
+    },
+  });
+const resultBlock = ($: any, id: string, tool: string) =>
   $.ui.mount({
     plugin: 'code-kit',
     component: 'ToolResult',
@@ -573,25 +598,88 @@ test('CARD-2 /approvals lists the open requests and the approvals in force, with
   expect(res.text).toContain('design for the web lane, 42 min left: new screens agreed');
 });
 
-test("CARD-3 /verify prints verify's report on this branch", async ($, on) => {
+test("CARD-3 /verify-branch prints verify's report on this branch", async ($, on) => {
   const w = project();
   w.verifyExit = 1;
   w.verifyOut =
     'Layer rules:\n  packages/domain/x.ts imports workers/s (domain may not import workers)\n\n1 problem(s). Fix them on this branch.';
   await start($, on, w);
-  const res = await $.command.run({ command: 'verify', args: '' });
+  const res = await $.command.run({ command: 'verify-branch', args: '' });
   expect(res.text).toContain('domain may not import workers');
   expect(res.text).toContain('1 problem(s)');
 });
 
-test('CARD-4 outside a code-kit project, /approvals and /verify say so', async ($, on) => {
+test('CARD-4 outside a code-kit project, /approvals and /verify-branch say so', async ($, on) => {
   const w = project();
   w.check = { ...w.check, exists: false, valid: false };
   await start($, on, w);
   expect((await $.command.run({ command: 'approvals', args: '' })).text).toBe(
     "This project doesn't use code-kit.",
   );
-  expect((await $.command.run({ command: 'verify', args: '' })).text).toBe(
+  expect((await $.command.run({ command: 'verify-branch', args: '' })).text).toBe(
     "This project doesn't use code-kit.",
   );
+});
+
+const install =
+  'Blocked: a new dependency (dayjs) needs a person\'s approval. Write a short change request for the lead.\n  ! echo "<what you are approving>" > .claude/approvals/dep-dayjs\n(a person runs it; it allows installing it for any agent, for 60 minutes)\nCommand: npm install dayjs';
+
+test('CARD-1 a group holding a refusal unfolds, so its row can be the card', async ($, on) => {
+  const w = project();
+  await start($, on, w);
+  const call = {
+    tool_use_id: 'tu-9',
+    tool: 'Bash',
+    input: {},
+    isRunning: false,
+    isErrored: true,
+    isInterrupted: false,
+    output: install,
+  };
+  const plain = { ...call, tool_use_id: 'tu-8', isErrored: false, output: { stdout: 'ok' } };
+  const mountGroup = (calls: any[]) =>
+    $.ui.mount({
+      plugin: 'code-kit',
+      component: 'ToolGroup',
+      requestId: 'g-1',
+      surface: 'terminal',
+      viewport: { columns: 120, rows: 40 },
+      props: { calls, isActive: false, isExpanded: false },
+    });
+  const folded = await mountGroup([plain]);
+  expect(w.drawn.at(-1).props.isExpanded).toBe(false);
+  await folded.unmount();
+  const unfolded = await mountGroup([plain, call]);
+  expect(w.drawn.at(-1).props.isExpanded).toBe(true);
+  await unfolded.unmount();
+});
+
+test('CARD-1 the card is drawn from the text the model read, and the result block beneath is left empty', async ($, on) => {
+  const w = project();
+  await start($, on, w);
+  const row = await toolResult($, 'tu-10', 'Bash', install);
+  expect(await row.find({ type: 'Text', text: 'Install refused: dayjs' })).toBeDefined();
+  expect(await row.find({ key: 'card-approve' })).toBeDefined();
+  await row.unmount();
+  w.refusal = install;
+  await $.tool.call({ tool: 'Bash', tool_use_id: 'tu-11', command: 'npm install dayjs' } as any);
+  const block = await resultBlock($, 'tu-11', 'Bash');
+  expect(await block.find({ type: 'Text', text: /dayjs/ })).toBeUndefined();
+  await block.unmount();
+});
+
+test('CARD-4 a command whose name is taken is left out; the rest of the mod still works', async ($, on) => {
+  const w = project();
+  w.requests = [dayjs];
+  w.taken = ['approvals'];
+  stub(on, w);
+  const clock = mock.clock(on);
+  await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true });
+  await clock.advance(2000);
+  const res = await $.command.run({ command: 'lanes', args: '' });
+  expect(res.text ?? '').toBe('');
+  expect(w.opened).toContain(PANE);
+  const ui = await bandUi($);
+  expect(await ui.find({ type: 'Text', text: '1 approval waiting' })).toBeDefined();
+  await ui.unmount();
 });

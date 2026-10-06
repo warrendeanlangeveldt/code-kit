@@ -275,7 +275,7 @@ With Claude Code 2.1.287 or later, code-kit's mod shows the project in the sessi
 
 - **`/lanes`** opens the Lanes pane: each lane with its agent, story, branch and state (building, in review, blocked, idle), a mark while its agent is at work, and the stories ready to start. It stays current within 2 seconds of a commit, a branch change, a plan edit or an agent starting or stopping. `/lanes` again, or Escape, closes it.
 - **Refusals** a code-kit hook gives an agent are drawn as cards: what was refused, the rule, what to do, and Approve… where your approval would allow it. The full text is a press away.
-- **`/approvals`** lists the requests waiting and the approvals in force, with minutes left. **`/verify`** runs `code-kit verify` on this branch. Neither calls the model.
+- **`/approvals`** lists the requests waiting and the approvals in force, with minutes left. **`/verify-branch`** runs `code-kit verify` on this branch. Neither calls the model.
 
 Approving from the band records `(approved in the code-kit pane)` with your reason, and a merge from it says it was merged by the person from the pane. Both happen only on your press: the hooks refuse `approve --via pane` and `merge --person` from every agent. Outside a project with `.claude/code-kit.json`, the mod draws nothing. Mods don't draw in the VS Code extension's chat panel, the Agent SDK or `claude -p`.
 

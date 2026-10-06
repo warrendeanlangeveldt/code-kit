@@ -40,20 +40,29 @@ const REFUSALS_KEPT = 200;
 
 export function register(on) {
   on('session.start', async ($, e, next) => {
-    await $.command.register({
-      name: 'lanes',
-      description: "code-kit's lanes: agents, stories, branches and what's ready",
-      immediate: true,
-    });
-    await $.command.register({
-      name: 'approvals',
-      description: "code-kit's approval requests waiting, and the approvals in force",
-      immediate: true,
-    });
-    await $.command.register({
-      name: 'verify',
-      description: 'Run code-kit verify on this branch, checks included',
-    });
+    // A name another command already holds is refused; the rest of the mod goes on without it.
+    const unavailable = (name) => (err) =>
+      $.ui.log(`code-kit: /${name} isn't available in this session: ${err?.message ?? err}`);
+    await $.command
+      .register({
+        name: 'lanes',
+        description: "code-kit's lanes: agents, stories, branches and what's ready",
+        immediate: true,
+      })
+      .catch(unavailable('lanes'));
+    await $.command
+      .register({
+        name: 'approvals',
+        description: "code-kit's approval requests waiting, and the approvals in force",
+        immediate: true,
+      })
+      .catch(unavailable('approvals'));
+    await $.command
+      .register({
+        name: 'verify-branch',
+        description: 'Run code-kit verify on this branch, checks included',
+      })
+      .catch(unavailable('verify-branch'));
     const cli = `${$.plugin.root}/bin/code-kit.mjs`;
     const cwd = e.cwd ?? (await $.session.cwd());
     const session = await $.session.id();
@@ -259,8 +268,8 @@ export function register(on) {
   on('command.run', { command: 'approvals' }, async ($, e) =>
     act ? act.approvals() : starting('approvals'),
   );
-  on('command.run', { command: 'verify' }, async ($, e) =>
-    act ? act.verify() : starting('verify'),
+  on('command.run', { command: 'verify-branch' }, async ($, e) =>
+    act ? act.verify() : starting('verify-branch'),
   );
 
   // CARD-1: the text a code-kit hook refused a call with, kept for the call's result to draw as a card.
@@ -273,9 +282,26 @@ export function register(on) {
     }
     return res;
   }).catch(($, e, next) => next(e)); // it only watches: whatever fails here, the call goes on as it would
+  // A refused call's text: kept from its tool.call, or the output its row carries (what the model read).
+  const refusalOf = (id, output) =>
+    refusalCard(refusals.get(id) ?? (typeof output === 'string' ? output : null));
+  // Shell calls fold into one line ("Ran 1 shell command"); a group holding a refusal unfolds, so
+  // the refused call's row can be drawn as its card.
+  on('ui.render', { component: 'ToolGroup' }, async ($, e, next) => {
+    const refused = e.props.calls.some((c) => c.tool_use_id && refusalOf(c.tool_use_id, c.output));
+    return refused && !e.props.isExpanded
+      ? next({ ...e, props: { ...e.props, isExpanded: true } })
+      : next(e);
+  });
+  // The card takes the call's row; the result block beneath a standalone row is then left empty.
   on('ui.render', { component: 'ToolResult' }, async ($, e, next) => {
+    const card = refusalOf(e.props.tool_use_id, e.props.output);
+    if (!card || !act) return next(e);
+    return $.ui.resolve(e).Box({ children: [] });
+  });
+  on('ui.render', { component: 'ToolUse' }, async ($, e, next) => {
     const id = e.props.tool_use_id;
-    const card = refusals.has(id) ? refusalCard(refusals.get(id)) : null;
+    const card = refusalOf(id, e.props.output);
     if (!card || !act) return next(e);
     return refusalView(card, expanded.has(id), $.ui.resolve(e), {
       onApprove: () => act.approve({ request: card.request }),
