@@ -48,7 +48,7 @@ Needs Claude Code 2.1.287 or later on the machine that builds it.
 **Lane:** lead
 **Requirements:** PANE-2, PANE-3, PANE-4
 **Depends on:** ST-3
-**Status:** todo
+**Status:** review
 
 A row per lane with its agent, story, branch and state, the active mark from subagents starting and finishing, and what's ready. Refreshes on change, at most every 10 seconds otherwise.
 

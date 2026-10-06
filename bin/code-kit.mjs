@@ -112,6 +112,7 @@ function checkJson() {
     Object.entries(config.lanes).map(([name, l]) => [name, { agent: l.agent, paths: l.paths }]),
   );
   report.adapters = config.adapters;
+  report.docs = config.docs ?? null;
   out(JSON.stringify(report, null, 2));
 }
 
