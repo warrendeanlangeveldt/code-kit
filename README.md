@@ -101,6 +101,7 @@ Set it up at the start of a new build, straight from the architecture docs, or b
   | `Stop`, `SubagentStop`   | `hooks/stop-check.mjs`      | proof before finishing                                            |
 
 - **For the main session and every subagent**, including agents in worktrees under `.claude/worktrees/`.
+- **In front of you, in the terminal and the Desktop app,** through the code-kit mod (Claude Code 2.1.287 or later; see [In the session](#in-the-session)). It shows and acts, and never enforces: the hooks above do that everywhere, the mod or not.
 - **In CI**, through `code-kit verify` in a GitHub Actions workflow that init can install (`templates/github-workflow.yml`).
 - **Locally, with Node 22 or later.** Nothing is sent anywhere. The CLI in `bin/` runs the same rules from a terminal.
 
@@ -260,6 +261,23 @@ Editing an agent file can't loosen a rule. And the agent files are kit files (`.
 **Project skills** (`.claude/skills/<recipe>/SKILL.md`) are the step-by-step recipes your docs describe, like "add a migration" or "add an endpoint". Init lists the ones it finds and writes them only if you say yes, never as empty stubs. Each is listed in the owning lane agent's "Skills to use". Like the agents, they're kit files: the lead maintains them, and changes are logged.
 
 **Kept in step.** When the project changes (a new app, a new lane, moved folders), re-run `/code-kit:init`. It drafts new agents for new lanes and updates the paths of existing ones, keeping anything written by hand. You see the difference and approve it before anything changes.
+
+## In the session
+
+With Claude Code 2.1.287 or later, code-kit's mod shows the project in the session, in the terminal (VS Code's terminal included) and the Desktop app. Older versions skip it and keep enforcing everything through the hooks.
+
+- **The band** sits above the prompt whenever something waits for you, and is gone when nothing does. It shows:
+  - approvals agents have asked for: **Approve…** opens a confirmation with a reason prefilled from the request, which you keep or rewrite;
+  - stories finished and waiting for review: **Review** asks the lead to run `/code-kit:review` on the branch, and **Merge** runs `verify`, checks included, then merges if it passes;
+  - a finish check failing in this session: **Lanes** opens the pane.
+
+  Each button has a digit: type it in an empty prompt to press it.
+
+- **`/lanes`** opens the Lanes pane: each lane with its agent, story, branch and state (building, in review, blocked, idle), a mark while its agent is at work, and the stories ready to start. It stays current within 2 seconds of a commit, a branch change, a plan edit or an agent starting or stopping. `/lanes` again, or Escape, closes it.
+- **Refusals** a code-kit hook gives an agent are drawn as cards: what was refused, the rule, what to do, and Approve… where your approval would allow it. The full text is a press away.
+- **`/approvals`** lists the requests waiting and the approvals in force, with minutes left. **`/verify`** runs `code-kit verify` on this branch. Neither calls the model.
+
+Approving from the band records `(approved in the code-kit pane)` with your reason, and a merge from it says it was merged by the person from the pane. Both happen only on your press: the hooks refuse `approve --via pane` and `merge --person` from every agent. Outside a project with `.claude/code-kit.json`, the mod draws nothing. Mods don't draw in the VS Code extension's chat panel, the Agent SDK or `claude -p`.
 
 ## Build
 

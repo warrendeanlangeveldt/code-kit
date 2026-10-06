@@ -12,6 +12,7 @@ import {
   NOT_CODE_KIT,
   PANE_ID,
   RESULT_ID,
+  approvalsText,
   agentsAtWork,
   approvePane,
   band,
@@ -20,6 +21,8 @@ import {
   parseJson,
   prefilledReason,
   projectState,
+  refusalCard,
+  refusalView,
   resultPane,
 } from './view.mjs';
 
@@ -31,6 +34,9 @@ let approving = null; // the open Approve… confirmation: { request, reason, er
 let result = null; // what the last merge reported
 let notice = null; // why the person's last act failed
 let act = null; // the session's actions, made at session start
+const refusals = new Map(); // tool_use_id → the refusal text a hook gave (CARD-1)
+const expanded = new Set(); // cards showing their raw text
+const REFUSALS_KEPT = 200;
 
 export function register(on) {
   on('session.start', async ($, e, next) => {
@@ -38,6 +44,15 @@ export function register(on) {
       name: 'lanes',
       description: "code-kit's lanes: agents, stories, branches and what's ready",
       immediate: true,
+    });
+    await $.command.register({
+      name: 'approvals',
+      description: "code-kit's approval requests waiting, and the approvals in force",
+      immediate: true,
+    });
+    await $.command.register({
+      name: 'verify',
+      description: 'Run code-kit verify on this branch, checks included',
     });
     const cli = `${$.plugin.root}/bin/code-kit.mjs`;
     const cwd = e.cwd ?? (await $.session.cwd());
@@ -195,6 +210,18 @@ export function register(on) {
         await $.ui.open({ id: RESULT_ID, title: 'Merge', focus: true, closeOnEscape: true });
         await act.reload();
       },
+      // CARD-2: no model call; the transcript shows it.
+      approvals: async () => {
+        await act.reload();
+        if (model.state.kind === 'none') return { text: NOT_CODE_KIT };
+        return { text: approvalsText(model.requests) };
+      },
+      // CARD-3: verify's own report, checks included.
+      verify: async () => {
+        if (model.state?.kind === 'none') return { text: NOT_CODE_KIT };
+        const ran = await $.process.run(['node', cli, 'verify'], { cwd, timeoutMs: 600000 });
+        return { text: `${ran.stdout}${ran.stderr}`.trim() };
+      },
       dismiss: async () => {
         notice = null;
         $.ui.invalidate('ui.render');
@@ -225,9 +252,40 @@ export function register(on) {
     return next(e);
   });
 
-  on('command.run', { command: 'lanes' }, async ($, e) =>
-    act ? act.lanes() : { text: 'code-kit is still starting; try /lanes again in a moment.' },
+  const starting = (name) => ({
+    text: `code-kit is still starting; try /${name} again in a moment.`,
+  });
+  on('command.run', { command: 'lanes' }, async ($, e) => (act ? act.lanes() : starting('lanes')));
+  on('command.run', { command: 'approvals' }, async ($, e) =>
+    act ? act.approvals() : starting('approvals'),
   );
+  on('command.run', { command: 'verify' }, async ($, e) =>
+    act ? act.verify() : starting('verify'),
+  );
+
+  // CARD-1: the text a code-kit hook refused a call with, kept for the call's result to draw as a card.
+  on('tool.call', async ($, e, next) => {
+    const res = await next(e);
+    const text = res?.deny ?? (res?.isError ? (res.text ?? String(res.result ?? '')) : null);
+    if (text && refusalCard(text)) {
+      refusals.set(e.tool_use_id, text);
+      if (refusals.size > REFUSALS_KEPT) refusals.delete(refusals.keys().next().value);
+    }
+    return res;
+  }).catch(($, e, next) => next(e)); // it only watches: whatever fails here, the call goes on as it would
+  on('ui.render', { component: 'ToolResult' }, async ($, e, next) => {
+    const id = e.props.tool_use_id;
+    const card = refusals.has(id) ? refusalCard(refusals.get(id)) : null;
+    if (!card || !act) return next(e);
+    return refusalView(card, expanded.has(id), $.ui.resolve(e), {
+      onApprove: () => act.approve({ request: card.request }),
+      onToggle: () => {
+        if (expanded.has(id)) expanded.delete(id);
+        else expanded.add(id);
+        $.ui.invalidate('ui.render');
+      },
+    });
+  });
 
   on('turn.start', async ($, e, next) => {
     if (reviewTurn === 'next') reviewTurn = e.turnId;

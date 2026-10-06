@@ -293,3 +293,119 @@ export function resultPane(result, { Box, Text }) {
     ],
   });
 }
+
+// --- refusal cards and the commands ------------------------------------------------------------
+
+const APPROVAL_LINE =
+  /^\s*! echo "<what you are approving>" > .*?\.claude\/approvals\/(?:([^/\s]+)\/)?([^/\s]+)\s*$/gm;
+
+/**
+ * A code-kit refusal read back from the text its hooks print (CARD-1): what was refused, the rule and
+ * why, what to do, and the approval that would allow it, if any. Null for text it doesn't recognise,
+ * which Claude Code then draws as it would.
+ */
+export function refusalCard(raw) {
+  const at = typeof raw === 'string' ? raw.indexOf('Blocked: ') : -1;
+  if (at < 0) return null;
+  const text = raw.slice(at + 'Blocked: '.length).trim();
+  const [first, ...rest] = text.split('\n');
+  const approvals = [...text.matchAll(APPROVAL_LINE)];
+  const command = text.match(/^Command: (.+)$/m)?.[1] ?? null;
+  const request = (what) =>
+    approvals.length
+      ? { names: approvals.map((m) => m[2]), lane: approvals[0][1] ?? null, what }
+      : null;
+  let m = first.match(/^The (.+?) may not write (\S+?)(?: \(owned by the (.+)\))?\.$/);
+  if (m)
+    return {
+      kind: 'write',
+      title: `Write refused: ${m[2]}`,
+      why: m[3] ? `It's owned by the ${m[3]}, not the ${m[1]}.` : `Nobody may write it.`,
+      todo: rest.find((l) => l.trim()) ?? '',
+      request: null,
+      raw: text,
+    };
+  m = first.match(/^(\S+) is (.+) and needs a person's approval\./);
+  if (m)
+    return {
+      kind: 'approval',
+      title: `Approval needed: ${m[1]}`,
+      why: `It's ${m[2]}.`,
+      todo: 'A person approves it, here or with the `!` command, for 60 minutes.',
+      request: request(`write ${m[1]}`),
+      raw: text,
+    };
+  m = first.match(/^a new dependency \((.+?)\) needs a person's approval\./);
+  if (m)
+    return {
+      kind: 'dependency',
+      title: `Install refused: ${m[1]}`,
+      why: "A new dependency needs a person's approval.",
+      todo: 'A person approves it, here or with the `!` command, for 60 minutes.',
+      request: request(command ?? `install ${m[1]}`),
+      raw: text,
+    };
+  if (command)
+    return {
+      kind: 'command',
+      title: 'Command refused',
+      why: first,
+      todo: rest.filter((l) => l.trim() && !l.startsWith('Command: ')).join(' '),
+      command,
+      request: request(command),
+      raw: text,
+    };
+  return null;
+}
+
+/** A refusal card (CARD-1), with Approve… where an approval would allow it and the raw text a press away. */
+export function refusalView(card, expanded, { Box, Text, Button }, { onApprove, onToggle }) {
+  return Box({
+    flexDirection: 'column',
+    borderStyle: 'round',
+    paddingX: 1,
+    children: [
+      Text({ bold: true, color: 'red', children: [card.title] }),
+      Text({ children: [card.why] }),
+      ...(card.command ? [Text({ dimColor: true, children: [card.command] })] : []),
+      ...(card.todo ? [Text({ dimColor: true, children: [card.todo] })] : []),
+      Box({
+        flexDirection: 'row',
+        columnGap: 2,
+        children: [
+          ...(card.request
+            ? [Button({ key: 'card-approve', label: 'Approve…', onPress: onApprove })]
+            : []),
+          Button({
+            key: 'card-raw',
+            label: expanded ? 'Hide the text' : 'Show the text',
+            plain: true,
+            onPress: onToggle,
+          }),
+        ],
+      }),
+      ...(expanded ? [Text({ dimColor: true, children: [card.raw] })] : []),
+    ],
+  });
+}
+
+/** `/approvals` (CARD-2): the open requests and the approvals in force, from `requests --json`. */
+export function approvalsText(requests) {
+  const open = requests?.open ?? [];
+  const inForce = requests?.inForce ?? [];
+  const lines = [
+    open.length ? `${plural(open.length, 'request', 'requests')} waiting:` : 'No requests waiting.',
+    ...open.map(
+      (r) =>
+        `  ${r.names.map(approvalLabel).join(', ')} for ${r.lane ? `the ${r.lane} lane` : 'any agent'}: ${r.what}`,
+    ),
+    inForce.length
+      ? `${plural(inForce.length, 'approval', 'approvals')} in force:`
+      : 'No approvals in force.',
+    ...inForce.map(
+      (a) =>
+        `  ${approvalLabel(a.name)} for ${a.lane ? `the ${a.lane} lane` : 'any agent'}, ${a.minutesLeft} min left: ${a.reason}`,
+    ),
+  ];
+  return lines.join('\n');
+}

@@ -57,7 +57,7 @@ A row per lane with its agent, story, branch and state, the active mark from sub
 **Lane:** lead
 **Requirements:** BAND-2, BAND-3, BAND-4
 **Depends on:** ST-3
-**Status:** review
+**Status:** done
 
 One line per kind of thing waiting, with counts, actions and digit hotkeys. Absent when nothing waits, and clears itself when causes go.
 
@@ -66,7 +66,7 @@ One line per kind of thing waiting, with counts, actions and digit hotkeys. Abse
 **Lane:** lead
 **Requirements:** ACT-1, ACT-3, ACT-4
 **Depends on:** ST-4, ST-5
-**Status:** review
+**Status:** done
 
 - **Approve:** a confirmation with the prefilled, editable reason.
 - **Review:** a prompt to the lead to run the review skill.
@@ -77,6 +77,6 @@ One line per kind of thing waiting, with counts, actions and digit hotkeys. Abse
 **Lane:** lead
 **Requirements:** CARD-1, CARD-2, CARD-3
 **Depends on:** ST-6
-**Status:** todo
+**Status:** review
 
 code-kit refusals redrawn as cards, with Approve… where an approval would allow them, and the raw text a press away. `/approvals` and `/verify` print without a model call.
