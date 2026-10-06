@@ -299,7 +299,7 @@ Lanes never change silently: only when you approve the diff.
 Run from the project root, as `code-kit <command>` once installed (`npm i -g @warren-dean/code-kit`), or `npx @warren-dean/code-kit <command>`. Add `--config .claude/code-kit.draft.json` to any command to read a draft instead. In a session, the `/code-kit:check` skill runs `check` and `unowned` for you. `next` also works in a project without code-kit, or outside a git repository.
 
 ```bash
-code-kit check              # validate and summarise
+code-kit check [--json]     # validate and summarise
 code-kit who <path>...      # owner and layer of each path
 code-kit unowned            # tracked files nobody may write
 code-kit diff --config .claude/code-kit.draft.json  # what a draft changes

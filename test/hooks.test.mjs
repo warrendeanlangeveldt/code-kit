@@ -1051,6 +1051,24 @@ try {
     truth(check.status === 0 && check.stdout.includes('is valid'), check.stderr),
     0,
   );
+  const checked = JSON.parse(cli('check', '--json').stdout);
+  expect(
+    'PANE-5 check --json gives the lanes, with their agents, for the mod',
+    truth(
+      checked.valid && checked.lanes.web.agent === 'web-engineer' && checked.problems.length === 0,
+      JSON.stringify(checked),
+    ),
+    0,
+  );
+  const badCheck = cli('check', '--json', '--config', 'nope.json');
+  expect(
+    'and reports a missing or invalid config as JSON, not an error',
+    truth(
+      badCheck.status === 1 && JSON.parse(badCheck.stdout).exists === false,
+      badCheck.stdout + badCheck.stderr,
+    ),
+    0,
+  );
   const draft = JSON.parse(fixture);
   draft.lanes.jobs = { agent: 'jobs-engineer', paths: ['workers/jobs/**'] };
   draft.lanes.backend.exclude = ['workers/ai/**', 'workers/jobs/**'];

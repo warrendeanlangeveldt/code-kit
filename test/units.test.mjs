@@ -12,6 +12,7 @@ import { importsOf, layerProblems } from '../hooks/lib/layers.mjs';
 import { diffConfigs, ownershipMoves } from '../hooks/lib/diff.mjs';
 import { newProblems } from '../hooks/lib/baseline.mjs';
 import { addedPackages, dependencyApproval, isDependencyFile } from '../hooks/lib/dependencies.mjs';
+import { NOT_CODE_KIT, lanesPane, parseJson, projectState } from '../hooks/mod/view.mjs';
 
 const fixture = JSON.parse(
   readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'fixture.json'), 'utf8'),
@@ -309,4 +310,39 @@ test('approvals.delegate is validated, with defaults for the dependency rule', (
   assert.ok(validate(c).some((p) => p.includes('approvals.delegate')));
   c.approvals = { delegate: { dependencies: { minWeeklyDownloads: -1 } } };
   assert.ok(validate(c).some((p) => p.includes('approvals.delegate')));
+});
+
+// The mod's drawing, with stand-ins for the elements $.ui.resolve gives it.
+const el = {
+  Box: (props) => ({ type: 'Box', props, children: props.children ?? [] }),
+  Text: (props) => ({ type: 'Text', props, children: props.children ?? [] }),
+};
+const texts = (node) =>
+  node.type === 'Text' ? node.children : node.children.flatMap((c) => texts(c));
+
+test("the mod: CARD-4 and PANE-5, what the Lanes pane shows for the project's state", () => {
+  assert.equal(parseJson('not json'), null);
+  assert.deepEqual(projectState(null, null), { kind: 'none' });
+  assert.deepEqual(projectState({ exists: false, valid: false, problems: [] }, null), {
+    kind: 'none',
+  });
+  assert.deepEqual(texts(lanesPane(projectState(null, null), el)), [NOT_CODE_KIT]);
+  const invalid = projectState({ exists: true, valid: false, problems: ['x'] }, null);
+  assert.deepEqual(texts(lanesPane(invalid, el)), ['The config is invalid: run code-kit check.']);
+  const check = {
+    exists: true,
+    valid: true,
+    problems: [],
+    lanes: { web: { agent: 'web-engineer', paths: ['apps/web/**'] } },
+  };
+  const ok = projectState(check, { problems: [] });
+  assert.deepEqual(
+    ok.lanes.map((l) => l.name),
+    ['lead', 'web'],
+  );
+  const shown = texts(lanesPane(ok, el));
+  assert.ok(shown.includes('web-engineer') && shown.includes('the main session'));
+  assert.ok(!shown.some((s) => s.includes('gap')));
+  const gaps = texts(lanesPane(projectState(check, { problems: ['ST-1 has no **Lane:**'] }), el));
+  assert.equal(gaps[0], 'The plan has 1 gap(s): run code-kit status.');
 });

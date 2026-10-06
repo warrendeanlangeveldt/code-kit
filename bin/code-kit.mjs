@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Run from the project root: node "${CLAUDE_PLUGIN_ROOT}/bin/code-kit.mjs" <command>
-//   check                 validate the config and summarise it
+//   check [--json]        validate the config and summarise it
 //   who <path>...         who may write each path, and its layer
 //   unowned               tracked files nobody may write
 //   diff                  what a draft changes against the live config, and whose files move
@@ -92,7 +92,31 @@ function load(path = file) {
   return { raw, config: effectiveConfig(raw, '.') };
 }
 
+/** The config as the mod reads it: whether it's there and valid, and the lead's and lanes' paths. */
+function checkJson() {
+  const report = { file, exists: existsSync(resolve(file)), valid: false, problems: [] };
+  if (!report.exists) return (out(JSON.stringify(report, null, 2)), process.exit(1));
+  let raw;
+  try {
+    raw = JSON.parse(read(file));
+  } catch (e) {
+    report.problems = [e.message];
+    return (out(JSON.stringify(report, null, 2)), process.exit(1));
+  }
+  report.problems = validate(raw);
+  if (report.problems.length) return (out(JSON.stringify(report, null, 2)), process.exit(1));
+  const config = effectiveConfig(raw, '.');
+  report.valid = true;
+  report.lead = { paths: config.lead.paths };
+  report.lanes = Object.fromEntries(
+    Object.entries(config.lanes).map(([name, l]) => [name, { agent: l.agent, paths: l.paths }]),
+  );
+  report.adapters = config.adapters;
+  out(JSON.stringify(report, null, 2));
+}
+
 function check() {
+  if (flag('--json')) return checkJson();
   const { raw } = load();
   out(`${file} is valid.`);
   out(`Lead: ${raw.lead.paths.join(', ')}`);
