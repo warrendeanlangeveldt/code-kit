@@ -39,7 +39,7 @@ Needs Claude Code 2.1.287 or later on the machine that builds it.
 **Lane:** lead
 **Requirements:** PANE-1, PANE-5, CARD-4
 **Depends on:** ST-1, ST-2
-**Status:** todo
+**Status:** done
 
 `hooks.json` gains the module. The mod registers `/lanes`, opens and closes the pane, draws nothing outside a code-kit project, and reports an unreadable config or plan. It passes `claude plugin validate`, and `claude plugin test` runs its tests.
 
