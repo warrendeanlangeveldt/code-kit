@@ -1,5 +1,6 @@
 {
   "description": "code-kit: lanes, protected paths with an approval log, spec-check and design gates, layer rules and the project's checks, from .claude/code-kit.json",
+  "modules": ["./mod/register.mjs"],
   "hooks": {
     "PreToolUse": [
       {
