@@ -8,7 +8,6 @@
 import { NOT_CODE_KIT, PANE_ID, lanesPane, parseJson, projectState } from './view.mjs';
 
 let state = null; // the project as last read, for the pane
-let isOpen = false;
 
 export function register(on) {
   on('session.start', async ($, e, next) => {
@@ -22,12 +21,13 @@ export function register(on) {
   // PANE-1: /lanes opens the pane, and closes it when it's open. CARD-4: outside a code-kit project it
   // says so and opens nothing.
   on('command.run', { command: 'lanes' }, async ($, e) => {
-    if (isOpen) {
+    // Asked, not remembered: the person may have closed it with Escape.
+    const panes = await $.ui.panes();
+    if (panes.some((p) => p.id === PANE_ID)) {
       await $.ui.close({ id: PANE_ID });
-      isOpen = false;
       return {};
     }
-    const cli = `${await $.plugin.root()}/bin/code-kit.mjs`;
+    const cli = `${$.plugin.root}/bin/code-kit.mjs`;
     const cwd = await $.session.cwd();
     const checked = await $.process.run(['node', cli, 'check', '--json'], { cwd });
     const check = parseJson(checked.stdout);
@@ -44,16 +44,10 @@ export function register(on) {
       focus: true,
       closeOnEscape: true,
     });
-    if (!placed.isPlaced) return { text: `The Lanes pane couldn't open: ${placed.reason}` };
-    isOpen = true;
+    // Opened but not drawn yet: it waits for room, and the reason says what seats it.
+    if (!placed.isPlaced) return { text: `The Lanes pane is waiting: ${placed.reason}` };
     $.ui.invalidate('ui.render');
     return {};
-  });
-
-  // Escape, or the person closing it some other way.
-  on('ui.close', async ($, e, next) => {
-    if (e.id === PANE_ID) isOpen = false;
-    return next(e);
   });
 
   on('ui.render', { component: 'Pane', requestId: PANE_ID }, async ($, e) =>

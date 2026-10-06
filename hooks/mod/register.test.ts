@@ -33,9 +33,16 @@ const status = JSON.stringify({
 });
 
 /** Stubs the CLI: check prints `check`, status prints a plan with no gaps. */
-function cli(on: any, check: string, opened: string[]) {
+function cli(
+  on: any,
+  check: string,
+  opened: string[],
+  closed: string[] = [],
+  open = new Set<string>(),
+) {
+  on('ui.panes', () => ({ value: [...open].map((id) => ({ id, title: 'Lanes', isShown: true })) }));
   on('process.run', ($: any, e: any) => {
-    const argv: string[] = e.argv ?? e.command ?? e.args ?? [];
+    const argv: readonly string[] = e.argv;
     const out = argv.includes('check') ? check : status;
     return {
       value: {
@@ -45,24 +52,42 @@ function cli(on: any, check: string, opened: string[]) {
       },
     };
   });
-  on('plugin.root', () => ({ value: '/plugins/code-kit' }));
   on('session.cwd', () => ({ value: '/work' }));
   on('command.register', () => ({ value: undefined }));
   on('ui.open', ($: any, e: any) => {
     opened.push(e.id);
+    open.add(e.id);
     return { value: { isPlaced: true } };
   });
-  on('ui.close', () => ({ value: undefined }));
+  on('ui.close', ($: any, e: any) => {
+    closed.push(e.id);
+    open.delete(e.id);
+    return { value: undefined };
+  });
 }
 
 test('PANE-1 /lanes opens the Lanes pane, and /lanes again closes it', async ($, on) => {
   const opened: string[] = [];
-  cli(on, valid, opened);
+  const closed: string[] = [];
+  cli(on, valid, opened, closed);
   const first = await $.command.run({ command: 'lanes', args: '' });
   expect(opened).toEqual(['code-kit-lanes']);
   expect(first.text ?? '').toBe('');
   await $.command.run({ command: 'lanes', args: '' });
   expect(opened).toEqual(['code-kit-lanes']);
+  expect(closed).toEqual(['code-kit-lanes']);
+});
+
+test('PANE-1 after Escape closes the pane, /lanes opens it again', async ($, on) => {
+  const opened: string[] = [];
+  const open = new Set<string>();
+  cli(on, valid, opened, [], open);
+  await $.command.run({ command: 'lanes', args: '' });
+  open.clear();
+  // The person's Escape: the pane is no longer among those open.
+  await $.command.run({ command: 'lanes', args: '' });
+  expect(opened).toEqual(['code-kit-lanes', 'code-kit-lanes']);
+  await $.command.run({ command: 'lanes', args: '' });
 });
 
 test('PANE-1 the pane lists the lanes with their agents', async ($, on) => {
