@@ -4,109 +4,269 @@
 //
 // Everything it shows comes from the code-kit CLI's JSON, run in the session's folder; the mod never
 // imports hooks/lib, which uses node modules a hooks module may not. What it draws is built by the pure
-// functions in view.mjs.
+// functions in view.mjs. It acts only on the person's presses: approving (`approve --via pane`), asking
+// the lead to review, and merging (`merge --person`). No agent reaches those: they are the mod's own
+// buttons, and the hooks refuse both commands from every agent.
 import {
+  APPROVE_ID,
   NOT_CODE_KIT,
   PANE_ID,
+  RESULT_ID,
   agentsAtWork,
+  approvePane,
+  band,
+  bandLines,
   lanesPane,
   parseJson,
+  prefilledReason,
   projectState,
+  resultPane,
 } from './view.mjs';
 
-let state = null; // the project as last read, for the pane
-let refresh = null; // the open pane's refresh timer
+// What the session knows of the project, read again when it changes.
+let model = { state: null, requests: null, stops: [] };
+let reviewing = new Set(); // stories the person asked the lead to review (ACT-3)
+let reviewTurn = null; // 'next' until the lead's review turn starts, then its id
+let approving = null; // the open Approve… confirmation: { request, reason, error }
+let result = null; // what the last merge reported
+let notice = null; // why the person's last act failed
+let act = null; // the session's actions, made at session start
 
 export function register(on) {
   on('session.start', async ($, e, next) => {
     await $.command.register({
       name: 'lanes',
       description: "code-kit's lanes: agents, stories, branches and what's ready",
+      immediate: true,
     });
-    return next(e);
-  });
-
-  // PANE-1: /lanes opens the pane, and closes it when it's open. CARD-4: outside a code-kit project it
-  // says so and opens nothing. PANE-4: while it's open it stays current.
-  on('command.run', { command: 'lanes' }, async ($, e) => {
-    // Asked, not remembered: the person may have closed it with Escape.
-    const panes = await $.ui.panes();
-    if (panes.some((p) => p.id === PANE_ID)) {
-      refresh?.cancel();
-      refresh = null;
-      await $.ui.close({ id: PANE_ID });
-      return {};
-    }
     const cli = `${$.plugin.root}/bin/code-kit.mjs`;
-    const cwd = await $.session.cwd();
+    const cwd = e.cwd ?? (await $.session.cwd());
+    const session = await $.session.id();
     const json = async (...args) => {
       const ran = await $.process.run(['node', cli, ...args, '--json'], { cwd });
       return ran.exitCode === 0 ? parseJson(ran.stdout) : null;
     };
-    const atWork = async () => agentsAtWork(await $.agent.list());
-    // Everything the pane shows, read again; returns the config's check.
-    const load = async () => {
-      const ran = await $.process.run(['node', cli, 'check', '--json'], { cwd });
-      const check = parseJson(ran.stdout);
-      const [status, next] = check?.valid
-        ? [await json('status'), await json('next')]
-        : [null, null];
-      state = projectState(check, status, next, await atWork());
-      return check;
+    const stamp = async (path) => {
+      const s = await $.fs.stat(`${cwd}/${path}`).catch(() => null);
+      return s ? `${path}@${s.mtimeMs}` : `${path}-`;
     };
-    // What a refresh waits on: commits and branches, the plan, and the agents at work.
-    const fingerprint = async (check) => {
-      const refs = await $.process.run(
-        ['git', 'for-each-ref', '--format=%(objectname) %(refname)', 'refs/heads'],
-        { cwd },
-      );
-      const planFile = check?.docs?.plan;
-      const plan = planFile && (await $.fs.exists(planFile)) ? await $.fs.read(planFile) : '';
-      return [refs.stdout, plan, [...(await atWork())].sort().join(',')].join('\n');
+    const listing = async (path) => {
+      const entries = await $.fs.list(`${cwd}/${path}`).catch(() => []);
+      const stamps = [];
+      for (const entry of entries)
+        stamps.push(
+          entry.kind === 'dir'
+            ? await listing(`${path}/${entry.name}`)
+            : await stamp(`${path}/${entry.name}`),
+        );
+      return stamps.join(',');
     };
 
-    const check = await load();
-    if (state.kind === 'none') return { text: NOT_CODE_KIT };
-    const placed = await $.ui.open({
-      id: PANE_ID,
-      title: 'Lanes',
-      focus: true,
-      closeOnEscape: true,
-    });
-    $.ui.invalidate('ui.render');
+    act = {
+      // Everything the band and the pane show, read again.
+      reload: async () => {
+        const ran = await $.process.run(['node', cli, 'check', '--json'], { cwd });
+        const check = parseJson(ran.stdout);
+        const valid = Boolean(check?.valid);
+        const status = valid ? await json('status') : null;
+        const nextStep = valid ? await json('next') : null;
+        const requests = valid ? await json('requests') : null;
+        const stops = valid ? ((await json('stops', '--session', session)) ?? []) : [];
+        const atWork = agentsAtWork(await $.agent.list());
+        model = {
+          state: projectState(check, status, nextStep, atWork),
+          requests,
+          stops,
+          check,
+          base: status?.base ?? null,
+        };
+        $.ui.invalidate('ui.render');
+      },
+      // What a refresh waits on, read cheaply: branches and HEAD, the config and the plan, requests,
+      // approvals and finish checks, and the agents at work. Only a change runs the CLI.
+      fingerprint: async () => {
+        const refs = await $.process.run(
+          ['git', 'for-each-ref', '--format=%(HEAD)%(objectname) %(refname)', 'refs/heads'],
+          { cwd },
+        );
+        const plan = model.check?.docs?.plan;
+        return [
+          refs.stdout,
+          await stamp('.claude/code-kit.json'),
+          plan ? await stamp(plan) : '',
+          await stamp('.claude/state/requests.jsonl'),
+          await listing('.claude/approvals'),
+          await listing('.claude/state/stop-blocks'),
+          [...agentsAtWork(await $.agent.list())].sort().join(','),
+        ].join('\n');
+      },
+      // PANE-1: open the Lanes pane, or close it when it's open.
+      lanes: async () => {
+        // Asked, not remembered: the person may have closed it with Escape.
+        if ((await $.ui.panes()).some((p) => p.id === PANE_ID)) {
+          await $.ui.close({ id: PANE_ID });
+          return {};
+        }
+        await act.reload();
+        if (model.state.kind === 'none') return { text: NOT_CODE_KIT };
+        const placed = await $.ui.open({
+          id: PANE_ID,
+          title: 'Lanes',
+          focus: true,
+          closeOnEscape: true,
+        });
+        // Opened but not drawn yet: it waits for room, and the reason says what seats it.
+        if (!placed.isPlaced) return { text: `The Lanes pane is waiting: ${placed.reason}` };
+        return {};
+      },
+      // ACT-1: the confirmation, prefilled from the request.
+      approve: async (line) => {
+        approving = { request: line.request, reason: prefilledReason(line.request), error: null };
+        await $.ui.open({ id: APPROVE_ID, title: 'Approve', focus: true, closeOnEscape: true });
+        $.ui.invalidate('ui.render');
+      },
+      confirmApproval: async (reason) => {
+        if (!approving) return;
+        if (!reason.trim()) {
+          approving = { ...approving, error: 'Give a reason: it goes in the approval log.' };
+          $.ui.invalidate('ui.render');
+          return;
+        }
+        const { request } = approving;
+        const ran = await $.process.run(
+          [
+            'node',
+            cli,
+            'approve',
+            ...request.names,
+            ...(request.lane ? ['--lane', request.lane] : []),
+            '--reason',
+            reason.trim(),
+            '--via',
+            'pane',
+          ],
+          { cwd },
+        );
+        if (ran.exitCode !== 0) {
+          const why = (ran.stderr || ran.stdout).trim().split('\n')[0];
+          notice = `Nothing was approved: ${why}`;
+          approving = { ...approving, error: notice };
+          $.ui.invalidate('ui.render');
+          return;
+        }
+        approving = null;
+        notice = null;
+        await $.ui.close({ id: APPROVE_ID });
+        await act.reload();
+      },
+      cancelApproval: async () => {
+        approving = null;
+        await $.ui.close({ id: APPROVE_ID });
+      },
+      // ACT-3: ask the lead, and show the story as being reviewed until its turn ends.
+      review: async (line) => {
+        reviewing.add(line.story.id);
+        reviewTurn = 'next';
+        $.ui.invalidate('ui.render');
+        await $.prompt.submit({
+          text: `Review ${line.story.id} (${line.story.title}): run /code-kit:review ${line.story.branch}.`,
+        });
+      },
+      // ACT-4: confirm, then verify and merge as the person; nothing merges unless verify passes.
+      merge: async (line) => {
+        const { branch } = line.story;
+        const into = model.base ?? 'the base branch';
+        const answer = await $.ui
+          .ask(
+            `Merge ${branch} into ${into}? code-kit verify runs first, checks included, and nothing merges unless it passes.`,
+            ['Merge', 'Cancel'],
+          )
+          .catch(() => 'Cancel');
+        if (answer !== 'Merge') return;
+        const ran = await $.process.run(['node', cli, 'merge', branch, '--person'], {
+          cwd,
+          timeoutMs: 600000,
+        });
+        result = {
+          ok: ran.exitCode === 0,
+          title: ran.exitCode === 0 ? `Merged ${branch}` : `Nothing merged: ${branch}`,
+          text: `${ran.stdout}${ran.stderr}`.trim(),
+        };
+        await $.ui.open({ id: RESULT_ID, title: 'Merge', focus: true, closeOnEscape: true });
+        await act.reload();
+      },
+      dismiss: async () => {
+        notice = null;
+        $.ui.invalidate('ui.render');
+      },
+    };
 
-    // Within 2 seconds of a change, and every 10 seconds regardless; never a model call.
-    let seen = await fingerprint(check);
+    // PANE-4 and BAND-3: within 2 seconds of a change. With nothing changed, the project is read
+    // again every 10 seconds while the pane is open, and every minute otherwise (approvals expire).
+    let seen = null;
     let quiet = 0;
     let busy = false;
-    refresh?.cancel();
-    refresh = $.clock.every(2000, async () => {
+    $.clock.every(2000, async () => {
       if (busy) return;
       busy = true;
       try {
-        const open = await $.ui.panes();
-        if (!open.some((p) => p.id === PANE_ID)) {
-          refresh?.cancel();
-          refresh = null;
-          return;
-        }
-        const now = await fingerprint(check);
+        const now = await act.fingerprint();
+        const paneOpen = (await $.ui.panes()).some((p) => p.id === PANE_ID);
         quiet += 1;
-        if (now === seen && quiet < 5) return;
-        seen = now;
+        if (now === seen && quiet < (paneOpen ? 5 : 30)) return;
         quiet = 0;
-        await load();
-        $.ui.invalidate('ui.render');
+        await act.reload();
+        // Taken again: what it covers (the plan) can change with what was read.
+        seen = await act.fingerprint();
       } finally {
         busy = false;
       }
     });
-    // Opened but not drawn yet: it waits for room, and the reason says what seats it.
-    if (!placed.isPlaced) return { text: `The Lanes pane is waiting: ${placed.reason}` };
-    return {};
+    return next(e);
+  });
+
+  on('command.run', { command: 'lanes' }, async ($, e) =>
+    act ? act.lanes() : { text: 'code-kit is still starting; try /lanes again in a moment.' },
+  );
+
+  on('turn.start', async ($, e, next) => {
+    if (reviewTurn === 'next') reviewTurn = e.turnId;
+    return next(e);
+  });
+  // The lead has reported on the review it was asked for.
+  on('turn.complete', async ($, e, next) => {
+    if (reviewTurn && reviewTurn === e.turnId) {
+      reviewing = new Set();
+      reviewTurn = null;
+      $.ui.invalidate('ui.render');
+    }
+    return next(e);
   });
 
   on('ui.render', { component: 'Pane', requestId: PANE_ID }, async ($, e) =>
-    lanesPane(state, $.ui.resolve(e)),
+    lanesPane(model.state, $.ui.resolve(e)),
+  );
+
+  // BAND-2: absent when nothing waits.
+  on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
+    const lines = bandLines({ ...model, reviewing, notice });
+    if (!lines.length || !act) return next(e);
+    return band(lines, $.ui.resolve(e), (id, line) => act[id](line));
+  });
+
+  on('ui.render', { component: 'Pane', requestId: APPROVE_ID }, async ($, e) => {
+    if (!approving) return resultPane(null, $.ui.resolve(e));
+    return approvePane(approving, $.ui.resolve(e), {
+      onInput: (value) => {
+        approving = { ...approving, reason: value };
+        $.ui.invalidate('ui.render');
+      },
+      onSubmit: (value) => act.confirmApproval(value),
+      onCancel: () => act.cancelApproval(),
+    });
+  });
+
+  on('ui.render', { component: 'Pane', requestId: RESULT_ID }, async ($, e) =>
+    resultPane(result, $.ui.resolve(e)),
   );
 }

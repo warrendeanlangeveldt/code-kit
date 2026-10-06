@@ -1198,6 +1198,22 @@ try {
   expect('and a third time, saying it is the last', stopAgain(), 2, "won't block on it again");
   expect('then lets the finish through rather than loop', stopAgain(), 0);
   expect('a new session counts from the start', stopAgain('s2'), 2, 'Commit your work');
+  const failing = JSON.parse(cli('stops', '--json', '--session', 's2').stdout);
+  expect(
+    'BAND-2 stops lists the finish check failing in a session, with whose and why',
+    truth(
+      failing.length === 1 &&
+        failing[0].agentType === 'platform-engineer' &&
+        failing[0].title.startsWith('Commit your work'),
+      JSON.stringify(failing),
+    ),
+    0,
+  );
+  expect(
+    'and none for a session whose finish went through',
+    truth(JSON.parse(cli('stops', '--json', '--session', 's1').stdout).length === 0),
+    0,
+  );
   rmSync(join(repo, 'runbooks/loop.md'));
 
   // --- verify: a branch's changes as a whole, for CI and review ---------------------------------

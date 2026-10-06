@@ -15,8 +15,10 @@ import { addedPackages, dependencyApproval, isDependencyFile } from '../hooks/li
 import {
   NOT_CODE_KIT,
   agentsAtWork,
+  bandLines,
   lanesPane,
   parseJson,
+  prefilledReason,
   projectState,
 } from '../hooks/mod/view.mjs';
 
@@ -419,4 +421,38 @@ test('the mod: PANE-2 a row per lane, with its story, branch and state, and PANE
     ],
     ['web-engineer'],
   );
+});
+
+test('the mod: BAND-2 and BAND-4, the band lines and their hotkeys, and ACT-1 the prefilled reason', () => {
+  const check = {
+    exists: true,
+    valid: true,
+    problems: [],
+    lanes: { web: { agent: 'web-engineer' } },
+  };
+  const status = {
+    problems: [],
+    stories: [{ id: 'ST-4', title: 'Form', lane: 'web', state: 'review', branch: 'web/st-4' }],
+  };
+  const request = { lane: 'web', names: ['dep-@scope+pkg'], what: 'npm install @scope/pkg' };
+  assert.equal(
+    prefilledReason(request),
+    'Approve @scope/pkg for the web lane: npm install @scope/pkg',
+  );
+  const quiet = projectState(check, { problems: [], stories: [] }, null, new Set());
+  assert.deepEqual(bandLines({ state: quiet, requests: { open: [] }, stops: [] }), []);
+  const lines = bandLines({
+    state: projectState(check, status, null, new Set()),
+    requests: { open: [request, request] },
+    stops: [{ title: 'Check tests failed' }],
+  });
+  assert.deepEqual(
+    lines.map((l) => l.text),
+    ['2 approvals waiting', 'ST-4 ready for review', 'Finish check failing: Check tests failed'],
+  );
+  assert.deepEqual(
+    lines.flatMap((l) => l.actions.map((a) => `${a.hotkey} ${a.id}`)),
+    ['1 approve', '2 review', '3 merge', '4 lanes'],
+  );
+  assert.equal(bandLines({ state: null, notice: 'Nothing was approved: x' })[0].kind, 'notice');
 });

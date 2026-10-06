@@ -18,10 +18,11 @@
 //   merge <branch> --delegated|--person [--into branch]  merge a branch that passes verify: the lead
 //                                    (approvals.delegate.merge) or the person (the code-kit pane)
 //   requests [--json]                 open approval requests and approvals in force
+//   stops [--session id] [--json]     finish checks that refused an agent's last stop, still failing
 //                         record approvals a person gave in chat (with approvals.lead on, the lead runs it)
 // --config <file> reads a draft (.claude/code-kit.draft.json) instead of .claude/code-kit.json.
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, posix, resolve } from 'node:path';
 import { BASELINE_FILE, loadBaseline } from '../hooks/lib/baseline.mjs';
@@ -71,6 +72,7 @@ const reason = option('--reason');
 const laneName = option('--lane');
 const intoName = option('--into');
 const via = option('--via');
+const sessionId = option('--session');
 const FLAGS = ['--write', '--no-checks', '--json', '--delegated', '--person'];
 const flag = (name) => args.includes(name);
 const writeBaseline = flag('--write');
@@ -372,7 +374,7 @@ function merge(branch) {
         '-m',
         `Merge ${branch} into ${into}`,
         '-m',
-        `Verified with code-kit verify (${changed.length} file(s)${lane ? `, held to the ${lane} lane` : ''}) and merged ${byPerson ? 'by the person' : 'by the lead within the delegated rules'}.`,
+        `Verified with code-kit verify (${changed.length} file(s)${lane ? `, held to the ${lane} lane` : ''}) and merged ${byPerson ? 'by the person, from the code-kit pane' : 'by the lead within the delegated rules'}.`,
         branch,
       );
     } catch (e) {
@@ -409,6 +411,33 @@ function requests() {
     out(
       `  ${a.name} for ${a.lane ? `the ${a.lane} lane` : 'any agent'}, ${a.minutesLeft} min left: ${a.reason}`,
     );
+}
+
+/** Finish checks still failing: the stop hook's last refusal for each session and agent. */
+function stops() {
+  load();
+  const dir = resolve('.claude/state/stop-blocks');
+  const found = [];
+  for (const name of existsSync(dir) ? readdirSync(dir) : []) {
+    try {
+      const b = JSON.parse(readFileSync(join(dir, name), 'utf8'));
+      if (sessionId && b.session !== sessionId) continue;
+      found.push({
+        session: b.session ?? null,
+        agent: b.agent ?? null,
+        agentType: b.agentType ?? null,
+        title: String(b.message ?? '').split('\n')[0],
+        count: b.count ?? 1,
+        at: b.at ?? null,
+      });
+    } catch {
+      // a file the hook is still writing, or not one of its own
+    }
+  }
+  if (flag('--json')) return out(JSON.stringify(found, null, 2));
+  if (!found.length) return out('No finish check is failing.');
+  for (const s of found)
+    out(`${s.agentType ?? 'the lead'}${s.session ? ` (session ${s.session})` : ''}: ${s.title}`);
 }
 
 function verify() {
@@ -641,6 +670,7 @@ const commands = {
   approve: () => (rest.length ? approve(rest) : usage()),
   merge: () => (rest.length === 1 ? merge(rest[0]) : usage()),
   requests,
+  stops,
   trace: () => (rest.length ? trace(rest) : usage()),
   adapters,
   next,
@@ -657,8 +687,9 @@ function usage() {
     'Usage: code-kit check | who <path>... | unowned | diff | baseline [--write] | graph [--depth N]\n' +
       '              | verify [--base ref] [--branch name] [--no-checks] | status [--base ref] [--json]\n' +
       '              | next [--base ref] [--json] | adapters | trace <path>... [--json]\n' +
-      '              | approve <name>... --reason "…" [--lane name]   [--config file]',
-    '              | merge <branch> --delegated|--person [--into branch] | requests [--json]',
+      '              | approve <name>... --reason "…" [--lane name]   [--config file]\n' +
+      '              | merge <branch> --delegated|--person [--into branch] | requests [--json]\n' +
+      '              | stops [--session id] [--json]',
   );
 }
 await (commands[command] ?? usage)();

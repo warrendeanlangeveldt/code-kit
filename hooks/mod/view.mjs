@@ -146,3 +146,150 @@ export function lanesPane(state, { Box, Text }) {
     ],
   });
 }
+
+// --- the band, and the person's acts -----------------------------------------------------------
+
+export const APPROVE_ID = 'code-kit-approve';
+export const RESULT_ID = 'code-kit-result';
+
+/** An approval name as a person reads it: a dependency approval by its package. */
+export function approvalLabel(name) {
+  return name.startsWith('dep-') ? name.slice(4).replaceAll('+', '/') : name;
+}
+
+/** The reason an Approve… confirmation starts with (ACT-1). */
+export function prefilledReason(request) {
+  return `Approve ${request.names.map(approvalLabel).join(', ')} for ${
+    request.lane ? `the ${request.lane} lane` : 'any agent'
+  }: ${request.what}`;
+}
+
+const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
+
+/**
+ * The band's lines (BAND-2): one per kind of thing waiting, each with its actions, and none when
+ * nothing waits. `reviewing` holds the stories the person has asked the lead to review (ACT-3);
+ * `notice` is why the person's last act failed, until they dismiss it.
+ */
+export function bandLines({ state, requests, stops, reviewing = new Set(), notice = null }) {
+  const lines = [];
+  if (notice)
+    lines.push({ kind: 'notice', text: notice, actions: [{ id: 'dismiss', label: 'Dismiss' }] });
+  if (!state || state.kind !== 'ok') return lines;
+  const open = requests?.open ?? [];
+  if (open.length)
+    lines.push({
+      kind: 'approvals',
+      text: `${plural(open.length, 'approval', 'approvals')} waiting`,
+      request: open[0],
+      actions: [{ id: 'approve', label: 'Approve…' }],
+    });
+  const inReview = state.lanes.filter((l) => l.state === 'in review').map((l) => l.story);
+  if (inReview.length) {
+    const [story] = inReview;
+    const ids = inReview.map((s) => s.id).join(', ');
+    lines.push(
+      reviewing.has(story.id)
+        ? { kind: 'review', text: `${story.id} being reviewed`, story, actions: [] }
+        : {
+            kind: 'review',
+            text: `${ids} ready for review`,
+            story,
+            actions: [
+              { id: 'review', label: 'Review' },
+              { id: 'merge', label: 'Merge' },
+            ],
+          },
+    );
+  }
+  if (stops?.length)
+    lines.push({
+      kind: 'finish',
+      text: `Finish check failing: ${stops[0].title}${stops.length > 1 ? ` (and ${stops.length - 1} more)` : ''}`,
+      actions: [{ id: 'lanes', label: 'Lanes' }],
+    });
+  // BAND-4: a digit for every action, in the order they're drawn.
+  let digit = 0;
+  for (const line of lines)
+    for (const action of line.actions) action.hotkey = digit < 9 ? String(++digit) : undefined;
+  return lines;
+}
+
+/** The band, drawn with the elements `$.ui.resolve(e)` returned; `onAction(id, line)` acts. */
+export function band(lines, { Box, Text, Button }, onAction) {
+  const COLOR = { notice: 'red', approvals: 'yellow', review: 'blue', finish: 'red' };
+  return Box({
+    flexDirection: 'column',
+    children: lines.map((line) =>
+      Box({
+        key: `band-${line.kind}`,
+        flexDirection: 'row',
+        columnGap: 2,
+        children: [
+          Text({ color: COLOR[line.kind], children: ['code-kit'] }),
+          Text({ children: [line.text] }),
+          ...line.actions.map((a) =>
+            Button({
+              key: `band-${a.id}`,
+              label: a.hotkey ? `${a.hotkey} ${a.label}` : a.label,
+              hotkey: a.hotkey,
+              onPress: () => onAction(a.id, line),
+            }),
+          ),
+        ],
+      }),
+    ),
+  });
+}
+
+/** The Approve… confirmation (ACT-1): what it grants, to whom, for how long, and the reason. */
+export function approvePane(
+  approving,
+  { Box, Text, Input, Button },
+  { onInput, onSubmit, onCancel },
+) {
+  const { request, reason, error } = approving;
+  return Box({
+    flexDirection: 'column',
+    rowGap: 1,
+    children: [
+      Text({ bold: true, children: [`Approve ${request.names.join(', ')}`] }),
+      Text({
+        children: [
+          `For ${request.lane ? `the ${request.lane} lane` : 'any agent'}, for 60 minutes. Asked for: ${request.what}`,
+        ],
+      }),
+      Input({
+        key: 'approve-reason',
+        label: 'Reason',
+        value: reason,
+        submitLabel: 'Approve',
+        autoFocus: true,
+        onInput,
+        onSubmit,
+      }),
+      ...(error ? [Text({ color: 'red', children: [error] })] : []),
+      Box({
+        flexDirection: 'row',
+        columnGap: 2,
+        children: [
+          Button({ key: 'approve-confirm', label: 'Approve', onPress: () => onSubmit(reason) }),
+          Button({ key: 'approve-cancel', label: 'Cancel', onPress: onCancel }),
+        ],
+      }),
+    ],
+  });
+}
+
+/** What a merge (or another act run through the CLI) reported. */
+export function resultPane(result, { Box, Text }) {
+  if (!result) return Text({ dimColor: true, children: ['Nothing to show.'] });
+  return Box({
+    flexDirection: 'column',
+    rowGap: 1,
+    children: [
+      Text({ bold: true, color: result.ok ? 'green' : 'red', children: [result.title] }),
+      Text({ children: [result.text.slice(-9000) || '(no output)'] }),
+    ],
+  });
+}
