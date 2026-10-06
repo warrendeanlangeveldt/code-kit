@@ -15,6 +15,7 @@ import {
 import { homedir, tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { refusalCard } from '../hooks/mod/view.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const hooks = join(here, '..', 'hooks');
@@ -1044,6 +1045,59 @@ try {
   expect('with specs they are', write('workers/jobs/y.ts', 'backend-engineer'), 2, 'spec-check');
   git('checkout', '-q', 'lane/work');
 
+  // --- the mod's refusal cards, read from what the hooks really print (CARD-1) -------------------
+  const cardOf = (res) => refusalCard(res.stderr);
+  const owned = cardOf(write('workers/jobs/z.ts', 'web-engineer'));
+  expect(
+    'CARD-1 a write refused for another lane reads as a card: the file, its owner, what to do',
+    truth(
+      owned?.title === 'Write refused: workers/jobs/z.ts' &&
+        owned.why.includes('backend lane') &&
+        owned.todo.startsWith('Write a short change request for the lead') &&
+        owned.request === null,
+      JSON.stringify(owned),
+    ),
+    0,
+  );
+  const guarded = cardOf(write('design/approved-screens.json', 'web-engineer'));
+  expect(
+    'a protected path names the approval that would allow it, and for which lane',
+    truth(
+      guarded?.title === 'Approval needed: design/approved-screens.json' &&
+        guarded.request?.names.join() === 'design' &&
+        guarded.request.lane === 'web',
+      JSON.stringify(guarded),
+    ),
+    0,
+  );
+  const installing = cardOf(bash('npm install dayjs', 'web-engineer'));
+  expect(
+    'a refused install names the package, the dependency approval and the command',
+    truth(
+      installing?.title === 'Install refused: dayjs' &&
+        installing.request?.names.join() === 'dep-dayjs' &&
+        installing.request.what === 'npm install dayjs',
+      JSON.stringify(installing),
+    ),
+    0,
+  );
+  const forced = cardOf(bash('git push --force'));
+  expect(
+    'a refused command shows the rule and the command, with nothing to approve',
+    truth(
+      forced?.title === 'Command refused' &&
+        forced.command === 'git push --force' &&
+        forced.request === null,
+      JSON.stringify(forced),
+    ),
+    0,
+  );
+  expect(
+    "text that isn't a code-kit refusal is left to Claude Code",
+    truth(refusalCard('Context Graph: read src/b.ts first.') === null),
+    0,
+  );
+
   // --- the CLI -----------------------------------------------------------------------------------
   const check = cli('check');
   expect(
@@ -1198,6 +1252,22 @@ try {
   expect('and a third time, saying it is the last', stopAgain(), 2, "won't block on it again");
   expect('then lets the finish through rather than loop', stopAgain(), 0);
   expect('a new session counts from the start', stopAgain('s2'), 2, 'Commit your work');
+  const failing = JSON.parse(cli('stops', '--json', '--session', 's2').stdout);
+  expect(
+    'BAND-2 stops lists the finish check failing in a session, with whose and why',
+    truth(
+      failing.length === 1 &&
+        failing[0].agentType === 'platform-engineer' &&
+        failing[0].title.startsWith('Commit your work'),
+      JSON.stringify(failing),
+    ),
+    0,
+  );
+  expect(
+    'and none for a session whose finish went through',
+    truth(JSON.parse(cli('stops', '--json', '--session', 's1').stdout).length === 0),
+    0,
+  );
   rmSync(join(repo, 'runbooks/loop.md'));
 
   // --- verify: a branch's changes as a whole, for CI and review ---------------------------------

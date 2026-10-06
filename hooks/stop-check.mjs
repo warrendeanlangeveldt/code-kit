@@ -39,7 +39,18 @@ const blockCounted = (message) => {
   const count = last.message === message ? last.count + 1 : 1;
   if (count > MAX_REPEATS) passed();
   mkdirSync(join(memory, '..'), { recursive: true });
-  writeFileSync(memory, JSON.stringify({ message, count }));
+  // Also what `code-kit stops` shows the person: whose finish was refused, when, and why.
+  writeFileSync(
+    memory,
+    JSON.stringify({
+      message,
+      count,
+      session: input.session_id ?? null,
+      agent: input.agent_id ?? null,
+      agentType: input.agent_type ?? null,
+      at: new Date().toISOString(),
+    }),
+  );
   const final =
     count === MAX_REPEATS
       ? `\n\n(code-kit has reported this ${count} times without progress; it won't block on it again. Tell the lead what is still failing.)`

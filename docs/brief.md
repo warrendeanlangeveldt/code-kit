@@ -47,7 +47,7 @@ How anyone will know: a full approval that used to take a typed command takes a 
 | Lanes pane              | `specs/01-lanes-pane.md`           | Lanes, agents, stories, branches, states, ready next; opened by `/lanes` or the band      | Story detail views |
 | Waiting band            | `specs/02-waiting-band.md`         | Requests to approve, branches to review, failing finish checks; shown only when non-empty |                    |
 | Approve, review, merge  | `specs/03-approve-review-merge.md` | Confirmed approvals with an editable reason; Review asks the lead; Merge after verify     |                    |
-| Refusal cards, commands | `specs/04-cards-and-commands.md`   | Refusals drawn as cards; `/lanes`, `/approvals`, `/verify`                                |                    |
+| Refusal cards, commands | `specs/04-cards-and-commands.md`   | Refusals drawn as cards; `/lanes`, `/approvals`, `/verify-branch`                         |                    |
 
 **Quality targets:** the band and pane refresh within 2 seconds of a change; nothing in them makes a model call; keyboard-usable, with hotkeys on buttons; readable in light and dark terminals.
 

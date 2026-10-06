@@ -12,7 +12,16 @@ import { importsOf, layerProblems } from '../hooks/lib/layers.mjs';
 import { diffConfigs, ownershipMoves } from '../hooks/lib/diff.mjs';
 import { newProblems } from '../hooks/lib/baseline.mjs';
 import { addedPackages, dependencyApproval, isDependencyFile } from '../hooks/lib/dependencies.mjs';
-import { NOT_CODE_KIT, lanesPane, parseJson, projectState } from '../hooks/mod/view.mjs';
+import {
+  NOT_CODE_KIT,
+  agentsAtWork,
+  bandLines,
+  lanesPane,
+  parseJson,
+  commandItself,
+  prefilledReason,
+  projectState,
+} from '../hooks/mod/view.mjs';
 
 const fixture = JSON.parse(
   readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'fixture.json'), 'utf8'),
@@ -345,4 +354,121 @@ test("the mod: CARD-4 and PANE-5, what the Lanes pane shows for the project's st
   assert.ok(!shown.some((s) => s.includes('gap')));
   const gaps = texts(lanesPane(projectState(check, { problems: ['ST-1 has no **Lane:**'] }), el));
   assert.equal(gaps[0], 'The plan has 1 gap(s): run code-kit status.');
+});
+
+test('the mod: PANE-2 a row per lane, with its story, branch and state, and PANE-3 what is ready', () => {
+  const check = {
+    exists: true,
+    valid: true,
+    problems: [],
+    lanes: {
+      web: { agent: 'web-engineer', paths: [] },
+      api: { agent: 'api-engineer', paths: [] },
+      core: { agent: 'core-engineer', paths: [] },
+    },
+  };
+  const story = (id, lane, state, extra = {}) => ({
+    id,
+    title: `Story ${id}`,
+    lane,
+    state,
+    branch: `${lane}/${id.toLowerCase()}`,
+    waitingOn: [],
+    ...extra,
+  });
+  const status = {
+    problems: [],
+    stories: [
+      story('ST-4', 'web', 'review'),
+      story('ST-5', 'core', 'blocked', { waitingOn: ['ST-4'] }),
+      story('ST-6', 'lead', 'ready'),
+      story('ST-7', 'lead', 'ready'),
+      story('ST-9', 'core', 'ready'),
+    ],
+  };
+  const next = { step: 'dispatch', args: 'ST-9', then: [{ step: 'lead', args: 'ST-6 ST-7' }] };
+  const row = (s, name) => s.lanes.find((l) => l.name === name);
+  // The web agent is still at work, so its commits are a build, not a finished branch.
+  const working = projectState(check, status, next, new Set(['web-engineer']));
+  assert.deepEqual(
+    (({ agent, branch, state, active }) => ({ agent, branch, state, active }))(row(working, 'web')),
+    { agent: 'web-engineer', branch: 'web/st-4', state: 'building', active: true },
+  );
+  assert.equal(row(working, 'web').story.id, 'ST-4');
+  assert.equal(row(working, 'api').state, 'idle');
+  assert.equal(row(working, 'core').state, 'blocked');
+  // When it finishes, the same branch is waiting for review, and the active mark goes.
+  const finished = projectState(check, status, next, new Set());
+  assert.equal(row(finished, 'web').state, 'in review');
+  assert.equal(row(finished, 'web').active, false);
+  assert.deepEqual(
+    finished.ready.map((r) => [r.id, r.lane]),
+    [
+      ['ST-9', 'core'],
+      ['ST-6', 'lead'],
+      ['ST-7', 'lead'],
+    ],
+  );
+  const shown = texts(lanesPane(finished, el));
+  assert.ok(shown.some((s) => s.includes('ST-4 Story ST-4 · web/st-4')));
+  assert.ok(shown.some((s) => s.includes('waits on ST-4')));
+  assert.equal(shown.filter((s) => s === "the lead's own").length, 2);
+  assert.deepEqual(
+    [
+      ...agentsAtWork([
+        { type: 'web-engineer', status: 'running' },
+        { type: 'x', status: 'completed' },
+      ]),
+    ],
+    ['web-engineer'],
+  );
+});
+
+test('the mod: BAND-2 and BAND-4, the band lines and their hotkeys, and ACT-1 the prefilled reason', () => {
+  const check = {
+    exists: true,
+    valid: true,
+    problems: [],
+    lanes: { web: { agent: 'web-engineer' } },
+  };
+  const status = {
+    problems: [],
+    stories: [{ id: 'ST-4', title: 'Form', lane: 'web', state: 'review', branch: 'web/st-4' }],
+  };
+  const request = { lane: 'web', names: ['dep-@scope+pkg'], what: 'npm install @scope/pkg' };
+  assert.equal(
+    prefilledReason(request),
+    'Approve @scope/pkg for the web lane: npm install @scope/pkg',
+  );
+  const quiet = projectState(check, { problems: [], stories: [] }, null, new Set());
+  assert.deepEqual(bandLines({ state: quiet, requests: { open: [] }, stops: [] }), []);
+  const lines = bandLines({
+    state: projectState(check, status, null, new Set()),
+    requests: { open: [request, request] },
+    stops: [{ title: 'Check tests failed' }],
+  });
+  assert.deepEqual(
+    lines.map((l) => l.text),
+    ['2 approvals waiting', 'ST-4 ready for review', 'Finish check failing: Check tests failed'],
+  );
+  assert.deepEqual(
+    lines.flatMap((l) => l.actions.map((a) => `${a.hotkey} ${a.id}`)),
+    ['1 approve', '2 review', '3 merge', '4 lanes'],
+  );
+  assert.equal(bandLines({ state: null, notice: 'Nothing was approved: x' })[0].kind, 'notice');
+});
+
+test("the mod: ACT-1 a prefilled reason names the command itself, not the agent's pipes", () => {
+  assert.equal(commandItself('npm install dayjs 2>&1 | tail -20'), 'npm install dayjs');
+  assert.equal(commandItself('pnpm add zod && pnpm test'), 'pnpm add zod');
+  assert.equal(commandItself('pip install requests > /dev/null'), 'pip install requests');
+  assert.equal(commandItself('npm install dayjs'), 'npm install dayjs');
+  assert.equal(
+    prefilledReason({
+      lane: null,
+      names: ['dep-dayjs'],
+      what: 'npm install dayjs 2>&1 | tail -20',
+    }),
+    'Approve dayjs for any agent: npm install dayjs',
+  );
 });

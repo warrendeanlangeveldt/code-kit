@@ -4,11 +4,11 @@ This covers what the mod adds. The rest of code-kit (hooks, the CLI, skills, tem
 
 ## Components
 
-| Component      | Where                    | What it does                                                                                                                         |
-| -------------- | ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------ |
-| Settings hooks | `hooks/*.mjs` (as today) | Enforce the rules. They also record approval requests (BAND-1).                                                                      |
-| The mod        | `hooks/mod/` (new)       | Draws the band, the Lanes pane and refusal cards; registers `/lanes`, `/approvals`, `/verify`; turns presses into the person's acts. |
-| The CLI        | `bin/code-kit.mjs`       | The mod's only source of facts and its only way to act. New: `requests`, `verify --json`, `approve --via pane`, `merge --person`.    |
+| Component      | Where                    | What it does                                                                                                                                |
+| -------------- | ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| Settings hooks | `hooks/*.mjs` (as today) | Enforce the rules. They also record approval requests (BAND-1).                                                                             |
+| The mod        | `hooks/mod/` (new)       | Draws the band, the Lanes pane and refusal cards; registers `/lanes`, `/approvals`, `/verify-branch`; turns presses into the person's acts. |
+| The CLI        | `bin/code-kit.mjs`       | The mod's only source of facts and its only way to act. New: `requests`, `verify --json`, `approve --via pane`, `merge --person`.           |
 
 `hooks/hooks.json` keeps its settings hooks under `hooks` and adds `"modules": ["./mod/register.mjs"]`. Claude Code older than 2.1.287 doesn't load the module and runs the hooks as before.
 

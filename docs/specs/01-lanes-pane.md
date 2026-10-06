@@ -38,8 +38,8 @@
 
 The pane shows one row per lane in the config, plus `lead`, each with its agent, the story it's on and its title, the branch, and the state:
 
-- `building`: the story's branch has commits beyond its base and isn't done;
-- `in review`: `status` puts it in review;
+- `building`: the story has a branch and isn't done, and, once the branch has commits, the lane's agent is still at work in this session;
+- `in review`: `status` puts it in review (commits beyond its base) and the lane's agent is no longer at work. `status` alone can't tell a finished branch from one still being built, so the agent decides;
 - `blocked`: its next story waits on another;
 - `idle`: none of these.
 

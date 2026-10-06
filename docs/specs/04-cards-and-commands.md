@@ -23,13 +23,13 @@ Where Claude Code draws a tool result that a code-kit hook refused, the mod draw
 
 - Given one open request and one approval in force, when the person types `/approvals`, then both appear, the approval with its minutes left.
 
-### CARD-3 `/verify`
+### CARD-3 `/verify-branch`
 
-`/verify` runs `code-kit verify` on the current branch and prints its result in the transcript, without a model call.
+`/verify-branch` runs `code-kit verify` on the current branch and prints its result in the transcript, without a model call. It isn't `/verify`: that name is Claude Code's own, and a mod can't register a command whose name is taken.
 
 **Acceptance**
 
-- Given a branch with a layer violation, when the person types `/verify`, then the transcript shows the violation and "1 problem(s)".
+- Given a branch with a layer violation, when the person types `/verify-branch`, then the transcript shows the violation and "1 problem(s)".
 
 ### CARD-4 Not in a code-kit project
 
