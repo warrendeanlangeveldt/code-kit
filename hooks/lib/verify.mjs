@@ -81,6 +81,22 @@ function logEntries(root, base) {
 }
 
 /**
+ * Whether every commit since `from` that changed `file` carries the trailer a protected entry names as
+ * a person's signature (`signedBy`, a pattern for one line of the message). A person's own commit from
+ * their terminal never passes through the hooks, so for such files the signature stands in for the log.
+ */
+function signedByPerson(root, from, file, signedBy) {
+  if (!signedBy) return false;
+  const out = git(root, 'log', '--format=%B%x1e', `${from}..HEAD`, '--', file);
+  const messages = out
+    .split('\x1e')
+    .map((m) => m.trim())
+    .filter(Boolean);
+  const line = new RegExp(signedBy, 'm');
+  return messages.length > 0 && messages.every((m) => line.test(m));
+}
+
+/**
  * Every problem with the branch, grouped: { ownership, protected, layers, baseline, design, checks }.
  * `lane` holds the branch to that lane's paths; `checks: false` leaves the project's checks to CI's
  * own steps.
@@ -100,7 +116,8 @@ export function verifyBranch({ root, base, config, lane = null, checks = true })
       found.ownership.push(`${f} may hold secrets; secrets never go in the repository.`);
     if (f === APPROVAL_LOG) continue;
     const guarded = protectedEntry(f, config);
-    if (guarded && !logged.has(f))
+    const signed = guarded && !logged.has(f) && signedByPerson(root, from, f, guarded.signedBy);
+    if (guarded && !logged.has(f) && !signed)
       found.protected.push(
         `${f} is ${guarded.why}, but no approval-log entry records this change. Protected files are committed through Claude Code with code-kit, which logs them.`,
       );
@@ -114,7 +131,7 @@ export function verifyBranch({ root, base, config, lane = null, checks = true })
         isDependencyFile(f) &&
         entry?.approval === 'dependency' &&
         [null, lane].includes(laneOf(f, config));
-      const approved = (guarded && entry?.approval === guarded.approval) || dependency;
+      const approved = (guarded && entry?.approval === guarded.approval) || signed || dependency;
       if (!own && !approved)
         found.ownership.push(
           `${f}: the ${lane} lane doesn't own it (owner: ${ownerOf(f, config) ?? 'nobody'}).`,

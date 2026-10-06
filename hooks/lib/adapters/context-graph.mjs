@@ -22,7 +22,13 @@ export default {
     lead: ['.ctx/**'],
     anyActor: ['.ctx/decisions.ctx', '.ctx/cards.ctx'],
     protected: [
-      { glob: '.ctx/graph.ctx', approval: 'ctx', why: "Context Graph's rules and concepts" },
+      {
+        glob: '.ctx/graph.ctx',
+        approval: 'ctx',
+        why: "Context Graph's rules and concepts",
+        // A person's ratification (`ctx ratify --commit`, `ctx drop --commit`) is signed, not logged.
+        signedBy: '^Ctx-Ratified-By:(?![^\\n]*\\(delegated\\))\\s*\\S',
+      },
       { glob: '.ctx/config.toml', approval: 'ctx', why: "Context Graph's settings" },
     ],
   },
