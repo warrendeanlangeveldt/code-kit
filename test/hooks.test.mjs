@@ -521,6 +521,11 @@ try {
   );
   const depEntries = logLines();
   expect(
+    'the commit that adds the package uses its approval up',
+    truth(!existsSync(join(repo, '.claude/approvals/web/dep-lodash'))),
+    0,
+  );
+  expect(
     'for the manifest outside its paths only, with the package and reason',
     truth(
       depEntries.length === 1 &&
@@ -539,7 +544,13 @@ try {
   rmSync(join(repo, 'apps/field/package.json'));
   approveFor('web', 'dep-lodash', 61);
   expect(
-    'once it expires, the manifest change is an ownership problem again',
+    'a dependency approval still stands an hour later, when the story resumes',
+    audit('web-engineer'),
+    0,
+  );
+  approveFor('web', 'dep-lodash', 7 * 24 * 60 + 1);
+  expect(
+    'after a week it lapses, and the manifest change is an ownership problem again',
     audit('web-engineer'),
     2,
   );

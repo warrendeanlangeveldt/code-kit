@@ -38,6 +38,7 @@ import { buildStatus } from '../hooks/lib/plan.mjs';
 import { recordSentBack } from '../hooks/lib/reviews.mjs';
 import {
   APPROVAL_MINUTES,
+  approvalLifetime,
   currentBranch,
   PANE,
   approvalsInForce,
@@ -704,7 +705,7 @@ async function approve(given) {
   const whom = laneName ? `the ${laneName} lane` : 'any agent';
   const renamed = given.flatMap((g, i) => (g === names[i] ? [] : [`${g} → ${names[i]}`]));
   out(
-    `Approved ${names.join(', ')} for ${whom}, for ${APPROVAL_MINUTES} minutes${delegated ? ', within the delegated rules' : ''}: ${reason.trim()}${renamed.length ? `\n(${renamed.join(', ')})` : ''}`,
+    `Approved ${names.join(', ')} for ${whom}, ${approvalLifetime(names)}${delegated ? ', within the delegated rules' : ''}: ${reason.trim()}${renamed.length ? `\n(${renamed.join(', ')})` : ''}`,
   );
 }
 

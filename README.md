@@ -377,7 +377,7 @@ echo "Date formatting for ST-12" > .claude/approvals/web/dep-dayjs             #
 - **Scope:** an approval in a lane's folder serves that lane only; one directly in `.claude/approvals/` serves every agent. The refusal a lane gets names its own folder.
 - **Dependencies:** each new package needs its own approval, `dep-<package>` (`/` becomes `+`, so `@scope/pkg` is `dep-@scope+pkg`). It allows the install, and the changes the install makes to manifests and lockfiles that no other lane owns. When the lane commits a manifest or lockfile outside its own paths, the commit hook logs it as a `dependency` approval, with the packages and reasons, and `code-kit verify` accepts it.
 - **Worktrees:** approvals live in the main checkout, so a lane working in its own worktree sees the ones given at the lead's terminal.
-- **Lifetime:** 60 minutes. Agents can't create, edit or even mention approvals or the log.
+- **Lifetime:** 60 minutes; a dependency approval (`dep-…`) lasts until the lane commits the install it allows, at most 7 days, since a story may resume hours later. Agents can't create, edit or even mention approvals or the log.
 
 ### From chat
 

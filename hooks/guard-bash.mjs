@@ -5,10 +5,10 @@
 // approval log on commit and scans commits for secrets. Shell writes are also checked afterwards by
 // lane-audit.mjs. With `approvals.lead` on, the lead may act for the person on what they say in chat:
 // record their approvals (`code-kit approve`) and run blocked commands marked `person`.
-import { appendFileSync } from 'node:fs';
+import { appendFileSync, existsSync, readFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { join, resolve } from 'node:path';
-import { addedPackages, dependencyApproval } from './lib/dependencies.mjs';
+import { addedPackages, dependencyApproval, isDependencyFile } from './lib/dependencies.mjs';
 import { CODE_KIT, GIT, codeOf, runs } from './lib/shell.mjs';
 import { block, start } from './lib/hook.mjs';
 import {
@@ -20,6 +20,7 @@ import {
   currentBranch,
   dependencyChange,
   dependencyGrants,
+  useApproval,
   owns,
   protectedEntry,
   recordRequest,
@@ -313,6 +314,24 @@ function recordApprovals() {
         reason: 'Lead change; reviewed in the pull request',
         grantedAt: null,
       });
+  }
+  // A dependency approval is used up by the commit that adds its package to a manifest or lockfile.
+  const manifests = files.filter((f) => isDependencyFile(f));
+  if (manifests.length && actor.kind !== 'readonly') {
+    // The lines each manifest gains on HEAD, read from the working tree: this hook runs before
+    // `git add … && git commit` has staged anything, and a new manifest isn't tracked yet.
+    const added = manifests
+      .flatMap((f) => {
+        const before = new Set(git('show', `HEAD:${f}`).split('\n'));
+        const now = existsSync(join(root, f)) ? readFileSync(join(root, f), 'utf8') : '';
+        return now.split('\n').filter((l) => !before.has(l));
+      })
+      .join('\n');
+    for (const g of dependencyGrants(root, actor)) {
+      const pkg = g.name.slice('dep-'.length).replaceAll('+', '/');
+      const quoted = pkg.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      if (new RegExp(`["'\\s/]${quoted}["'@=:\\s]`).test(added)) useApproval(root, g.name, actor);
+    }
   }
   if (lines.length === 0) return;
   appendFileSync(join(root, APPROVAL_LOG), `${lines.join('\n')}\n`);

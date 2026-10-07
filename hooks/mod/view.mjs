@@ -272,7 +272,7 @@ export function approvePane(
       Text({ bold: true, children: [`Approve ${request.names.join(', ')}`] }),
       Text({
         children: [
-          `For ${request.lane ? `the ${request.lane} lane` : 'any agent'}, for 60 minutes. Asked for: ${request.what}`,
+          `For ${request.lane ? `the ${request.lane} lane` : 'any agent'}, ${request.names.every((n) => n.startsWith('dep-')) ? 'until the install is committed (at most 7 days)' : 'for 60 minutes'}. Asked for: ${request.what}`,
         ],
       }),
       Input({
@@ -357,7 +357,7 @@ export function refusalCard(raw) {
       kind: 'dependency',
       title: `Install refused: ${m[1]}`,
       why: "A new dependency needs a person's approval.",
-      todo: 'A person approves it, here or with the `!` command, for 60 minutes.',
+      todo: 'A person approves it, here or with the `!` command, until the install is committed (at most 7 days).',
       request: request(command ?? `install ${m[1]}`),
       raw: text,
     };

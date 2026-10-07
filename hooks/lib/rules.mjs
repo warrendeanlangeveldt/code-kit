@@ -20,12 +20,13 @@ import {
   readFileSync,
   readdirSync,
   realpathSync,
+  rmSync,
   statSync,
   writeFileSync,
 } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { homedir } from 'node:os';
-import { dirname, join, relative, resolve } from 'node:path';
+import { basename, dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DEPENDENCY_APPROVAL, isDependencyFile } from './dependencies.mjs';
 import { globToRegExp, matchesAny } from './glob.mjs';
@@ -33,6 +34,23 @@ import { globToRegExp, matchesAny } from './glob.mjs';
 export const APPROVAL_LOG = '.claude/approval-log.jsonl';
 export const APPROVALS_DIR = '.claude/approvals';
 export const APPROVAL_MINUTES = 60;
+// A dependency approval lasts until the lane commits the install it allows (the story may resume
+// hours later), and at most a week, so a forgotten one doesn't linger.
+export const DEPENDENCY_APPROVAL_DAYS = 7;
+
+/** How long an approval named `name` lasts, in minutes. */
+export const approvalMinutes = (name) =>
+  String(name).startsWith(DEPENDENCY_APPROVAL)
+    ? DEPENDENCY_APPROVAL_DAYS * 24 * 60
+    : APPROVAL_MINUTES;
+
+/** How long approvals for `names` last, in words. */
+export function approvalLifetime(names) {
+  const list = [names].flat();
+  return list.every((n) => String(n).startsWith(DEPENDENCY_APPROVAL))
+    ? `until the install is committed, at most ${DEPENDENCY_APPROVAL_DAYS} days`
+    : `for ${APPROVAL_MINUTES} minutes`;
+}
 // Marks a worktree as a lane's, for a person running that lane; the lead creates it, and it is never work.
 export const LANE_FILE = '.lane';
 const NEVER_WRITABLE = [`${APPROVALS_DIR}/**`, APPROVAL_LOG];
@@ -80,7 +98,7 @@ export function approvalHowTo(names, actor, root, allows = 'these edits', config
     : '';
   return (
     `${lines.join('\n')}\n` +
-    `(a person runs it; the reason is recorded in ${APPROVAL_LOG}, and it allows ${allows} for ${whom}, for ${APPROVAL_MINUTES} minutes)${relay}${delegated}`
+    `(a person runs it; the reason is recorded in ${APPROVAL_LOG}, and it allows ${allows} for ${whom}, ${approvalLifetime(names)})${relay}${delegated}`
   );
 }
 
@@ -211,7 +229,7 @@ export function owns(actor, rel, config) {
 function inForce(file) {
   if (!existsSync(file) || !statSync(file).isFile()) return null;
   const { mtimeMs } = statSync(file);
-  if (Date.now() - mtimeMs >= APPROVAL_MINUTES * 60_000) return null;
+  if (Date.now() - mtimeMs >= approvalMinutes(basename(file)) * 60_000) return null;
   const reason = readFileSync(file, 'utf8').trim();
   return reason ? { reason, grantedAt: new Date(mtimeMs).toISOString() } : null;
 }
@@ -221,6 +239,16 @@ export function approval(root, name, actor) {
   const dir = approvalsDir(root);
   const lane = actor?.kind === 'lane' ? inForce(join(dir, actor.lane, name)) : null;
   return lane ?? inForce(join(dir, name));
+}
+
+/** Uses up the approval in force for `name` and `actor`: a dependency approval, once its install is committed. */
+export function useApproval(root, name, actor) {
+  const dir = approvalsDir(root);
+  for (const file of [
+    ...(actor?.kind === 'lane' ? [join(dir, actor.lane, name)] : []),
+    join(dir, name),
+  ])
+    if (inForce(file)) return rmSync(file, { force: true });
 }
 
 const requestsFile = (root) => join(projectWorktrees(root)[0] ?? root, REQUESTS_FILE);
@@ -306,7 +334,7 @@ export function approvalsInForce(root, now = Date.now()) {
       }
       const a = inForce(file);
       if (!a) continue;
-      const left = APPROVAL_MINUTES - (now - Date.parse(a.grantedAt)) / 60_000;
+      const left = approvalMinutes(name) - (now - Date.parse(a.grantedAt)) / 60_000;
       found.push({
         name,
         ...(lane ? { lane } : {}),
