@@ -19,6 +19,7 @@
 //                                    (approvals.delegate.merge) or the person (the code-kit pane)
 //   requests [--json]                 open approval requests and approvals in force
 //   stops [--session id] [--json]     finish checks that refused an agent's last stop, still failing
+//   sent-back <branch> [--reason …]   records that a review sent the branch back at its current commit
 //                         record approvals a person gave in chat (with approvals.lead on, the lead runs it)
 // --config <file> reads a draft (.claude/code-kit.draft.json) instead of .claude/code-kit.json.
 import { execFileSync } from 'node:child_process';
@@ -34,6 +35,7 @@ import { ADAPTERS, activeAdapters } from '../hooks/lib/adapters/index.mjs';
 import { nextStep } from '../hooks/lib/next.mjs';
 import { traceFile } from '../hooks/lib/trace.mjs';
 import { buildStatus } from '../hooks/lib/plan.mjs';
+import { recordSentBack } from '../hooks/lib/reviews.mjs';
 import {
   APPROVAL_MINUTES,
   currentBranch,
@@ -413,6 +415,24 @@ function requests() {
     );
 }
 
+/** Records the review's send-back of `branch` at its current commit (lib/reviews.mjs). */
+function sentBackCommand(branch) {
+  load();
+  let sha;
+  try {
+    sha = execFileSync('git', ['rev-parse', '--verify', `${branch}^{commit}`], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+  } catch {
+    die(`No branch ${branch} here.`);
+  }
+  recordSentBack(resolve('.'), branch, sha, reason);
+  out(
+    `Recorded: ${branch} was sent back at ${sha.slice(0, 7)}. status shows its story as sent back until the branch moves on.`,
+  );
+}
+
 /** Finish checks still failing: the stop hook's last refusal for each session and agent. */
 function stops() {
   load();
@@ -671,6 +691,7 @@ const commands = {
   merge: () => (rest.length === 1 ? merge(rest[0]) : usage()),
   requests,
   stops,
+  'sent-back': () => (rest.length === 1 ? sentBackCommand(rest[0]) : usage()),
   trace: () => (rest.length ? trace(rest) : usage()),
   adapters,
   next,
@@ -689,7 +710,7 @@ function usage() {
       '              | next [--base ref] [--json] | adapters | trace <path>... [--json]\n' +
       '              | approve <name>... --reason "…" [--lane name]   [--config file]\n' +
       '              | merge <branch> --delegated|--person [--into branch] | requests [--json]\n' +
-      '              | stops [--session id] [--json]',
+      '              | stops [--session id] [--json] | sent-back <branch> [--reason "…"]',
   );
 }
 await (commands[command] ?? usage)();

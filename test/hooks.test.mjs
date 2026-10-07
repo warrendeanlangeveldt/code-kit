@@ -1866,6 +1866,50 @@ try {
   vCommit('ST-2');
   v.git('checkout', '-q', 'main');
   nextIs('finished stories go to review', v.dir, 'review', 'ST-2');
+  // A review that sends the branch back: the same commits aren't finished work to review again.
+  const sent = vCli('sent-back', 'web/st-2', '--reason', 'cancel needs its test');
+  expect(
+    'sent-back records the commit a review sent back',
+    truth(sent.status === 0, sent.stderr),
+    0,
+  );
+  const backState = JSON.parse(vCli('status', '--json').stdout).stories.find(
+    (s) => s.id === 'ST-2',
+  );
+  expect(
+    'status reads a sent-back branch as sent back',
+    truth(backState.state === 'sent back', JSON.stringify(backState)),
+    0,
+  );
+  nextIs("next proposes the lane's fix, not another review", v.dir, 'dispatch', 'ST-2');
+  v.git('checkout', '-q', 'web/st-2');
+  vPut('apps/office/lib/cancel.test.ts', "test('BOOK-2 cancel', () => {});\n");
+  vCommit('ST-2 fix');
+  v.git('checkout', '-q', 'main');
+  nextIs('once the lane commits its fix, the branch goes to review again', v.dir, 'review', 'ST-2');
+  // A story with commits whose dependency isn't done is blocked on it, not finished.
+  const planNow = readFileSync(join(v.dir, 'docs/spec/plan.md'), 'utf8');
+  vPut(
+    'docs/spec/plan.md',
+    planNow.replace(/(### ST-1 [\s\S]*?\*\*Status:\*\* )[a-z ]+/, '$1in progress'),
+  );
+  const blockedNow = JSON.parse(vCli('status', '--json').stdout).stories.find(
+    (s) => s.id === 'ST-2',
+  );
+  expect(
+    'a story whose dependency is not done is blocked on it, even with commits on its branch',
+    truth(
+      blockedNow.state === 'blocked' && blockedNow.waitingOn.join() === 'ST-1',
+      JSON.stringify(blockedNow),
+    ),
+    0,
+  );
+  expect(
+    'and next does not propose reviewing it',
+    truth(!nextIn(v.dir).args.split(' ').includes('ST-2'), JSON.stringify(nextIn(v.dir))),
+    0,
+  );
+  vPut('docs/spec/plan.md', planNow);
   const donePlan = plan('done')
     .replace('**Depends on:** ST-1\n**Status:** todo', '**Depends on:** ST-1\n**Status:** done')
     .replace('### ST-3 Stray\n\n**Lane:** nope\n**Requirements:** BOOK-9\n', '');

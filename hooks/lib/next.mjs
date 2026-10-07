@@ -150,7 +150,9 @@ export function nextStep(root, base) {
     );
 
   const ids = (state) => status.stories.filter((s) => s.state === state).map((s) => s.id);
-  const [review, building, blocked] = ['review', 'in progress', 'blocked'].map(ids);
+  const [review, building, blocked, fixes] = ['review', 'in progress', 'blocked', 'sent back'].map(
+    ids,
+  );
   // A ready story with a gap (unknown lane, a requirement no spec defines) waits for the plan's fix.
   const defined = new Set(status.requirements.map((r) => r.id));
   const buildable = (s) =>
@@ -167,13 +169,22 @@ export function nextStep(root, base) {
       `${unbuildable.join(', ')} can't be dispatched until the plan's gaps are fixed.`,
     );
   const then = [];
-  if (review.length && ready.length) then.push({ step: 'dispatch', args: ready.join(' ') });
+  // A sent-back story goes back to its lane with the review's findings, before new work starts.
+  const toDispatch = [...fixes, ...ready];
+  if (review.length && toDispatch.length)
+    then.push({ step: 'dispatch', args: toDispatch.join(' ') });
   if (forLead.length) then.push({ step: 'lead', args: forLead.join(' ') });
   if (review.length)
     return result('review', `${review.join(', ')} finished and wait for review.`, {
       args: review.join(' '),
       then,
     });
+  if (fixes.length)
+    return result(
+      'dispatch',
+      `${fixes.join(', ')} ${fixes.length === 1 ? 'was' : 'were'} sent back and ${fixes.length === 1 ? 'waits' : 'wait'} for the lane's fix: dispatch ${fixes.length === 1 ? 'it' : 'each'} again with the review's findings${ready.length ? `, then ${ready.join(', ')}` : ''}.`,
+      { args: toDispatch.join(' '), then },
+    );
   if (ready.length)
     return result('dispatch', `${ready.join(', ')} can start: their dependencies are done.`, {
       args: ready.join(' '),

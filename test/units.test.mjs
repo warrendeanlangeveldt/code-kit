@@ -489,3 +489,28 @@ test('shell: the simple commands a command runs, apart from the text it carries'
   assert.equal(runs('git commit -m "--no-verify"', /--no-verify/, { quoted: false }), false);
   assert.equal(runs('git commit --no-verify', /--no-verify/, { quoted: false }), true);
 });
+
+test("the mod: a sent-back story's lane reads as sent back, not idle", () => {
+  const check = {
+    exists: true,
+    valid: true,
+    problems: [],
+    lanes: { web: { agent: 'web-engineer' } },
+  };
+  const status = {
+    problems: [],
+    stories: [
+      {
+        id: 'ST-2',
+        title: 'Cancel',
+        lane: 'web',
+        state: 'sent back',
+        branch: 'web/st-2',
+        waitingOn: [],
+      },
+    ],
+  };
+  const web = projectState(check, status).lanes.find((l) => l.name === 'web');
+  assert.equal(web.state, 'sent back');
+  assert.equal(web.branch, 'web/st-2');
+});

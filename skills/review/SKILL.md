@@ -51,7 +51,14 @@ Read the story, every requirement it cites, and the full diff (`git diff <base>.
 Report the table, `verify`'s result and one of:
 
 - **Merge.** Everything passes. The lead merges the branch into its own branch (`git merge --no-ff <branch>`), sets the story's `**Status:**` to `done` in the plan, and commits. `main` and the other protected branches are merged by a person, through a pull request, after `verify` passes in CI. When the branch is merged, remove its worktree.
-- **Send back.** List each problem, where it is, and what "fixed" looks like. Send the list to the same lane agent if it's still running (SendMessage), or dispatch the story again with the list added to the brief. Set the story's status to `in progress`.
+- **Send back.** List each problem, where it is, and what "fixed" looks like. Record the send-back, so `status` and `next` read the branch as waiting for its fix rather than finished:
+
+  ```bash
+  node "${CLAUDE_PLUGIN_ROOT}/bin/code-kit.mjs" sent-back <branch> --reason "<the problems, in one line>"
+  ```
+
+  Send the list to the same lane agent if it's still running (SendMessage), or dispatch the story again with the list added to the brief. Set the story's status to `in progress`.
+
 - **Ask the person.** When the right answer is a product or scope decision (the spec is silent, or the lane found a real conflict), put the question to the person with your recommendation. Don't merge around it.
 
 Keep the report short: the verdict first, then the table, then the problems.

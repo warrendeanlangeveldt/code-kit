@@ -330,6 +330,7 @@ code-kit trace <path>... [--json]      # what a file is for: requirements, lane,
 code-kit merge <branch> --delegated|--person [--into branch]  # merge a branch that passes verify: the lead where approvals.delegate.merge is on, or the person
 code-kit requests [--json]                                   # approval requests the hooks refused, still open, and the approvals in force
 code-kit stops [--session id] [--json]                       # finish checks that refused an agent's last stop and still fail
+code-kit sent-back <branch> [--reason "…"]                    # record a review's send-back: status shows the story as sent back until the branch moves on
 code-kit approve <name>... --reason "…" [--lane name] [--delegated | --via pane]  # record a person's approval from chat, or (--delegated) grant one within the delegated rules; a package name stands for its dep- approval
 ```
 
