@@ -71,7 +71,12 @@ function delegateRules(d) {
           ],
           minWeeklyDownloads: d.dependencies.minWeeklyDownloads ?? 10_000,
           maxMonthsSinceRelease: d.dependencies.maxMonthsSinceRelease ?? 18,
-          allowInstallScripts: d.dependencies.allowInstallScripts === true,
+          // true (any), false (none), or the kinds allowed: binary, build (lib/registry.mjs).
+          allowInstallScripts:
+            d.dependencies.allowInstallScripts === true ||
+            (Array.isArray(d.dependencies.allowInstallScripts)
+              ? d.dependencies.allowInstallScripts
+              : false),
         }
       : null,
   };
@@ -159,8 +164,10 @@ export function validate(c) {
             (dep.licences === undefined || isList(dep.licences)) &&
             isCount(dep.minWeeklyDownloads) &&
             isCount(dep.maxMonthsSinceRelease) &&
-            [undefined, true, false].includes(dep.allowInstallScripts)))),
-    '"approvals.delegate" must be { protected?: [approval names], merge?: true|false, dependencies?: { licences?, minWeeklyDownloads?, maxMonthsSinceRelease?, allowInstallScripts? } }',
+            ([undefined, true, false].includes(dep.allowInstallScripts) ||
+              (isList(dep.allowInstallScripts) &&
+                dep.allowInstallScripts.every((k) => ['binary', 'build', 'other'].includes(k))))))),
+    '"approvals.delegate" must be { protected?: [approval names], merge?: true|false, dependencies?: { licences?, minWeeklyDownloads?, maxMonthsSinceRelease?, allowInstallScripts?: true|false|["binary","build","other"] } }',
   );
   need(
     c.branches === undefined || isList(c.branches?.protected),

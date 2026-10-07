@@ -514,3 +514,45 @@ test("the mod: a sent-back story's lane reads as sent back, not idle", () => {
   assert.equal(web.state, 'sent back');
   assert.equal(web.branch, 'web/st-2');
 });
+
+test("install scripts are told apart: a prebuilt binary, a native build, or the package's own code", async () => {
+  const { dependencyRuleProblems, installScriptKind } = await import('../hooks/lib/registry.mjs');
+  assert.equal(installScriptKind({ scripts: { test: 'x' } }), null);
+  const esbuild = {
+    scripts: { postinstall: 'node install.js' },
+    optionalDependencies: { '@esbuild/darwin-arm64': '1', '@esbuild/linux-x64': '1' },
+  };
+  assert.equal(installScriptKind(esbuild), 'binary');
+  assert.equal(
+    installScriptKind({ scripts: { install: 'prebuild-install || node-gyp rebuild' } }),
+    'binary',
+  );
+  assert.equal(installScriptKind({ scripts: { install: 'node-gyp rebuild' } }), 'build');
+  assert.equal(installScriptKind({ scripts: { postinstall: 'node ./telemetry.js' } }), 'other');
+  const rule = {
+    licences: ['MIT'],
+    minWeeklyDownloads: 0,
+    maxMonthsSinceRelease: 99,
+    allowInstallScripts: ['binary'],
+  };
+  const facts = (kind) => ({
+    licence: 'MIT',
+    weeklyDownloads: 1,
+    lastRelease: new Date().toISOString(),
+    installScripts: true,
+    installScriptKind: kind,
+  });
+  assert.deepEqual(dependencyRuleProblems(facts('binary'), rule), []);
+  assert.deepEqual(dependencyRuleProblems(facts('other'), rule), [
+    'installing it runs a script that runs its own code',
+  ]);
+  assert.deepEqual(
+    dependencyRuleProblems(facts('build'), { ...rule, allowInstallScripts: true }),
+    [],
+  );
+  const c = clone();
+  c.approvals = { delegate: { dependencies: { allowInstallScripts: ['binary', 'build'] } } };
+  assert.deepEqual(validate(c), []);
+  c.approvals.delegate.dependencies.allowInstallScripts = ['everything'];
+  assert.match(validate(c).join(' '), /allowInstallScripts/);
+});

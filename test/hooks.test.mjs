@@ -773,7 +773,7 @@ try {
       'one whose install runs scripts',
       delegate('scripted-pkg', '--reason', 'x'),
       1,
-      'runs scripts',
+      'runs a script that runs its own code',
     );
     expect(
       'and one the registry has never heard of',
