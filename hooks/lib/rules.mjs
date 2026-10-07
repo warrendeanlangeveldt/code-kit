@@ -337,6 +337,33 @@ export function dependencyGrants(root, actor) {
 }
 
 /**
+ * During a merge, whether `rel` is exactly as the incoming branch (MERGE_HEAD) has it: then its change
+ * arrives with that branch's history, approvals and audit-log entries, not from the actor concluding
+ * the merge. `staged` compares what will be committed; otherwise the working tree. A file both sides
+ * delete counts too. verify still holds the branch to its rules afterwards.
+ */
+export function arrivesWithMerge(root, rel, { staged = false } = {}) {
+  const run = (...args) => {
+    try {
+      return execFileSync('git', ['-C', root, ...args], {
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'ignore'],
+      }).trim();
+    } catch {
+      return null;
+    }
+  };
+  if (run('rev-parse', '--verify', '--quiet', 'MERGE_HEAD') === null) return false;
+  const incoming = run('rev-parse', '--verify', '--quiet', `MERGE_HEAD:${rel}`);
+  const mine = staged
+    ? run('rev-parse', '--verify', '--quiet', `:${rel}`)
+    : existsSync(join(root, rel))
+      ? run('hash-object', '--', rel)
+      : null;
+  return incoming === mine;
+}
+
+/**
  * Whether a dependency approval lets `actor` change `rel`: a manifest or lockfile no other lane owns,
  * changed while the actor has a dependency approval in force. Installing a package rewrites them.
  */

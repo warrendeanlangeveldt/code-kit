@@ -14,6 +14,7 @@ import { block, start } from './lib/hook.mjs';
 import {
   APPROVAL_LOG,
   actorFor,
+  arrivesWithMerge,
   approval,
   approvalHowTo,
   currentBranch,
@@ -281,6 +282,8 @@ function recordApprovals() {
       }),
     );
   for (const file of files) {
+    // Concluding a merge: what arrives as the other branch has it was logged there, with its approvals.
+    if (arrivesWithMerge(root, file, { staged: true })) continue;
     const entry = protectedEntry(file, config);
     const granted = entry && approval(root, entry.approval, actor);
     const byDependency = actor.kind === 'lane' && dependencyChange(actor, file, root, config);

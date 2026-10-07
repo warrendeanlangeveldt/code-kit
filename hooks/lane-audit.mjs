@@ -5,7 +5,14 @@
 import { readFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { join } from 'node:path';
-import { APPROVAL_LOG, LANE_FILE, actorFor, actorRoot, writeProblem } from './lib/rules.mjs';
+import {
+  APPROVAL_LOG,
+  LANE_FILE,
+  actorFor,
+  actorRoot,
+  arrivesWithMerge,
+  writeProblem,
+} from './lib/rules.mjs';
 
 // The commit hook appends to the approval log and stages it; if that commit then fails, the
 // appended lines are left uncommitted. That is the only change to the log that is not a problem.
@@ -36,11 +43,15 @@ export function auditProblems(input, config) {
   const root = actorRoot(input);
   if (!root) return [];
   const actor = actorFor(input, root, config);
-  return changedFiles(root)
-    .filter((rel) => !(rel === APPROVAL_LOG && appendedOnly(root, rel)))
-    .map((rel) => [rel, writeProblem(actor, rel, root, config)])
-    .filter(([, problem]) => problem)
-    .map(([rel, problem]) => `${rel}: ${problem.split('\n')[0]}`);
+  return (
+    changedFiles(root)
+      .filter((rel) => !(rel === APPROVAL_LOG && appendedOnly(root, rel)))
+      // Mid-merge, the incoming branch's changes are its own, not this actor's writes.
+      .filter((rel) => !arrivesWithMerge(root, rel))
+      .map((rel) => [rel, writeProblem(actor, rel, root, config)])
+      .filter(([, problem]) => problem)
+      .map(([rel, problem]) => `${rel}: ${problem.split('\n')[0]}`)
+  );
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {

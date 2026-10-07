@@ -816,6 +816,52 @@ try {
     put('.claude/code-kit.json', fixture);
   }
 
+  // --- a lane merging its base: what arrives with the base was logged there ---------------------
+  {
+    const b = newRepo();
+    cleanups.push(b.dir);
+    const bPut = (rel, body) => {
+      mkdirSync(dirname(join(b.dir, rel)), { recursive: true });
+      writeFileSync(join(b.dir, rel), body);
+    };
+    const bHook = (name, command, agent) =>
+      spawnSync('node', [join(hooks, name)], {
+        input: JSON.stringify({ cwd: b.dir, tool_input: { command }, agent_type: agent }),
+        env: { ...process.env, CLAUDE_PROJECT_DIR: b.dir },
+        encoding: 'utf8',
+      });
+    b.git('checkout', '-q', '-b', 'web/st-9');
+    bPut('apps/office/lib/w.ts', 'export const w = 1;\n');
+    b.git('add', '-A');
+    b.git('commit', '-q', '-m', 'ST-9');
+    b.git('checkout', '-q', 'main');
+    bPut('design/approved-screens.json', JSON.stringify({ screens: [] }));
+    bPut('workers/jobs/j.ts', 'export const j = 1;\n');
+    b.git('add', '-A');
+    b.git('commit', '-q', '-m', 'the base moves on');
+    b.git('checkout', '-q', 'web/st-9');
+    b.git('merge', '-q', '--no-ff', '--no-commit', 'main');
+    expect(
+      'a lane concluding a merge of its base needs no approval for what the base logged',
+      bHook('guard-bash.mjs', 'git commit -m "Merge main"', 'web-engineer'),
+      0,
+    );
+    expect(
+      "and the ownership audit doesn't ask it to revert the base's changes",
+      bHook('lane-audit.mjs', 'git merge --no-commit main', 'web-engineer'),
+      0,
+    );
+    bPut('design/approved-screens.json', JSON.stringify({ screens: ['mine'] }));
+    b.git('add', 'design/approved-screens.json');
+    expect(
+      "but its own change to a protected file mid-merge still needs a person's approval",
+      bHook('guard-bash.mjs', 'git commit -m "Merge main"', 'web-engineer'),
+      2,
+      "needs a person's approval",
+    );
+    b.git('merge', '--abort');
+  }
+
   // --- delegated merges: the lead merges a branch that passes verify --------------------------------
   {
     const mergeFixture = (merge) =>
