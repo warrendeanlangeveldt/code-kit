@@ -19,6 +19,7 @@
 //                                    (approvals.delegate.merge) or the person (the code-kit pane)
 //   requests [--json]                 open approval requests and approvals in force
 //   stops [--session id] [--json]     finish checks that refused an agent's last stop, still failing
+//   sent-back <branch> [--reason …]   records that a review sent the branch back at its current commit
 //                         record approvals a person gave in chat (with approvals.lead on, the lead runs it)
 // --config <file> reads a draft (.claude/code-kit.draft.json) instead of .claude/code-kit.json.
 import { execFileSync } from 'node:child_process';
@@ -34,8 +35,10 @@ import { ADAPTERS, activeAdapters } from '../hooks/lib/adapters/index.mjs';
 import { nextStep } from '../hooks/lib/next.mjs';
 import { traceFile } from '../hooks/lib/trace.mjs';
 import { buildStatus } from '../hooks/lib/plan.mjs';
+import { recordSentBack } from '../hooks/lib/reviews.mjs';
 import {
   APPROVAL_MINUTES,
+  approvalLifetime,
   currentBranch,
   PANE,
   approvalsInForce,
@@ -43,10 +46,11 @@ import {
   grantApprovals,
   openRequests,
   ownerOf,
+  reviewerOf,
 } from '../hooks/lib/rules.mjs';
 import { DEPENDENCY_APPROVAL, dependencyApproval } from '../hooks/lib/dependencies.mjs';
 import { dependencyRuleProblems, npmFacts, packageOf } from '../hooks/lib/registry.mjs';
-import { laneOfBranch, verifyBranch } from '../hooks/lib/verify.mjs';
+import { heldTo, laneOfBranch, verifyBranch } from '../hooks/lib/verify.mjs';
 
 const out = (s) => process.stdout.write(`${s}\n`);
 // Piped into `head` and the like: stop quietly when the reader closes.
@@ -135,7 +139,13 @@ function who(paths) {
   const { config } = load();
   for (const p of paths) {
     const layer = layerOf(p, config.layers);
-    out(`${p}: ${ownerOf(p, config) ?? 'nobody'}${layer ? ` · layer ${layer.name}` : ''}`);
+    const reviewer = reviewerOf(p, config);
+    const whose =
+      ownerOf(p, config) ??
+      (reviewer
+        ? `any agent may write it; ${reviewer === 'lead' ? 'the lead' : `the ${reviewer} lane`} reviews it`
+        : 'nobody');
+    out(`${p}: ${whose}${layer ? ` · layer ${layer.name}` : ''}`);
   }
 }
 
@@ -288,6 +298,27 @@ const VERIFY_GROUPS = {
 // merges, and only when `verify` passes on that branch, checks included. A person merges with git.
 // With --person, the person merges (the mod passes it for a press in its pane): the same verify first,
 // with no delegation needed. The hooks refuse --person from every agent.
+/**
+ * The config as committed on `ref`: what governs merging into it, so a branch's own config can't grant
+ * itself a merge its target doesn't allow.
+ */
+function configAt(ref) {
+  let raw;
+  try {
+    raw = JSON.parse(
+      execFileSync('git', ['show', `${ref}:${file}`], {
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'ignore'],
+      }),
+    );
+  } catch {
+    die(`${ref} has no readable ${file}; a merge into it follows the rules committed there.`);
+  }
+  const problems = validate(raw);
+  if (problems.length) die(`${file} on ${ref} is invalid:\n  ${problems.join('\n  ')}`);
+  return effectiveConfig(raw, '.');
+}
+
 function merge(branch) {
   const { config } = load();
   const byPerson = flag('--person');
@@ -297,14 +328,16 @@ function merge(branch) {
     );
   if (flag('--delegated') && byPerson)
     die("A merge is either the lead's (--delegated) or the person's (--person), not both.");
-  if (!byPerson && !config.approvals.delegate?.merge)
-    die(
-      'This project doesn\'t delegate merges to the lead ("approvals.delegate.merge" isn\'t true). A person merges after review.',
-    );
   const into = intoName ?? config.branches.protected[0];
-  if (!config.branches.protected.includes(into))
+  // Whether the lead may merge, and which branches are protected, are the target's rules.
+  const target = configAt(into);
+  if (!byPerson && !target.approvals.delegate?.merge)
+    die(
+      `${into} doesn't delegate merges to the lead ("approvals.delegate.merge" isn't true in its ${file}). A person merges after review.`,
+    );
+  if (!target.branches.protected.includes(into))
     die(`${into} isn't a protected branch; merge into it with git.`);
-  if (config.branches.protected.includes(branch)) die(`${branch} is itself a protected branch.`);
+  if (target.branches.protected.includes(branch)) die(`${branch} is itself a protected branch.`);
   const root = resolve('.');
   const g = (cwd, ...a) =>
     execFileSync('git', ['-C', cwd, ...a], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
@@ -374,7 +407,7 @@ function merge(branch) {
         '-m',
         `Merge ${branch} into ${into}`,
         '-m',
-        `Verified with code-kit verify (${changed.length} file(s)${lane ? `, held to the ${lane} lane` : ''}) and merged ${byPerson ? 'by the person, from the code-kit pane' : 'by the lead within the delegated rules'}.`,
+        `Verified with code-kit verify (${changed.length} file(s)${lane ? `, held to ${heldTo(lane)}` : ''}) and merged ${byPerson ? 'by the person, from the code-kit pane' : 'by the lead within the delegated rules'}.`,
         branch,
       );
     } catch (e) {
@@ -388,7 +421,7 @@ function merge(branch) {
       );
     }
     out(
-      `Merged ${branch} into ${into}: verify passed on ${changed.length} file(s)${lane ? `, held to the ${lane} lane` : ''}.`,
+      `Merged ${branch} into ${into}: verify passed on ${changed.length} file(s)${lane ? `, held to ${heldTo(lane)}` : ''}.`,
     );
   } finally {
     cleanup();
@@ -411,6 +444,24 @@ function requests() {
     out(
       `  ${a.name} for ${a.lane ? `the ${a.lane} lane` : 'any agent'}, ${a.minutesLeft} min left: ${a.reason}`,
     );
+}
+
+/** Records the review's send-back of `branch` at its current commit (lib/reviews.mjs). */
+function sentBackCommand(branch) {
+  load();
+  let sha;
+  try {
+    sha = execFileSync('git', ['rev-parse', '--verify', `${branch}^{commit}`], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+  } catch {
+    die(`No branch ${branch} here.`);
+  }
+  recordSentBack(resolve('.'), branch, sha, reason);
+  out(
+    `Recorded: ${branch} was sent back at ${sha.slice(0, 7)}. status shows its story as sent back until the branch moves on.`,
+  );
 }
 
 /** Finish checks still failing: the stop hook's last refusal for each session and agent. */
@@ -472,7 +523,7 @@ function verify() {
     return;
   }
   out(
-    `${changed.length} file(s) changed since ${from}${lane ? `, held to the ${lane} lane (branch ${branch})` : ''}.`,
+    `${changed.length} file(s) changed since ${from}${lane ? `, held to ${heldTo(lane)} (branch ${branch})` : ''}.`,
   );
   let count = 0;
   for (const [key, title] of Object.entries(VERIFY_GROUPS)) {
@@ -576,7 +627,10 @@ function adapters() {
     if (!active.includes(a.name)) continue;
     const c = a.config ?? {};
     if (c.lead?.length) out(`  lead writes: ${c.lead.join(', ')}`);
-    if (c.anyActor?.length) out(`  anyone writes: ${c.anyActor.join(', ')}`);
+    if (c.anyActor?.length)
+      out(
+        `  anyone writes: ${c.anyActor.map((e) => (typeof e === 'string' ? e : `${e.glob} (reviewed by ${e.reviewer ?? 'the lead'})`)).join(', ')}`,
+      );
     for (const p of c.protected ?? [])
       out(`  protected: ${p.glob} (approval "${p.approval}": ${p.why})`);
     for (const b of a.shell?.block ?? []) out(`  blocked command: /${b.pattern}/ — ${b.why}`);
@@ -591,7 +645,7 @@ function trace(paths) {
   for (const t of traces) {
     out(t.path);
     out(
-      `  owner: ${t.owner ?? 'nobody'}${t.layer ? ` · layer ${t.layer.name} → ${t.layer.mayImport.join(', ') || 'only itself'}` : ''}`,
+      `  owner: ${t.owner ?? (t.reviewer ? `any agent; the ${t.reviewer === 'lead' ? 'lead' : `${t.reviewer} lane`} reviews it` : 'nobody')}${t.layer ? ` · layer ${t.layer.name} → ${t.layer.mayImport.join(', ') || 'only itself'}` : ''}`,
     );
     if (!t.requirements.length) out('  no requirements traced (no commit names a story)');
     for (const r of t.requirements)
@@ -661,7 +715,7 @@ async function approve(given) {
   const whom = laneName ? `the ${laneName} lane` : 'any agent';
   const renamed = given.flatMap((g, i) => (g === names[i] ? [] : [`${g} → ${names[i]}`]));
   out(
-    `Approved ${names.join(', ')} for ${whom}, for ${APPROVAL_MINUTES} minutes${delegated ? ', within the delegated rules' : ''}: ${reason.trim()}${renamed.length ? `\n(${renamed.join(', ')})` : ''}`,
+    `Approved ${names.join(', ')} for ${whom}, ${approvalLifetime(names)}${delegated ? ', within the delegated rules' : ''}: ${reason.trim()}${renamed.length ? `\n(${renamed.join(', ')})` : ''}`,
   );
 }
 
@@ -671,6 +725,7 @@ const commands = {
   merge: () => (rest.length === 1 ? merge(rest[0]) : usage()),
   requests,
   stops,
+  'sent-back': () => (rest.length === 1 ? sentBackCommand(rest[0]) : usage()),
   trace: () => (rest.length ? trace(rest) : usage()),
   adapters,
   next,
@@ -689,7 +744,7 @@ function usage() {
       '              | next [--base ref] [--json] | adapters | trace <path>... [--json]\n' +
       '              | approve <name>... --reason "…" [--lane name]   [--config file]\n' +
       '              | merge <branch> --delegated|--person [--into branch] | requests [--json]\n' +
-      '              | stops [--session id] [--json]',
+      '              | stops [--session id] [--json] | sent-back <branch> [--reason "…"]',
   );
 }
 await (commands[command] ?? usage)();

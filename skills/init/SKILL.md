@@ -31,7 +31,7 @@ Say which one applies and why before you start.
    - **Design-first rules:** screens designed before they are built, and where approvals are listed.
    - **Commands:** test, lint, typecheck, database and deploy commands, and which must never run locally.
 2. **The repository.** Map the real layout: `git ls-files | cut -d/ -f1-3 | sort | uniq -c`, package manifests (`package.json`, `pyproject.toml`, `go.mod`, `Cargo.toml`), workspace files, existing lint, format and test scripts, CI workflows and CODEOWNERS.
-3. **Existing kit.** If the project has `.claude/hooks`, agents or skills, read them. The kit replaces local hooks; agents and skills are kept and adapted, not rewritten.
+3. **Existing kit.** If the project has `.claude/hooks`, agents or skills, read them. The kit replaces local hooks; agents and skills are kept and adapted, not rewritten. On an update (section 4), skills that came from the docs' recipes follow those recipes as they are now.
 4. **Other tools.** Run `adapters --config .claude/code-kit.draft.json` once the draft exists. It lists the tools code-kit has an adapter for (such as Context Graph, found by its `.ctx/` folder), what each adds to the rules, and the setup each needs. Don't copy an adapter's paths into the config; they're added automatically while the tool is present.
 
 **Brownfield, in addition:**
@@ -97,6 +97,8 @@ Draft, alongside the config:
   - Drop the spec-check lines if the config has no `docs.specs`.
 - **CLAUDE.md:** add the section from `${CLAUDE_PLUGIN_ROOT}/templates/claude-md.md`.
 - **Project skills** (recipes like "new migration" or "new endpoint"): list the recipes the docs describe step by step, and offer to write them. Don't write them unasked, and never write an empty one.
+  - Write each as `.claude/skills/<name>/SKILL.md`, saying in its description which recipe in which doc it comes from, so an update can find it again.
+  - List it under **Skills to use** on every lane agent whose paths the recipe touches, not only one: a recipe that adds a migration and the endpoint that uses it belongs to both lanes. A recipe only the lead follows goes in the CLAUDE.md section instead.
 
 Show the person:
 
@@ -144,10 +146,16 @@ Re-run whenever the build has moved on: new apps or packages, folders that moved
 
 4. **Also propose:**
    - agent files for new lanes, and updates to agents whose paths changed;
+   - **project skills**, by reading the recipes in the docs again and comparing them with `.claude/skills/`:
+     - a new skill for each recipe the docs now describe that has none;
+     - an update to each skill whose recipe changed, showing what changed;
+     - removing a skill whose recipe is gone from the docs (ask first: the person may want it kept);
+     - the matching **Skills to use** changes on every lane agent whose paths each recipe touches;
+     - skills the person wrote themselves, with no recipe behind them, stay as they are;
    - a smaller baseline when `baseline` shows violations were fixed. It only ever shrinks.
 5. **On approval:**
    1. Replace `.claude/code-kit.json` with the draft and delete the draft.
-   2. Write or update the agents.
+   2. Write or update the agents, and write, update or remove the project skills as approved.
    3. Run `baseline --write` if it shrank.
    4. Run `check` and `unowned`.
    5. Commit on a branch.

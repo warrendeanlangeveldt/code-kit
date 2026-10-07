@@ -12,7 +12,35 @@ export const packageOf = (approvalName) =>
 
 const INSTALL_SCRIPTS = ['preinstall', 'install', 'postinstall'];
 
-/** { licence, weeklyDownloads, lastRelease (ISO), installScripts } for `pkg`, or { error }. */
+// Kinds of install script, for the rule's allowInstallScripts:
+//   binary  fetches a prebuilt binary for this platform (esbuild, sharp): a prebuild tool, or a script
+//           beside optional dependencies built per platform;
+//   build   compiles native code from source (node-gyp);
+//   other   anything else: code the package runs on install.
+const BINARY_TOOLS =
+  /\b(prebuild-install|node-pre-gyp|node-gyp-build|prebuildify|napi-postinstall)\b/;
+const PLATFORM = /(darwin|linux|win32|windows|freebsd|android|musl|arm64|x64|ia32)/;
+
+/** The kind of install script a package version runs (binary, build or other), or null for none. */
+export function installScriptKind(version) {
+  const scripts = INSTALL_SCRIPTS.map((s) => version?.scripts?.[s]).filter(Boolean);
+  if (!scripts.length) return null;
+  const text = scripts.join(' && ');
+  const perPlatform = Object.keys(version?.optionalDependencies ?? {}).filter((d) =>
+    PLATFORM.test(d),
+  );
+  if (BINARY_TOOLS.test(text) || perPlatform.length >= 2) return 'binary';
+  if (/\bnode-gyp\b|\bcmake-js\b/.test(text)) return 'build';
+  return 'other';
+}
+
+const KIND_WORDS = {
+  binary: 'downloads a prebuilt binary',
+  build: 'compiles native code',
+  other: 'runs its own code',
+};
+
+/** { licence, weeklyDownloads, lastRelease (ISO), installScripts, installScriptKind } for `pkg`, or { error }. */
 export async function npmFacts(pkg) {
   const name = pkg.startsWith('@')
     ? `@${encodeURIComponent(pkg.slice(1))}`
@@ -34,6 +62,7 @@ export async function npmFacts(pkg) {
       weeklyDownloads,
       lastRelease: (latest && doc.time?.[latest]) ?? doc.time?.modified ?? null,
       installScripts: INSTALL_SCRIPTS.some((s) => version?.scripts?.[s]),
+      installScriptKind: installScriptKind(version),
     };
   } catch (e) {
     return { error: `couldn't reach the npm registry (${e.message})` };
@@ -57,7 +86,12 @@ export function dependencyRuleProblems(facts, rule, now = Date.now()) {
     problems.push(
       `its last release was ${Number.isFinite(months) ? `${Math.floor(months)} months` : 'never'} ago, over ${rule.maxMonthsSinceRelease}`,
     );
-  if (facts.installScripts && !rule.allowInstallScripts)
-    problems.push('installing it runs scripts');
+  if (facts.installScripts) {
+    const kind = facts.installScriptKind ?? 'other';
+    const allowed =
+      rule.allowInstallScripts === true ||
+      (Array.isArray(rule.allowInstallScripts) && rule.allowInstallScripts.includes(kind));
+    if (!allowed) problems.push(`installing it runs a script that ${KIND_WORDS[kind]}`);
+  }
   return problems;
 }

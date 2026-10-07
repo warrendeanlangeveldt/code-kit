@@ -34,6 +34,7 @@ export function readyFrom(next) {
  * One lane's row (PANE-2): the story it's on, its branch and its state.
  *   building   a branch for the story and, if it has commits, the lane's agent still at work on it;
  *   in review  commits on the branch (status's `review`) and the agent no longer at work;
+ *   sent back  a review sent the branch back, and the lane hasn't committed its fix yet;
  *   blocked    the lane's next story waits on another;
  *   idle       none of these.
  * `status` can't tell a finished branch from one still being built, so the agent at work decides.
@@ -41,7 +42,9 @@ export function readyFrom(next) {
 function laneRow(name, agent, stories, atWork) {
   const own = stories.filter((s) => s.lane === name);
   const active = Boolean(agent && atWork.has(agent));
-  const story = own.find((s) => ['in progress', 'review'].includes(s.state));
+  const story = own.find((s) => ['in progress', 'review', 'sent back'].includes(s.state));
+  if (story?.state === 'sent back')
+    return { name, agent, active, story, branch: story.branch, state: 'sent back' };
   if (story) {
     const state = story.state === 'review' && !active ? 'in review' : 'building';
     return { name, agent, active, story, branch: story.branch, state };
@@ -77,7 +80,13 @@ export function projectState(check, status, next = null, atWork = new Set()) {
   return { kind: 'ok', lanes, ready, planGaps: status ? (status.problems ?? []).length : null };
 }
 
-const STATE_COLOR = { building: 'blue', 'in review': 'yellow', blocked: 'red', idle: undefined };
+const STATE_COLOR = {
+  building: 'blue',
+  'in review': 'yellow',
+  'sent back': 'magenta',
+  blocked: 'red',
+  idle: undefined,
+};
 
 /** The Lanes pane's body, drawn with the elements `$.ui.resolve(e)` returned. */
 export function lanesPane(state, { Box, Text }) {
@@ -263,7 +272,7 @@ export function approvePane(
       Text({ bold: true, children: [`Approve ${request.names.join(', ')}`] }),
       Text({
         children: [
-          `For ${request.lane ? `the ${request.lane} lane` : 'any agent'}, for 60 minutes. Asked for: ${request.what}`,
+          `For ${request.lane ? `the ${request.lane} lane` : 'any agent'}, ${request.names.every((n) => n.startsWith('dep-')) ? 'until the install is committed (at most 7 days)' : 'for 60 minutes'}. Asked for: ${request.what}`,
         ],
       }),
       Input({
@@ -348,7 +357,7 @@ export function refusalCard(raw) {
       kind: 'dependency',
       title: `Install refused: ${m[1]}`,
       why: "A new dependency needs a person's approval.",
-      todo: 'A person approves it, here or with the `!` command, for 60 minutes.',
+      todo: 'A person approves it, here or with the `!` command, until the install is committed (at most 7 days).',
       request: request(command ?? `install ${m[1]}`),
       raw: text,
     };

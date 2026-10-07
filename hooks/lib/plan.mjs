@@ -7,6 +7,7 @@
 import { execFileSync } from 'node:child_process';
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
+import { sentBack } from './reviews.mjs';
 
 export const REQUIREMENT = /\b(?!ST-)([A-Z][A-Z0-9]*-\d+)\b/g;
 const STORY_HEADING = /^###\s+(ST-\d+)\b\s*(.*)$/;
@@ -125,18 +126,22 @@ function worktrees(root) {
  * Where each story is. The plan's `done` stands (the lead marks it after merging, and merged
  * branches are often deleted or squashed). Otherwise git decides: a branch with commits not in
  * `base` is in review; one level with it is in progress, or done once the plan had it in review.
- * Without a branch, the plan's status stands. A todo story is `blocked` until every story it
- * depends on is done, then `ready`.
+ * A branch still at the commit a review sent back is `sent back`, waiting for its lane's fix.
+ * Without a branch, the plan's status stands. A story is `blocked` while a story it depends on
+ * isn't done, whatever its branch holds; a todo story whose dependencies are done is `ready`.
  */
 export function storyStates(root, stories, base) {
   const trees = worktrees(root);
+  const backs = sentBack(root);
   const states = stories.map((story) => {
     const branch = storyBranch(story);
     const ref = story.lane ? branchRef(root, branch) : null;
     const ahead = ref ? Number(git(root, 'rev-list', '--count', `${base}..${ref}`) ?? 0) : 0;
     let state = story.status;
     if (ref && story.status !== 'done') {
-      if (ahead > 0) state = 'review';
+      const head = backs[branch] ? git(root, 'rev-parse', ref) : null;
+      if (head && head === backs[branch].sha) state = 'sent back';
+      else if (ahead > 0) state = 'review';
       else state = story.status === 'review' ? 'done' : 'in progress';
     }
     return {
@@ -151,9 +156,10 @@ export function storyStates(root, stories, base) {
   });
   const done = new Set(states.filter((s) => s.state === 'done').map((s) => s.id));
   for (const s of states) {
-    if (s.state !== 'todo') continue;
+    if (s.state === 'done') continue;
     s.waitingOn = s.dependsOn.filter((d) => !done.has(d));
-    s.state = s.waitingOn.length ? 'blocked' : 'ready';
+    if (s.waitingOn.length) s.state = 'blocked';
+    else if (s.state === 'todo') s.state = 'ready';
   }
   return states;
 }
@@ -200,13 +206,18 @@ export function buildStatus(root, config, base, files) {
     let state = 'no story';
     if (r.removed) state = 'removed';
     else if (covering.length && covering.every((s) => s.state === 'done')) state = 'done';
-    else if (covering.some((s) => ['in progress', 'review', 'done'].includes(s.state)))
+    else if (covering.some((s) => ['in progress', 'review', 'sent back', 'done'].includes(s.state)))
       state = 'in progress';
     else if (covering.length) state = 'todo';
     return { ...r, state, stories: covering.map((s) => s.id), tests: tested[r.id] ?? [] };
   });
   const drift = stories
-    .filter((s) => !['ready', 'blocked'].includes(s.state) && s.state !== s.status)
+    .filter(
+      (s) =>
+        !['ready', 'blocked'].includes(s.state) &&
+        s.state !== s.status &&
+        !(s.state === 'sent back' && s.status === 'in progress'),
+    )
     .map((s) => ({ story: s.id, plan: s.status, actual: s.state }));
   return { stories, requirements: byRequirement, problems, drift };
 }

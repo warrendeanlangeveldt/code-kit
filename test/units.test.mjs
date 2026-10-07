@@ -12,6 +12,7 @@ import { importsOf, layerProblems } from '../hooks/lib/layers.mjs';
 import { diffConfigs, ownershipMoves } from '../hooks/lib/diff.mjs';
 import { newProblems } from '../hooks/lib/baseline.mjs';
 import { addedPackages, dependencyApproval, isDependencyFile } from '../hooks/lib/dependencies.mjs';
+import { commandsOf, runs, withoutHeredocs } from '../hooks/lib/shell.mjs';
 import {
   NOT_CODE_KIT,
   agentsAtWork,
@@ -471,4 +472,101 @@ test("the mod: ACT-1 a prefilled reason names the command itself, not the agent'
     }),
     'Approve dayjs for any agent: npm install dayjs',
   );
+});
+
+test('shell: the simple commands a command runs, apart from the text it carries', () => {
+  assert.deepEqual(
+    commandsOf('cd a && FOO=1 git commit -m "x; y" | tee log; (npm test)').map((c) => c.text),
+    ['cd a', 'git commit -m "x; y"', 'tee log', 'npm test'],
+  );
+  assert.equal(
+    withoutHeredocs("cat > f <<'EOF'\ngit push --force\nEOF\necho done"),
+    "cat > f <<'EOF'\necho done",
+  );
+  assert.equal(withoutHeredocs('cat <<< "a <<EOF"\nnext'), 'cat <<< "a <<EOF"\nnext');
+  assert.equal(runs('echo "git commit"', /^git\s+commit\b/), false);
+  assert.equal(runs('x=$(git commit -m a)', /^git\s+commit\b/), true);
+  assert.equal(runs('git commit -m "--no-verify"', /--no-verify/, { quoted: false }), false);
+  assert.equal(runs('git commit --no-verify', /--no-verify/, { quoted: false }), true);
+});
+
+test("the mod: a sent-back story's lane reads as sent back, not idle", () => {
+  const check = {
+    exists: true,
+    valid: true,
+    problems: [],
+    lanes: { web: { agent: 'web-engineer' } },
+  };
+  const status = {
+    problems: [],
+    stories: [
+      {
+        id: 'ST-2',
+        title: 'Cancel',
+        lane: 'web',
+        state: 'sent back',
+        branch: 'web/st-2',
+        waitingOn: [],
+      },
+    ],
+  };
+  const web = projectState(check, status).lanes.find((l) => l.name === 'web');
+  assert.equal(web.state, 'sent back');
+  assert.equal(web.branch, 'web/st-2');
+});
+
+test("install scripts are told apart: a prebuilt binary, a native build, or the package's own code", async () => {
+  const { dependencyRuleProblems, installScriptKind } = await import('../hooks/lib/registry.mjs');
+  assert.equal(installScriptKind({ scripts: { test: 'x' } }), null);
+  const esbuild = {
+    scripts: { postinstall: 'node install.js' },
+    optionalDependencies: { '@esbuild/darwin-arm64': '1', '@esbuild/linux-x64': '1' },
+  };
+  assert.equal(installScriptKind(esbuild), 'binary');
+  assert.equal(
+    installScriptKind({ scripts: { install: 'prebuild-install || node-gyp rebuild' } }),
+    'binary',
+  );
+  assert.equal(installScriptKind({ scripts: { install: 'node-gyp rebuild' } }), 'build');
+  assert.equal(installScriptKind({ scripts: { postinstall: 'node ./telemetry.js' } }), 'other');
+  const rule = {
+    licences: ['MIT'],
+    minWeeklyDownloads: 0,
+    maxMonthsSinceRelease: 99,
+    allowInstallScripts: ['binary'],
+  };
+  const facts = (kind) => ({
+    licence: 'MIT',
+    weeklyDownloads: 1,
+    lastRelease: new Date().toISOString(),
+    installScripts: true,
+    installScriptKind: kind,
+  });
+  assert.deepEqual(dependencyRuleProblems(facts('binary'), rule), []);
+  assert.deepEqual(dependencyRuleProblems(facts('other'), rule), [
+    'installing it runs a script that runs its own code',
+  ]);
+  assert.deepEqual(
+    dependencyRuleProblems(facts('build'), { ...rule, allowInstallScripts: true }),
+    [],
+  );
+  const c = clone();
+  c.approvals = { delegate: { dependencies: { allowInstallScripts: ['binary', 'build'] } } };
+  assert.deepEqual(validate(c), []);
+  c.approvals.delegate.dependencies.allowInstallScripts = ['everything'];
+  assert.match(validate(c).join(' '), /allowInstallScripts/);
+});
+
+test('files any agent may write have a reviewer: the lead, or the lane an entry names', async () => {
+  const { reviewerOf } = await import('../hooks/lib/rules.mjs');
+  const c = clone();
+  c.anyActor = ['pnpm-lock.yaml', { glob: 'supabase/seed.sql', reviewer: 'data' }];
+  assert.deepEqual(validate(c), []);
+  const config = withDefaults(c);
+  assert.ok(config.anyActor.includes('supabase/seed.sql'));
+  assert.equal(reviewerOf('pnpm-lock.yaml', config), 'lead');
+  assert.equal(reviewerOf('supabase/seed.sql', config), 'data');
+  assert.equal(reviewerOf('apps/office/x.ts', config), null);
+  c.anyActor = [{ glob: 'x', reviewer: 'nobody-lane' }];
+  assert.match(validate(c).join(' '), /"anyActor"/);
 });

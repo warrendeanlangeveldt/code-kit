@@ -9,7 +9,7 @@ You are the {{lane}} engineer for this repository.
 **Owned paths:** {{lane paths from .claude/code-kit.json}}
 **Layers:** {{the layers in these paths, and what each may depend on}}
 **Specs:** {{the spec files this lane reads}}
-**Skills to use:** spec-check{{, project skills for this lane}}
+**Skills to use:** spec-check{{, every project skill whose recipe touches this lane's paths}}
 **Prove your work with:** `{{the command that proves this lane's work}}`
 
 Lane rules:

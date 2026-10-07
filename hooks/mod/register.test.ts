@@ -336,7 +336,9 @@ test('ACT-1 and BAND-3 approving with the prefilled reason grants it for the lan
   const confirm = await pane($, APPROVE);
   const reason = 'Approve dayjs for the web lane: npm install dayjs';
   expect((await confirm.find({ key: 'approve-reason' }))?.props.value).toBe(reason);
-  expect(await confirm.find({ type: 'Text', text: /for 60 minutes/ })).toBeDefined();
+  expect(
+    await confirm.find({ type: 'Text', text: /until the install is committed \(at most 7 days\)/ }),
+  ).toBeDefined();
   await press($, 'approve-confirm', APPROVE);
   expect(w.acts).toEqual([
     ['approve', 'dep-dayjs', '--lane', 'web', '--reason', reason, '--via', 'pane'],
@@ -558,7 +560,7 @@ test('CARD-1 a refused write is drawn as a card, its text a press away', async (
 test('CARD-1 a refusal an approval would allow has Approve…, which opens the confirmation', async ($, on) => {
   const w = project();
   w.refusal =
-    'Blocked: a new dependency (dayjs) needs a person\'s approval. Write a short change request for the lead.\n  ! echo "<what you are approving>" > .claude/approvals/web/dep-dayjs\n(a person runs it; it allows installing it for the web lane, for 60 minutes)\nCommand: npm install dayjs';
+    'Blocked: a new dependency (dayjs) needs a person\'s approval. Write a short change request for the lead.\n  ! echo "<what you are approving>" > .claude/approvals/web/dep-dayjs\n(a person runs it; it allows installing it for the web lane, until the install is committed, at most 7 days)\nCommand: npm install dayjs';
   await start($, on, w);
   await $.tool.call({ tool: 'Bash', tool_use_id: 'tu-2', command: 'npm install dayjs' } as any);
   const ui = await toolResult($, 'tu-2', 'Bash');
@@ -622,7 +624,7 @@ test('CARD-4 outside a code-kit project, /approvals and /verify-branch say so', 
 });
 
 const install =
-  'Blocked: a new dependency (dayjs) needs a person\'s approval. Write a short change request for the lead.\n  ! echo "<what you are approving>" > .claude/approvals/dep-dayjs\n(a person runs it; it allows installing it for any agent, for 60 minutes)\nCommand: npm install dayjs';
+  'Blocked: a new dependency (dayjs) needs a person\'s approval. Write a short change request for the lead.\n  ! echo "<what you are approving>" > .claude/approvals/dep-dayjs\n(a person runs it; it allows installing it for any agent, until the install is committed, at most 7 days)\nCommand: npm install dayjs';
 
 test('CARD-1 a group holding a refusal unfolds, so its row can be the card', async ($, on) => {
   const w = project();

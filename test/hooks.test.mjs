@@ -262,6 +262,48 @@ try {
 
   // --- shell -------------------------------------------------------------------------------------
   expect('bare install allowed', bash('pnpm install && pnpm test'), 0);
+
+  // Commands are recognised where they run, not where their text is mentioned.
+  expect(
+    'switching to a protected branch and committing is refused',
+    bash('git switch main && git commit -m "x"'),
+    2,
+    'never commit to',
+  );
+  expect(
+    'but a grep for that text is not',
+    bash('grep -rn "git switch main && git commit" docs/'),
+    0,
+  );
+  expect(
+    'nor a heredoc that mentions it',
+    bash(
+      "cat > docs/notes.md <<'EOF'\nRun git switch main && git commit, then code-kit merge web/st-4 --delegated.\nEOF",
+    ),
+    0,
+  );
+  expect(
+    "nor a lane's commit message that mentions code-kit merge",
+    bash('git commit -m "wire up: code-kit merge runs after verify"', 'web-engineer'),
+    0,
+  );
+  expect(
+    'a lane running code-kit merge after cd is still refused',
+    bash('cd apps && node "/opt/my tools/code-kit.mjs" merge web/st-4 --delegated', 'web-engineer'),
+    2,
+    'only the lead merges',
+  );
+  expect(
+    'and --no-verify in a commit message is text, not the flag',
+    bash('git commit -m "docs: why we never use --no-verify"'),
+    0,
+  );
+  expect(
+    'while the flag itself is refused',
+    bash('git commit --no-verify -m x'),
+    2,
+    'Skipping git hooks',
+  );
   expect('new JS dependency blocked', bash('pnpm --filter office add lodash'), 2);
   expect('new Python dependency blocked', bash('pip install requests'), 2);
   expect(
@@ -479,6 +521,11 @@ try {
   );
   const depEntries = logLines();
   expect(
+    'the commit that adds the package uses its approval up',
+    truth(!existsSync(join(repo, '.claude/approvals/web/dep-lodash'))),
+    0,
+  );
+  expect(
     'for the manifest outside its paths only, with the package and reason',
     truth(
       depEntries.length === 1 &&
@@ -497,7 +544,13 @@ try {
   rmSync(join(repo, 'apps/field/package.json'));
   approveFor('web', 'dep-lodash', 61);
   expect(
-    'once it expires, the manifest change is an ownership problem again',
+    'a dependency approval still stands an hour later, when the story resumes',
+    audit('web-engineer'),
+    0,
+  );
+  approveFor('web', 'dep-lodash', 7 * 24 * 60 + 1);
+  expect(
+    'after a week it lapses, and the manifest change is an ownership problem again',
     audit('web-engineer'),
     2,
   );
@@ -720,7 +773,7 @@ try {
       'one whose install runs scripts',
       delegate('scripted-pkg', '--reason', 'x'),
       1,
-      'runs scripts',
+      'runs a script that runs its own code',
     );
     expect(
       'and one the registry has never heard of',
@@ -772,6 +825,52 @@ try {
     rmSync(logFile, { force: true });
     rmSync(join(repo, '.claude/approvals'), { recursive: true, force: true });
     put('.claude/code-kit.json', fixture);
+  }
+
+  // --- a lane merging its base: what arrives with the base was logged there ---------------------
+  {
+    const b = newRepo();
+    cleanups.push(b.dir);
+    const bPut = (rel, body) => {
+      mkdirSync(dirname(join(b.dir, rel)), { recursive: true });
+      writeFileSync(join(b.dir, rel), body);
+    };
+    const bHook = (name, command, agent) =>
+      spawnSync('node', [join(hooks, name)], {
+        input: JSON.stringify({ cwd: b.dir, tool_input: { command }, agent_type: agent }),
+        env: { ...process.env, CLAUDE_PROJECT_DIR: b.dir },
+        encoding: 'utf8',
+      });
+    b.git('checkout', '-q', '-b', 'web/st-9');
+    bPut('apps/office/lib/w.ts', 'export const w = 1;\n');
+    b.git('add', '-A');
+    b.git('commit', '-q', '-m', 'ST-9');
+    b.git('checkout', '-q', 'main');
+    bPut('design/approved-screens.json', JSON.stringify({ screens: [] }));
+    bPut('workers/jobs/j.ts', 'export const j = 1;\n');
+    b.git('add', '-A');
+    b.git('commit', '-q', '-m', 'the base moves on');
+    b.git('checkout', '-q', 'web/st-9');
+    b.git('merge', '-q', '--no-ff', '--no-commit', 'main');
+    expect(
+      'a lane concluding a merge of its base needs no approval for what the base logged',
+      bHook('guard-bash.mjs', 'git commit -m "Merge main"', 'web-engineer'),
+      0,
+    );
+    expect(
+      "and the ownership audit doesn't ask it to revert the base's changes",
+      bHook('lane-audit.mjs', 'git merge --no-commit main', 'web-engineer'),
+      0,
+    );
+    bPut('design/approved-screens.json', JSON.stringify({ screens: ['mine'] }));
+    b.git('add', 'design/approved-screens.json');
+    expect(
+      "but its own change to a protected file mid-merge still needs a person's approval",
+      bHook('guard-bash.mjs', 'git commit -m "Merge main"', 'web-engineer'),
+      2,
+      "needs a person's approval",
+    );
+    b.git('merge', '--abort');
   }
 
   // --- delegated merges: the lead merges a branch that passes verify --------------------------------
@@ -866,13 +965,24 @@ try {
       2,
       "the person's own act",
     );
+    // Delegation is the target's rule: main stops delegating, committed there.
+    m.git('update-index', '--no-assume-unchanged', '.claude/code-kit.json');
+    m.git('commit', '-q', '-am', 'stop delegating merges');
     expect(
-      'without approvals.delegate.merge the command refuses',
+      'without approvals.delegate.merge on the target the command refuses',
       mKit('merge', 'web/st-1', '--delegated'),
       1,
-      "doesn't delegate merges",
+      "main doesn't delegate merges",
     );
     expect('and so does the hook', mHook(mergeCmd), 2, "doesn't delegate merges");
+    m.git('checkout', '-q', '-b', 'lead/m3', 'main~1');
+    expect(
+      "a branch whose own config delegates merges can't grant itself one its target doesn't allow",
+      mKit('merge', 'web/st-1', '--delegated'),
+      1,
+      "main doesn't delegate merges",
+    );
+    m.git('checkout', '-q', 'main');
   }
 
   // --- approvals reach lanes in their own worktrees ----------------------------------------------
@@ -1099,6 +1209,20 @@ try {
   );
 
   // --- the CLI -----------------------------------------------------------------------------------
+  const whoLock = cli('who', 'pnpm-lock.yaml');
+  expect(
+    "who names the reviewer of a file any agent may write, not 'nobody'",
+    truth(
+      whoLock.stdout.includes('pnpm-lock.yaml: any agent may write it; the lead reviews it'),
+      whoLock.stdout + whoLock.stderr,
+    ),
+    0,
+  );
+  expect(
+    'and so does trace',
+    truth(JSON.parse(cli('trace', 'pnpm-lock.yaml', '--json').stdout).reviewer === 'lead'),
+    0,
+  );
   const check = cli('check');
   expect(
     'check validates the config',
@@ -1332,6 +1456,32 @@ try {
     ),
     0,
   );
+  expect(
+    "a lead branch is held to the lead's paths for what its own commits change",
+    failsWith(
+      verify('--no-checks', '--branch', 'lead/m1'),
+      "apps/office/lib/a.ts: changed by a commit on the lead's branch, but the lead doesn't own it",
+    ),
+    0,
+  );
+  // Lane work reaches the lead's branch by merging the lane's branch, and isn't the lead's own change.
+  const laneBranch = v.git('branch', '--show-current').trim();
+  v.git('checkout', '-q', '-b', 'lead/m9', 'main');
+  vPut('docs/notes.md', 'the lead writes here\n');
+  vCommit('lead notes');
+  v.git('merge', '-q', '--no-ff', '-m', 'Merge the lane', laneBranch);
+  const leadVerify = verify('--no-checks');
+  expect(
+    "lane work merged into the lead's branch isn't held to the lead's paths",
+    truth(
+      !(leadVerify.stdout + leadVerify.stderr).includes(
+        "changed by a commit on the lead's branch",
+      ) && (leadVerify.stdout + leadVerify.stderr).includes("held to the lead's paths"),
+      leadVerify.stdout + leadVerify.stderr,
+    ),
+    0,
+  );
+  v.git('checkout', '-q', laneBranch);
   vPut('apps/office/app/home/page.tsx', 'export default function P() {}\n');
   vCommit('screen');
   expect(
@@ -1344,6 +1494,38 @@ try {
   expect(
     'verify fails committed secrets',
     failsWith(verify('--no-checks'), '.env.local may hold secrets'),
+    0,
+  );
+  v.git('rm', '-q', '.env.local');
+  vCommit('secret removed');
+  expect(
+    "a secret committed and then deleted still fails: it's in the branch's history",
+    failsWith(
+      verify('--no-checks'),
+      ".env.local may hold secrets, and it's in this branch's history",
+    ),
+    0,
+  );
+  // Where gitleaks is installed, verify scans the branch's commits with it (a stand-in here).
+  const fakeBin = mkdtempSync(join(tmpdir(), 'code-kit-gitleaks-'));
+  cleanups.push(fakeBin);
+  writeFileSync(
+    join(fakeBin, 'gitleaks'),
+    '#!/bin/sh\necho "Finding: AWS key in apps/office/lib/a.ts (commit abc123)"\nexit 1\n',
+    { mode: 0o755 },
+  );
+  const scanned = spawnSync(
+    'node',
+    [join(here, '..', 'bin', 'code-kit.mjs'), 'verify', '--base', 'main', '--no-checks'],
+    {
+      cwd: v.dir,
+      encoding: 'utf8',
+      env: { ...process.env, PATH: `${fakeBin}:${process.env.PATH}` },
+    },
+  );
+  expect(
+    "and what gitleaks finds in the branch's commits",
+    failsWith(scanned, "gitleaks found possible secrets in this branch's commits"),
     0,
   );
 
@@ -1824,6 +2006,50 @@ try {
   vCommit('ST-2');
   v.git('checkout', '-q', 'main');
   nextIs('finished stories go to review', v.dir, 'review', 'ST-2');
+  // A review that sends the branch back: the same commits aren't finished work to review again.
+  const sent = vCli('sent-back', 'web/st-2', '--reason', 'cancel needs its test');
+  expect(
+    'sent-back records the commit a review sent back',
+    truth(sent.status === 0, sent.stderr),
+    0,
+  );
+  const backState = JSON.parse(vCli('status', '--json').stdout).stories.find(
+    (s) => s.id === 'ST-2',
+  );
+  expect(
+    'status reads a sent-back branch as sent back',
+    truth(backState.state === 'sent back', JSON.stringify(backState)),
+    0,
+  );
+  nextIs("next proposes the lane's fix, not another review", v.dir, 'dispatch', 'ST-2');
+  v.git('checkout', '-q', 'web/st-2');
+  vPut('apps/office/lib/cancel.test.ts', "test('BOOK-2 cancel', () => {});\n");
+  vCommit('ST-2 fix');
+  v.git('checkout', '-q', 'main');
+  nextIs('once the lane commits its fix, the branch goes to review again', v.dir, 'review', 'ST-2');
+  // A story with commits whose dependency isn't done is blocked on it, not finished.
+  const planNow = readFileSync(join(v.dir, 'docs/spec/plan.md'), 'utf8');
+  vPut(
+    'docs/spec/plan.md',
+    planNow.replace(/(### ST-1 [\s\S]*?\*\*Status:\*\* )[a-z ]+/, '$1in progress'),
+  );
+  const blockedNow = JSON.parse(vCli('status', '--json').stdout).stories.find(
+    (s) => s.id === 'ST-2',
+  );
+  expect(
+    'a story whose dependency is not done is blocked on it, even with commits on its branch',
+    truth(
+      blockedNow.state === 'blocked' && blockedNow.waitingOn.join() === 'ST-1',
+      JSON.stringify(blockedNow),
+    ),
+    0,
+  );
+  expect(
+    'and next does not propose reviewing it',
+    truth(!nextIn(v.dir).args.split(' ').includes('ST-2'), JSON.stringify(nextIn(v.dir))),
+    0,
+  );
+  vPut('docs/spec/plan.md', planNow);
   const donePlan = plan('done')
     .replace('**Depends on:** ST-1\n**Status:** todo', '**Depends on:** ST-1\n**Status:** done')
     .replace('### ST-3 Stray\n\n**Lane:** nope\n**Requirements:** BOOK-9\n', '');
