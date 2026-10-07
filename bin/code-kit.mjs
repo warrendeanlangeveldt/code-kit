@@ -48,7 +48,7 @@ import {
 } from '../hooks/lib/rules.mjs';
 import { DEPENDENCY_APPROVAL, dependencyApproval } from '../hooks/lib/dependencies.mjs';
 import { dependencyRuleProblems, npmFacts, packageOf } from '../hooks/lib/registry.mjs';
-import { laneOfBranch, verifyBranch } from '../hooks/lib/verify.mjs';
+import { heldTo, laneOfBranch, verifyBranch } from '../hooks/lib/verify.mjs';
 
 const out = (s) => process.stdout.write(`${s}\n`);
 // Piped into `head` and the like: stop quietly when the reader closes.
@@ -376,7 +376,7 @@ function merge(branch) {
         '-m',
         `Merge ${branch} into ${into}`,
         '-m',
-        `Verified with code-kit verify (${changed.length} file(s)${lane ? `, held to the ${lane} lane` : ''}) and merged ${byPerson ? 'by the person, from the code-kit pane' : 'by the lead within the delegated rules'}.`,
+        `Verified with code-kit verify (${changed.length} file(s)${lane ? `, held to ${heldTo(lane)}` : ''}) and merged ${byPerson ? 'by the person, from the code-kit pane' : 'by the lead within the delegated rules'}.`,
         branch,
       );
     } catch (e) {
@@ -390,7 +390,7 @@ function merge(branch) {
       );
     }
     out(
-      `Merged ${branch} into ${into}: verify passed on ${changed.length} file(s)${lane ? `, held to the ${lane} lane` : ''}.`,
+      `Merged ${branch} into ${into}: verify passed on ${changed.length} file(s)${lane ? `, held to ${heldTo(lane)}` : ''}.`,
     );
   } finally {
     cleanup();
@@ -492,7 +492,7 @@ function verify() {
     return;
   }
   out(
-    `${changed.length} file(s) changed since ${from}${lane ? `, held to the ${lane} lane (branch ${branch})` : ''}.`,
+    `${changed.length} file(s) changed since ${from}${lane ? `, held to ${heldTo(lane)} (branch ${branch})` : ''}.`,
   );
   let count = 0;
   for (const [key, title] of Object.entries(VERIFY_GROUPS)) {

@@ -1374,6 +1374,32 @@ try {
     ),
     0,
   );
+  expect(
+    "a lead branch is held to the lead's paths for what its own commits change",
+    failsWith(
+      verify('--no-checks', '--branch', 'lead/m1'),
+      "apps/office/lib/a.ts: changed by a commit on the lead's branch, but the lead doesn't own it",
+    ),
+    0,
+  );
+  // Lane work reaches the lead's branch by merging the lane's branch, and isn't the lead's own change.
+  const laneBranch = v.git('branch', '--show-current').trim();
+  v.git('checkout', '-q', '-b', 'lead/m9', 'main');
+  vPut('docs/notes.md', 'the lead writes here\n');
+  vCommit('lead notes');
+  v.git('merge', '-q', '--no-ff', '-m', 'Merge the lane', laneBranch);
+  const leadVerify = verify('--no-checks');
+  expect(
+    "lane work merged into the lead's branch isn't held to the lead's paths",
+    truth(
+      !(leadVerify.stdout + leadVerify.stderr).includes(
+        "changed by a commit on the lead's branch",
+      ) && (leadVerify.stdout + leadVerify.stderr).includes("held to the lead's paths"),
+      leadVerify.stdout + leadVerify.stderr,
+    ),
+    0,
+  );
+  v.git('checkout', '-q', laneBranch);
   vPut('apps/office/app/home/page.tsx', 'export default function P() {}\n');
   vCommit('screen');
   expect(

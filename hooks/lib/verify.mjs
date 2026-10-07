@@ -10,7 +10,15 @@ import { CONFIG_FILE } from './config.mjs';
 import { isDependencyFile } from './dependencies.mjs';
 import { matchesAny } from './glob.mjs';
 import { layerProblems } from './layers.mjs';
-import { APPROVAL_LOG, SECRETS, laneOf, ownerOf, protectedEntry, screenProblem } from './rules.mjs';
+import {
+  APPROVAL_LOG,
+  SECRETS,
+  laneOf,
+  ownerOf,
+  owns,
+  protectedEntry,
+  screenProblem,
+} from './rules.mjs';
 
 const git = (root, ...args) =>
   execFileSync('git', ['-C', root, ...args], {
@@ -31,7 +39,28 @@ function showAt(root, ref, rel) {
 /** The lane a branch belongs to by its name (`<lane>/<story>`), or null. */
 export function laneOfBranch(branch, config) {
   const lane = branch?.split('/')[0];
+  if (lane === 'lead') return 'lead';
   return lane && config.lanes[lane] ? lane : null;
+}
+
+/** What verify holds a branch to, in words: a lane's paths, or the lead's. */
+export const heldTo = (lane) => (lane === 'lead' ? "the lead's paths" : `the ${lane} lane`);
+
+/**
+ * Files changed by commits made on the branch itself (first parents, merges left out): on the lead's
+ * branch, what the lead wrote, as distinct from lane work it merged in after review.
+ */
+function directChanges(root, from) {
+  const out = git(
+    root,
+    'log',
+    '--first-parent',
+    '--no-merges',
+    '--format=',
+    '--name-only',
+    `${from}..HEAD`,
+  );
+  return new Set(out.split('\n').filter(Boolean));
 }
 
 /** Files changed on this branch since it left `base`. */
@@ -110,6 +139,7 @@ export function verifyBranch({ root, base, config, lane = null, checks = true })
   const { entries, problems: logProblems } = logEntries(root, from);
   found.protected.push(...logProblems);
   const logged = new Map(entries.map((e) => [e.file, e]));
+  const direct = lane === 'lead' ? directChanges(root, from) : null;
 
   for (const f of changed) {
     if (SECRETS(f))
@@ -122,7 +152,20 @@ export function verifyBranch({ root, base, config, lane = null, checks = true })
         `${f} is ${guarded.why}, but no approval-log entry records this change. Protected files are committed through Claude Code with code-kit, which logs them.`,
       );
     if (matchesAny(f, config.anyActor)) continue;
-    if (lane) {
+    if (lane === 'lead') {
+      // The lead's branch is held to the lead's paths for what it changes itself; lane work reaches it
+      // by merging the lane's branch, which verify held to that lane.
+      if (!direct.has(f)) continue;
+      const entry = logged.get(f);
+      const approved =
+        (guarded && entry?.approval === guarded.approval) ||
+        signed ||
+        (isDependencyFile(f) && entry?.approval === 'dependency');
+      if (!owns({ kind: 'lead' }, f, config) && !approved)
+        found.ownership.push(
+          `${f}: changed by a commit on the lead's branch, but the lead doesn't own it (owner: ${ownerOf(f, config) ?? 'nobody'}). Lane work comes in by merging the lane's reviewed branch.`,
+        );
+    } else if (lane) {
       const { paths, exclude } = config.lanes[lane];
       const own = matchesAny(f, paths) && !matchesAny(f, exclude);
       const entry = logged.get(f);
