@@ -556,3 +556,17 @@ test("install scripts are told apart: a prebuilt binary, a native build, or the 
   c.approvals.delegate.dependencies.allowInstallScripts = ['everything'];
   assert.match(validate(c).join(' '), /allowInstallScripts/);
 });
+
+test('files any agent may write have a reviewer: the lead, or the lane an entry names', async () => {
+  const { reviewerOf } = await import('../hooks/lib/rules.mjs');
+  const c = clone();
+  c.anyActor = ['pnpm-lock.yaml', { glob: 'supabase/seed.sql', reviewer: 'data' }];
+  assert.deepEqual(validate(c), []);
+  const config = withDefaults(c);
+  assert.ok(config.anyActor.includes('supabase/seed.sql'));
+  assert.equal(reviewerOf('pnpm-lock.yaml', config), 'lead');
+  assert.equal(reviewerOf('supabase/seed.sql', config), 'data');
+  assert.equal(reviewerOf('apps/office/x.ts', config), null);
+  c.anyActor = [{ glob: 'x', reviewer: 'nobody-lane' }];
+  assert.match(validate(c).join(' '), /"anyActor"/);
+});

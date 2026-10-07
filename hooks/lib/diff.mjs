@@ -2,6 +2,10 @@
 // lanes, layers and rules added, removed or changed, and which files would change owner.
 import { ownerOf } from './rules.mjs';
 
+/** An anyActor entry in words: its glob, with its reviewer when named. */
+const anyActorText = (e) =>
+  typeof e === 'string' ? e : `${e.glob} (reviewed by ${e.reviewer ?? 'the lead'})`;
+
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 const lists = (a = [], b = []) => ({
   added: b.filter((x) => !a.includes(x)),
@@ -95,7 +99,7 @@ export function diffConfigs(before, after) {
   for (const [label, a, b] of [
     ['lead paths', before.lead?.paths, after.lead?.paths],
     ['lead outside paths', before.lead?.outside, after.lead?.outside],
-    ['any-actor paths', before.anyActor, after.anyActor],
+    ['any-actor paths', before.anyActor?.map(anyActorText), after.anyActor?.map(anyActorText)],
     ['protected branches', before.branches?.protected, after.branches?.protected],
   ]) {
     const change = listChange('', a, b);

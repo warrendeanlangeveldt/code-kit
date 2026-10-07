@@ -470,6 +470,13 @@ export function laneOf(rel, config) {
   );
 }
 
+/** Who reviews a change to a file any agent may write: the lane an anyActor entry names, else the lead. Null for other files. */
+export function reviewerOf(rel, config) {
+  if (!matchesAny(rel, config.anyActor)) return null;
+  const named = (config.anyActorReviewers ?? []).find((e) => matchesAny(rel, [e.glob]));
+  return named?.reviewer ?? 'lead';
+}
+
 export function ownerOf(rel, config) {
   const lane = laneOf(rel, config);
   if (lane) return `${lane} lane / ${config.lanes[lane].agent}`;

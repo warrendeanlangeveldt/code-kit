@@ -50,6 +50,7 @@ Read the story, every requirement it cites, and the full diff (`git diff <base>.
 
 Report the table, `verify`'s result and one of:
 
+- **Files any agent may write** (`anyActor`, such as a lockfile or recorded decisions) have no owning lane, but they have a reviewer: `trace <file>` names it (the lead unless the config names a lane). Review those changes as that reviewer would, or ask that lane's agent.
 - **Merge.** Everything passes. The lead merges the branch into its own branch (`git merge --no-ff <branch>`), sets the story's `**Status:**` to `done` in the plan, and commits. `main` and the other protected branches are merged by a person, through a pull request, after `verify` passes in CI. When the branch is merged, remove its worktree.
 - **Send back.** List each problem, where it is, and what "fixed" looks like. Record the send-back, so `status` and `next` read the branch as waiting for its fix rather than finished:
 

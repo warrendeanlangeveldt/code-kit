@@ -31,6 +31,9 @@ export function loadConfig(projectDir) {
 /** The rules the hooks enforce: the project's config, the kit's defaults, and any active adapters. */
 export const effectiveConfig = (raw, root) => applyAdapters(withDefaults(raw), raw, root);
 
+/** An anyActor entry's glob: entries are globs, or { glob, reviewer } naming who reviews changes to it. */
+export const anyActorGlob = (e) => (typeof e === 'string' ? e : e?.glob);
+
 /** The engine's fixed rules, merged into the project's: the kit and Claude's own files belong to the lead. */
 export function withDefaults(c) {
   return {
@@ -39,7 +42,11 @@ export function withDefaults(c) {
       paths: [...c.lead.paths, '.claude/**'],
       outside: [...(c.lead.outside ?? []), ...CLAUDE_OWN],
     },
-    anyActor: [...(c.anyActor ?? []), '.claude/state/**'],
+    anyActor: [...(c.anyActor ?? []).map(anyActorGlob), '.claude/state/**'],
+    // Who reviews changes to files any agent may write; the lead unless an entry names a lane.
+    anyActorReviewers: (c.anyActor ?? [])
+      .filter((e) => typeof e === 'object' && e?.reviewer)
+      .map((e) => ({ glob: e.glob, reviewer: e.reviewer })),
     protected: [KIT, ...(c.protected ?? []).filter((p) => p.glob !== KIT.glob)],
     layers: c.layers ?? [],
     importAliases: c.importAliases ?? {},
@@ -118,9 +125,20 @@ export function validate(c) {
     c.lead?.outside === undefined || isList(c.lead.outside),
     '"lead.outside" must be a list of globs',
   );
-  need(c.anyActor === undefined || isList(c.anyActor), '"anyActor" must be a list of globs');
   validateLanes(c, need);
   const lanes = Object.keys(isObj(c.lanes) ? c.lanes : {});
+  need(
+    c.anyActor === undefined ||
+      (Array.isArray(c.anyActor) &&
+        c.anyActor.every(
+          (e) =>
+            isStr(e) ||
+            (isObj(e) &&
+              isStr(e.glob) &&
+              (e.reviewer === undefined || e.reviewer === 'lead' || lanes.includes(e.reviewer))),
+        )),
+    '"anyActor" must be a list of globs, or { "glob", "reviewer" } with the lead or a lane as reviewer',
+  );
   each('protected', (e, at) => {
     need(isStr(e.glob) && isStr(e.why), `${at} needs "glob" and "why"`);
     need(

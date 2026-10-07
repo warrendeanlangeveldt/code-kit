@@ -46,6 +46,7 @@ import {
   grantApprovals,
   openRequests,
   ownerOf,
+  reviewerOf,
 } from '../hooks/lib/rules.mjs';
 import { DEPENDENCY_APPROVAL, dependencyApproval } from '../hooks/lib/dependencies.mjs';
 import { dependencyRuleProblems, npmFacts, packageOf } from '../hooks/lib/registry.mjs';
@@ -138,7 +139,13 @@ function who(paths) {
   const { config } = load();
   for (const p of paths) {
     const layer = layerOf(p, config.layers);
-    out(`${p}: ${ownerOf(p, config) ?? 'nobody'}${layer ? ` · layer ${layer.name}` : ''}`);
+    const reviewer = reviewerOf(p, config);
+    const whose =
+      ownerOf(p, config) ??
+      (reviewer
+        ? `any agent may write it; ${reviewer === 'lead' ? 'the lead' : `the ${reviewer} lane`} reviews it`
+        : 'nobody');
+    out(`${p}: ${whose}${layer ? ` · layer ${layer.name}` : ''}`);
   }
 }
 
@@ -620,7 +627,10 @@ function adapters() {
     if (!active.includes(a.name)) continue;
     const c = a.config ?? {};
     if (c.lead?.length) out(`  lead writes: ${c.lead.join(', ')}`);
-    if (c.anyActor?.length) out(`  anyone writes: ${c.anyActor.join(', ')}`);
+    if (c.anyActor?.length)
+      out(
+        `  anyone writes: ${c.anyActor.map((e) => (typeof e === 'string' ? e : `${e.glob} (reviewed by ${e.reviewer ?? 'the lead'})`)).join(', ')}`,
+      );
     for (const p of c.protected ?? [])
       out(`  protected: ${p.glob} (approval "${p.approval}": ${p.why})`);
     for (const b of a.shell?.block ?? []) out(`  blocked command: /${b.pattern}/ — ${b.why}`);
@@ -635,7 +645,7 @@ function trace(paths) {
   for (const t of traces) {
     out(t.path);
     out(
-      `  owner: ${t.owner ?? 'nobody'}${t.layer ? ` · layer ${t.layer.name} → ${t.layer.mayImport.join(', ') || 'only itself'}` : ''}`,
+      `  owner: ${t.owner ?? (t.reviewer ? `any agent; the ${t.reviewer === 'lead' ? 'lead' : `${t.reviewer} lane`} reviews it` : 'nobody')}${t.layer ? ` · layer ${t.layer.name} → ${t.layer.mayImport.join(', ') || 'only itself'}` : ''}`,
     );
     if (!t.requirements.length) out('  no requirements traced (no commit names a story)');
     for (const r of t.requirements)

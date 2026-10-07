@@ -6,7 +6,7 @@ import { execFileSync } from 'node:child_process';
 import { matchesAny } from './glob.mjs';
 import { layerOf } from './layers.mjs';
 import { readRequirements, readStories } from './plan.mjs';
-import { ownerOf } from './rules.mjs';
+import { ownerOf, reviewerOf } from './rules.mjs';
 
 const git = (root, ...args) => {
   try {
@@ -30,7 +30,7 @@ export function storiesOf(root, rel) {
   return [...ids];
 }
 
-/** { path, owner, lane, layer, requirements: [{ id, title, spec, stories }] } for one repository path. */
+/** { path, owner, reviewer, lane, layer, requirements: [{ id, title, spec, stories }] } for one repository path. */
 export function traceFile(root, rel, config) {
   const laneName = Object.keys(config.lanes).find((l) => {
     const { paths, exclude } = config.lanes[l];
@@ -40,6 +40,8 @@ export function traceFile(root, rel, config) {
   const out = {
     path: rel,
     owner: ownerOf(rel, config),
+    // For a file any agent may write: who reviews changes to it.
+    reviewer: reviewerOf(rel, config),
     lane: laneName ? { name: laneName, agent: config.lanes[laneName].agent } : null,
     layer: layer
       ? { name: layer.name, mayImport: layer.mayImport, denyPackages: layer.denyPackages ?? [] }

@@ -1209,6 +1209,20 @@ try {
   );
 
   // --- the CLI -----------------------------------------------------------------------------------
+  const whoLock = cli('who', 'pnpm-lock.yaml');
+  expect(
+    "who names the reviewer of a file any agent may write, not 'nobody'",
+    truth(
+      whoLock.stdout.includes('pnpm-lock.yaml: any agent may write it; the lead reviews it'),
+      whoLock.stdout + whoLock.stderr,
+    ),
+    0,
+  );
+  expect(
+    'and so does trace',
+    truth(JSON.parse(cli('trace', 'pnpm-lock.yaml', '--json').stdout).reviewer === 'lead'),
+    0,
+  );
   const check = cli('check');
   expect(
     'check validates the config',
