@@ -12,6 +12,7 @@ import { importsOf, layerProblems } from '../hooks/lib/layers.mjs';
 import { diffConfigs, ownershipMoves } from '../hooks/lib/diff.mjs';
 import { newProblems } from '../hooks/lib/baseline.mjs';
 import { addedPackages, dependencyApproval, isDependencyFile } from '../hooks/lib/dependencies.mjs';
+import { commandsOf, runs, withoutHeredocs } from '../hooks/lib/shell.mjs';
 import {
   NOT_CODE_KIT,
   agentsAtWork,
@@ -471,4 +472,20 @@ test("the mod: ACT-1 a prefilled reason names the command itself, not the agent'
     }),
     'Approve dayjs for any agent: npm install dayjs',
   );
+});
+
+test('shell: the simple commands a command runs, apart from the text it carries', () => {
+  assert.deepEqual(
+    commandsOf('cd a && FOO=1 git commit -m "x; y" | tee log; (npm test)').map((c) => c.text),
+    ['cd a', 'git commit -m "x; y"', 'tee log', 'npm test'],
+  );
+  assert.equal(
+    withoutHeredocs("cat > f <<'EOF'\ngit push --force\nEOF\necho done"),
+    "cat > f <<'EOF'\necho done",
+  );
+  assert.equal(withoutHeredocs('cat <<< "a <<EOF"\nnext'), 'cat <<< "a <<EOF"\nnext');
+  assert.equal(runs('echo "git commit"', /^git\s+commit\b/), false);
+  assert.equal(runs('x=$(git commit -m a)', /^git\s+commit\b/), true);
+  assert.equal(runs('git commit -m "--no-verify"', /--no-verify/, { quoted: false }), false);
+  assert.equal(runs('git commit --no-verify', /--no-verify/, { quoted: false }), true);
 });

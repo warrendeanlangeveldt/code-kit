@@ -262,6 +262,48 @@ try {
 
   // --- shell -------------------------------------------------------------------------------------
   expect('bare install allowed', bash('pnpm install && pnpm test'), 0);
+
+  // Commands are recognised where they run, not where their text is mentioned.
+  expect(
+    'switching to a protected branch and committing is refused',
+    bash('git switch main && git commit -m "x"'),
+    2,
+    'never commit to',
+  );
+  expect(
+    'but a grep for that text is not',
+    bash('grep -rn "git switch main && git commit" docs/'),
+    0,
+  );
+  expect(
+    'nor a heredoc that mentions it',
+    bash(
+      "cat > docs/notes.md <<'EOF'\nRun git switch main && git commit, then code-kit merge web/st-4 --delegated.\nEOF",
+    ),
+    0,
+  );
+  expect(
+    "nor a lane's commit message that mentions code-kit merge",
+    bash('git commit -m "wire up: code-kit merge runs after verify"', 'web-engineer'),
+    0,
+  );
+  expect(
+    'a lane running code-kit merge after cd is still refused',
+    bash('cd apps && node "/opt/my tools/code-kit.mjs" merge web/st-4 --delegated', 'web-engineer'),
+    2,
+    'only the lead merges',
+  );
+  expect(
+    'and --no-verify in a commit message is text, not the flag',
+    bash('git commit -m "docs: why we never use --no-verify"'),
+    0,
+  );
+  expect(
+    'while the flag itself is refused',
+    bash('git commit --no-verify -m x'),
+    2,
+    'Skipping git hooks',
+  );
   expect('new JS dependency blocked', bash('pnpm --filter office add lodash'), 2);
   expect('new Python dependency blocked', bash('pip install requests'), 2);
   expect(

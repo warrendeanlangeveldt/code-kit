@@ -9,6 +9,7 @@ import { appendFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { join, resolve } from 'node:path';
 import { addedPackages, dependencyApproval } from './lib/dependencies.mjs';
+import { CODE_KIT, GIT, codeOf, runs } from './lib/shell.mjs';
 import { block, start } from './lib/hook.mjs';
 import {
   APPROVAL_LOG,
@@ -27,28 +28,46 @@ import {
 const { input, project, config, error } = start();
 const cmd = String(input.tool_input?.command || '');
 
-const ALWAYS = [
-  [/\bgit\s+push\b.*(--force\b|\s-f\b|--force-with-lease\b)/, 'Force-push is not allowed.'],
-  [/--no-verify\b/, 'Skipping git hooks is not allowed.'],
+// Commands are recognised where they run (lib/shell.mjs), so a commit message, a heredoc, a quoted
+// --text or a grep pattern that mentions one doesn't trip its rule.
+const RUNS = [
   [
-    /\brm\s+-rf?\s+(\/|~|\$HOME|\.\.?)(\s|$)/,
+    new RegExp(String.raw`^${GIT}push\b.*(--force\b|\s-f\b|--force-with-lease\b)`),
+    'Force-push is not allowed.',
+  ],
+  [new RegExp(String.raw`^${GIT}\S+\b.*\s--no-verify\b`), 'Skipping git hooks is not allowed.'],
+  [
+    /^rm\s+-rf?\s+(\/|~|\$HOME|\.\.?)(\s|$)/,
     'Refusing a destructive delete of a root, home or parent directory.',
   ],
-  [/\b(curl|wget)\b[^|]*\|\s*(sh|bash|zsh)\b/, 'Piping downloads into a shell is not allowed.'],
-  [/\.claude\/approvals/, 'Approvals are created only by a person, with a `!` shell command.'],
+];
+for (const [re, why] of RUNS) {
+  if (runs(cmd, re, { quoted: false })) block(`Blocked: ${why}\nCommand: ${cmd}`);
+}
+// These read the command whole: a pipe spans commands, and an approval or the log can be written
+// through a quoted path.
+const ALWAYS = [
+  [
+    /\b(curl|wget)\b[^|]*\|\s*(sh|bash|zsh)\b/,
+    'Piping downloads into a shell is not allowed.',
+    codeOf(cmd),
+  ],
+  [/\.claude\/approvals/, 'Approvals are created only by a person, with a `!` shell command.', cmd],
   [
     /approval-log\.jsonl/,
     'The approval audit log is appended only by the commit hook; nobody edits it.',
+    cmd,
   ],
 ];
-for (const [re, why] of ALWAYS) {
-  if (re.test(cmd)) block(`Blocked: ${why}\nCommand: ${cmd}`);
+for (const [re, why, text] of ALWAYS) {
+  if (re.test(text)) block(`Blocked: ${why}\nCommand: ${cmd}`);
 }
 const packages = addedPackages(cmd);
-const approves = /\bcode-kit(\.mjs)?["']?\s+approve\b/.test(cmd);
-const delegatedMerge = /\bcode-kit(\.mjs)?["']?\s+merge\b/.test(cmd);
+const approves = runs(cmd, new RegExp(String.raw`^${CODE_KIT}\s+approve\b`));
+const delegatedMerge = runs(cmd, new RegExp(String.raw`^${CODE_KIT}\s+merge\b`));
+const commits = runs(cmd, new RegExp(String.raw`^${GIT}commit\b`));
 if (error) {
-  if (/\bgit\s+commit\b/.test(cmd)) block(`Blocked: ${error}\nFix the config before committing.`);
+  if (commits) block(`Blocked: ${error}\nFix the config before committing.`);
   if (approves) block(`Blocked: ${error}\nApprovals wait until the config is valid.`);
   if (delegatedMerge) block(`Blocked: ${error}\nMerges wait until the config is valid.`);
   if (packages.length)
@@ -62,23 +81,35 @@ const branches = config.branches.protected
 // The branch is read before the command runs, so a command that switches to a protected branch and then
 // commits or merges in the same breath is judged by what it does, not by where it starts. Moving a
 // protected branch directly (branch -f, update-ref) is a commit on it by another name.
-const writesHistory = /\bgit\s+(commit|merge|cherry-pick|rebase|revert|am)\b/.test(cmd);
-const switchesToProtected = new RegExp(
-  `\\bgit\\s+(?:switch|checkout)\\s+(?:-[^\\s]+\\s+)*(${branches})(?![\\w./-])(?!\\s+--)`,
-).test(cmd);
+const writesHistory = runs(
+  cmd,
+  new RegExp(String.raw`^${GIT}(commit|merge|cherry-pick|rebase|revert|am)\b`),
+);
+const switchesToProtected = runs(
+  cmd,
+  new RegExp(
+    String.raw`^${GIT}(?:switch|checkout)\s+(?:-[^\s]+\s+)*(${branches})(?![\w./-])(?!\s+--)`,
+  ),
+);
 const movesProtected =
-  new RegExp(
-    `\\bgit\\s+branch\\s+(?:\\S+\\s+)*(?:-f|--force|-M|-C)\\b.*\\b(${branches})(?![\\w./-])`,
-  ).test(cmd) ||
-  new RegExp(
-    `\\bgit\\s+update-ref\\s+(?:-\\S+\\s+)*(?:refs/heads/)?(${branches})(?![\\w./-])`,
-  ).test(cmd);
+  runs(
+    cmd,
+    new RegExp(
+      String.raw`^${GIT}branch\s+(?:\S+\s+)*(?:-f|--force|-M|-C)\b.*\b(${branches})(?![\w./-])`,
+    ),
+  ) ||
+  runs(
+    cmd,
+    new RegExp(
+      String.raw`^${GIT}update-ref\s+(?:-\S+\s+)*(?:refs/heads/)?(${branches})(?![\w./-])`,
+    ),
+  );
 if ((switchesToProtected && writesHistory) || movesProtected) {
   block(
     `Blocked: never commit to, merge into or move ${config.branches.protected.join(' or ')}, even by switching to it first. Work on a branch; a person merges after review${config.approvals.delegate?.merge ? ', or the lead merges a verified branch with `code-kit merge <branch> --delegated`' : ''}.\nCommand: ${cmd}`,
   );
 }
-if (new RegExp(`\\bgit\\s+push\\b.*\\b(${branches})\\b`).test(cmd)) {
+if (runs(cmd, new RegExp(String.raw`^${GIT}push\b.*\b(${branches})\b`))) {
   block(
     `Blocked: push to your own branch; a person merges to ${config.branches.protected[0]} after review.\nCommand: ${cmd}`,
   );
@@ -180,10 +211,7 @@ try {
 } catch {
   // not a git repository yet
 }
-if (
-  /\bgit\s+(commit|merge|cherry-pick|rebase|revert)\b/.test(cmd) &&
-  config.branches.protected.includes(branch)
-) {
+if (writesHistory && config.branches.protected.includes(branch)) {
   block(
     `Blocked: never commit or merge on ${branch}. Work on a branch; a person merges after review.`,
   );
@@ -288,7 +316,7 @@ function recordApprovals() {
   git('add', APPROVAL_LOG);
 }
 
-if (/\bgit\s+commit\b/.test(cmd)) {
+if (commits) {
   recordApprovals();
   const scan = spawnSync('gitleaks', ['protect', '--staged', '--redact', '--no-banner'], {
     cwd: root,
