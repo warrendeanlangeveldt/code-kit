@@ -65,7 +65,7 @@ code-kit stops each of these at the moment it would happen. The hook refuses the
   - a `<lane>/…` branch stays in that lane's paths, apart from manifest and lockfile changes logged under a dependency approval;
   - every protected change is in the approval log, and the log is append-only;
   - no new layer violations, and the baseline doesn't grow;
-  - no screens without an approved design, and no committed secrets;
+  - no screens without an approved design, and no secrets anywhere in the branch's history, including ones committed and deleted again;
   - the project's checks pass.
 
 A project without `.claude/code-kit.json` isn't governed at all. An invalid config fails closed: nothing but the config itself can be written until it's fixed.
@@ -107,7 +107,7 @@ Set it up at the start of a new build, straight from the architecture docs, or b
 
 ## Install
 
-**Requirements:** Claude Code, Node 22 or later, and git. [gitleaks](https://github.com/gitleaks/gitleaks) is optional: when it's installed, every commit gets a secret scan.
+**Requirements:** Claude Code, Node 22 or later, and git. [gitleaks](https://github.com/gitleaks/gitleaks) is optional: when it's installed, every commit gets a secret scan, and `verify` scans every commit on the branch.
 
 **The plugin**, from this repository's marketplace:
 

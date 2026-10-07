@@ -1482,6 +1482,38 @@ try {
     failsWith(verify('--no-checks'), '.env.local may hold secrets'),
     0,
   );
+  v.git('rm', '-q', '.env.local');
+  vCommit('secret removed');
+  expect(
+    "a secret committed and then deleted still fails: it's in the branch's history",
+    failsWith(
+      verify('--no-checks'),
+      ".env.local may hold secrets, and it's in this branch's history",
+    ),
+    0,
+  );
+  // Where gitleaks is installed, verify scans the branch's commits with it (a stand-in here).
+  const fakeBin = mkdtempSync(join(tmpdir(), 'code-kit-gitleaks-'));
+  cleanups.push(fakeBin);
+  writeFileSync(
+    join(fakeBin, 'gitleaks'),
+    '#!/bin/sh\necho "Finding: AWS key in apps/office/lib/a.ts (commit abc123)"\nexit 1\n',
+    { mode: 0o755 },
+  );
+  const scanned = spawnSync(
+    'node',
+    [join(here, '..', 'bin', 'code-kit.mjs'), 'verify', '--base', 'main', '--no-checks'],
+    {
+      cwd: v.dir,
+      encoding: 'utf8',
+      env: { ...process.env, PATH: `${fakeBin}:${process.env.PATH}` },
+    },
+  );
+  expect(
+    "and what gitleaks finds in the branch's commits",
+    failsWith(scanned, "gitleaks found possible secrets in this branch's commits"),
+    0,
+  );
 
   v.git('checkout', '-q', 'main');
   v.git('checkout', '-q', '-b', 'lead/contracts');

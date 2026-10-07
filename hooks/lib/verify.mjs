@@ -1,7 +1,7 @@
 // The rules for a branch's changes as a whole, for CI and the lead's review: the hooks only see work
 // done in Claude Code sessions, so a person's commits or another tool would otherwise go unchecked.
 // Everything is judged from git (base...HEAD), except the checks, which run in the checkout.
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { BASELINE_FILE, loadBaseline, newProblems } from './baseline.mjs';
@@ -126,6 +126,33 @@ function signedByPerson(root, from, file, signedBy) {
 }
 
 /**
+ * Secrets anywhere in the branch's history, not only in the files as they end up: a secret committed
+ * and then deleted is still in the commits that merge. Names that look like secret files, from every
+ * commit; and, where gitleaks is installed, what it finds in the commits' content.
+ */
+function historySecrets(root, from, changed) {
+  const problems = [];
+  const touched = git(root, 'log', '--format=', '--name-only', `${from}..HEAD`)
+    .split('\n')
+    .filter(Boolean);
+  for (const f of new Set(touched))
+    if (SECRETS(f) && !changed.includes(f))
+      problems.push(
+        `${f} may hold secrets, and it's in this branch's history even though it's gone now. Rewrite the history without it before it merges.`,
+      );
+  const scan = spawnSync(
+    'gitleaks',
+    ['detect', '--source', root, `--log-opts=${from}..HEAD`, '--redact', '--no-banner'],
+    { encoding: 'utf8' },
+  );
+  if (scan.error?.code !== 'ENOENT' && scan.status === 1)
+    problems.push(
+      `gitleaks found possible secrets in this branch's commits:\n${`${scan.stdout}${scan.stderr}`.trim()}`,
+    );
+  return problems;
+}
+
+/**
  * Every problem with the branch, grouped: { ownership, protected, layers, baseline, design, checks }.
  * `lane` holds the branch to that lane's paths; `checks: false` leaves the project's checks to CI's
  * own steps.
@@ -141,6 +168,7 @@ export function verifyBranch({ root, base, config, lane = null, checks = true })
   const logged = new Map(entries.map((e) => [e.file, e]));
   const direct = lane === 'lead' ? directChanges(root, from) : null;
 
+  found.ownership.push(...historySecrets(root, from, changed));
   for (const f of changed) {
     if (SECRETS(f))
       found.ownership.push(`${f} may hold secrets; secrets never go in the repository.`);
