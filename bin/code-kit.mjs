@@ -290,6 +290,27 @@ const VERIFY_GROUPS = {
 // merges, and only when `verify` passes on that branch, checks included. A person merges with git.
 // With --person, the person merges (the mod passes it for a press in its pane): the same verify first,
 // with no delegation needed. The hooks refuse --person from every agent.
+/**
+ * The config as committed on `ref`: what governs merging into it, so a branch's own config can't grant
+ * itself a merge its target doesn't allow.
+ */
+function configAt(ref) {
+  let raw;
+  try {
+    raw = JSON.parse(
+      execFileSync('git', ['show', `${ref}:${file}`], {
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'ignore'],
+      }),
+    );
+  } catch {
+    die(`${ref} has no readable ${file}; a merge into it follows the rules committed there.`);
+  }
+  const problems = validate(raw);
+  if (problems.length) die(`${file} on ${ref} is invalid:\n  ${problems.join('\n  ')}`);
+  return effectiveConfig(raw, '.');
+}
+
 function merge(branch) {
   const { config } = load();
   const byPerson = flag('--person');
@@ -299,14 +320,16 @@ function merge(branch) {
     );
   if (flag('--delegated') && byPerson)
     die("A merge is either the lead's (--delegated) or the person's (--person), not both.");
-  if (!byPerson && !config.approvals.delegate?.merge)
-    die(
-      'This project doesn\'t delegate merges to the lead ("approvals.delegate.merge" isn\'t true). A person merges after review.',
-    );
   const into = intoName ?? config.branches.protected[0];
-  if (!config.branches.protected.includes(into))
+  // Whether the lead may merge, and which branches are protected, are the target's rules.
+  const target = configAt(into);
+  if (!byPerson && !target.approvals.delegate?.merge)
+    die(
+      `${into} doesn't delegate merges to the lead ("approvals.delegate.merge" isn't true in its ${file}). A person merges after review.`,
+    );
+  if (!target.branches.protected.includes(into))
     die(`${into} isn't a protected branch; merge into it with git.`);
-  if (config.branches.protected.includes(branch)) die(`${branch} is itself a protected branch.`);
+  if (target.branches.protected.includes(branch)) die(`${branch} is itself a protected branch.`);
   const root = resolve('.');
   const g = (cwd, ...a) =>
     execFileSync('git', ['-C', cwd, ...a], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });

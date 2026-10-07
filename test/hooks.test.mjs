@@ -908,13 +908,24 @@ try {
       2,
       "the person's own act",
     );
+    // Delegation is the target's rule: main stops delegating, committed there.
+    m.git('update-index', '--no-assume-unchanged', '.claude/code-kit.json');
+    m.git('commit', '-q', '-am', 'stop delegating merges');
     expect(
-      'without approvals.delegate.merge the command refuses',
+      'without approvals.delegate.merge on the target the command refuses',
       mKit('merge', 'web/st-1', '--delegated'),
       1,
-      "doesn't delegate merges",
+      "main doesn't delegate merges",
     );
     expect('and so does the hook', mHook(mergeCmd), 2, "doesn't delegate merges");
+    m.git('checkout', '-q', '-b', 'lead/m3', 'main~1');
+    expect(
+      "a branch whose own config delegates merges can't grant itself one its target doesn't allow",
+      mKit('merge', 'web/st-1', '--delegated'),
+      1,
+      "main doesn't delegate merges",
+    );
+    m.git('checkout', '-q', 'main');
   }
 
   // --- approvals reach lanes in their own worktrees ----------------------------------------------
