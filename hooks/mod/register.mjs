@@ -36,6 +36,8 @@ import { holdable } from './hold.mjs';
 import {
   DEFAULT_UI,
   SENDBACK_ID,
+  closeGoesBack,
+  laneActions,
   lanesFrame,
   liveLevel,
   sendBackPane,
@@ -96,6 +98,7 @@ const harness = () => harnessSettings(model.check?.harness);
 let paneUi = { ...DEFAULT_UI };
 let leadLast = null; // { tool, at }
 let sendingBack = null; // { lane, branch, story, reason, error }
+let storyOpen = null; // the drill-down's story (VIEW-7): { id, lane, data, error }
 const personAsks = []; // prompts the person asked for (stop an agent), waiting for the lead to be idle
 // The reviewer (spec 07): each branch's review at its head, and the agent type registered for it.
 const reviews = new Map(); // branch → { branch, head, story, state, startedAt, findings, why?, error? }
@@ -766,6 +769,32 @@ export function register(on) {
         sendingBack = null;
         await $.ui.close({ id: SENDBACK_ID });
       },
+      // VIEW-7: a story's drill-down, its facts from `code-kit story --json`.
+      openStory: async (lane) => {
+        if (!lane.story) return;
+        const id = lane.story.id;
+        paneUi = { ...paneUi, story: id, file: null };
+        storyOpen = { id, lane: lane.name, data: null, error: null };
+        $.ui.invalidate('ui.render');
+        const ran = await $.process.run(['node', cli, 'story', id, '--json'], {
+          cwd,
+          timeoutMs: 180000,
+        });
+        if (storyOpen?.id !== id) return;
+        const data = ran.exitCode === 0 ? parseJson(ran.stdout) : null;
+        storyOpen = data
+          ? { ...storyOpen, data }
+          : {
+              ...storyOpen,
+              error: (ran.stderr || ran.stdout).trim().split('\n')[0] || 'code-kit story failed',
+            };
+        $.ui.invalidate('ui.render');
+      },
+      closeStory: () => {
+        paneUi = { ...paneUi, story: null, file: null };
+        storyOpen = null;
+        $.ui.invalidate('ui.render');
+      },
       // VIEW-6: a lane's act, from its key or button.
       laneAct: async (id, lane) => {
         if (id === 'approve') {
@@ -1050,6 +1079,29 @@ export function register(on) {
     }
     return live;
   };
+  // VIEW-7: the drill-down's view of the open story, with what the session knows of it.
+  const storyNow = (open, now, usage) => {
+    const lane = model.state?.lanes?.find((l) => l.name === open.lane) ?? null;
+    const branch = open.data?.branch ?? lane?.branch ?? null;
+    return {
+      story: open,
+      review: branch ? (reviews.get(branch) ?? null) : null,
+      tokens: usage?.stories?.[open.id] ?? 0,
+      outlier: usage?.outliers?.find((o) => o.id === open.id)?.ratio ?? null,
+      steps: loop.steps.filter(
+        (s) => s.target.includes(open.id) || (branch && s.target.includes(branch)),
+      ),
+      actions: lane
+        ? laneActions(lane, {
+            queue: model.queue ?? [],
+            held: [...held.values()],
+            requests: model.requests?.open ?? [],
+          }).filter((a) => !['nudge', 'stop'].includes(a.id))
+        : [],
+      file: paneUi.file,
+      now,
+    };
+  };
   // The band's lines, which the pane pins as what needs the person (VIEW-5).
   const linesNow = (now) =>
     bandLines({
@@ -1078,6 +1130,7 @@ export function register(on) {
         requests: model.requests?.open ?? [],
         ui: paneUi,
         placement: e.props.placement,
+        story: storyOpen ? storyNow(storyOpen, now, usage) : null,
       },
       $.ui.resolve(e),
       {
@@ -1100,6 +1153,21 @@ export function register(on) {
               : (at + step + lanesNow.length) % lanesNow.length;
           paneUi = { ...paneUi, selected: lanesNow[to].name };
           $.ui.invalidate('ui.render');
+          // VIEW-6: Enter opens the selected lane's story: the focus waits on its Open button.
+          if (lanesNow[to].story)
+            $.ui.focus({ requestId: PANE_ID, key: 'open-story' }).catch(() => {});
+        },
+        onOpen: (lane) => act?.openStory(lane),
+        story: {
+          onBack: () => act?.closeStory(),
+          onFile: (file) => {
+            paneUi = { ...paneUi, file };
+            $.ui.invalidate('ui.render');
+          },
+          onAct: (id) => {
+            const lane = lanesNow.find((l) => l.name === storyOpen?.lane);
+            if (lane) act?.laneAct(id, lane);
+          },
         },
         onNeed: (id, line) => act?.[id]?.(line),
         onLane: (id, lane) => act?.laneAct(id, lane),
@@ -1110,6 +1178,15 @@ export function register(on) {
         onFocusSearch: () => $.ui.focus({ requestId: PANE_ID, key: 'filter' }).catch(() => {}),
       },
     );
+  });
+
+  // VIEW-6: Escape on a story goes back to the lanes; on the lanes, it closes the pane.
+  on('ui.close', async ($, e, next) => {
+    if (closeGoesBack(e, PANE_ID, paneUi)) {
+      act?.closeStory();
+      return;
+    }
+    return next(e);
   });
 
   on('ui.render', { component: 'Pane', requestId: SENDBACK_ID }, async ($, e) =>

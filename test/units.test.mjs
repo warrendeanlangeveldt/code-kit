@@ -872,3 +872,48 @@ test("VIEW-1, VIEW-4, VIEW-6 panes v2: counts, liveness and the selected lane's 
   assert.equal(liveLevel(20 * 60000, stall, { running: true }), null);
   assert.equal(liveLevel(0, stall, { flagged: true }), 'stalled');
 });
+
+test('VIEW-7 the drill-down: a diff per file, the spec-check table, and Escape going back', async () => {
+  const { fileDiffs, closeGoesBack } = await import('../hooks/mod/panes.mjs');
+  const { specCheckRows } = await import('../hooks/lib/plan.mjs');
+  const diff = [
+    'diff --git a/a.ts b/a.ts',
+    'new file mode 100644',
+    'index 0000000..1111111',
+    '--- /dev/null',
+    '+++ b/a.ts',
+    '@@ -0,0 +1 @@',
+    '+a',
+    'diff --git a/logo.png b/logo.png',
+    'Binary files a/logo.png and b/logo.png differ',
+    'diff --git a/old.ts b/old.ts',
+    'deleted file mode 100644',
+    '--- a/old.ts',
+    '+++ /dev/null',
+    '@@ -1 +0,0 @@',
+    '-gone',
+    '',
+  ].join('\n');
+  assert.deepEqual(fileDiffs(diff), [
+    { path: 'a.ts', source: '--- /dev/null\n+++ b/a.ts\n@@ -0,0 +1 @@\n+a\n' },
+    { path: 'old.ts', source: '--- a/old.ts\n+++ /dev/null\n@@ -1 +0,0 @@\n-gone\n' },
+  ]);
+  assert.deepEqual(fileDiffs(''), []);
+  assert.deepEqual(
+    specCheckRows(
+      '# Report\n\n| Requirement | Status (done / partial / missing / conflicts) | Where | Note |\n|---|---|---|---|\n| BOOK-1 Request | Partial | src/a.ts | no test |\n| BOOK-2 | missing | | |\n\nQuestions follow.',
+    ),
+    [
+      { requirement: 'BOOK-1', status: 'partial', where: 'src/a.ts', note: 'no test' },
+      { requirement: 'BOOK-2', status: 'missing', where: '', note: '' },
+    ],
+  );
+  assert.deepEqual(specCheckRows('no table'), []);
+  const person = { id: 'lanes', origin: { kind: 'person' } };
+  assert.equal(closeGoesBack(person, 'lanes', { story: 'ST-4' }), true);
+  assert.equal(closeGoesBack(person, 'lanes', { story: null }), false);
+  assert.equal(
+    closeGoesBack({ ...person, origin: { kind: 'plugin' } }, 'lanes', { story: 'ST-4' }),
+    false,
+  );
+});

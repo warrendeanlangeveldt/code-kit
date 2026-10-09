@@ -209,7 +209,7 @@ Timelines per lane and the lane agents’ characters, animated in place.
 **Lane:** lead
 **Requirements:** VIEW-7, REVW-5
 **Depends on:** ST-16, ST-19
-**Status:** todo
+**Status:** done
 
 Spec-check, diff, verify, findings, usage and steps for a story.
 

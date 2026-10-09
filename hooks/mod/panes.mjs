@@ -4,10 +4,12 @@
 import {
   NOT_CODE_KIT,
   STATE_COLOR,
+  ago,
   lanesPane,
   loopSection,
   queueSection,
   shownState,
+  tokens,
   usageSection,
 } from './view.mjs';
 
@@ -212,6 +214,18 @@ export function lanesFrame(view, els, on) {
     ),
   });
 
+  // VIEW-7: a story's drill-down takes the tabs' place; Back (b, or Escape) returns.
+  if (ui.story && view.story)
+    return Box({
+      flexDirection: 'column',
+      rowGap: 1,
+      children: [
+        header,
+        ...(needs.length ? [Box({ key: 'needs', flexDirection: 'column', children: needs })] : []),
+        storyPane(view.story, els, on.story),
+      ],
+    });
+
   const selected = state.lanes.find((l) => l.name === ui.selected) ?? null;
   const body =
     ui.tab === 'queue'
@@ -244,6 +258,18 @@ export function lanesFrame(view, els, on) {
             columnGap: 1,
             flexWrap: 'wrap',
             children: [
+              ...(selected?.story
+                ? [
+                    Button({
+                      key: 'open-story',
+                      label: `Open ${selected.story.id}`,
+                      hotkey: 'o',
+                      variant: 'primary',
+                      autoFocus: true,
+                      onPress: () => on.onOpen(selected),
+                    }),
+                  ]
+                : []),
               Button({
                 key: 'lane-next',
                 label: 'Next lane',
@@ -377,3 +403,234 @@ export function sendBackPane(
     ],
   });
 }
+
+/**
+ * A unified diff split per file, each as the hunks the Code element draws (its `---`/`+++` pair and
+ * `@@` hunks, without git's `diff --git` and index lines): [{ path, source }]. Files without hunks
+ * (binary, a mode change) are left out.
+ */
+export function fileDiffs(text) {
+  const out = [];
+  for (const part of String(text ?? '')
+    .split(/^diff --git /m)
+    .slice(1)) {
+    const lines = part.split('\n');
+    const from = lines.findIndex((l) => l.startsWith('--- '));
+    if (from < 0 || !lines.slice(from).some((l) => l.startsWith('@@'))) continue;
+    const plus = lines.find((l) => l.startsWith('+++ '))?.slice(4) ?? '';
+    const minus = lines[from].slice(4);
+    const path = (plus === '/dev/null' ? minus : plus).replace(/^[ab]\//, '');
+    out.push({ path, source: lines.slice(from).join('\n').replace(/\n+$/, '\n') });
+  }
+  return out;
+}
+
+const SPEC_CHECK_COLOR = { done: 'green', partial: 'yellow', missing: 'red', conflicts: 'red' };
+const SEVERITY_TITLE = { blocker: 'Blockers', concern: 'Concerns', nit: 'Nits' };
+
+/**
+ * VIEW-7 and REVW-5: a story's drill-down. `story` is { id, data, error }, data being `code-kit
+ * story --json`'s; `review` the reviewer's for its branch; `tokens` its usage; `steps` the loop's for
+ * it; `actions` the lane's acts. `on`: onBack(), onFile(path), onAct(id).
+ */
+export function storyPane(
+  { story, review, tokens: usedTokens, outlier, steps, actions, file, now },
+  els,
+  on,
+) {
+  const { Box, Text, Button, Code } = els;
+  const text = (value, style = {}) => Text({ ...style, children: [value] });
+  const section = (key, title, children) =>
+    Box({ key, flexDirection: 'column', children: [text(title, { bold: true }), ...children] });
+  const d = story.data;
+  const head = Box({
+    key: 'story-head',
+    flexDirection: 'row',
+    columnGap: 2,
+    children: [
+      Button({
+        key: 'story-back',
+        label: 'Back',
+        hotkey: 'b',
+        plain: true,
+        dimColor: true,
+        onPress: on.onBack,
+      }),
+      text(d ? `${d.id} ${d.title}` : story.id, { bold: true }),
+      ...(d
+        ? [text(`${d.lane} · ${d.state}${d.branch ? ` · ${d.branch}` : ''}`, { dimColor: true })]
+        : []),
+    ],
+  });
+  if (story.error)
+    return Box({
+      flexDirection: 'column',
+      rowGap: 1,
+      children: [head, text(story.error, { color: 'red' })],
+    });
+  if (!d)
+    return Box({
+      flexDirection: 'column',
+      rowGap: 1,
+      children: [head, text('Reading the story…', { dimColor: true })],
+    });
+
+  const checked = new Map((d.specCheck?.rows ?? []).map((r) => [r.requirement, r]));
+  const requirements = section(
+    'story-requirements',
+    `Requirements${d.specCheck ? '' : ' (no spec-check report yet)'}`,
+    d.requirements.length
+      ? d.requirements.map((r) => {
+          const c = checked.get(r.id);
+          return Box({
+            key: `req-${r.id}`,
+            flexDirection: 'row',
+            columnGap: 2,
+            children: [
+              text(r.id),
+              text(r.title, { wrap: 'truncate-end' }),
+              text(`plan: ${r.state}`, { dimColor: true }),
+              ...(c
+                ? [text(`spec-check: ${c.status}`, { color: SPEC_CHECK_COLOR[c.status] })]
+                : []),
+              ...(c?.where ? [text(c.where, { dimColor: true, wrap: 'truncate-end' })] : []),
+              ...(r.tests.length ? [text(`${r.tests.length} test(s)`, { dimColor: true })] : []),
+            ],
+          });
+        })
+      : [text('It names no requirement.', { dimColor: true })],
+  );
+
+  const findings = review
+    ? section(
+        'story-findings',
+        review.state === 'done'
+          ? `Review of ${review.head.slice(0, 7)}`
+          : review.state === 'running'
+            ? 'Review running'
+            : `Review ${review.state}: ${review.why ?? review.error ?? ''}`,
+        ['blocker', 'concern', 'nit'].flatMap((s) => {
+          const of = review.findings.filter((f) => f.severity === s);
+          if (!of.length) return [];
+          return [
+            text(SEVERITY_TITLE[s], {
+              color: s === 'blocker' ? 'red' : s === 'concern' ? 'yellow' : undefined,
+            }),
+            ...of.map((f, i) =>
+              Button({
+                key: `finding-${s}-${i}`,
+                label: `${f.where ? `${f.where}  ` : ''}${f.text}${f.rule ? ` (${f.rule})` : ''}`,
+                plain: true,
+                // REVW-5: the finding's place is a way into the diff.
+                onPress: () => f.where && on.onFile(f.where.split(':')[0]),
+              }),
+            ),
+          ];
+        }),
+      )
+    : null;
+
+  const problems = d.verify
+    ? Object.entries(d.verify.problems).flatMap(([group, list]) =>
+        list.map((p) => `${group}: ${p}`),
+      )
+    : [];
+  const verify = d.verify
+    ? section(
+        'story-verify',
+        'verify (without checks)',
+        problems.length
+          ? problems.map((p, i) =>
+              text(p, { key: `problem-${i}`, color: 'red', wrap: 'truncate-end' }),
+            )
+          : [text('No problems.', { color: 'green' })],
+      )
+    : null;
+
+  const diffs = fileDiffs(d.diff?.text);
+  const shown = diffs.find((f) => f.path === file) ?? diffs[0] ?? null;
+  const diff = d.diff
+    ? section(
+        'story-diff',
+        `Diff against ${d.base} · ${d.diff.files.length} file(s)${d.diff.truncated ? ' (cut short)' : ''}`,
+        [
+          Box({
+            key: 'diff-files',
+            flexDirection: 'row',
+            columnGap: 2,
+            flexWrap: 'wrap',
+            children: d.diff.files.map((f, i) =>
+              Button({
+                key: `file-${i}`,
+                label: `${f.path} +${f.added} -${f.removed}`,
+                plain: true,
+                ...(shown?.path === f.path ? {} : { dimColor: true }),
+                onPress: () => on.onFile(f.path),
+              }),
+            ),
+          }),
+          ...(shown
+            ? [
+                Code({
+                  key: 'diff-code',
+                  source: shown.source,
+                  format: 'diff',
+                  path: shown.path,
+                  wrap: 'truncate-end',
+                }),
+              ]
+            : []),
+        ],
+      )
+    : null;
+
+  const usage = usedTokens
+    ? text(
+        `Used ${tokens(usedTokens)} tokens this session${outlier ? `, ${outlier}× the usual` : ''}`,
+        {
+          ...(outlier ? { color: 'yellow' } : { dimColor: true }),
+        },
+      )
+    : null;
+  const recent = steps.length
+    ? section(
+        'story-steps',
+        'Loop steps',
+        steps
+          .slice(-6)
+          .reverse()
+          .map((s, i) =>
+            text(`${ago(now - s.at)}  ${s.kind}  ${s.target}`, {
+              key: `sstep-${i}`,
+              dimColor: true,
+            }),
+          ),
+      )
+    : null;
+  const acts = actions.length
+    ? Box({
+        key: 'story-acts',
+        flexDirection: 'row',
+        columnGap: 2,
+        children: actions.map((a) =>
+          Button({
+            key: `story-${a.id}`,
+            label: a.label,
+            hotkey: a.hotkey,
+            variant: 'primary',
+            onPress: () => on.onAct(a.id),
+          }),
+        ),
+      })
+    : null;
+
+  return Box({
+    flexDirection: 'column',
+    rowGap: 1,
+    children: [head, acts, requirements, findings, verify, usage, recent, diff].filter(Boolean),
+  });
+}
+
+/** VIEW-6: the person's Escape on an open story goes back to the lanes instead of closing the pane. */
+export const closeGoesBack = (e, paneId, ui) =>
+  e.id === paneId && e.origin?.kind === 'person' && Boolean(ui.story);

@@ -44,7 +44,7 @@ import { CODE, importsOf, layerOf, layerProblems, targetOf } from '../hooks/lib/
 import { ADAPTERS, activeAdapters } from '../hooks/lib/adapters/index.mjs';
 import { nextStep } from '../hooks/lib/next.mjs';
 import { traceFile } from '../hooks/lib/trace.mjs';
-import { buildStatus } from '../hooks/lib/plan.mjs';
+import { buildStatus, specCheckRows } from '../hooks/lib/plan.mjs';
 import { recordSentBack } from '../hooks/lib/reviews.mjs';
 import { dequeue, enqueue, lastMerged, readQueue, settle, waiting } from '../hooks/lib/queue.mjs';
 import { SETTINGS, parseSetting, settingOf, withSetting } from '../hooks/lib/harness.mjs';
@@ -550,6 +550,114 @@ function queue() {
   left.forEach((e, i) => out(`  ${i + 1}. ${e.branch} (passed review ${e.passed})`));
 }
 
+/** The most of a story's diff `story` prints; past it the text is cut and says so. */
+const DIFF_KEPT = 256 * 1024;
+
+/**
+ * One story's facts, for the mod's drill-down (VIEW-7): its requirements with the spec-check report's
+ * rows, its branch's diff against the base, and verify's problems on it (without the checks, which
+ * merge runs), where it's checked out or in a temporary worktree.
+ */
+function story(id) {
+  const { config } = load();
+  const { specs, plan } = config.docs ?? {};
+  if (!specs || !plan)
+    die('story needs docs.specs and docs.plan in the config. The spec-design skill writes both.');
+  const from = base(config, false);
+  const { stories, requirements } = buildStatus('.', config, from, tracked());
+  const s = stories.find((x) => x.id === id.toUpperCase());
+  if (!s) die(`There is no story ${id} in ${plan}.`);
+  const report = {
+    id: s.id,
+    title: s.title,
+    lane: s.lane,
+    state: s.state,
+    base: from,
+    branch: s.branchExists ? s.branch : null,
+    worktree: s.worktree,
+    requirements: s.requirements.map((rid) => {
+      const q = requirements.find((x) => x.id === rid);
+      return {
+        id: rid,
+        title: q?.title ?? '',
+        spec: q?.file ?? null,
+        state: q?.state ?? 'no spec',
+        tests: q?.tests ?? [],
+      };
+    }),
+    specCheck: null,
+    diff: null,
+    verify: null,
+  };
+  if (s.branchExists) {
+    const g = (...a) => execFileSync('git', a, { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+    const name = `.claude/state/spec-check/${s.branch.replace(/[^\w.-]+/g, '_')}.md`;
+    const found = [s.worktree, '.']
+      .filter(Boolean)
+      .map((d) => join(resolve(d), name))
+      .find((f) => existsSync(f));
+    if (found) report.specCheck = { file: found, rows: specCheckRows(readFileSync(found, 'utf8')) };
+    const range = `${from}...${s.branch}`;
+    const files = g('diff', '--numstat', range)
+      .split('\n')
+      .filter(Boolean)
+      .map((line) => {
+        const [added, removed, path] = line.split('\t');
+        return { path, added: Number(added) || 0, removed: Number(removed) || 0 };
+      });
+    const text = g('diff', range);
+    report.diff = {
+      files,
+      text:
+        text.length > DIFF_KEPT
+          ? text.slice(0, text.lastIndexOf('\ndiff --git', DIFF_KEPT) + 1 || DIFF_KEPT)
+          : text,
+      truncated: text.length > DIFF_KEPT,
+    };
+    // verify, without checks, where the branch is checked out; a temporary worktree otherwise.
+    let dir = s.worktree;
+    let temporary = null;
+    if (!dir) {
+      temporary = mkdtempSync(join(tmpdir(), 'code-kit-story-'));
+      rmSync(temporary, { recursive: true });
+      g('worktree', 'add', '--quiet', '--detach', temporary, s.branch);
+      dir = temporary;
+    }
+    try {
+      const lane = laneOfBranch(s.branch, config);
+      const { found: problems } = verifyBranch({
+        root: dir,
+        base: from,
+        config,
+        lane,
+        checks: false,
+      });
+      report.verify = {
+        checks: false,
+        where: temporary ? 'a temporary worktree' : dir,
+        problems: Object.fromEntries(
+          Object.entries(VERIFY_GROUPS).map(([key, title]) => [title, problems[key] ?? []]),
+        ),
+      };
+    } finally {
+      if (temporary) g('worktree', 'remove', '--force', temporary);
+    }
+  }
+  if (flag('--json')) return out(JSON.stringify(report, null, 2));
+  out(
+    `${report.id} ${report.title} (${report.lane}, ${report.state})${report.branch ? ` on ${report.branch}` : ''}`,
+  );
+  for (const r of report.requirements) out(`  ${r.id} ${r.title}: ${r.state}`);
+  if (report.diff) out(`${report.diff.files.length} file(s) changed against ${from}.`);
+  const count = report.verify ? Object.values(report.verify.problems).flat().length : 0;
+  if (report.verify)
+    out(
+      count
+        ? `verify (without checks): ${count} problem(s).`
+        : 'verify (without checks): no problems.',
+    );
+}
+
 // Open approval requests and the approvals in force, for the person and the mod's band.
 function requests() {
   load();
@@ -918,6 +1026,7 @@ const commands = {
   settings,
   hold: () => (rest.length === 1 ? hold(rest[0]) : usage()),
   queue,
+  story: () => (rest.length === 1 ? story(rest[0]) : usage()),
   'sent-back': () => (rest.length === 1 ? sentBackCommand(rest[0]) : usage()),
   trace: () => (rest.length ? trace(rest) : usage()),
   adapters,
@@ -940,7 +1049,8 @@ function usage() {
       '              | stops [--session id] [--json] | sent-back <branch> [--reason "…"]\n' +
       '              | settings [--json] | settings set <key> <value> --reason "…" [--via pane]\n' +
       '              | hold <id> [--minutes N] | hold <id> --answer approved|refused\n' +
-      '              | queue [--json] | queue add|drop <branch> | queue merge --delegated|--person',
+      '              | queue [--json] | queue add|drop <branch> | queue merge --delegated|--person\n' +
+      '              | story <id> [--json]',
   );
 }
 await (commands[command] ?? usage)();

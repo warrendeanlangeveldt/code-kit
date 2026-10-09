@@ -2378,6 +2378,40 @@ try {
   );
   writeFileSync(join(v.dir, '.claude/code-kit.json'), vConfig);
   vCli('queue', 'drop', 'web/st-2');
+  // story: one story's facts for the drill-down.
+  vPut(
+    '.claude/state/spec-check/web_st-2.md',
+    '# Spec check\n\n| Requirement | Status (done / partial / missing / conflicts) | Where | Note |\n| --- | --- | --- | --- |\n| BOOK-2 Cancel | done | apps/office/lib/cancel.ts | |\n',
+  );
+  const told = vCli('story', 'st-2', '--json');
+  const facts = JSON.parse(told.stdout || '{}');
+  expect(
+    "VIEW-7 story gives a story's requirements, its spec-check rows, its diff and verify without checks",
+    truth(
+      facts.id === 'ST-2' &&
+        facts.branch === 'web/st-2' &&
+        facts.requirements.map((r) => r.id).join() === 'BOOK-2' &&
+        facts.specCheck?.rows[0]?.requirement === 'BOOK-2' &&
+        facts.specCheck.rows[0].status === 'done' &&
+        facts.diff.files.some((f) => f.path === 'apps/office/lib/cancel.ts' && f.added === 1) &&
+        facts.diff.text.includes('+export const cancel = 1;') &&
+        Object.values(facts.verify.problems).flat().length === 0 &&
+        facts.verify.checks === false,
+      told.stderr || told.stdout.slice(0, 400),
+    ),
+    0,
+  );
+  expect(
+    'and leaves no temporary worktree behind',
+    truth(v.git('worktree', 'list').trim().split('\n').length === 1),
+    0,
+  );
+  expect(
+    'a story the plan has not is refused',
+    vCli('story', 'ST-99', '--json'),
+    1,
+    'There is no story ST-99',
+  );
   // A story with commits whose dependency isn't done is blocked on it, not finished.
   const planNow = readFileSync(join(v.dir, 'docs/spec/plan.md'), 'utf8');
   vPut(

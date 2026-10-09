@@ -101,6 +101,43 @@ function project() {
     heads: { 'web/st-4': 'abc123def4567890\n' } as Record<string, string>,
     registered: [] as any[],
     queue: [] as any[],
+    story: {
+      id: 'ST-4',
+      title: 'Booking form',
+      lane: 'web',
+      state: 'review',
+      base: 'main',
+      branch: 'web/st-4',
+      worktree: null,
+      requirements: [
+        {
+          id: 'BOOK-1',
+          title: 'Request a booking',
+          spec: 'docs/spec/01.md',
+          state: 'in progress',
+          tests: [],
+        },
+      ],
+      specCheck: {
+        file: '.claude/state/spec-check/web_st-4.md',
+        rows: [{ requirement: 'BOOK-1', status: 'partial', where: 'apps/web/form.tsx', note: '' }],
+      },
+      diff: {
+        files: [
+          { path: 'apps/web/form.tsx', added: 2, removed: 0 },
+          { path: 'apps/web/api.ts', added: 1, removed: 0 },
+        ],
+        text:
+          'diff --git a/apps/web/form.tsx b/apps/web/form.tsx\nnew file mode 100644\nindex 0000000..1111111\n--- /dev/null\n+++ b/apps/web/form.tsx\n@@ -0,0 +1,2 @@\n+export const form = 1;\n+export const x = 2;\n' +
+          'diff --git a/apps/web/api.ts b/apps/web/api.ts\nindex 2222222..3333333 100644\n--- a/apps/web/api.ts\n+++ b/apps/web/api.ts\n@@ -1 +1,2 @@\n a\n+b\n',
+        truncated: false,
+      },
+      verify: {
+        checks: false,
+        where: 'a temporary worktree',
+        problems: { Ownership: ["apps/api/x.ts: not the web lane's"], Checks: [] },
+      },
+    } as any,
     sent: [] as { to: any; text: string }[],
     holdWaits: false, // false: the hold ends at once, as if timed out (tests about cards, not hold)
     waiting: new Map<string, (answer: string) => void>(),
@@ -135,6 +172,7 @@ function stub(on: any, w: World) {
     if (sub === 'verify')
       return ran(w.verifyExit, w.verifyExit ? '' : w.verifyOut, w.verifyExit ? w.verifyOut : '');
     if (sub === 'stops') return ran(0, JSON.stringify(w.stops));
+    if (sub === 'story') return ran(0, JSON.stringify(w.story));
     if (sub === 'sent-back') {
       w.acts.push([...argv.slice(2)]);
       return ran(0, `Recorded: ${argv[3]} was sent back.`);
@@ -1784,5 +1822,87 @@ test('VIEW-8 inline, the pane is the header, what needs the person and one line 
   expect(await ui.find({ key: 'count-building' })).toBeDefined();
   expect(await ui.find({ key: 'tabs' })).toBeUndefined();
   expect((await ui.find({ key: 'lane-web' }))?.text).toMatch(/^web\s*building\s*ST-4/);
+  await ui.unmount();
+});
+
+// --- the story drill-down ---------------------------------------------------------------------------
+
+/** The Lanes pane with web's lane selected. */
+async function onWeb($: any) {
+  await lanes($);
+  const ui = await pane($, PANE);
+  await press($, 'lane-next', PANE);
+  await press($, 'lane-next', PANE);
+  return ui;
+}
+
+test('VIEW-7 Enter on a lane opens its story: requirements with the spec-check, verify, the diff and its acts', async ($, on) => {
+  const w = project();
+  w.stories[0] = { ...w.stories[0], state: 'review' };
+  await start($, on, w);
+  const ui = await onWeb($);
+  const open = await ui.find({ key: 'open-story' });
+  expect(open?.props.label).toBe('Open ST-4');
+  expect(open?.props.hotkey).toBe('o');
+  expect(open?.props.autoFocus).toBe(true);
+  await press($, 'open-story', PANE);
+  expect((await ui.find({ key: 'story-head' }))?.text).toMatch(
+    /ST-4 Booking form\s*web · review · web\/st-4/,
+  );
+  expect((await ui.find({ key: 'req-BOOK-1' }))?.text).toMatch(/spec-check: partial/);
+  expect((await ui.find({ key: 'story-verify' }))?.text).toMatch(/Ownership: apps\/api\/x.ts/);
+  expect((await ui.find({ key: 'file-0' }))?.props.label).toBe('apps/web/form.tsx +2 -0');
+  const code = await ui.find({ type: 'Code' });
+  expect(code?.props.format).toBe('diff');
+  expect(String(code?.props.source)).toMatch(/^--- \/dev\/null\n\+\+\+ b\/apps\/web\/form.tsx\n@@/);
+  await press($, 'file-1', PANE);
+  expect(String((await ui.find({ type: 'Code' }))?.props.source)).toMatch(
+    /\+\+\+ b\/apps\/web\/api.ts/,
+  );
+  expect((await ui.find({ key: 'story-review' }))?.props.hotkey).toBe('r');
+  expect((await ui.find({ key: 'story-sendBack' }))?.props.hotkey).toBe('s');
+  await press($, 'story-back', PANE);
+  expect(await ui.find({ key: 'tabs' })).toBeDefined();
+  await ui.unmount();
+});
+
+test("REVW-5 the drill-down shows the reviewer's findings by severity, each a way into the diff", async ($, on) => {
+  const w = reviewing();
+  const clock = await start($, on, w);
+  await leadTurn($);
+  await settle(clock);
+  w.agents = [
+    {
+      id: 'r1',
+      type: 'code-kit:reviewer',
+      description: 'Review web/st-4 (ST-4)',
+      status: 'completed',
+    },
+  ];
+  await $.turn.complete({
+    turnId: 't-r1',
+    agentId: 'r1',
+    answer: report({
+      verify: { passed: true, problems: [] },
+      findings: [
+        { severity: 'nit', where: 'apps/web/form.tsx:2', text: 'x is unused.' },
+        {
+          severity: 'concern',
+          where: 'apps/web/api.ts:2',
+          text: 'No error handling.',
+          rule: 'BOOK-1',
+        },
+      ],
+    }),
+    durationMs: 1,
+    isAborted: false,
+  } as any);
+  const ui = await onWeb($);
+  await press($, 'open-story', PANE);
+  const findings = (await ui.find({ key: 'story-findings' }))?.text ?? '';
+  expect(findings).toMatch(/Review of abc123d/);
+  expect(findings.indexOf('Concerns')).toBeLessThan(findings.indexOf('Nits'));
+  await press($, 'finding-concern-0', PANE);
+  expect(String((await ui.find({ type: 'Code' }))?.props.source)).toMatch(/apps\/web\/api.ts/);
   await ui.unmount();
 });
