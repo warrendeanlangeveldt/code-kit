@@ -2134,6 +2134,17 @@ try {
       2,
       "the person's own acts",
     );
+  // A heredoc or a quoted message that mentions one is data, not the act.
+  expect(
+    "a commit message whose line starts with a person's ctx act is not the act",
+    cBash("git commit -F - <<'EOF'\nctx settings set changes one as the person's act\nEOF"),
+    0,
+  );
+  expect(
+    'nor is a quoted message that spans lines',
+    cBash('git commit -m "Notes\nctx drop src.small is the person\'s"'),
+    0,
+  );
   expect('ratifying without a commit is untouched', cBash('ctx ratify C:events'), 0);
   expect(
     'text that only mentions the act is untouched',

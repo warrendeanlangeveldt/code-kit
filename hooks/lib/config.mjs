@@ -252,10 +252,13 @@ function validateLayers(c, need, each) {
 function validateShell(s, lanes, need) {
   if (!need(isObj(s), '"shell" must be an object')) return;
   const rule = (r) => isObj(r) && isRegExp(r.pattern) && isStr(r.why);
-  const blockRule = (r) => rule(r) && [undefined, true, false].includes(r.person);
+  const blockRule = (r) =>
+    rule(r) &&
+    [undefined, true, false].includes(r.person) &&
+    [undefined, true, false].includes(r.command);
   need(
     s.block === undefined || (Array.isArray(s.block) && s.block.every(blockRule)),
-    '"shell.block" must be a list of { pattern, why, person? }',
+    '"shell.block" must be a list of { pattern, why, person?, command? }',
   );
   const restricted =
     s.restricted === undefined ||

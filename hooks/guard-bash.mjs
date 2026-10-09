@@ -123,8 +123,11 @@ const actor = actorFor(input, sessionIn ?? project, config);
 // The lead acts for the person only where the config says the person may approve from chat.
 const forPerson = actor.kind === 'lead' && config.approvals.lead;
 
-for (const { pattern, why, person } of config.shell.block) {
-  if (!new RegExp(pattern).test(cmd) || (person && forPerson)) continue;
+for (const { pattern, why, person, command } of config.shell.block) {
+  // `command: true`: the pattern names a command, matched from the start of each one the line runs, so a
+  // heredoc or a quoted message that mentions it isn't refused. Otherwise it reads the whole text.
+  const matched = command ? runs(cmd, new RegExp(pattern)) : new RegExp(pattern).test(cmd);
+  if (!matched || (person && forPerson)) continue;
   const hint =
     person && actor.kind === 'lead'
       ? '\nTo let the lead run it when the person says so in chat, a person sets "approvals": { "lead": true } in the config.'

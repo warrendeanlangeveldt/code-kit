@@ -9,7 +9,7 @@
 // rules: only the lead may write that trailer, and Context Graph's gate checks the kinds it covers.
 // Ratifying with `--commit`, dropping a proposal and changing the harness settings are the person's acts
 // in ctx too, so no actor runs
-// them; only a command in command position counts, so text that mentions one isn't refused.
+// them; only a command the line runs counts, so a heredoc or quoted text that mentions one isn't refused.
 import { execFileSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
@@ -31,7 +31,7 @@ function ctx(root, args) {
 }
 
 const CTX = String.raw`(?:ctx|node\s+["']?[^\s"']*ctx\.mjs["']?|npx\s+(?:--yes\s+)?@warren-dean/context-graph(?:@\S+)?)`;
-const PERSONS_ACT = String.raw`(?:^|[;&|\n])\s*${CTX}\s+(?:ratify\b[^;&|\n]*\s--commit\b|drop\b|settings\s+set\b)`;
+const PERSONS_ACT = String.raw`^${CTX}\s+(?:ratify\b[^;&|\n]*\s--commit\b|drop\b|settings\s+set\b)`;
 
 export default {
   name: 'context-graph',
@@ -59,6 +59,7 @@ export default {
       },
       {
         pattern: PERSONS_ACT,
+        command: true,
         why: "Ratifying a Context Graph proposal with --commit, dropping one, and changing Context Graph's harness settings are the person's own acts: they run them themselves, with a `!` command, or from the Context Graph pane.",
       },
     ],

@@ -262,7 +262,7 @@ test('approvals from chat and person-only commands are switches', () => {
   c.shell.block[0].person = 'yes';
   const problems = validate(c).join(' ');
   assert.match(problems, /"approvals.lead" must be true or false/);
-  assert.match(problems, /"shell.block" must be a list of \{ pattern, why, person\? \}/);
+  assert.match(problems, /"shell.block" must be a list of \{ pattern, why, person\?, command\? \}/);
   c.approvals.lead = true;
   c.shell.block[0].person = true;
   assert.deepEqual(validate(c), []);
@@ -996,4 +996,14 @@ test('VIEW-2 and VIEW-3 the pictures: raster cells, poses, bars and their runs',
   assert.equal(merged[38], 'merged');
   assert.equal(merged[39], 'none');
   assert.equal(axisStart([], now), now - 3600000);
+});
+
+test('shell: a newline inside quotes ends no command', async () => {
+  const { commandsOf } = await import('../hooks/lib/shell.mjs');
+  assert.deepEqual(
+    commandsOf('git commit -m "Notes\nctx drop src.small is the person\'s"\nnpm test').map(
+      (c) => c.text,
+    ),
+    ['git commit -m "Notes\nctx drop src.small is the person\'s"', 'npm test'],
+  );
 });
