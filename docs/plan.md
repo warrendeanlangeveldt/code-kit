@@ -90,7 +90,7 @@ The riskiest assumptions in the brief, checked before building on them.
 **Lane:** lead
 **Requirements:** none
 **Depends on:** none
-**Status:** todo
+**Status:** done
 
 Submit a prompt on `turn.complete` and while a turn runs; record what happens (assumption A).
 
@@ -99,7 +99,7 @@ Submit a prompt on `turn.complete` and while a turn runs; record what happens (a
 **Lane:** lead
 **Requirements:** none
 **Depends on:** none
-**Status:** todo
+**Status:** done
 
 Against the real hooks: hold a refused install, write the approval, continue the same call; else the re-run fallback (assumption B).
 
@@ -108,7 +108,7 @@ Against the real hooks: hold a refused install, write the approval, continue the
 **Lane:** lead
 **Requirements:** none
 **Depends on:** none
-**Status:** todo
+**Status:** done
 
 Spawn a cheap agent beside a lead turn; read its usage per request and its last tool call (assumptions C and D).
 
@@ -123,14 +123,14 @@ Run the probe pane in the person’s VS Code terminal; note what draws (assumpti
 
 ## Milestone 4: code-kit's harness
 
-### ST-12 The judge
+### ST-12 Reading refusals for hold
 
 **Lane:** lead
 **Requirements:** HOLD-1
 **Depends on:** ST-9
 **Status:** todo
 
-Move the guard hooks’ decisions into `hooks/lib/judge.mjs`; the hooks and `code-kit judge --json` both use it; every hook test still passes.
+Recognise, from a refused call's result, the refusals a person's approval would allow (new packages, protected files, kit edits) and the approvals that would; the spike showed the same call can then be retried (`docs/spikes/harness.md`).
 
 ### ST-13 Harness settings
 
@@ -166,7 +166,7 @@ Prompting the lead when idle, stalls, autonomy, pause and done.
 **Depends on:** ST-10, ST-15
 **Status:** todo
 
-Started per finished branch; graded findings into the lead’s review.
+Started by prompting the lead (auto mode refuses a mod's own spawn) per finished branch; graded findings into the lead’s review.
 
 ### ST-17 The merge queue
 

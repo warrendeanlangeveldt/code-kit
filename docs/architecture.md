@@ -41,30 +41,29 @@ Both are reached only from `ui.press` handlers on the mod's own buttons and conf
 
 The harness grows the mod from showing and acting on a press into running the loop between presses. The rules stay in the settings hooks; the mod holds, asks, prompts the lead and runs background agents.
 
-| Component    | Where                                       | What it does                                                                                                                                                                                                                            |
-| ------------ | ------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| The judge    | `hooks/lib/judge.mjs` (new)                 | One function that says what code-kit would do with a tool call: allow, refuse, or refuse for want of named approvals. The guard hooks, the CLI (`code-kit judge`) and the mod's hold all use it, so the mod never re-implements a rule. |
-| Loop engine  | `hooks/mod/loop.mjs`                        | Pure: from `status`, `next`, the agents' activity, the queue, the settings and the clock, the next loop step (dispatch, review, merge, nudge, restart, flag).                                                                           |
-| Hold         | `hooks/mod/hold.mjs`                        | Pure: which calls to hold (from the judge's answer), the band's question, the timeout.                                                                                                                                                  |
-| Reviewer     | `hooks/mod/reviewer.mjs`                    | Pure: the reviewer's brief and the parsing of its graded findings.                                                                                                                                                                      |
-| Usage        | `hooks/mod/usage.mjs`                       | Pure: usage per agent, story and lane; outliers; the pause point.                                                                                                                                                                       |
-| Merge queue  | `hooks/lib/queue.mjs`, `code-kit queue`     | The queue's state in `.claude/state/merge-queue.json`, shared by the CLI and the mod.                                                                                                                                                   |
-| Settings     | `hooks/lib/config.mjs`, `code-kit settings` | The `harness` section, validated; `code-kit settings set <key> <value> --reason … --via pane` writes it as the person's change and logs it.                                                                                             |
-| Views        | `hooks/mod/views/`                          | Pure drawing: header, lanes and timeline, characters, story drill-down, queue, map, usage, settings.                                                                                                                                    |
-| Live regions | `hooks/mod/regions/`                        | Client modules for animated parts (characters, timelines): their own frame clock, keys and pointer.                                                                                                                                     |
-| Register     | `hooks/mod/register.mjs`                    | The only file that calls the mods API: events, timers, agents, prompts; it wires the pure parts together.                                                                                                                               |
+| Component    | Where                                       | What it does                                                                                                                                                                                                           |
+| ------------ | ------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Loop engine  | `hooks/mod/loop.mjs`                        | Pure: from `status`, `next`, the agents' activity, the queue, the settings and the clock, the next loop step (dispatch, review, merge, nudge, restart, flag).                                                          |
+| Hold         | `hooks/mod/hold.mjs`                        | Pure: from a refused call's result, the approvals that would allow it (new packages, protected files, kit edits), reusing the refusal cards' reading; the band's question; the timeout. The hooks stay the only judge. |
+| Reviewer     | `hooks/mod/reviewer.mjs`                    | Pure: the reviewer's brief and the parsing of its graded findings.                                                                                                                                                     |
+| Usage        | `hooks/mod/usage.mjs`                       | Pure: usage per agent, story and lane; outliers; the pause point.                                                                                                                                                      |
+| Merge queue  | `hooks/lib/queue.mjs`, `code-kit queue`     | The queue's state in `.claude/state/merge-queue.json`, shared by the CLI and the mod.                                                                                                                                  |
+| Settings     | `hooks/lib/config.mjs`, `code-kit settings` | The `harness` section, validated; `code-kit settings set <key> <value> --reason … --via pane` writes it as the person's change and logs it.                                                                            |
+| Views        | `hooks/mod/views/`                          | Pure drawing: header, lanes and timeline, characters, story drill-down, queue, map, usage, settings.                                                                                                                   |
+| Live regions | `hooks/mod/regions/`                        | Client modules for animated parts (characters, timelines): their own frame clock, keys and pointer.                                                                                                                    |
+| Register     | `hooks/mod/register.mjs`                    | The only file that calls the mods API: events, timers, agents, prompts; it wires the pure parts together.                                                                                                              |
 
 ### How it acts
 
 - **Through the lead:** dispatch, review and merge are prompts to the lead naming the skills, submitted when the lead is idle and the person isn't typing.
-- **Through agents it starts:** the reviewer, with `$.agent.spawn`, read-only under the hooks.
+- **Through agents the lead starts:** the mod prompts the lead to start the reviewer (auto mode refuses an agent a mod starts itself), then follows it by `agentId`; its report starts a lead turn.
 - **Through the CLI:** approvals (`approve --via pane`), merges (`merge --person`), sends-back, the queue and settings, all on the person's press or the loop's step.
-- **Holding a call:** the mod's `tool.call` hook asks the judge before the hooks run; a call the person's approval would allow waits while the band asks, and continues once the approval is written. Everything else passes straight to the hooks.
+- **Holding a call:** the mod's `tool.call` hook lets the hooks judge; when the result is a refusal a person's approval would allow, the call waits while the band asks, and on Approve the approval is written and the same call retried (spike B). Everything else passes through unchanged.
 
 ### Contracts
 
-New JSON outputs the mod reads, changed with it: `judge`, `queue`, `settings`, and the `harness` section's schema. `status`, `next`, `requests`, `stops` and `verify` stay as they are.
+New JSON outputs the mod reads, changed with it: `queue`, `settings`, and the `harness` section's schema. `status`, `next`, `requests`, `stops` and `verify` stay as they are.
 
 ### Tests
 
-The pure parts in `test/units.test.mjs`; the judge, queue and settings end to end in `test/hooks.test.mjs` (the hooks and the CLI must agree with the judge); the mod in `claude plugin test`, with timers on the mock clock and agents stubbed.
+The pure parts in `test/units.test.mjs`; the queue and settings end to end in `test/hooks.test.mjs`, and hold's reading of refusals against the hooks' real refusal text; the mod in `claude plugin test`, with timers on the mock clock and agents stubbed.
