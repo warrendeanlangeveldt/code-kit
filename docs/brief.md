@@ -1,6 +1,6 @@
 # code-kit in the session: a continuous engineering harness
 
-**Status:** scoped
+**Status:** specified
 **Updated:** 2026-10-09
 
 ## Problem
