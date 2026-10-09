@@ -1,6 +1,6 @@
 # code-kit in the session: a continuous engineering harness
 
-**Status:** specified
+**Status:** planned
 **Updated:** 2026-10-09
 
 ## Problem
@@ -111,6 +111,10 @@ Built plugin by plugin: spikes first, then code-kit's harness and panes, then Co
 | 2026-10-09 | Background agents pause when the plan's 5-hour usage passes 80%, and resume below it; no daily caps. | Usage follows the plan, which is what limits the person. | Daily caps per agent. Both. |
 | 2026-10-09 | The harness settings live in the project config (code-kit's `harness` section, Context Graph's `[harness]`), shared and protected. | The team shares one setup, reviewed like the rest. | Per machine. Both. |
 | 2026-10-09 | The merge queue merges in the order branches passed review; one that no longer merges cleanly goes back to its lane. | The lane that wrote it resolves it. | The lead resolving conflicts in lane files. |
+| 2026-10-09 | Background agents default to the session's model; each can be changed in Settings. | Quality first; the person controls usage through opt-in and the pause point. | Sonnet for review and Haiku for the rest. Haiku for all. |
+| 2026-10-09 | One set of lane characters, tinted per lane from the theme. | Consistent and learnable. | Chosen per lane. Generated per project (a dependency on image generation). |
+| 2026-10-09 | Side questions (`/why`) are always available, each answer showing its cost. | It only runs when asked. | Opt in. |
+| 2026-10-09 | One judge (`hooks/lib/judge.mjs`) decides what code-kit would do with a call, for the hooks, the CLI and the mod's hold. | The mod must never re-implement a rule. | Copying the hooks' checks into the mod. |
 | 2026-10-09 | Drawing works in VS Code's integrated terminal (it runs the terminal surface); only the VS Code extension's chat panel, `-p`, the SDK and cloud sessions draw nothing. | Seen in use. | v1's assumption that VS Code draws nothing. |
 
 ## Open questions

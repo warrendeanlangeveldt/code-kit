@@ -27,7 +27,7 @@ Each lane is a row with its story's bar along a shared time axis: dispatched, bu
 
 ### VIEW-3 A character per lane agent
 
-Each lane agent is drawn as a small pixel character (cell graphics in half-blocks in the terminal, SVG on Desktop) whose pose shows its state: working (animated), waiting on the person, quiet, stalled, done. The lead has its own. Characters animate only while their agent is working, and are fixed per lane so the person learns them.
+Each lane agent is drawn as a small pixel character (cell graphics in half-blocks in the terminal, SVG on Desktop) whose pose shows its state: working (animated), waiting on the person, quiet, stalled, done. The lead has its own. Characters animate only while their agent is working, and are fixed per lane so the person learns them. One set of characters for every lane, tinted with the lane's own colour from the theme.
 
 **Acceptance**
 
@@ -67,4 +67,3 @@ Docked, all of the above; inline (under 110 columns), the header, the needs-you 
 | Question                                                                                             | Owner  | Blocks         |
 | ---------------------------------------------------------------------------------------------------- | ------ | -------------- |
 | What cell graphics and live regions look like in the person's VS Code terminal (the probe, spike E). | Warren | VIEW-2, VIEW-3 |
-| The characters' look: one style for all lanes, or chosen per lane in the settings.                   | Warren | VIEW-3         |

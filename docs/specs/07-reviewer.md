@@ -77,6 +77,5 @@ The story's drill-down (11) shows the findings grouped by severity, each with it
 
 ## Open questions
 
-| Question                            | Owner  | Blocks      |
-| ----------------------------------- | ------ | ----------- |
-| The default model for the reviewer. | Warren | 12-settings |
+| Question | Owner | Blocks |
+| -------- | ----- | ------ |
