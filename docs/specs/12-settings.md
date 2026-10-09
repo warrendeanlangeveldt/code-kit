@@ -12,15 +12,15 @@
 
 ## Data
 
-| Setting                     | Type    | Default      | Rules                                                                                                  |
-| --------------------------- | ------- | ------------ | ------------------------------------------------------------------------------------------------------ |
-| `autonomy`                  | enum    | `autonomous` | `autonomous`, `propose`, `off` (05)                                                                    |
-| `hold.minutes`              | number  | 2            | 0 switches holding off (06); at most 30                                                                |
-| `stall.nudgeMinutes`        | number  | 5            | (05)                                                                                                   |
-| `stall.restartMinutes`      | number  | 10           | Greater than `nudgeMinutes`                                                                            |
-| `stall.maxRestarts`         | integer | 2            |                                                                                                        |
-| `agents.reviewer`           | object  | off          | `{ on, model }`; model an alias (`haiku`, `sonnet`, `opus`) or an id; without one, the session's model |
-| `background.pauseAtPercent` | number  | 80           | Of the plan's 5-hour use (08)                                                                          |
+| Setting                     | Type    | Default      | Rules                                                                                                                    |
+| --------------------------- | ------- | ------------ | ------------------------------------------------------------------------------------------------------------------------ |
+| `autonomy`                  | enum    | `autonomous` | `autonomous`, `propose`, `off` (05)                                                                                      |
+| `hold.minutes`              | number  | 2            | 0 switches holding off (06); at most 10 (a held call waits in a process, which Claude Code runs for ten minutes at most) |
+| `stall.nudgeMinutes`        | number  | 5            | (05)                                                                                                                     |
+| `stall.restartMinutes`      | number  | 10           | Greater than `nudgeMinutes`                                                                                              |
+| `stall.maxRestarts`         | integer | 2            |                                                                                                                          |
+| `agents.reviewer`           | object  | off          | `{ on, model }`; model an alias (`haiku`, `sonnet`, `opus`) or an id; without one, the session's model                   |
+| `background.pauseAtPercent` | number  | 80           | Of the plan's 5-hour use (08)                                                                                            |
 
 Context Graph's agents have their own `[harness]` section in `.ctx/config.toml`, specified there.
 

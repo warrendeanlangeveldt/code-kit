@@ -97,6 +97,8 @@ function project() {
     delegateExit: 1,
     delegated: [] as string[][],
     holds: [] as string[][],
+    draft: '', // what the person has typed in the prompt
+    sent: [] as { to: any; text: string }[],
     holdWaits: false, // false: the hold ends at once, as if timed out (tests about cards, not hold)
     waiting: new Map<string, (answer: string) => void>(),
   };
@@ -208,6 +210,13 @@ function stub(on: any, w: World) {
       : { result: { stdout: 'added 1 package', stderr: '', interrupted: false } };
   });
   on('agent.list', () => ({ value: w.agents }));
+  on('prompt.read', () => ({ value: { text: w.draft, cursor: w.draft.length } }));
+  on('session.send', ($: any, e: any) => {
+    w.sent.push({ to: e.to, text: e.text });
+    return { isDelivered: true };
+  });
+  on('turn.start', ($: any, e: any) => e);
+  on('turn.complete', () => ({ text: '' }));
   on('session.usage', () => ({ value: { startedAt: 0, context: {}, rateLimits: w.limits } }));
   on('session.measure', ($: any, e: any) => ({ changed: e.changed }));
   // A model request, answered with the usage the test gave it.
@@ -593,8 +602,6 @@ test('BAND-2 a failing finish check shows, with Lanes opening the pane', async (
 test('ACT-3 the story shows as being reviewed until the lead has reported', async ($, on) => {
   const w = project();
   w.stories[0] = { ...w.stories[0], state: 'review' };
-  on('turn.start', ($: any, e: any) => e);
-  on('turn.complete', () => ({ text: '' }));
   await start($, on, w);
   const ui = await bandUi($);
   await press($, 'band-review');
@@ -1237,4 +1244,188 @@ test('HOLD-1 a refusal no approval allows (force-push) is refused at once, unhel
   expect(refused(res)).toBe(true);
   expect(w.holds).toEqual([]);
   expect(w.delegated).toEqual([]);
+});
+
+// --- the lead loop ----------------------------------------------------------------------------------
+
+/** One lead turn, start to end: the person's prompt, or one the loop submitted. */
+async function leadTurn($: any, id = 't-1') {
+  await $.turn.start({ turnId: id, text: '' } as any);
+  await $.turn.complete({ turnId: id, answer: 'Done.', durationMs: 1, isAborted: false } as any);
+}
+/** Lets the loop's work after a turn settle. */
+const settle = async (clock: any) => {
+  for (let i = 0; i < 5; i++) await clock.advance(1);
+};
+
+test('LOOP-1 and LOOP-2 with the lead idle, the loop dispatches every ready story in one prompt and records it', async ($, on) => {
+  const w = project();
+  w.next = { step: 'dispatch', args: 'ST-9 ST-10 ST-11 ST-12', then: [] };
+  const clock = await start($, on, w);
+  await leadTurn($);
+  await settle(clock);
+  expect(w.prompts).toEqual([
+    'Dispatch ST-9, ST-10, ST-11, ST-12: run /code-kit:dispatch ST-9 ST-10 ST-11 ST-12.',
+  ]);
+  await lanes($);
+  const ui = await pane($, PANE);
+  expect((await ui.find({ key: 'step-0' }))?.text).toMatch(/dispatch\s*ST-9 ST-10 ST-11 ST-12/);
+  await ui.unmount();
+});
+
+test('LOOP-1 nothing is submitted mid-turn, or while the person has a draft, or twice for the same step', async ($, on) => {
+  const w = project();
+  const clock = await start($, on, w);
+  await $.turn.start({ turnId: 't-1', text: '' } as any);
+  await clock.advance(4000);
+  expect(w.prompts).toEqual([]);
+  w.draft = 'half a thought';
+  await $.turn.complete({ turnId: 't-1', answer: '', durationMs: 1, isAborted: false } as any);
+  await settle(clock);
+  expect(w.prompts).toEqual([]);
+  w.draft = '';
+  await leadTurn($, 't-2');
+  await settle(clock);
+  expect(w.prompts).toEqual(['Dispatch ST-9: run /code-kit:dispatch ST-9.']);
+  await leadTurn($, 't-3');
+  await settle(clock);
+  expect(w.prompts).toHaveLength(1);
+});
+
+test("LOOP-1 review and the lead's own stories are prompted with their skill", async ($, on) => {
+  const w = project();
+  w.next = { step: 'review', args: 'ST-4', then: [] };
+  const clock = await start($, on, w);
+  await leadTurn($);
+  await settle(clock);
+  w.next = { step: 'lead', args: 'ST-6', then: [] };
+  w.refs += ' ccc refs/heads/web/st-4-moved\n';
+  await leadTurn($, 't-2');
+  await settle(clock);
+  expect(w.prompts[0]).toBe('Review ST-4: run /code-kit:review ST-4.');
+  expect(w.prompts[1]).toMatch(/^Build ST-6 yourself.*lead\/st-6/);
+});
+
+test('LOOP-5 under propose the band offers the step, and nothing goes until Go', async ($, on) => {
+  const w = project();
+  (w.check as any).harness = { autonomy: 'propose' };
+  const clock = await start($, on, w);
+  await leadTurn($);
+  await settle(clock);
+  expect(w.prompts).toEqual([]);
+  const ui = await bandUi($);
+  expect(await ui.find({ type: 'Text', text: 'Dispatch ST-9?' })).toBeDefined();
+  await press($, 'band-go');
+  await ui.unmount();
+  expect(w.prompts).toEqual(['Dispatch ST-9: run /code-kit:dispatch ST-9.']);
+});
+
+test('LOOP-5 under off the loop takes no step, and the band shows no loop', async ($, on) => {
+  const w = project();
+  (w.check as any).harness = { autonomy: 'off' };
+  const clock = await start($, on, w);
+  await leadTurn($);
+  await settle(clock);
+  expect(w.prompts).toEqual([]);
+  const ui = await bandUi($);
+  expect(await ui.find({ type: 'Text', text: /loop/ })).toBeUndefined();
+  await ui.unmount();
+});
+
+test('LOOP-6 Pause stops new steps until Resume', async ($, on) => {
+  const w = project();
+  w.next = { step: 'review', args: 'ST-4', then: [] };
+  const clock = await start($, on, w);
+  await leadTurn($);
+  await settle(clock);
+  let ui = await bandUi($);
+  expect(await ui.find({ type: 'Text', text: 'loop on · last: review ST-4' })).toBeDefined();
+  await press($, 'band-pause');
+  await ui.unmount();
+  w.next = { step: 'dispatch', args: 'ST-9', then: [] };
+  await leadTurn($, 't-2');
+  await settle(clock);
+  expect(w.prompts).toEqual(['Review ST-4: run /code-kit:review ST-4.']);
+  ui = await bandUi($);
+  expect(await ui.find({ type: 'Text', text: 'loop paused' })).toBeDefined();
+  await press($, 'band-resume');
+  await ui.unmount();
+  expect(w.prompts).toEqual([
+    'Review ST-4: run /code-kit:review ST-4.',
+    'Dispatch ST-9: run /code-kit:dispatch ST-9.',
+  ]);
+});
+
+test('LOOP-3 a quiet lane agent is nudged at 5 minutes, restarted through the lead at 10, and flagged after 2 restarts', async ($, on) => {
+  const w = project();
+  w.next = { step: 'wait', args: '', then: [] };
+  w.agents = [
+    { id: 'a1', type: 'web-engineer', description: 'ST-4 booking form', status: 'running' },
+  ];
+  const clock = await start($, on, w);
+  // First seen at the next look (2 s), so quiet for 5 minutes a look later.
+  await clock.advance(5 * 60000 + 2000);
+  expect(w.sent).toEqual([
+    {
+      to: 'a1',
+      text: 'No tool call for 5 minutes: report where you are, or carry on.',
+    },
+  ]);
+  await lanes($);
+  let ui = await pane($, PANE);
+  expect((await ui.find({ key: 'lane-web' }))?.text).toMatch(/nudged/);
+  await ui.unmount();
+  await clock.advance(5 * 60000);
+  expect(w.prompts[0]).toMatch(
+    /^web-engineer \(agent a1\) on ST-4 has made no tool call for 10 minutes\. Stop it with TaskStop.*\/code-kit:dispatch ST-4$/,
+  );
+  ui = await pane($, PANE);
+  expect((await ui.find({ key: 'lane-web' }))?.text).toMatch(/restarted 1\/2/);
+  await ui.unmount();
+  // The lane's agent is started again, and stalls again, twice more.
+  for (const id of ['a2', 'a3']) {
+    w.agents = [{ id, type: 'web-engineer', description: 'ST-4 booking form', status: 'running' }];
+    await clock.advance(10 * 60000 + 2000);
+  }
+  expect(w.prompts).toHaveLength(2);
+  const band = await bandUi($);
+  expect(await band.find({ type: 'Text', text: 'web stalled 3 times on ST-4' })).toBeDefined();
+  expect(await band.find({ key: 'band-resumeStall' })).toBeDefined();
+  await band.unmount();
+});
+
+test('LOOP-3 an agent waiting on a held call (or running a long command) is never quiet', async ($, on) => {
+  const w = project();
+  w.next = { step: 'wait', args: '', then: [] };
+  w.refusal = webInstall;
+  (w.check as any).harness = { hold: { minutes: 10 } };
+  w.agents = [{ id: 'a1', type: 'web-engineer', description: 'ST-4', status: 'running' }];
+  const clock = await start($, on, w);
+  const { call } = await heldCall($, w, clock);
+  await clock.advance(6 * 60000);
+  expect(w.sent).toEqual([]);
+  w.waiting.get('tu-h1')?.('timed out');
+  await call;
+  // Its quiet time starts again when the call ends: nudged 5 minutes after, not at once.
+  await clock.advance(2000);
+  expect(w.sent).toEqual([]);
+  await clock.advance(5 * 60000);
+  expect(w.sent.map((m) => m.to)).toEqual(['a1']);
+});
+
+test('LOOP-7 when every story is done the loop stops, and the band says so until dismissed', async ($, on) => {
+  const w = project();
+  w.stories = w.stories.map((s) => ({ ...s, state: 'done' }));
+  w.next = { step: 'done', args: '', then: [] };
+  const clock = await start($, on, w);
+  await leadTurn($);
+  await settle(clock);
+  expect(w.prompts).toEqual([]);
+  let ui = await bandUi($);
+  expect(await ui.find({ type: 'Text', text: 'Milestone done: 4 stories merged' })).toBeDefined();
+  await press($, 'band-dismissDone');
+  await ui.unmount();
+  ui = await bandUi($);
+  expect(await ui.find({ type: 'Text', text: /Milestone done/ })).toBeUndefined();
+  await ui.unmount();
 });

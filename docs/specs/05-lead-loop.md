@@ -40,7 +40,7 @@ A lane agent, as the loop sees it: `working` → `quiet` (no tool call for 5 min
 
 ### LOOP-1 Prompts the lead when it's idle
 
-When no turn is running and the prompt holds no draft, the loop asks `next` what to do and, if it's a step the lead takes (`dispatch`, `lead`, `review`), submits that step to the lead as a prompt naming the skill and its argument, for example `/code-kit:dispatch ST-7 ST-9`. It never submits while a turn runs or while the person is typing, and submits at most one prompt per idle period.
+When no turn is running and the prompt holds no draft, the loop asks `next` what to do and, if it's a step the lead takes (`dispatch`, `lead`, `review`), submits that step to the lead as a prompt naming the skill and its argument, for example "Dispatch ST-7, ST-9: run /code-kit:dispatch ST-7 ST-9." (Claude Code refuses a mod's prompt that begins with `/`). It never submits while a turn runs or while the person is typing, and submits at most one prompt per idle period.
 
 - **Who:** the mod; only in a project with `.claude/code-kit.json`.
 - **Errors:** if `next` fails, the band shows its error and the loop waits for the next change.

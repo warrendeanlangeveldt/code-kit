@@ -99,7 +99,7 @@ const STATE_COLOR = {
  * The Lanes pane's body, drawn with the elements `$.ui.resolve(e)` returned; `usage` is
  * usageSummary's, `plan` planOf's (USE-2), either null before there is any.
  */
-export function lanesPane(state, { Box, Text }, usage = null, plan = null) {
+export function lanesPane(state, { Box, Text }, usage = null, plan = null, loop = null) {
   const text = (value, style = {}) => Text({ ...style, children: [value] });
   if (!state || state.kind === 'none') return text(NOT_CODE_KIT, { dimColor: true });
   if (state.kind === 'invalid')
@@ -118,6 +118,13 @@ export function lanesPane(state, { Box, Text }, usage = null, plan = null) {
             text(l.name.padEnd(width), { bold: true }),
             text(l.state.padEnd(9), STATE_COLOR[l.state] ? { color: STATE_COLOR[l.state] } : {}),
             text(l.agent ?? 'the main session', { dimColor: true }),
+            ...(loop?.laneNotes?.[l.name]
+              ? [
+                  text(loop.laneNotes[l.name], {
+                    color: loop.laneNotes[l.name] === 'stalled' ? 'red' : 'yellow',
+                  }),
+                ]
+              : []),
             ...(usage?.lanes[l.name]
               ? [text(tokens(usage.lanes[l.name]), { dimColor: true })]
               : []),
@@ -166,8 +173,44 @@ export function lanesPane(state, { Box, Text }, usage = null, plan = null) {
       Box({ flexDirection: 'column', children: rows }),
       Box({ flexDirection: 'column', children: ready }),
       ...usageSection(usage, plan, text, Box),
+      ...loopSection(loop, text, Box),
     ],
   });
+}
+
+/** How long ago, as a person reads it: now, 40s ago, 12m ago, 2h ago. */
+export function ago(ms) {
+  const s = Math.max(0, Math.round(ms / 1000));
+  if (s < 5) return 'now';
+  if (s < 60) return `${s}s ago`;
+  if (s < 3600) return `${Math.floor(s / 60)}m ago`;
+  return `${Math.floor(s / 3600)}h ago`;
+}
+
+/** The loop's record (spec 05): its state and its latest steps, newest first. */
+function loopSection(loop, text, Box) {
+  if (!loop || (!loop.steps?.length && loop.state !== 'paused')) return [];
+  const steps = [...(loop.steps ?? [])].reverse().slice(0, 8);
+  return [
+    Box({
+      flexDirection: 'column',
+      children: [
+        text(`Loop · ${loop.state === 'paused' ? 'paused' : loop.autonomy}`, { bold: true }),
+        ...steps.map((s, i) =>
+          Box({
+            key: `step-${i}`,
+            flexDirection: 'row',
+            columnGap: 2,
+            children: [
+              text(ago(loop.now - s.at).padEnd(8), { dimColor: true }),
+              text(s.kind.padEnd(8)),
+              text(s.target, { wrap: 'truncate-end' }),
+            ],
+          }),
+        ),
+      ],
+    }),
+  ];
 }
 
 /** USE-2: the plan's 5-hour use as a bar, each story's tokens, and the background agents' share. */
@@ -276,6 +319,7 @@ export function bandLines({
   plan = null,
   held = [],
   now = 0,
+  loop = null,
 }) {
   const lines = [];
   if (notice)
@@ -295,6 +339,24 @@ export function bandLines({
       ],
     });
   }
+  // LOOP-3: a lane stalled past its restarts waits for the person.
+  for (const f of loop?.flagged ?? [])
+    lines.push({
+      kind: 'stalled',
+      text: `${f.lane} stalled ${f.count} times on ${f.story}`,
+      stall: f,
+      actions: [
+        { id: 'lanes', label: 'Lanes' },
+        { id: 'resumeStall', label: 'Resume' },
+      ],
+    });
+  // LOOP-5: under autonomy propose, each step waits for Go.
+  if (loop?.proposal)
+    lines.push({
+      kind: 'proposal',
+      text: `${loop.proposal.label}?`,
+      actions: [{ id: 'go', label: 'Go' }],
+    });
   // A held call's request is asked on its own line above, not again here.
   const open = (requests?.open ?? []).filter((r) => !held.some((h) => sameAsk(h, r)));
   if (open.length)
@@ -343,6 +405,21 @@ export function bandLines({
       text: `background agents paused: plan at ${plan.percent}%`,
       actions: [],
     });
+  // LOOP-7: the milestone is done; LOOP-6: the loop's own state, with Pause or Resume.
+  if (loop?.state === 'done')
+    lines.push({
+      kind: 'done',
+      text: `Milestone done: ${plural(loop.doneCount, 'story', 'stories')} merged`,
+      actions: [{ id: 'dismissDone', label: 'Dismiss' }],
+    });
+  else if (loop?.state === 'paused')
+    lines.push({ kind: 'loop', text: 'loop paused', actions: [{ id: 'resume', label: 'Resume' }] });
+  else if (loop?.state === 'running' && loop.started)
+    lines.push({
+      kind: 'loop',
+      text: `loop on${loop.last ? ` · last: ${loop.last}` : ''}`,
+      actions: [{ id: 'pause', label: 'Pause' }],
+    });
   // BAND-4: a digit for every action, in the order they're drawn.
   let digit = 0;
   for (const line of lines)
@@ -355,6 +432,10 @@ export function band(lines, { Box, Text, Button }, onAction) {
   const COLOR = {
     notice: 'red',
     held: 'yellow',
+    stalled: 'red',
+    proposal: 'cyan',
+    loop: 'green',
+    done: 'green',
     approvals: 'yellow',
     review: 'blue',
     finish: 'red',

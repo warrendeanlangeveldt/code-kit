@@ -155,7 +155,7 @@ The mod holds what a person’s approval would allow (read from the refusal), as
 **Lane:** lead
 **Requirements:** LOOP-1, LOOP-2, LOOP-3, LOOP-5, LOOP-6, LOOP-7
 **Depends on:** ST-8, ST-10, ST-13
-**Status:** todo
+**Status:** done
 
 Prompting the lead when idle, stalls, autonomy, pause and done.
 

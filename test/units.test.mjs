@@ -752,3 +752,33 @@ test('USE-1 to USE-4 usage: attribution, the roll-up, outliers and the plan', ()
   assert.deepEqual([tokens(950), tokens(12400), tokens(1400000)], ['950', '12k', '1.4M']);
   assert.equal(planBar(62), '██████░░░░');
 });
+
+test('LOOP-1 to LOOP-3 the loop: prompts for steps, and what a quiet agent is due', async () => {
+  const { leadPrompt, stepKey, stepLabel, stallDue } = await import('../hooks/mod/loop.mjs');
+  assert.equal(
+    leadPrompt({ step: 'dispatch', args: 'ST-7 ST-9' }),
+    'Dispatch ST-7, ST-9: run /code-kit:dispatch ST-7 ST-9.',
+  );
+  assert.equal(
+    leadPrompt({ step: 'review', args: 'ST-4' }),
+    'Review ST-4: run /code-kit:review ST-4.',
+  );
+  assert.equal(
+    leadPrompt({ step: 'review', args: 'ST-4 ST-5' }),
+    'Review ST-4, ST-5: run /code-kit:review.',
+  );
+  assert.match(leadPrompt({ step: 'lead', args: 'ST-6' }), /^Build ST-6 yourself.*lead\/st-6/);
+  for (const step of ['spec-design', 'init', 'wait', 'done'])
+    assert.equal(leadPrompt({ step }), null);
+  assert.ok(!leadPrompt({ step: 'dispatch', args: 'ST-1' }).startsWith('/'));
+  assert.equal(stepKey({ step: 'dispatch', args: 'ST-1' }), 'dispatch:ST-1');
+  assert.equal(stepLabel({ step: 'dispatch', args: 'ST-7 ST-9' }), 'Dispatch ST-7, ST-9');
+  const stall = { nudgeMinutes: 5, restartMinutes: 10, maxRestarts: 2 };
+  const fresh = { nudged: false, stopped: false };
+  assert.equal(stallDue(4 * 60000, fresh, 0, stall), null);
+  assert.equal(stallDue(5 * 60000, fresh, 0, stall), 'nudge');
+  assert.equal(stallDue(6 * 60000, { ...fresh, nudged: true }, 0, stall), null);
+  assert.equal(stallDue(10 * 60000, { ...fresh, nudged: true }, 1, stall), 'restart');
+  assert.equal(stallDue(10 * 60000, { ...fresh, nudged: true }, 2, stall), 'flag');
+  assert.equal(stallDue(30 * 60000, { nudged: true, stopped: true }, 2, stall), null);
+});
