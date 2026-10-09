@@ -106,6 +106,8 @@ function project() {
     times: [] as any[],
     blits: [] as string[],
     adapters: [] as any[],
+    agentsThrow: false,
+    registerFails: 0,
     commands: [] as any[],
     story: {
       id: 'ST-4',
@@ -270,8 +272,15 @@ function stub(on: any, w: World) {
       ? { deny: w.refusal }
       : { result: { stdout: 'added 1 package', stderr: '', interrupted: false } };
   });
-  on('agent.list', () => ({ value: w.agents }));
+  on('agent.list', () => {
+    if (w.agentsThrow) throw new Error('no session is bound in this process');
+    return { value: w.agents };
+  });
   on('agent.register', ($: any, e: any) => {
+    if (w.registerFails > 0) {
+      w.registerFails -= 1;
+      throw new Error('no session is bound in this process');
+    }
     w.registered.push(e);
     return { value: { agent: `code-kit:${e.name}` } };
   });
@@ -2206,4 +2215,30 @@ test('JOIN-2 to JOIN-4 the drill-down names the unread files, the cards owed and
   await press($, 'unread-file-0', PANE);
   expect(w.commands.length).toBe(2);
   await ui.unmount();
+});
+
+test("with no session bound (claude -p before it mounts), the agent list's failure leaves the project's refresh working", async ($, on) => {
+  const w = project();
+  w.agentsThrow = true;
+  const clock = await start($, on, w);
+  await lanes($);
+  w.stories[0] = { ...w.stories[0], state: 'review' };
+  w.refs += ' abc refs/heads/web/st-4-done\n';
+  await clock.advance(2000);
+  const ui = await pane($, PANE);
+  expect((await ui.find({ key: 'lane-web' }))?.text).toMatch(/in review/);
+  await ui.unmount();
+});
+
+test('REVW-2 a reviewer that could not be registered yet is registered at a later refresh, then used', async ($, on) => {
+  const w = reviewing();
+  w.registerFails = 1;
+  const clock = await start($, on, w);
+  expect(w.registered).toEqual([]);
+  w.refs += ' abc refs/heads/x\n';
+  await clock.advance(2000);
+  expect(w.registered.map((s) => s.name)).toEqual(['reviewer']);
+  await leadTurn($);
+  await settle(clock);
+  expect(w.prompts[0]).toMatch(/^Start code-kit's reviewer/);
 });

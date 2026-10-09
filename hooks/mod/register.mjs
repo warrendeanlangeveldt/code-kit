@@ -193,7 +193,8 @@ export function register(on) {
           valid && check.adapters?.length
             ? ((await json('adapters', '--session', session)) ?? [])
             : [];
-        const atWork = agentsAtWork(await $.agent.list());
+        // The agents at work; none where the session has none bound (claude -p before it mounts).
+        const atWork = agentsAtWork(await $.agent.list().catch(() => []));
         model = {
           state: projectState(check, status, nextStep, atWork),
           requests,
@@ -213,19 +214,21 @@ export function register(on) {
       registerReviewer: async () => {
         const wanted = harness().agents.reviewer.model ?? '';
         if (reviewerModel === wanted) return;
-        reviewerModel = wanted;
         const spec = reviewerSpec({
           cli,
           checklist: `${$.plugin.root}/skills/review/SKILL.md`,
           model: wanted || undefined,
         });
-        reviewerAgent =
-          (
-            await $.agent.register(spec).catch((err) => {
-              $.ui.log(`code-kit: the reviewer agent isn't available: ${err?.message ?? err}`);
-              return null;
-            })
-          )?.agent ?? null;
+        // Until the session is bound (claude -p, early on) registering fails: it's tried again next time.
+        const done = await $.agent.register(spec).catch((err) => {
+          $.ui.log(`code-kit: the reviewer agent isn't available yet: ${err?.message ?? err}`, {
+            to: 'debug',
+          });
+          return null;
+        });
+        if (!done) return;
+        reviewerModel = wanted;
+        reviewerAgent = done.agent ?? null;
       },
       // REVW-1, REVW-4, LOOP-4: for stories in review, start the reviewer at each branch's head, and
       // once it has reported (or failed, or was skipped) prompt the lead's review with its findings.
@@ -291,7 +294,9 @@ export function register(on) {
       reviewed: async (agentId, answer) => {
         let review = [...reviews.values()].find((r) => r.agentId === agentId);
         if (!review) {
-          const agent = ((await $.agent.list()) ?? []).find((a) => a.id === agentId);
+          const agent = ((await $.agent.list().catch(() => [])) ?? []).find(
+            (a) => a.id === agentId,
+          );
           if (!agent || !reviewerAgent || agent.type !== reviewerAgent) return;
           review = [...reviews.values()].find(
             (r) => r.state === 'running' && agent.description?.includes(r.branch),
@@ -344,7 +349,7 @@ export function register(on) {
           await stamp('.claude/state/merge-queue.json'),
           await listing('.claude/approvals'),
           await listing('.claude/state/stop-blocks'),
-          [...agentsAtWork(await $.agent.list())].sort().join(','),
+          [...agentsAtWork(await $.agent.list().catch(() => []))].sort().join(','),
         ].join('\n');
       },
       // PANE-1: open the Lanes pane, or close it when it's open.
@@ -555,7 +560,7 @@ export function register(on) {
       // USE-1: a model request's tokens, put down to the agent that made it and its story and lane.
       measure: async (agentId, usage) => {
         if (agentId && !agentsSeen.has(agentId))
-          for (const a of (await $.agent.list()) ?? []) agentsSeen.set(a.id, a);
+          for (const a of (await $.agent.list().catch(() => [])) ?? []) agentsSeen.set(a.id, a);
         const who = attribution(agentId, agentsSeen.get(agentId) ?? null, model.check, model.state);
         ledger = withUsage(ledger, who, usage);
         $.ui.invalidate('ui.render');
@@ -665,7 +670,7 @@ export function register(on) {
         const now = await $.clock.now();
         const lanes = Object.entries(model.check?.lanes ?? {});
         const waitingOnPerson = new Set([...held.values()].map((c) => c.agentId));
-        for (const agent of (await $.agent.list()) ?? []) {
+        for (const agent of (await $.agent.list().catch(() => [])) ?? []) {
           if (agent.status !== 'running') continue;
           const lane = lanes.find(([, l]) => l.agent === agent.type)?.[0];
           if (!lane) continue;
@@ -749,7 +754,7 @@ export function register(on) {
         $.ui.invalidate('ui.render');
       },
       runningAgentOf: async (lane) =>
-        ((await $.agent.list()) ?? []).find(
+        ((await $.agent.list().catch(() => [])) ?? []).find(
           (a) => a.status === 'running' && a.type === lane.agent,
         ) ?? null,
       nudgeLane: async (lane) => {
