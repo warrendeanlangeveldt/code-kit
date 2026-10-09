@@ -182,7 +182,7 @@ Started by prompting the lead (auto mode refuses a mod's own spawn) per finished
 **Lane:** lead
 **Requirements:** USE-1, USE-2, USE-3, USE-4
 **Depends on:** ST-10
-**Status:** todo
+**Status:** done
 
 Usage per agent, story and lane; outliers; background agents paused near the plan’s limit.
 

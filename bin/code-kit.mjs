@@ -122,6 +122,7 @@ function checkJson() {
   );
   report.adapters = config.adapters;
   report.docs = config.docs ?? null;
+  report.harness = config.harness;
   out(JSON.stringify(report, null, 2));
 }
 

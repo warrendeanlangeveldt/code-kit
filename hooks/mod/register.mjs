@@ -15,17 +15,22 @@ import {
   SETTINGS_ID,
   approvalsText,
   agentsAtWork,
+  attribution,
   approvePane,
   band,
   bandLines,
+  finishedStories,
   lanesPane,
   parseJson,
+  planOf,
   prefilledReason,
   projectState,
   refusalCard,
   refusalView,
   resultPane,
   settingsView,
+  usageSummary,
+  withUsage,
 } from './view.mjs';
 
 // What the session knows of the project, read again when it changes.
@@ -38,6 +43,9 @@ let notice = null; // why the person's last act failed
 let act = null; // the session's actions, made at session start
 let settingRows = []; // the harness settings, from `code-kit settings --json`
 let pendingSetting = null; // a change waiting for the person's reason: { key, value, reason, error }
+let ledger = {}; // the session's tokens by agent and story (USE-1)
+let rateLimits = []; // the session's limits, as session.measure last gave them
+const agentsSeen = new Map(); // agent id → its $.agent.list() entry, kept once it leaves the list
 const refusals = new Map(); // tool_use_id → the refusal text a hook gave (CARD-1)
 const expanded = new Set(); // cards showing their raw text
 const REFUSALS_KEPT = 200;
@@ -74,6 +82,7 @@ export function register(on) {
         immediate: true,
       })
       .catch(unavailable('harness'));
+    rateLimits = (await $.session.usage().catch(() => null))?.rateLimits ?? [];
     const cli = `${$.plugin.root}/bin/code-kit.mjs`;
     const cwd = e.cwd ?? (await $.session.cwd());
     const session = await $.session.id();
@@ -302,6 +311,14 @@ export function register(on) {
         pendingSetting = null;
         $.ui.invalidate('ui.render');
       },
+      // USE-1: a model request's tokens, put down to the agent that made it and its story and lane.
+      measure: async (agentId, usage) => {
+        if (agentId && !agentsSeen.has(agentId))
+          for (const a of (await $.agent.list()) ?? []) agentsSeen.set(a.id, a);
+        const who = attribution(agentId, agentsSeen.get(agentId) ?? null, model.check, model.state);
+        ledger = withUsage(ledger, who, usage);
+        $.ui.invalidate('ui.render');
+      },
       dismiss: async () => {
         notice = null;
         $.ui.invalidate('ui.render');
@@ -387,6 +404,27 @@ export function register(on) {
     });
   });
 
+  // USE-1: each model request's usage, as the request ends; the lead's requests carry no agentId.
+  on('turn.step', async function* ($, e, next) {
+    const res = yield* next(e);
+    if (res?.usage && act) await act.measure(e.agentId, res.usage).catch(() => {});
+    return res;
+  });
+  // USE-4: the plan's 5-hour use, as Claude Code measures it.
+  on('session.measure', async ($, e, next) => {
+    if (e.changed.includes('rateLimits')) {
+      rateLimits = e.rateLimits;
+      $.ui.invalidate('ui.render');
+    }
+    return next(e);
+  });
+
+  // What the pane and band show of usage: the session's tokens and the plan's use.
+  const usageNow = () => ({
+    usage: usageSummary(ledger, finishedStories(model.state)),
+    plan: planOf(rateLimits, model.check?.harness?.background?.pauseAtPercent),
+  });
+
   on('turn.start', async ($, e, next) => {
     if (reviewTurn === 'next') reviewTurn = e.turnId;
     return next(e);
@@ -401,14 +439,15 @@ export function register(on) {
     return next(e);
   });
 
-  on('ui.render', { component: 'Pane', requestId: PANE_ID }, async ($, e) =>
-    lanesPane(model.state, $.ui.resolve(e)),
-  );
+  on('ui.render', { component: 'Pane', requestId: PANE_ID }, async ($, e) => {
+    const { usage, plan } = usageNow();
+    return lanesPane(model.state, $.ui.resolve(e), usage, plan);
+  });
 
   // BAND-2: absent when nothing waits. Its lines go above whatever else the band holds (another
   // plugin's lines, such as Context Graph's, or Claude Code's own), which it keeps.
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
-    const lines = bandLines({ ...model, reviewing, notice });
+    const lines = bandLines({ ...model, reviewing, notice, ...usageNow() });
     if (!lines.length || !act) return next(e);
     const ours = band(lines, $.ui.resolve(e), (id, line) => act[id](line));
     const below = await next(e);

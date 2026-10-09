@@ -269,11 +269,13 @@ With Claude Code 2.1.287 or later, code-kit's mod shows the project in the sessi
 - **The band** sits above the prompt whenever something waits for you, and is gone when nothing does. It shows:
   - approvals agents have asked for: **Approve…** opens a confirmation with a reason prefilled from the request, which you keep or rewrite;
   - stories finished and waiting for review: **Review** asks the lead to run `/code-kit:review` on the branch, and **Merge** runs `verify`, checks included, then merges if it passes;
-  - a finish check failing in this session: **Lanes** opens the pane.
+  - a finish check failing in this session: **Lanes** opens the pane;
+  - a story using more than three times the median of the stories finished this session (once three have finished): **Lanes** opens the pane;
+  - background agents paused, once the plan’s 5-hour use passes `harness.background.pauseAtPercent` (80% unless set).
 
   Each button has a digit: type it in an empty prompt to press it.
 
-- **`/lanes`** opens the Lanes pane: each lane with its agent, story, branch and state (building, in review, blocked, idle), a mark while its agent is at work, and the stories ready to start. It stays current within 2 seconds of a commit, a branch change, a plan edit or an agent starting or stopping. `/lanes` again, or Escape, closes it.
+- **`/lanes`** opens the Lanes pane: each lane with its agent, story, branch and state (building, in review, blocked, idle), a mark while its agent is at work, and the stories ready to start. Beneath them, the session’s usage: tokens per lane and story, the background agents’ share, and the plan’s 5-hour use as a bar. It stays current within 2 seconds of a commit, a branch change, a plan edit or an agent starting or stopping. `/lanes` again, or Escape, closes it.
 - **Refusals** a code-kit hook gives an agent are drawn as cards: what was refused, the rule, what to do, and Approve… where your approval would allow it. The full text is a press away.
 - **`/harness`** opens the harness settings: how the lead loop acts, how long a call waiting on your approval is held, when a stalled lane is nudged and restarted, the reviewer agent and its model, and the use at which background agents pause. Changing one asks your reason, writes `.claude/code-kit.json` and logs a `kit` approval. Lanes, paths and rules still change through `/code-kit:init`.
 - **`/approvals`** lists the requests waiting and the approvals in force, with minutes left. **`/verify-branch`** runs `code-kit verify` on this branch. Neither calls the model.

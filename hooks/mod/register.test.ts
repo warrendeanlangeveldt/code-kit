@@ -69,7 +69,8 @@ function project() {
     taken: [] as string[], // command names another command already holds
     stops: [] as any[],
     refs: ' aaa refs/heads/main\n bbb refs/heads/web/st-4\n',
-    agents: [] as { type: string; status: string }[],
+    agents: [] as { type: string; status: string; id?: string; description?: string }[],
+    limits: [] as { kind: string; percentUsed: number }[],
     approveExit: 0,
     mergeExit: 0,
     answer: 'Merge',
@@ -171,6 +172,19 @@ function stub(on: any, w: World) {
     w.refusal ? { deny: w.refusal } : { result: { stdout: '', stderr: '', interrupted: false } },
   );
   on('agent.list', () => ({ value: w.agents }));
+  on('session.usage', () => ({ value: { startedAt: 0, context: {}, rateLimits: w.limits } }));
+  on('session.measure', ($: any, e: any) => ({ changed: e.changed }));
+  // A model request, answered with the usage the test gave it.
+  on('turn.step', async function* ($: any, e: any) {
+    return {
+      turnId: e.turnId,
+      index: e.index,
+      answer: '',
+      toolUses: [],
+      stopReason: 'end_turn',
+      usage: e.messageCount === 0 ? null : { model: e.model, ...stepUsage(e.messageCount) },
+    };
+  } as any);
   on('fs.stat', () => ({ value: { kind: 'file', size: 1, mtimeMs: 1, isLink: false } }));
   on('fs.list', () => ({ value: [] }));
   on('session.cwd', () => ({ value: '/work' }));
@@ -197,6 +211,30 @@ function stub(on: any, w: World) {
     w.open.delete(e.id);
     return { value: undefined };
   });
+}
+
+/** A request of n thousand tokens, split as a model request's usage is. */
+function stepUsage(thousands: number) {
+  const n = thousands * 1000;
+  return {
+    input_tokens: n * 0.3,
+    cache_creation_input_tokens: n * 0.1,
+    output_tokens: n * 0.1,
+    cache_read_input_tokens: n * 0.5,
+  };
+}
+
+/** One model request by an agent (or the lead) of so many thousand tokens, run to its end. */
+async function request($: any, agentId: string | undefined, thousands: number) {
+  const s = $.turn.step({
+    turnId: `t-${agentId ?? 'lead'}`,
+    index: 0,
+    model: 'claude-sonnet-5-5',
+    messageCount: thousands, // the stub beneath answers with this many thousand tokens
+    ...(agentId ? { agentId } : {}),
+  });
+  for await (const _ of s);
+  return s.result;
 }
 
 /** A session started on the project, with the mock clock. */
@@ -837,4 +875,141 @@ test('CARD-4 outside a code-kit project, /harness says so and opens nothing', as
   const said = await harness($);
   expect(String(said?.text)).toMatch(/code-kit/);
   expect(w.opened).not.toContain(SETTINGS);
+});
+
+// --- usage per lane ---------------------------------------------------------------------------------
+
+const working = (id: string, type: string, description: string) => ({
+  id,
+  type,
+  description,
+  status: 'running',
+});
+
+test("USE-1 a lane agent's requests show on its lane's row and its story", async ($, on) => {
+  const w = project();
+  w.agents = [working('a1', 'web-engineer', 'Build ST-4: the booking form')];
+  const clock = await start($, on, w);
+  await lanes($);
+  await request($, 'a1', 120);
+  await request($, 'a1', 80);
+  await clock.advance(2000);
+  const ui = await pane($, PANE);
+  expect((await ui.find({ key: 'lane-web' }))?.text).toContain('200k');
+  expect((await ui.find({ key: 'usage-ST-4' }))?.text).toContain('200k');
+  expect((await ui.find({ key: 'lane-api' }))?.text).not.toMatch(/\d+k/);
+  await ui.unmount();
+});
+
+test("USE-1 the lead's requests are the lead's; an agent's brief names its story", async ($, on) => {
+  const w = project();
+  w.agents = [working('a2', 'core-engineer', 'ST-9 pricing rules')];
+  await start($, on, w);
+  await lanes($);
+  await request($, undefined, 30);
+  await request($, 'a2', 50);
+  const ui = await pane($, PANE);
+  expect((await ui.find({ key: 'lane-lead' }))?.text).toContain('30k');
+  expect((await ui.find({ key: 'lane-core' }))?.text).toContain('50k');
+  expect((await ui.find({ key: 'usage-ST-9' }))?.text).toContain('50k');
+  await ui.unmount();
+});
+
+test("USE-2 the background agents' share and the plan's 5-hour use", async ($, on) => {
+  const w = project();
+  w.limits = [{ kind: 'five_hour', percentUsed: 62 }];
+  w.agents = [
+    working('a1', 'web-engineer', 'ST-4 booking form'),
+    working('r1', 'code-reviewer', 'Review web/st-4'),
+  ];
+  await start($, on, w);
+  await lanes($);
+  await request($, 'a1', 150);
+  await request($, 'r1', 50);
+  const ui = await pane($, PANE);
+  expect(await ui.find({ type: 'Text', text: 'Background agents  50k (25%)' })).toBeDefined();
+  expect(await ui.find({ type: 'Text', text: '62% of the 5-hour window' })).toBeDefined();
+  expect(await ui.find({ type: 'Text', text: 'This session  200k tokens' })).toBeDefined();
+  await ui.unmount();
+});
+
+test('USE-3 a story past three times the median of three finished ones is flagged in the band', async ($, on) => {
+  const w = project();
+  w.stories = [
+    ...['ST-1', 'ST-2', 'ST-3'].map((id) => ({
+      id,
+      title: id,
+      lane: 'api',
+      state: 'done',
+      branch: `api/${id.toLowerCase()}`,
+      waitingOn: [],
+    })),
+    ...w.stories,
+  ];
+  w.agents = ['ST-1', 'ST-2', 'ST-3', 'ST-4'].map((id, i) =>
+    working(`a${i}`, i < 3 ? 'api-engineer' : 'web-engineer', `${id} work`),
+  );
+  await start($, on, w);
+  await request($, 'a0', 190);
+  await request($, 'a1', 200);
+  await request($, 'a2', 210);
+  await request($, 'a3', 500);
+  let ui = await bandUi($);
+  expect(await ui.find({ type: 'Text', text: /has used/ })).toBeUndefined();
+  await ui.unmount();
+  await request($, 'a3', 200);
+  ui = await bandUi($);
+  expect(await ui.find({ type: 'Text', text: 'ST-4 has used 3.5× the usual' })).toBeDefined();
+  await ui.unmount();
+});
+
+test('USE-3 with fewer than three finished, nothing is flagged', async ($, on) => {
+  const w = project();
+  w.stories = [
+    { id: 'ST-1', title: 'a', lane: 'api', state: 'done', branch: 'api/st-1', waitingOn: [] },
+    ...w.stories,
+  ];
+  w.agents = [working('a0', 'api-engineer', 'ST-1'), working('a1', 'web-engineer', 'ST-4')];
+  await start($, on, w);
+  await request($, 'a0', 10);
+  await request($, 'a1', 900);
+  const ui = await bandUi($);
+  expect(await ui.find({ type: 'Text', text: /has used/ })).toBeUndefined();
+  await ui.unmount();
+});
+
+test('USE-4 past the pause point the band says background agents are paused, and below it not', async ($, on) => {
+  const w = project();
+  await start($, on, w);
+  const measure = (percentUsed: number) =>
+    $.session.measure({
+      context: {} as any,
+      rateLimits: [{ kind: 'five_hour', percentUsed }],
+      changed: ['rateLimits'],
+    });
+  await measure(82);
+  let ui = await bandUi($);
+  expect(
+    await ui.find({ type: 'Text', text: 'background agents paused: plan at 82%' }),
+  ).toBeDefined();
+  await ui.unmount();
+  await measure(79);
+  ui = await bandUi($);
+  expect(await ui.find({ type: 'Text', text: /paused/ })).toBeUndefined();
+  await ui.unmount();
+});
+
+test('USE-4 the pause point is the harness setting', async ($, on) => {
+  const w = project();
+  (w.check as any).harness = { background: { pauseAtPercent: 90 } };
+  w.limits = [{ kind: 'five_hour', percentUsed: 85 }];
+  await start($, on, w);
+  let ui = await bandUi($);
+  expect(await ui.find({ type: 'Text', text: /paused/ })).toBeUndefined();
+  await ui.unmount();
+  w.limits = [{ kind: 'five_hour', percentUsed: 91 }];
+  await $.session.measure({ context: {} as any, rateLimits: w.limits, changed: ['rateLimits'] });
+  ui = await bandUi($);
+  expect(await ui.find({ type: 'Text', text: /plan at 91%/ })).toBeDefined();
+  await ui.unmount();
 });

@@ -1296,6 +1296,15 @@ try {
       ),
       0,
     );
+    const harness = JSON.parse(sCli('check', '--json').stdout).harness;
+    expect(
+      'USE-4 check --json carries the harness settings in force, for the mod',
+      truth(
+        harness?.autonomy === 'propose' && harness?.background?.pauseAtPercent === 80,
+        JSON.stringify(harness),
+      ),
+      0,
+    );
     const bad = sCli('settings', 'set', 'hold.minutes', '99', '--reason', 'longer');
     expect(
       'a value out of range changes nothing',
