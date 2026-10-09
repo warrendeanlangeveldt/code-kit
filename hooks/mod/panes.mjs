@@ -17,10 +17,11 @@ export const TABS = [
   { id: 'lanes', label: 'Lanes', hotkey: '1' },
   { id: 'queue', label: 'Queue', hotkey: '2' },
   { id: 'usage', label: 'Usage', hotkey: '3' },
+  { id: 'map', label: 'Map', hotkey: '4' },
 ];
 
 /** The pane's own state, kept by the mod between draws. */
-export const DEFAULT_UI = { tab: 'lanes', selected: null, filter: null, search: '' };
+export const DEFAULT_UI = { tab: 'lanes', selected: null, filter: null, search: '', cell: null };
 
 /** The glyph each state carries besides its colour (spec 11's quality target). */
 const GLYPH = {
@@ -198,7 +199,7 @@ export function lanesFrame(view, els, on) {
       ],
     });
 
-  // VIEW-6: the tabs, on 1 to 3.
+  // VIEW-6: the tabs, on 1 to 4.
   const tabs = Box({
     key: 'tabs',
     flexDirection: 'row',
@@ -228,19 +229,21 @@ export function lanesFrame(view, els, on) {
 
   const selected = state.lanes.find((l) => l.name === ui.selected) ?? null;
   const body =
-    ui.tab === 'queue'
-      ? queueSection(loop, text, Box)
-      : ui.tab === 'usage'
-        ? usageSection(view.usage, plan, text, Box)
-        : [
-            lanesPane(state, els, view.usage, plan, loop, {
-              filter: ui.filter,
-              search: ui.search,
-              selected: ui.selected,
-              live: view.live ?? {},
-            }),
-            ...loopSection(loop, text, Box),
-          ];
+    ui.tab === 'map'
+      ? mapTab(view.status, ui.cell, els, on)
+      : ui.tab === 'queue'
+        ? queueSection(loop, text, Box)
+        : ui.tab === 'usage'
+          ? usageSection(view.usage, plan, text, Box)
+          : [
+              lanesPane(state, els, view.usage, plan, loop, {
+                filter: ui.filter,
+                search: ui.search,
+                selected: ui.selected,
+                live: view.live ?? {},
+              }),
+              ...loopSection(loop, text, Box),
+            ];
   const empty =
     ui.tab === 'queue'
       ? 'The merge queue is empty.'
@@ -634,3 +637,180 @@ export function storyPane(
 /** VIEW-6: the person's Escape on an open story goes back to the lanes instead of closing the pane. */
 export const closeGoesBack = (e, paneId, ui) =>
   e.id === paneId && e.origin?.kind === 'person' && Boolean(ui.story);
+
+// --- the traceability map (spec 10) ------------------------------------------------------------
+
+/** Each cell state's glyph, colour and words (TRACE-1, TRACE-4: the glyph reads without colour). */
+export const CELL = {
+  tested: { glyph: '■', color: 'green', words: 'done and tested' },
+  done: { glyph: '□', color: 'green', words: 'done, untested' },
+  'in progress': { glyph: '◐', color: 'blue', words: 'in progress' },
+  todo: { glyph: '○', color: undefined, words: 'todo' },
+  'no story': { glyph: '✗', color: 'red', words: 'without a story' },
+  removed: { glyph: '·', color: undefined, words: 'removed' },
+};
+
+/** A requirement's cell state: status's state, with done split by whether a test names it. */
+export const cellOf = (r) => (r.state === 'done' ? (r.tests?.length ? 'tested' : 'done') : r.state);
+
+/** The requirements by spec, in the specs' order: [{ spec, requirements }]. */
+export function mapRows(requirements = []) {
+  const rows = [];
+  for (const r of requirements) {
+    let row = rows.find((x) => x.spec === r.file);
+    if (!row) rows.push((row = { spec: r.file, requirements: [] }));
+    row.requirements.push(r);
+  }
+  return rows;
+}
+
+/** TRACE-1's legend: the count of each cell state there is. */
+export function mapLegend(requirements = []) {
+  return Object.entries(CELL)
+    .map(([state, c]) => ({
+      state,
+      ...c,
+      n: requirements.filter((r) => cellOf(r) === state).length,
+    }))
+    .filter((c) => c.n > 0);
+}
+
+/** The cell `step` places from `id` in reading order, or the first row of the next spec (`rows`). */
+export function moveCell(requirements, id, step, { rows = false } = {}) {
+  if (!requirements.length) return null;
+  const at = Math.max(
+    0,
+    requirements.findIndex((r) => r.id === id),
+  );
+  if (!rows) return requirements[(at + step + requirements.length) % requirements.length].id;
+  const specs = mapRows(requirements);
+  const row = specs.findIndex((s) => s.requirements.some((r) => r.id === requirements[at].id));
+  return specs[(row + step + specs.length) % specs.length].requirements[0].id;
+}
+
+/**
+ * The Map tab (TRACE-1 to TRACE-4): a row per spec, a cell per requirement, a legend, and the
+ * selected requirement's stories and tests. `status` is `code-kit status --json`'s.
+ */
+export function mapTab(status, selectedId, { Box, Text, Button, Select }, on) {
+  const text = (value, style = {}) => Text({ ...style, children: [value] });
+  const requirements = status?.requirements ?? [];
+  if (!requirements.length)
+    return [
+      text('No requirements in the specs yet: the map fills as spec-design writes them.', {
+        dimColor: true,
+      }),
+    ];
+  const selected = requirements.find((r) => r.id === selectedId) ?? requirements[0];
+  const rows = mapRows(requirements);
+  const label = (spec) => spec.split('/').pop().replace(/\.md$/, '');
+  const width = Math.max(...rows.map((r) => label(r.spec).length));
+  const legend = Box({
+    key: 'map-legend',
+    flexDirection: 'row',
+    columnGap: 2,
+    flexWrap: 'wrap',
+    children: mapLegend(requirements).map((c) =>
+      text(`${c.glyph} ${c.n} ${c.words}`, c.color ? { color: c.color } : { dimColor: true }),
+    ),
+  });
+  const grid = Box({
+    key: 'map-grid',
+    flexDirection: 'column',
+    children: rows.map((row) =>
+      Box({
+        key: `map-row-${label(row.spec)}`,
+        flexDirection: 'row',
+        columnGap: 1,
+        children: [
+          text(label(row.spec).padEnd(width), { dimColor: true }),
+          ...row.requirements.map((r) => {
+            const c = CELL[cellOf(r)];
+            // Keyed by its Box: a Text keeps no key of its own.
+            return Box({
+              key: `cell-${r.id}`,
+              children: [
+                text(c.glyph, {
+                  ...(c.color ? { color: c.color } : { dimColor: cellOf(r) === 'removed' }),
+                  ...(r.id === selected.id ? { inverse: true, bold: true } : {}),
+                }),
+              ],
+            });
+          }),
+        ],
+      }),
+    ),
+  });
+  const keys = Box({
+    key: 'map-keys',
+    flexDirection: 'row',
+    columnGap: 1,
+    children: [
+      Button({
+        key: 'cell-prev',
+        label: 'Previous',
+        hotkey: 'h',
+        plain: true,
+        onPress: () => on.onCell(moveCell(requirements, selected.id, -1)),
+      }),
+      Button({
+        key: 'cell-next',
+        label: 'Next',
+        hotkey: 'l',
+        plain: true,
+        onPress: () => on.onCell(moveCell(requirements, selected.id, 1)),
+      }),
+      Button({
+        key: 'row-next',
+        label: 'Next spec',
+        hotkey: 'j',
+        plain: true,
+        onPress: () => on.onCell(moveCell(requirements, selected.id, 1, { rows: true })),
+      }),
+      Button({
+        key: 'row-prev',
+        label: 'Previous spec',
+        hotkey: 'k',
+        plain: true,
+        onPress: () => on.onCell(moveCell(requirements, selected.id, -1, { rows: true })),
+      }),
+    ],
+  });
+  // TRACE-2: the selected requirement, its stories with their states and branches, and its tests.
+  const stories = (status.stories ?? []).filter((s) => selected.stories?.includes(s.id));
+  const detail = Box({
+    key: 'map-detail',
+    flexDirection: 'column',
+    children: [
+      Select({
+        key: 'map-select',
+        label: 'Requirement',
+        value: selected.id,
+        options: requirements.map((r) => ({
+          value: r.id,
+          label: `${CELL[cellOf(r)].glyph} ${r.id} ${r.title}`,
+        })),
+        onSelect: (id) => on.onCell(id),
+      }),
+      text(`${selected.id} ${selected.title}`, { bold: true }),
+      text(`${selected.file} · ${CELL[cellOf(selected)].words}`, { dimColor: true }),
+      ...(stories.length
+        ? stories.map((s) =>
+            text(
+              `${s.id} ${s.title} · ${s.lane} · ${s.state}${s.branchExists ? ` · ${s.branch}` : ''}`,
+              { key: `map-story-${s.id}` },
+            ),
+          )
+        : [text('No story delivers it yet: a gap in the plan.', { color: 'red' })]),
+      ...(selected.tests?.length
+        ? [
+            text('Tests that name it', { bold: true }),
+            ...selected.tests.map((t, i) =>
+              text(`  ${t}`, { key: `map-test-${i}`, dimColor: true }),
+            ),
+          ]
+        : [text('No test names it.', { dimColor: true })]),
+    ],
+  });
+  return [legend, grid, keys, detail];
+}

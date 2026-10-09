@@ -101,6 +101,7 @@ function project() {
     heads: { 'web/st-4': 'abc123def4567890\n' } as Record<string, string>,
     registered: [] as any[],
     queue: [] as any[],
+    requirements: [] as any[],
     story: {
       id: 'ST-4',
       title: 'Booking form',
@@ -162,7 +163,7 @@ function stub(on: any, w: World) {
         JSON.stringify({
           base: 'main',
           stories: w.stories,
-          requirements: {},
+          requirements: w.requirements,
           problems: [],
           drift: [],
         }),
@@ -1904,5 +1905,87 @@ test("REVW-5 the drill-down shows the reviewer's findings by severity, each a wa
   expect(findings.indexOf('Concerns')).toBeLessThan(findings.indexOf('Nits'));
   await press($, 'finding-concern-0', PANE);
   expect(String((await ui.find({ type: 'Code' }))?.props.source)).toMatch(/apps\/web\/api.ts/);
+  await ui.unmount();
+});
+
+// --- the traceability map ---------------------------------------------------------------------------
+
+/** 40 requirements over two specs: 30 done (20 tested), 4 in progress, 3 todo, 3 without a story. */
+function requirementsMap() {
+  const reqs: any[] = [];
+  for (let i = 1; i <= 40; i++) {
+    const state = i <= 30 ? 'done' : i <= 34 ? 'in progress' : i <= 37 ? 'todo' : 'no story';
+    reqs.push({
+      id: `BOOK-${i}`,
+      title: `Requirement ${i}`,
+      file: i <= 20 ? 'docs/spec/01-booking.md' : 'docs/spec/02-payments.md',
+      removed: false,
+      state,
+      stories: state === 'no story' ? [] : ['ST-4'],
+      tests: i <= 20 ? [`apps/web/b${i}.test.ts`] : [],
+    });
+  }
+  return reqs;
+}
+
+test('TRACE-1 the map: a cell per requirement, a row per spec, and a legend with the gaps counted', async ($, on) => {
+  const w = project();
+  w.requirements = requirementsMap();
+  await start($, on, w);
+  await lanes($);
+  const ui = await pane($, PANE);
+  expect((await ui.find({ key: 'tab-map' }))?.props.hotkey).toBe('4');
+  await press($, 'tab-map', PANE);
+  const legend = (await ui.find({ key: 'map-legend' }))?.text ?? '';
+  expect(legend).toMatch(/■ 20 done and tested/);
+  expect(legend).toMatch(/✗ 3 without a story/);
+  expect((await ui.find({ key: 'map-row-01-booking' }))?.text.replace(/\s/g, '')).toBe(
+    '01-booking' + '■'.repeat(20),
+  );
+  const cells = await Promise.all(w.requirements.map((r) => ui.find({ key: `cell-${r.id}` })));
+  expect(cells.filter((c) => c?.text === '✗')).toHaveLength(3);
+  await ui.unmount();
+});
+
+test('TRACE-2 selecting a cell, by keys or the list, shows its spec, stories with their branches, and tests', async ($, on) => {
+  const w = project();
+  w.requirements = requirementsMap();
+  w.stories[0] = { ...w.stories[0], branchExists: true };
+  await start($, on, w);
+  await lanes($);
+  const ui = await pane($, PANE);
+  await press($, 'tab-map', PANE);
+  expect((await ui.find({ key: 'map-detail' }))?.text).toMatch(/BOOK-1 Requirement 1/);
+  await press($, 'cell-next', PANE);
+  expect(JSON.stringify((await ui.find({ key: 'cell-BOOK-2' }))?.children)).toMatch(
+    /"inverse":true/,
+  );
+  await press($, 'row-next', PANE);
+  expect(JSON.stringify((await ui.find({ key: 'cell-BOOK-21' }))?.children)).toMatch(
+    /"inverse":true/,
+  );
+  await $.ui.select({ plugin: 'code-kit', key: 'map-select', value: 'BOOK-3', requestId: PANE });
+  const detail = (await ui.find({ key: 'map-detail' }))?.text ?? '';
+  expect(detail).toMatch(/docs\/spec\/01-booking.md · done and tested/);
+  expect(detail).toMatch(/ST-4 Booking form · web · in progress · web\/st-4/);
+  expect(detail).toMatch(/apps\/web\/b3.test.ts/);
+  await $.ui.select({ plugin: 'code-kit', key: 'map-select', value: 'BOOK-40', requestId: PANE });
+  expect((await ui.find({ key: 'map-detail' }))?.text).toMatch(/No story delivers it yet/);
+  await ui.unmount();
+});
+
+test('TRACE-3 the map follows the project: a commit that finishes a requirement shows within 2 seconds', async ($, on) => {
+  const w = project();
+  w.requirements = requirementsMap();
+  const clock = await start($, on, w);
+  await lanes($);
+  const ui = await pane($, PANE);
+  await press($, 'tab-map', PANE);
+  w.requirements = w.requirements.map((r) =>
+    r.id === 'BOOK-31' ? { ...r, state: 'done', tests: ['t'] } : r,
+  );
+  w.refs += ' ddd refs/heads/web/st-9\n';
+  await clock.advance(2000);
+  expect((await ui.find({ key: 'map-legend' }))?.text).toMatch(/■ 21 done and tested/);
   await ui.unmount();
 });

@@ -218,7 +218,7 @@ Spec-check, diff, verify, findings, usage and steps for a story.
 **Lane:** lead
 **Requirements:** TRACE-1, TRACE-2, TRACE-3, TRACE-4
 **Depends on:** ST-19
-**Status:** todo
+**Status:** done
 
 Requirements by stories and tests, live, with drill-down.
 

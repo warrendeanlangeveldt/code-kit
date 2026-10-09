@@ -185,6 +185,7 @@ export function register(on) {
           requests,
           stops,
           queue,
+          status,
           check,
           base: status?.base ?? null,
         };
@@ -316,10 +317,13 @@ export function register(on) {
           { cwd },
         );
         const plan = model.check?.docs?.plan;
+        const specs = model.check?.docs?.specs;
         return [
           refs.stdout,
           await stamp('.claude/code-kit.json'),
           plan ? await stamp(plan) : '',
+          // TRACE-3: the map follows the specs too.
+          specs ? await listing(specs) : '',
           await stamp('.claude/state/requests.jsonl'),
           await stamp('.claude/state/merge-queue.json'),
           await listing('.claude/approvals'),
@@ -1129,6 +1133,7 @@ export function register(on) {
         held: [...held.values()],
         requests: model.requests?.open ?? [],
         ui: paneUi,
+        status: model.status ?? null,
         placement: e.props.placement,
         story: storyOpen ? storyNow(storyOpen, now, usage) : null,
       },
@@ -1158,6 +1163,11 @@ export function register(on) {
             $.ui.focus({ requestId: PANE_ID, key: 'open-story' }).catch(() => {});
         },
         onOpen: (lane) => act?.openStory(lane),
+        // TRACE-2: a cell selected by its keys or the requirement list.
+        onCell: (cell) => {
+          paneUi = { ...paneUi, cell };
+          $.ui.invalidate('ui.render');
+        },
         story: {
           onBack: () => act?.closeStory(),
           onFile: (file) => {

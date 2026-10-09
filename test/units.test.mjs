@@ -917,3 +917,29 @@ test('VIEW-7 the drill-down: a diff per file, the spec-check table, and Escape g
     false,
   );
 });
+
+test('TRACE-1 and TRACE-4 the map: cell states, rows by spec, the legend, moving, and a glyph per state', async () => {
+  const { CELL, cellOf, mapRows, mapLegend, moveCell } = await import('../hooks/mod/panes.mjs');
+  const glyphs = Object.values(CELL).map((c) => c.glyph);
+  assert.equal(new Set(glyphs).size, glyphs.length);
+  const reqs = [
+    { id: 'A-1', file: 'a.md', state: 'done', tests: ['t'] },
+    { id: 'A-2', file: 'a.md', state: 'done', tests: [] },
+    { id: 'B-1', file: 'b.md', state: 'no story', tests: [] },
+    { id: 'B-2', file: 'b.md', state: 'removed', tests: [] },
+  ];
+  assert.deepEqual(reqs.map(cellOf), ['tested', 'done', 'no story', 'removed']);
+  assert.deepEqual(
+    mapRows(reqs).map((r) => `${r.spec}:${r.requirements.map((x) => x.id).join('+')}`),
+    ['a.md:A-1+A-2', 'b.md:B-1+B-2'],
+  );
+  assert.deepEqual(
+    mapLegend(reqs).map((c) => `${c.n} ${c.words}`),
+    ['1 done and tested', '1 done, untested', '1 without a story', '1 removed'],
+  );
+  assert.equal(moveCell(reqs, 'A-2', 1), 'B-1');
+  assert.equal(moveCell(reqs, 'A-1', -1), 'B-2');
+  assert.equal(moveCell(reqs, 'A-2', 1, { rows: true }), 'B-1');
+  assert.equal(moveCell(reqs, 'B-2', 1, { rows: true }), 'A-1');
+  assert.equal(moveCell([], 'A-1', 1), null);
+});
