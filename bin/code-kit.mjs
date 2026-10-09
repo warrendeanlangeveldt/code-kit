@@ -20,6 +20,8 @@
 //   requests [--json]                 open approval requests and approvals in force
 //   stops [--session id] [--json]     finish checks that refused an agent's last stop, still failing
 //   sent-back <branch> [--reason …]   records that a review sent the branch back at its current commit
+//   settings [--json] | settings set <key> <value> --reason … [--via pane]
+//                                    the harness settings; set is the person's own change
 //                         record approvals a person gave in chat (with approvals.lead on, the lead runs it)
 // --config <file> reads a draft (.claude/code-kit.draft.json) instead of .claude/code-kit.json.
 import { execFileSync } from 'node:child_process';
@@ -36,6 +38,7 @@ import { nextStep } from '../hooks/lib/next.mjs';
 import { traceFile } from '../hooks/lib/trace.mjs';
 import { buildStatus } from '../hooks/lib/plan.mjs';
 import { recordSentBack } from '../hooks/lib/reviews.mjs';
+import { SETTINGS, parseSetting, settingOf, withSetting } from '../hooks/lib/harness.mjs';
 import {
   APPROVAL_MINUTES,
   approvalLifetime,
@@ -119,6 +122,7 @@ function checkJson() {
   );
   report.adapters = config.adapters;
   report.docs = config.docs ?? null;
+  report.harness = config.harness;
   out(JSON.stringify(report, null, 2));
 }
 
@@ -446,6 +450,45 @@ function requests() {
     );
 }
 
+/**
+ * The harness settings (`harness` in the config): listed, or one changed as the person's own act. The
+ * change is written to the config and given a kit approval with the person's reason, so the commit that
+ * keeps it logs their reason. The hooks refuse `settings set` from every agent.
+ */
+function settings() {
+  const { raw, config } = load();
+  if (rest[0] === 'set') {
+    const [, key, value] = rest;
+    if (!key || value === undefined)
+      die('code-kit settings set <key> <value> --reason "<why>" [--via pane]');
+    if (!(key in SETTINGS))
+      die(`${key} isn't a harness setting. They are: ${Object.keys(SETTINGS).join(', ')}.`);
+    if (!reason?.trim()) die('Give a reason with --reason "…": the approval log keeps it.');
+    const changed = withSetting(raw, key, parseSetting(key, value));
+    const problems = validate(changed);
+    if (problems.length) die(`Nothing changed: ${problems.join('; ')}`);
+    writeFileSync(resolve(file), `${JSON.stringify(changed, null, 2)}\n`);
+    const mark =
+      via === 'pane' ? '(changed in the code-kit pane)' : '(changed with code-kit settings)';
+    grantApprovals(resolve('.'), ['kit'], null, reason, { kit: mark });
+    return out(
+      `Set harness.${key} to ${JSON.stringify(settingOf(changed.harness, key))}. Commit ${file} to keep it; the approval log will carry your reason.`,
+    );
+  }
+  if (rest.length) die('code-kit settings [--json] | settings set <key> <value> --reason "<why>"');
+  const rows = Object.entries(SETTINGS).map(([key, s]) => ({
+    key,
+    value: settingOf(config.harness, key),
+    default: s.default,
+    about: s.about,
+  }));
+  if (flag('--json')) return out(JSON.stringify(rows, null, 2));
+  for (const r of rows)
+    out(
+      `${r.key.padEnd(26)} ${JSON.stringify(r.value).padEnd(14)} ${r.value === r.default ? '' : `(default ${JSON.stringify(r.default)}) `}${r.about}`,
+    );
+}
+
 /** Records the review's send-back of `branch` at its current commit (lib/reviews.mjs). */
 function sentBackCommand(branch) {
   load();
@@ -725,6 +768,7 @@ const commands = {
   merge: () => (rest.length === 1 ? merge(rest[0]) : usage()),
   requests,
   stops,
+  settings,
   'sent-back': () => (rest.length === 1 ? sentBackCommand(rest[0]) : usage()),
   trace: () => (rest.length ? trace(rest) : usage()),
   adapters,
@@ -744,7 +788,8 @@ function usage() {
       '              | next [--base ref] [--json] | adapters | trace <path>... [--json]\n' +
       '              | approve <name>... --reason "…" [--lane name]   [--config file]\n' +
       '              | merge <branch> --delegated|--person [--into branch] | requests [--json]\n' +
-      '              | stops [--session id] [--json] | sent-back <branch> [--reason "…"]',
+      '              | stops [--session id] [--json] | sent-back <branch> [--reason "…"]\n' +
+      '              | settings [--json] | settings set <key> <value> --reason "…" [--via pane]',
   );
 }
 await (commands[command] ?? usage)();

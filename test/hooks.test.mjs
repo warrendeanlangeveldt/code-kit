@@ -16,6 +16,7 @@ import { homedir, tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { refusalCard } from '../hooks/mod/view.mjs';
+import { holdable } from '../hooks/mod/hold.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const hooks = join(here, '..', 'hooks');
@@ -1202,6 +1203,35 @@ try {
     ),
     0,
   );
+  // HOLD-1: which refusals a person's approval would allow, read from the hooks' real text.
+  const holdOf = (res) => holdable(res.stderr);
+  expect(
+    'HOLD-1 a refused install is holdable, for its dependency approval and lane',
+    truth(
+      JSON.stringify(holdOf(bash('npm install dayjs', 'web-engineer'))?.names) ===
+        '["dep-dayjs"]' && holdOf(bash('npm install dayjs', 'web-engineer')).lane === 'web',
+    ),
+    0,
+  );
+  expect(
+    'so is a protected write, for its approval',
+    truth(holdOf(write('design/approved-screens.json', 'web-engineer'))?.names.join() === 'design'),
+    0,
+  );
+  expect(
+    "and a lane's kit edit through the shell, for the kit approval",
+    truth(holdOf(bash('echo x > .claude/agents/web.md', 'web-engineer'))?.names.join() === 'kit'),
+    0,
+  );
+  expect(
+    "but not another lane's file, a force-push or the approval log",
+    truth(
+      holdOf(write('workers/jobs/z.ts', 'web-engineer')) === null &&
+        holdOf(bash('git push --force')) === null &&
+        holdOf(bash('cat .claude/approval-log.jsonl > x')) === null,
+    ),
+    0,
+  );
   expect(
     "text that isn't a code-kit refusal is left to Claude Code",
     truth(refusalCard('Context Graph: read src/b.ts first.') === null),
@@ -1223,6 +1253,101 @@ try {
     truth(JSON.parse(cli('trace', 'pnpm-lock.yaml', '--json').stdout).reviewer === 'lead'),
     0,
   );
+  // --- the harness settings: the person's own change (SET-1, SET-2) --------------------------------
+  {
+    const s = newRepo();
+    cleanups.push(s.dir);
+    const sCli = (...args) =>
+      spawnSync('node', [join(here, '..', 'bin', 'code-kit.mjs'), ...args], {
+        cwd: s.dir,
+        encoding: 'utf8',
+      });
+    const set = sCli(
+      'settings',
+      'set',
+      'autonomy',
+      'propose',
+      '--reason',
+      'try proposing first',
+      '--via',
+      'pane',
+    );
+    const written = JSON.parse(readFileSync(join(s.dir, '.claude/code-kit.json'), 'utf8'));
+    expect(
+      'SET-2 settings set writes the harness setting into the config',
+      truth(set.status === 0 && written.harness?.autonomy === 'propose', set.stdout + set.stderr),
+      0,
+    );
+    expect(
+      "and gives the kit approval with the person's reason, marked as the pane's",
+      truth(
+        readFileSync(join(s.dir, '.claude/approvals/kit'), 'utf8').includes(
+          'try proposing first (changed in the code-kit pane)',
+        ),
+      ),
+      0,
+    );
+    const listed = JSON.parse(sCli('settings', '--json').stdout);
+    expect(
+      'settings --json lists every setting with its value and default',
+      truth(
+        listed.find((r) => r.key === 'autonomy')?.value === 'propose' &&
+          listed.find((r) => r.key === 'hold.minutes')?.default === 2,
+      ),
+      0,
+    );
+    const harness = JSON.parse(sCli('check', '--json').stdout).harness;
+    expect(
+      'USE-4 check --json carries the harness settings in force, for the mod',
+      truth(
+        harness?.autonomy === 'propose' && harness?.background?.pauseAtPercent === 80,
+        JSON.stringify(harness),
+      ),
+      0,
+    );
+    const bad = sCli('settings', 'set', 'hold.minutes', '99', '--reason', 'longer');
+    expect(
+      'a value out of range changes nothing',
+      truth(
+        bad.status === 1 &&
+          bad.stderr.includes('Nothing changed') &&
+          JSON.parse(readFileSync(join(s.dir, '.claude/code-kit.json'), 'utf8')).harness.hold ===
+            undefined,
+        bad.stderr,
+      ),
+      0,
+    );
+    expect(
+      'and a reason is needed',
+      sCli('settings', 'set', 'autonomy', 'off'),
+      1,
+      'Give a reason',
+    );
+    const sBash = (command, agent) =>
+      spawnSync('node', [join(hooks, 'guard-bash.mjs')], {
+        input: JSON.stringify({
+          cwd: s.dir,
+          tool_input: { command },
+          ...(agent ? { agent_type: agent } : {}),
+        }),
+        env: { ...process.env, CLAUDE_PROJECT_DIR: s.dir },
+        encoding: 'utf8',
+      });
+    expect(
+      'the lead may not change the settings',
+      sBash('node "/x/code-kit.mjs" settings set autonomy autonomous --reason go'),
+      2,
+      "the person's own act",
+    );
+    expect(
+      'nor may a lane',
+      sBash('code-kit settings set autonomy off --reason x', 'web-engineer'),
+      2,
+      "the person's own act",
+    );
+    expect('but listing them is fine', sBash('code-kit settings --json'), 0);
+  }
+
   const check = cli('check');
   expect(
     'check validates the config',

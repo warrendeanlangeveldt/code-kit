@@ -12,18 +12,25 @@ import {
   NOT_CODE_KIT,
   PANE_ID,
   RESULT_ID,
+  SETTINGS_ID,
   approvalsText,
   agentsAtWork,
+  attribution,
   approvePane,
   band,
   bandLines,
+  finishedStories,
   lanesPane,
   parseJson,
+  planOf,
   prefilledReason,
   projectState,
   refusalCard,
   refusalView,
   resultPane,
+  settingsView,
+  usageSummary,
+  withUsage,
 } from './view.mjs';
 
 // What the session knows of the project, read again when it changes.
@@ -34,6 +41,11 @@ let approving = null; // the open Approve… confirmation: { request, reason, er
 let result = null; // what the last merge reported
 let notice = null; // why the person's last act failed
 let act = null; // the session's actions, made at session start
+let settingRows = []; // the harness settings, from `code-kit settings --json`
+let pendingSetting = null; // a change waiting for the person's reason: { key, value, reason, error }
+let ledger = {}; // the session's tokens by agent and story (USE-1)
+let rateLimits = []; // the session's limits, as session.measure last gave them
+const agentsSeen = new Map(); // agent id → its $.agent.list() entry, kept once it leaves the list
 const refusals = new Map(); // tool_use_id → the refusal text a hook gave (CARD-1)
 const expanded = new Set(); // cards showing their raw text
 const REFUSALS_KEPT = 200;
@@ -63,6 +75,14 @@ export function register(on) {
         description: 'Run code-kit verify on this branch, checks included',
       })
       .catch(unavailable('verify-branch'));
+    await $.command
+      .register({
+        name: 'harness',
+        description: "code-kit's harness settings: autonomy, agents, hold time",
+        immediate: true,
+      })
+      .catch(unavailable('harness'));
+    rateLimits = (await $.session.usage().catch(() => null))?.rateLimits ?? [];
     const cli = `${$.plugin.root}/bin/code-kit.mjs`;
     const cwd = e.cwd ?? (await $.session.cwd());
     const session = await $.session.id();
@@ -231,6 +251,74 @@ export function register(on) {
         const ran = await $.process.run(['node', cli, 'verify'], { cwd, timeoutMs: 600000 });
         return { text: `${ran.stdout}${ran.stderr}`.trim() };
       },
+      // SET-2: the Settings view; a change is the person's, confirmed with a reason.
+      harness: async () => {
+        if ((await $.ui.panes()).some((p) => p.id === SETTINGS_ID)) {
+          await $.ui.close({ id: SETTINGS_ID });
+          return {};
+        }
+        await act.reload();
+        if (model.state.kind === 'none') return { text: NOT_CODE_KIT };
+        settingRows = (await json('settings')) ?? [];
+        await $.ui.open({ id: SETTINGS_ID, title: 'Harness', focus: true, closeOnEscape: true });
+        $.ui.invalidate('ui.render');
+        return {};
+      },
+      chooseSetting: (key, value) => {
+        const row = settingRows.find((x) => x.key === key);
+        if (row && String(row.value ?? 'null') === value) return;
+        pendingSetting = { key, value, reason: '', error: null };
+        $.ui.invalidate('ui.render');
+      },
+      confirmSetting: async (reason) => {
+        if (!pendingSetting) return;
+        if (!reason?.trim()) {
+          pendingSetting = {
+            ...pendingSetting,
+            error: 'Give a reason: the approval log keeps it.',
+          };
+          $.ui.invalidate('ui.render');
+          return;
+        }
+        const ran = await $.process.run(
+          [
+            'node',
+            cli,
+            'settings',
+            'set',
+            pendingSetting.key,
+            pendingSetting.value,
+            '--reason',
+            reason.trim(),
+            '--via',
+            'pane',
+          ],
+          { cwd },
+        );
+        if (ran.exitCode !== 0) {
+          pendingSetting = {
+            ...pendingSetting,
+            error: (ran.stderr || ran.stdout).trim().split('\n')[0],
+          };
+          $.ui.invalidate('ui.render');
+          return;
+        }
+        pendingSetting = null;
+        settingRows = (await json('settings')) ?? settingRows;
+        await act.reload();
+      },
+      cancelSetting: () => {
+        pendingSetting = null;
+        $.ui.invalidate('ui.render');
+      },
+      // USE-1: a model request's tokens, put down to the agent that made it and its story and lane.
+      measure: async (agentId, usage) => {
+        if (agentId && !agentsSeen.has(agentId))
+          for (const a of (await $.agent.list()) ?? []) agentsSeen.set(a.id, a);
+        const who = attribution(agentId, agentsSeen.get(agentId) ?? null, model.check, model.state);
+        ledger = withUsage(ledger, who, usage);
+        $.ui.invalidate('ui.render');
+      },
       dismiss: async () => {
         notice = null;
         $.ui.invalidate('ui.render');
@@ -265,6 +353,9 @@ export function register(on) {
     text: `code-kit is still starting; try /${name} again in a moment.`,
   });
   on('command.run', { command: 'lanes' }, async ($, e) => (act ? act.lanes() : starting('lanes')));
+  on('command.run', { command: 'harness' }, async ($, e) =>
+    act ? act.harness() : starting('harness'),
+  );
   on('command.run', { command: 'approvals' }, async ($, e) =>
     act ? act.approvals() : starting('approvals'),
   );
@@ -313,6 +404,27 @@ export function register(on) {
     });
   });
 
+  // USE-1: each model request's usage, as the request ends; the lead's requests carry no agentId.
+  on('turn.step', async function* ($, e, next) {
+    const res = yield* next(e);
+    if (res?.usage && act) await act.measure(e.agentId, res.usage).catch(() => {});
+    return res;
+  });
+  // USE-4: the plan's 5-hour use, as Claude Code measures it.
+  on('session.measure', async ($, e, next) => {
+    if (e.changed.includes('rateLimits')) {
+      rateLimits = e.rateLimits;
+      $.ui.invalidate('ui.render');
+    }
+    return next(e);
+  });
+
+  // What the pane and band show of usage: the session's tokens and the plan's use.
+  const usageNow = () => ({
+    usage: usageSummary(ledger, finishedStories(model.state)),
+    plan: planOf(rateLimits, model.check?.harness?.background?.pauseAtPercent),
+  });
+
   on('turn.start', async ($, e, next) => {
     if (reviewTurn === 'next') reviewTurn = e.turnId;
     return next(e);
@@ -327,14 +439,15 @@ export function register(on) {
     return next(e);
   });
 
-  on('ui.render', { component: 'Pane', requestId: PANE_ID }, async ($, e) =>
-    lanesPane(model.state, $.ui.resolve(e)),
-  );
+  on('ui.render', { component: 'Pane', requestId: PANE_ID }, async ($, e) => {
+    const { usage, plan } = usageNow();
+    return lanesPane(model.state, $.ui.resolve(e), usage, plan);
+  });
 
   // BAND-2: absent when nothing waits. Its lines go above whatever else the band holds (another
   // plugin's lines, such as Context Graph's, or Claude Code's own), which it keeps.
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
-    const lines = bandLines({ ...model, reviewing, notice });
+    const lines = bandLines({ ...model, reviewing, notice, ...usageNow() });
     if (!lines.length || !act) return next(e);
     const ours = band(lines, $.ui.resolve(e), (id, line) => act[id](line));
     const below = await next(e);
@@ -352,6 +465,18 @@ export function register(on) {
       onCancel: () => act.cancelApproval(),
     });
   });
+
+  on('ui.render', { component: 'Pane', requestId: SETTINGS_ID }, async ($, e) =>
+    settingsView(settingRows, pendingSetting, $.ui.resolve(e), {
+      onChoose: (key, value) => act.chooseSetting(key, value),
+      onReason: (value) => {
+        if (pendingSetting) pendingSetting = { ...pendingSetting, reason: value };
+        $.ui.invalidate('ui.render');
+      },
+      onConfirm: (reason) => act.confirmSetting(reason),
+      onCancel: () => act.cancelSetting(),
+    }),
+  );
 
   on('ui.render', { component: 'Pane', requestId: RESULT_ID }, async ($, e) =>
     resultPane(result, $.ui.resolve(e)),

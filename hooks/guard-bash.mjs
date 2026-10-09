@@ -140,6 +140,11 @@ if ((delegatedMerge && /\s--person\b/.test(cmd)) || (approves && /\s--via\b/.tes
   block(
     `Blocked: merging or approving as the person is the person's own act, from the code-kit pane or their terminal. Ask them, and stop.\nCommand: ${cmd}`,
   );
+// The harness settings are the person's to change, from the pane or their terminal.
+if (runs(cmd, new RegExp(String.raw`^${CODE_KIT}\s+settings\s+set\b`)))
+  block(
+    `Blocked: changing the harness settings is the person's own act, from the code-kit pane (/harness) or their terminal. Tell them what you'd change and why, and stop.\nCommand: ${cmd}`,
+  );
 if (delegatedMerge && actor.kind !== 'lead')
   block(
     `Blocked: only the lead merges into a protected branch. Finish your story and commit it on your branch; the lead reviews and merges it.\nCommand: ${cmd}`,

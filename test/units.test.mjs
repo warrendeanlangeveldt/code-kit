@@ -22,6 +22,14 @@ import {
   commandItself,
   prefilledReason,
   projectState,
+  settingsView,
+  attribution,
+  withUsage,
+  usageSummary,
+  finishedStories,
+  planOf,
+  tokens,
+  planBar,
 } from '../hooks/mod/view.mjs';
 
 const fixture = JSON.parse(
@@ -569,4 +577,178 @@ test('files any agent may write have a reviewer: the lead, or the lane an entry 
   assert.equal(reviewerOf('apps/office/x.ts', config), null);
   c.anyActor = [{ glob: 'x', reviewer: 'nobody-lane' }];
   assert.match(validate(c).join(' '), /"anyActor"/);
+});
+
+test('HOLD-1 a protected file refused at commit is holdable, and results are read in every shape', async () => {
+  const { holdable, resultText } = await import('../hooks/mod/hold.mjs');
+  const refusal =
+    'PreToolUse:Bash hook error: Blocked: design/approved-screens.json is the register of approved designs; committing it needs a person\'s approval in force. Ask the lead to run\n  ! echo "<what you are approving>" > .claude/approvals/web/design\n(a person runs it; …)';
+  assert.deepEqual(holdable(refusal), {
+    kind: 'approval',
+    title: 'Commit refused: design/approved-screens.json',
+    names: ['design'],
+    lane: 'web',
+    what: 'commit design/approved-screens.json',
+  });
+  assert.equal(resultText({ deny: 'x' }), 'x');
+  assert.equal(resultText({ isError: true, text: 'y', result: 'z' }), 'y');
+  assert.equal(resultText({ result: 'Error: PreToolUse' }), 'Error: PreToolUse');
+  assert.equal(resultText({ result: { stdout: '' } }), '');
+  assert.equal(holdable('some other failure'), null);
+});
+
+test('SET-1 the harness settings: defaults, validation and typed values', async () => {
+  const { harnessSettings, harnessProblems, parseSetting } =
+    await import('../hooks/lib/harness.mjs');
+  assert.deepEqual(harnessSettings(undefined), {
+    autonomy: 'autonomous',
+    hold: { minutes: 2 },
+    stall: { nudgeMinutes: 5, restartMinutes: 10, maxRestarts: 2 },
+    agents: { reviewer: { on: false, model: null } },
+    background: { pauseAtPercent: 80 },
+  });
+  assert.equal(
+    harnessSettings({ autonomy: 'propose', stall: { nudgeMinutes: 3 } }).stall.nudgeMinutes,
+    3,
+  );
+  const wrong = harnessSettings({ autonomy: 'always', hold: { minutes: 90 } });
+  assert.equal(wrong.autonomy, 'autonomous');
+  assert.equal(wrong.hold.minutes, 2);
+  assert.equal(harnessSettings('yes').autonomy, 'autonomous');
+  assert.deepEqual(harnessProblems(undefined), []);
+  assert.deepEqual(
+    harnessProblems({ autonomy: 'propose', agents: { reviewer: { on: true, model: 'sonnet' } } }),
+    [],
+  );
+  const bad = harnessProblems({
+    autonomy: 'yolo',
+    hold: { minutes: 90 },
+    stall: { nudgeMinutes: 10, restartMinutes: 5 },
+    colour: 'red',
+  });
+  for (const text of [
+    'harness.autonomy',
+    'harness.hold.minutes',
+    'harness.colour',
+    'restartMinutes" must be more than',
+  ])
+    assert.ok(
+      bad.some((p) => p.includes(text)),
+      `${text} in ${bad.join(' / ')}`,
+    );
+  const c = clone();
+  c.harness = { autonomy: 'nope' };
+  assert.match(validate(c).join(' '), /harness\.autonomy/);
+  assert.equal(parseSetting('hold.minutes', '5'), 5);
+  assert.equal(parseSetting('agents.reviewer.on', 'true'), true);
+  assert.equal(parseSetting('agents.reviewer.model', 'null'), null);
+  assert.equal(parseSetting('autonomy', 'propose'), 'propose');
+  assert.equal(withDefaults(clone()).harness.autonomy, 'autonomous');
+});
+
+test('SET-2 the settings view: a control per setting, a model id kept, and the confirmation once one changes', () => {
+  const el = (type) => (props) => ({ type, props, children: props.children ?? [] });
+  const els = {
+    Box: el('Box'),
+    Text: el('Text'),
+    Select: el('Select'),
+    Input: el('Input'),
+    Button: el('Button'),
+  };
+  const all = (n) => [
+    n,
+    ...(n.children ?? []).flatMap((c) => (c && typeof c === 'object' ? all(c) : [])),
+  ];
+  const rows = [
+    { key: 'autonomy', value: 'off', default: 'autonomous', about: 'a' },
+    { key: 'hold.minutes', value: 2, default: 2, about: 'b' },
+    { key: 'agents.reviewer.model', value: 'claude-haiku-4-5', default: null, about: 'c' },
+  ];
+  const h = { onChoose() {}, onReason() {}, onConfirm() {}, onCancel() {} };
+  const quiet = all(settingsView(rows, null, els, h));
+  assert.equal(quiet.find((n) => n.props.key === 'set-autonomy').type, 'Select');
+  assert.equal(quiet.find((n) => n.props.key === 'set-hold.minutes').type, 'Input');
+  const model = quiet.find((n) => n.props.key === 'set-agents.reviewer.model');
+  assert.ok(model.props.options.some((o) => o.value === 'claude-haiku-4-5'));
+  assert.ok(quiet.some((n) => n.type === 'Text' && n.children.includes('default autonomous')));
+  assert.ok(!quiet.some((n) => n.props.key === 'settings-confirm'));
+  const asking = all(
+    settingsView(rows, { key: 'hold.minutes', value: '5', reason: '', error: null }, els, h),
+  );
+  assert.ok(asking.some((n) => n.type === 'Text' && n.children.includes('Set hold.minutes to 5?')));
+  assert.ok(asking.some((n) => n.props.key === 'settings-reason'));
+});
+
+test('USE-1 to USE-4 usage: attribution, the roll-up, outliers and the plan', () => {
+  const check = { lanes: { web: { agent: 'web-engineer' }, api: { agent: 'api-engineer' } } };
+  const state = {
+    kind: 'ok',
+    lanes: [
+      { name: 'lead', state: 'building', story: { id: 'ST-6' } },
+      { name: 'web', state: 'building', story: { id: 'ST-4' } },
+      { name: 'api', state: 'in review', story: { id: 'ST-3' } },
+    ],
+    stories: [
+      { id: 'ST-1', state: 'done' },
+      { id: 'ST-2', state: 'done' },
+    ],
+  };
+  assert.deepEqual(attribution(undefined, null, check, state), {
+    key: 'lead',
+    lane: 'lead',
+    story: 'ST-6',
+    background: false,
+  });
+  const web = { id: 'a1', type: 'web-engineer', description: 'Fix the form' };
+  assert.equal(attribution('a1', web, check, state).story, 'ST-4');
+  assert.equal(attribution('a1', { ...web, description: 'ST-9 next' }, check, state).story, 'ST-9');
+  assert.equal(
+    attribution('r1', { id: 'r1', type: 'reviewer', description: 'x' }, check, state).background,
+    true,
+  );
+  assert.equal(attribution('gone', null, check, state).background, true);
+
+  const k = (n) => ({
+    input_tokens: n * 400,
+    cache_creation_input_tokens: n * 100,
+    output_tokens: n * 100,
+    cache_read_input_tokens: n * 400,
+  });
+  let ledger = {};
+  const as = (story, lane = 'api') => ({ key: story, lane, story, background: false });
+  ledger = withUsage(ledger, as('ST-1'), k(190));
+  ledger = withUsage(ledger, as('ST-2'), k(200));
+  ledger = withUsage(ledger, as('ST-3'), k(210));
+  ledger = withUsage(ledger, as('ST-4', 'web'), k(300));
+  ledger = withUsage(ledger, as('ST-4', 'web'), k(400));
+  ledger = withUsage(ledger, { key: 'r1', lane: null, story: null, background: true }, k(100));
+  assert.deepEqual(ledger['ST-4|ST-4'].output, 70000);
+  const finished = finishedStories(state);
+  assert.deepEqual([...finished].sort(), ['ST-1', 'ST-2', 'ST-3']);
+  const sum = usageSummary(ledger, finished);
+  assert.equal(sum.lanes.web, 700000);
+  assert.equal(sum.lanes.api, 600000);
+  assert.equal(sum.background, 100000);
+  assert.equal(sum.total, 1400000);
+  assert.deepEqual(sum.outliers, [{ id: 'ST-4', ratio: 3.5 }]);
+  assert.deepEqual(usageSummary(ledger, new Set(['ST-1', 'ST-2'])).outliers, []);
+
+  assert.deepEqual(
+    planOf([
+      { kind: 'seven_day', percentUsed: 90 },
+      { kind: 'five_hour', percentUsed: 81 },
+    ]),
+    { percent: 81, paused: true },
+  );
+  assert.deepEqual(planOf([{ kind: 'five_hour', percentUsed: 80 }]), {
+    percent: 80,
+    paused: false,
+  });
+  assert.deepEqual(planOf([{ kind: 'five_hour', percentUsed: 85 }], 90), {
+    percent: 85,
+    paused: false,
+  });
+  assert.deepEqual(planOf([]), { percent: null, paused: false });
+  assert.deepEqual([tokens(950), tokens(12400), tokens(1400000)], ['950', '12k', '1.4M']);
+  assert.equal(planBar(62), '██████░░░░');
 });

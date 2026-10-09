@@ -61,7 +61,8 @@ function laneRow(name, agent, stories, atWork) {
  * subagent types at work:
  *   { kind: 'none' }                             no .claude/code-kit.json
  *   { kind: 'invalid', problems }                a config that doesn't validate
- *   { kind: 'ok', lanes, ready, planGaps }       a row per lane, what's ready, the plan's gaps (or null)
+ *   { kind: 'ok', lanes, ready, planGaps, stories }  a row per lane, what's ready, the plan's gaps (or
+ *                                                     null), and each story's id, lane and state
  */
 export function projectState(check, status, next = null, atWork = new Set()) {
   if (!check || check.exists === false) return { kind: 'none' };
@@ -77,7 +78,13 @@ export function projectState(check, status, next = null, atWork = new Set()) {
     const story = stories.find((s) => s.id === id);
     return { id, title: story?.title ?? '', lane: story?.lane ?? null };
   });
-  return { kind: 'ok', lanes, ready, planGaps: status ? (status.problems ?? []).length : null };
+  return {
+    kind: 'ok',
+    lanes,
+    ready,
+    planGaps: status ? (status.problems ?? []).length : null,
+    stories: stories.map((s) => ({ id: s.id, lane: s.lane, state: s.state })),
+  };
 }
 
 const STATE_COLOR = {
@@ -88,8 +95,11 @@ const STATE_COLOR = {
   idle: undefined,
 };
 
-/** The Lanes pane's body, drawn with the elements `$.ui.resolve(e)` returned. */
-export function lanesPane(state, { Box, Text }) {
+/**
+ * The Lanes pane's body, drawn with the elements `$.ui.resolve(e)` returned; `usage` is
+ * usageSummary's, `plan` planOf's (USE-2), either null before there is any.
+ */
+export function lanesPane(state, { Box, Text }, usage = null, plan = null) {
   const text = (value, style = {}) => Text({ ...style, children: [value] });
   if (!state || state.kind === 'none') return text(NOT_CODE_KIT, { dimColor: true });
   if (state.kind === 'invalid')
@@ -108,6 +118,9 @@ export function lanesPane(state, { Box, Text }) {
             text(l.name.padEnd(width), { bold: true }),
             text(l.state.padEnd(9), STATE_COLOR[l.state] ? { color: STATE_COLOR[l.state] } : {}),
             text(l.agent ?? 'the main session', { dimColor: true }),
+            ...(usage?.lanes[l.name]
+              ? [text(tokens(usage.lanes[l.name]), { dimColor: true })]
+              : []),
           ],
         }),
         ...(l.story
@@ -152,8 +165,57 @@ export function lanesPane(state, { Box, Text }) {
       ...notes,
       Box({ flexDirection: 'column', children: rows }),
       Box({ flexDirection: 'column', children: ready }),
+      ...usageSection(usage, plan, text, Box),
     ],
   });
+}
+
+/** USE-2: the plan's 5-hour use as a bar, each story's tokens, and the background agents' share. */
+function usageSection(usage, plan, text, Box) {
+  const lines = [];
+  if (plan?.percent != null)
+    lines.push(
+      Box({
+        key: 'usage-plan',
+        flexDirection: 'row',
+        columnGap: 2,
+        children: [
+          text('Plan'),
+          text(planBar(plan.percent), { color: plan.paused ? 'red' : 'green' }),
+          text(`${plan.percent}% of the 5-hour window`, { dimColor: true }),
+          ...(plan.paused ? [text('background agents paused', { color: 'red' })] : []),
+        ],
+      }),
+    );
+  if (usage?.total) {
+    const flagged = new Map(usage.outliers.map((o) => [o.id, o.ratio]));
+    for (const [id, n] of Object.entries(usage.stories).sort((a, b) => b[1] - a[1]))
+      lines.push(
+        Box({
+          key: `usage-${id}`,
+          flexDirection: 'row',
+          columnGap: 2,
+          children: [
+            text(id),
+            text(tokens(n), { dimColor: true }),
+            ...(flagged.has(id)
+              ? [text(`${flagged.get(id)}× the usual`, { color: 'yellow' })]
+              : []),
+          ],
+        }),
+      );
+    if (usage.background)
+      lines.push(
+        text(
+          `Background agents  ${tokens(usage.background)} (${Math.round((usage.background / usage.total) * 100)}%)`,
+          { dimColor: true },
+        ),
+      );
+    lines.push(text(`This session  ${tokens(usage.total)} tokens`, { dimColor: true }));
+  }
+  return lines.length
+    ? [Box({ flexDirection: 'column', children: [text('Usage', { bold: true }), ...lines] })]
+    : [];
 }
 
 // --- the band, and the person's acts -----------------------------------------------------------
@@ -185,9 +247,18 @@ const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
 /**
  * The band's lines (BAND-2): one per kind of thing waiting, each with its actions, and none when
  * nothing waits. `reviewing` holds the stories the person has asked the lead to review (ACT-3);
- * `notice` is why the person's last act failed, until they dismiss it.
+ * `notice` is why the person's last act failed, until they dismiss it. `usage` (usageSummary's) flags
+ * outliers (USE-3), and `plan` (planOf's) says when background agents are paused (USE-4).
  */
-export function bandLines({ state, requests, stops, reviewing = new Set(), notice = null }) {
+export function bandLines({
+  state,
+  requests,
+  stops,
+  reviewing = new Set(),
+  notice = null,
+  usage = null,
+  plan = null,
+}) {
   const lines = [];
   if (notice)
     lines.push({ kind: 'notice', text: notice, actions: [{ id: 'dismiss', label: 'Dismiss' }] });
@@ -224,6 +295,21 @@ export function bandLines({ state, requests, stops, reviewing = new Set(), notic
       text: `Finish check failing: ${stops[0].title}${stops.length > 1 ? ` (and ${stops.length - 1} more)` : ''}`,
       actions: [{ id: 'lanes', label: 'Lanes' }],
     });
+  if (usage?.outliers.length) {
+    const [top] = usage.outliers;
+    const more = usage.outliers.length - 1;
+    lines.push({
+      kind: 'usage',
+      text: `${top.id} has used ${top.ratio}× the usual${more ? ` (and ${more} more)` : ''}`,
+      actions: [{ id: 'lanes', label: 'Lanes' }],
+    });
+  }
+  if (plan?.paused)
+    lines.push({
+      kind: 'paused',
+      text: `background agents paused: plan at ${plan.percent}%`,
+      actions: [],
+    });
   // BAND-4: a digit for every action, in the order they're drawn.
   let digit = 0;
   for (const line of lines)
@@ -233,7 +319,14 @@ export function bandLines({ state, requests, stops, reviewing = new Set(), notic
 
 /** The band, drawn with the elements `$.ui.resolve(e)` returned; `onAction(id, line)` acts. */
 export function band(lines, { Box, Text, Button }, onAction) {
-  const COLOR = { notice: 'red', approvals: 'yellow', review: 'blue', finish: 'red' };
+  const COLOR = {
+    notice: 'red',
+    approvals: 'yellow',
+    review: 'blue',
+    finish: 'red',
+    usage: 'yellow',
+    paused: 'yellow',
+  };
   return Box({
     flexDirection: 'column',
     children: lines.map((line) =>
@@ -351,6 +444,25 @@ export function refusalCard(raw) {
       request: request(`write ${m[1]}`),
       raw: text,
     };
+  m = first.match(/^(\S+) is (.+); committing it needs a person's approval in force\./);
+  if (m)
+    return {
+      kind: 'approval',
+      title: `Commit refused: ${m[1]}`,
+      why: `It's ${m[2]}.`,
+      todo: 'A person approves it, here or with the `!` command, for 60 minutes.',
+      request: request(`commit ${m[1]}`),
+      raw: text,
+    };
+  if (/^the \.claude kit is changed only by the lead or with a person's approval\./.test(first))
+    return {
+      kind: 'kit',
+      title: 'Kit edit refused',
+      why: "The .claude kit is changed only by the lead or with a person's approval.",
+      todo: 'A person approves it, here or with the `!` command, for 60 minutes.',
+      request: request('change the .claude kit'),
+      raw: text,
+    };
   m = first.match(/^a new dependency \((.+?)\) needs a person's approval\./);
   if (m)
     return {
@@ -424,4 +536,227 @@ export function approvalsText(requests) {
     ),
   ];
   return lines.join('\n');
+}
+
+// --- the harness settings (SET-2) --------------------------------------------------------------
+
+export const SETTINGS_ID = 'code-kit-settings';
+const CHOICES = {
+  autonomy: ['autonomous', 'propose', 'off'],
+  'agents.reviewer.model': ['', 'haiku', 'sonnet', 'opus'],
+};
+const shown = (v) =>
+  v === null || v === '' ? "the session's" : v === true ? 'on' : v === false ? 'off' : String(v);
+
+/**
+ * The Settings view: each setting from `code-kit settings --json` with a control, and, once one is
+ * changed, a confirmation asking the person's reason before anything is written.
+ */
+export function settingsView(rows, pending, { Box, Text, Select, Input, Button }, handlers) {
+  const control = (r) => {
+    const listed = CHOICES[r.key] ?? (typeof r.default === 'boolean' ? [true, false] : null);
+    // A value the list doesn't name (a model given by its id) is still shown, as the one chosen.
+    const choices =
+      listed && !listed.map(String).includes(String(r.value ?? '')) ? [...listed, r.value] : listed;
+    if (choices)
+      return Select({
+        key: `set-${r.key}`,
+        label: '',
+        value: String(r.value ?? ''),
+        options: choices.map((c) => ({ value: String(c), label: shown(c) })),
+        onSelect: (v) => handlers.onChoose(r.key, v === '' ? 'null' : v),
+      });
+    return Input({
+      key: `set-${r.key}`,
+      label: '',
+      value: String(r.value),
+      submitLabel: 'Set',
+      onSubmit: (v) => handlers.onChoose(r.key, v.trim()),
+    });
+  };
+  const rowsView = rows.map((r) =>
+    Box({
+      key: `setting-${r.key}`,
+      flexDirection: 'column',
+      children: [
+        Box({
+          flexDirection: 'row',
+          columnGap: 2,
+          children: [
+            Box({ width: 28, children: [Text({ bold: true, children: [r.key] })] }),
+            control(r),
+            ...(r.value !== r.default
+              ? [Text({ dimColor: true, children: [`default ${shown(r.default)}`] })]
+              : []),
+          ],
+        }),
+        Text({ dimColor: true, children: [`  ${r.about}`] }),
+      ],
+    }),
+  );
+  const confirm = pending
+    ? [
+        Box({
+          key: 'settings-confirm',
+          flexDirection: 'column',
+          borderStyle: 'round',
+          paddingX: 1,
+          children: [
+            Text({
+              bold: true,
+              children: [
+                `Set ${pending.key} to ${shown(pending.value === 'null' ? null : pending.value)}?`,
+              ],
+            }),
+            Text({
+              dimColor: true,
+              children: [
+                'It goes into .claude/code-kit.json, and the approval log keeps your reason.',
+              ],
+            }),
+            Input({
+              key: 'settings-reason',
+              label: 'Reason',
+              value: pending.reason,
+              submitLabel: 'Change it',
+              autoFocus: true,
+              onInput: handlers.onReason,
+              onSubmit: handlers.onConfirm,
+            }),
+            ...(pending.error ? [Text({ color: 'red', children: [pending.error] })] : []),
+            Box({
+              flexDirection: 'row',
+              columnGap: 2,
+              children: [
+                Button({
+                  key: 'settings-ok',
+                  label: 'Change it',
+                  onPress: () => handlers.onConfirm(pending.reason),
+                }),
+                Button({ key: 'settings-cancel', label: 'Cancel', onPress: handlers.onCancel }),
+              ],
+            }),
+          ],
+        }),
+      ]
+    : [];
+  return Box({
+    flexDirection: 'column',
+    rowGap: 1,
+    children: [
+      Text({ bold: true, color: 'cyan', children: ['HARNESS SETTINGS'] }),
+      ...confirm,
+      Box({ flexDirection: 'column', children: rowsView }),
+      Text({
+        dimColor: true,
+        children: ['Lanes, paths, layers and protected paths change through /code-kit:init.'],
+      }),
+    ],
+  });
+}
+
+// --- usage per lane (USE-1 to USE-4) -----------------------------------------------------------
+
+const STORY_ID = /\bST-\d+\b/;
+
+/** A model request's tokens: input (cache writes included), output and cache reads. */
+export function tokensOf(usage) {
+  return {
+    input: (usage?.input_tokens ?? 0) + (usage?.cache_creation_input_tokens ?? 0),
+    output: usage?.output_tokens ?? 0,
+    cache: usage?.cache_read_input_tokens ?? 0,
+  };
+}
+
+/**
+ * Whom a model request is for (USE-1): the lead when no agent made it; a lane's agent by its type,
+ * on the story its brief names or else the story its lane is on; any other agent is background.
+ * `agent` is the `$.agent.list()` entry, or null when the list no longer has it.
+ */
+export function attribution(agentId, agent, check, state) {
+  const laneStory = (name) => state?.lanes?.find((l) => l.name === name)?.story?.id ?? null;
+  if (!agentId) return { key: 'lead', lane: LEAD, story: laneStory(LEAD), background: false };
+  const lane = Object.entries(check?.lanes ?? {}).find(([, l]) => l.agent === agent?.type)?.[0];
+  const named = agent?.description?.match(STORY_ID)?.[0] ?? null;
+  if (!lane) return { key: agentId, lane: null, story: named, background: true };
+  return { key: agentId, lane, story: named ?? laneStory(lane), background: false };
+}
+
+/** The ledger with one request added: entries by agent and story, their tokens summed. */
+export function withUsage(ledger, who, usage) {
+  const id = `${who.key}|${who.story ?? ''}`;
+  const t = tokensOf(usage);
+  const was = ledger[id] ?? { ...who, input: 0, output: 0, cache: 0 };
+  return {
+    ...ledger,
+    [id]: {
+      ...was,
+      input: was.input + t.input,
+      output: was.output + t.output,
+      cache: was.cache + t.cache,
+    },
+  };
+}
+
+const total = (e) => e.input + e.output + e.cache;
+const median = (xs) => {
+  const s = [...xs].sort((a, b) => a - b);
+  const m = Math.floor(s.length / 2);
+  return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
+};
+
+/** The stories finished: done, or their lane's branch waiting for review. */
+export function finishedStories(state) {
+  if (state?.kind !== 'ok') return new Set();
+  return new Set([
+    ...(state.stories ?? []).filter((s) => s.state === 'done').map((s) => s.id),
+    ...state.lanes.filter((l) => l.state === 'in review').map((l) => l.story.id),
+  ]);
+}
+
+/**
+ * The session's usage rolled up (USE-1, USE-2): tokens per lane, per story and for the background
+ * agents, and the outliers (USE-3), stories past three times the median of the finished ones once
+ * at least three have finished.
+ */
+export function usageSummary(ledger, finished = new Set()) {
+  const lanes = {};
+  const stories = {};
+  let background = 0;
+  let all = 0;
+  for (const e of Object.values(ledger ?? {})) {
+    const n = total(e);
+    all += n;
+    if (e.background) background += n;
+    else lanes[e.lane] = (lanes[e.lane] ?? 0) + n;
+    if (e.story) stories[e.story] = (stories[e.story] ?? 0) + n;
+  }
+  const done = Object.entries(stories).filter(([id]) => finished.has(id));
+  const usual = done.length >= 3 ? median(done.map(([, n]) => n)) : null;
+  const outliers = usual
+    ? Object.entries(stories)
+        .filter(([, n]) => n > 3 * usual)
+        .map(([id, n]) => ({ id, ratio: Math.round((n / usual) * 10) / 10 }))
+        .sort((a, b) => b.ratio - a.ratio)
+    : [];
+  return { lanes, stories, background, total: all, outliers };
+}
+
+/** The plan's 5-hour use from the session's limits (null off a subscription), and the pause (USE-4). */
+export function planOf(rateLimits, pauseAtPercent = 80) {
+  const percent = (rateLimits ?? []).find((r) => r.kind === 'five_hour')?.percentUsed ?? null;
+  return { percent, paused: percent !== null && percent > pauseAtPercent };
+}
+
+/** Tokens as a person reads them: 950, 12k, 1.4M. */
+export function tokens(n) {
+  if (n < 1000) return String(n);
+  if (n < 1e6) return `${Math.round(n / 1000)}k`;
+  return `${(n / 1e6).toFixed(1)}M`;
+}
+
+/** The plan's use as a bar of ten cells. */
+export function planBar(percent) {
+  const full = Math.max(0, Math.min(10, Math.round(percent / 10)));
+  return `${'█'.repeat(full)}${'░'.repeat(10 - full)}`;
 }
