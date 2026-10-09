@@ -12,6 +12,7 @@ import {
   NOT_CODE_KIT,
   PANE_ID,
   RESULT_ID,
+  SETTINGS_ID,
   approvalsText,
   agentsAtWork,
   approvePane,
@@ -24,6 +25,7 @@ import {
   refusalCard,
   refusalView,
   resultPane,
+  settingsView,
 } from './view.mjs';
 
 // What the session knows of the project, read again when it changes.
@@ -34,6 +36,8 @@ let approving = null; // the open Approve… confirmation: { request, reason, er
 let result = null; // what the last merge reported
 let notice = null; // why the person's last act failed
 let act = null; // the session's actions, made at session start
+let settingRows = []; // the harness settings, from `code-kit settings --json`
+let pendingSetting = null; // a change waiting for the person's reason: { key, value, reason, error }
 const refusals = new Map(); // tool_use_id → the refusal text a hook gave (CARD-1)
 const expanded = new Set(); // cards showing their raw text
 const REFUSALS_KEPT = 200;
@@ -63,6 +67,13 @@ export function register(on) {
         description: 'Run code-kit verify on this branch, checks included',
       })
       .catch(unavailable('verify-branch'));
+    await $.command
+      .register({
+        name: 'harness',
+        description: "code-kit's harness settings: autonomy, agents, hold time",
+        immediate: true,
+      })
+      .catch(unavailable('harness'));
     const cli = `${$.plugin.root}/bin/code-kit.mjs`;
     const cwd = e.cwd ?? (await $.session.cwd());
     const session = await $.session.id();
@@ -231,6 +242,66 @@ export function register(on) {
         const ran = await $.process.run(['node', cli, 'verify'], { cwd, timeoutMs: 600000 });
         return { text: `${ran.stdout}${ran.stderr}`.trim() };
       },
+      // SET-2: the Settings view; a change is the person's, confirmed with a reason.
+      harness: async () => {
+        if ((await $.ui.panes()).some((p) => p.id === SETTINGS_ID)) {
+          await $.ui.close({ id: SETTINGS_ID });
+          return {};
+        }
+        await act.reload();
+        if (model.state.kind === 'none') return { text: NOT_CODE_KIT };
+        settingRows = (await json('settings')) ?? [];
+        await $.ui.open({ id: SETTINGS_ID, title: 'Harness', focus: true, closeOnEscape: true });
+        $.ui.invalidate('ui.render');
+        return {};
+      },
+      chooseSetting: (key, value) => {
+        const row = settingRows.find((x) => x.key === key);
+        if (row && String(row.value ?? 'null') === value) return;
+        pendingSetting = { key, value, reason: '', error: null };
+        $.ui.invalidate('ui.render');
+      },
+      confirmSetting: async (reason) => {
+        if (!pendingSetting) return;
+        if (!reason?.trim()) {
+          pendingSetting = {
+            ...pendingSetting,
+            error: 'Give a reason: the approval log keeps it.',
+          };
+          $.ui.invalidate('ui.render');
+          return;
+        }
+        const ran = await $.process.run(
+          [
+            'node',
+            cli,
+            'settings',
+            'set',
+            pendingSetting.key,
+            pendingSetting.value,
+            '--reason',
+            reason.trim(),
+            '--via',
+            'pane',
+          ],
+          { cwd },
+        );
+        if (ran.exitCode !== 0) {
+          pendingSetting = {
+            ...pendingSetting,
+            error: (ran.stderr || ran.stdout).trim().split('\n')[0],
+          };
+          $.ui.invalidate('ui.render');
+          return;
+        }
+        pendingSetting = null;
+        settingRows = (await json('settings')) ?? settingRows;
+        await act.reload();
+      },
+      cancelSetting: () => {
+        pendingSetting = null;
+        $.ui.invalidate('ui.render');
+      },
       dismiss: async () => {
         notice = null;
         $.ui.invalidate('ui.render');
@@ -265,6 +336,9 @@ export function register(on) {
     text: `code-kit is still starting; try /${name} again in a moment.`,
   });
   on('command.run', { command: 'lanes' }, async ($, e) => (act ? act.lanes() : starting('lanes')));
+  on('command.run', { command: 'harness' }, async ($, e) =>
+    act ? act.harness() : starting('harness'),
+  );
   on('command.run', { command: 'approvals' }, async ($, e) =>
     act ? act.approvals() : starting('approvals'),
   );
@@ -352,6 +426,18 @@ export function register(on) {
       onCancel: () => act.cancelApproval(),
     });
   });
+
+  on('ui.render', { component: 'Pane', requestId: SETTINGS_ID }, async ($, e) =>
+    settingsView(settingRows, pendingSetting, $.ui.resolve(e), {
+      onChoose: (key, value) => act.chooseSetting(key, value),
+      onReason: (value) => {
+        if (pendingSetting) pendingSetting = { ...pendingSetting, reason: value };
+        $.ui.invalidate('ui.render');
+      },
+      onConfirm: (reason) => act.confirmSetting(reason),
+      onCancel: () => act.cancelSetting(),
+    }),
+  );
 
   on('ui.render', { component: 'Pane', requestId: RESULT_ID }, async ($, e) =>
     resultPane(result, $.ui.resolve(e)),

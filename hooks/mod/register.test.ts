@@ -6,6 +6,7 @@ import { expect, mock, test } from 'claude-code/testing';
 const PANE = 'code-kit-lanes';
 const APPROVE = 'code-kit-approve';
 const RESULT = 'code-kit-result';
+const SETTINGS = 'code-kit-settings';
 
 /** A project as the stubs report it; tests change it to move the world on. */
 function project() {
@@ -78,6 +79,18 @@ function project() {
     prompts: [] as string[],
     acts: [] as string[][],
     runs: 0,
+    settings: [
+      {
+        key: 'autonomy',
+        value: 'autonomous',
+        default: 'autonomous',
+        about: 'How the lead loop acts',
+      },
+      { key: 'hold.minutes', value: 2, default: 2, about: 'How long a call is held' },
+      { key: 'agents.reviewer.on', value: false, default: false, about: 'A background reviewer' },
+      { key: 'agents.reviewer.model', value: null, default: null, about: "The reviewer's model" },
+    ] as any[],
+    setExit: 0,
   };
 }
 type World = ReturnType<typeof project>;
@@ -119,6 +132,29 @@ function stub(on: any, w: World) {
         ? ran(1, '', 'Nothing was merged. code-kit verify found 1 problem(s) on web/st-4')
         : ran(0, 'Merged web/st-4 into main.');
     }
+    if (sub === 'settings' && argv[3] === 'set') {
+      w.acts.push([...argv.slice(2)]);
+      if (w.setExit)
+        return ran(
+          1,
+          '',
+          '"harness.hold.minutes" must be a number of minutes from 0 (off) to 30\nNothing was changed.',
+        );
+      const row = w.settings.find((s) => s.key === argv[4]);
+      const raw = argv[5];
+      row.value =
+        raw === 'null'
+          ? null
+          : raw === 'true'
+            ? true
+            : raw === 'false'
+              ? false
+              : /^\d+$/.test(raw)
+                ? Number(raw)
+                : raw;
+      return ran(0, `Set harness.${argv[4]} to ${raw}.`);
+    }
+    if (sub === 'settings') return ran(0, JSON.stringify(w.settings));
     return ran(1, '', `unexpected ${argv.join(' ')}`);
   });
   on('session.start', () => ({ cwd: '/work' }));
@@ -714,3 +750,91 @@ test(
     await ui.unmount();
   },
 );
+
+// --- the harness settings -------------------------------------------------------------------------
+
+const harness = ($: any) => $.command.run({ command: 'harness', args: '' });
+
+test('SET-2 /harness opens the settings, each with its value, and /harness again closes it', async ($, on) => {
+  const w = project();
+  await start($, on, w);
+  await harness($);
+  expect(w.opened).toContain(SETTINGS);
+  const ui = await pane($, SETTINGS);
+  expect(await ui.find({ type: 'Text', text: 'hold.minutes' })).toBeDefined();
+  expect((await ui.find({ key: 'set-hold.minutes' }))?.props.value).toBe('2');
+  expect((await ui.find({ key: 'set-autonomy' }))?.props.value).toBe('autonomous');
+  await ui.unmount();
+  await harness($);
+  expect(w.closed).toContain(SETTINGS);
+});
+
+test('SET-2 a change asks for a reason, then is written by the CLI as the pane', async ($, on) => {
+  const w = project();
+  await start($, on, w);
+  await harness($);
+  const ui = await pane($, SETTINGS);
+  await $.ui.select({
+    plugin: 'code-kit',
+    key: 'set-autonomy',
+    value: 'propose',
+    requestId: SETTINGS,
+  });
+  expect(w.acts).toEqual([]);
+  expect(await ui.find({ type: 'Text', text: /Set autonomy to propose\?/ })).toBeDefined();
+  await $.ui.input({ plugin: 'code-kit', key: 'settings-reason', text: '   ' });
+  expect(w.acts).toEqual([]);
+  expect(await ui.find({ type: 'Text', text: /Give a reason/ })).toBeDefined();
+  await $.ui.input({ plugin: 'code-kit', key: 'settings-reason', text: 'watch it for a week' });
+  expect(w.acts).toEqual([
+    ['settings', 'set', 'autonomy', 'propose', '--reason', 'watch it for a week', '--via', 'pane'],
+  ]);
+  expect(await ui.find({ key: 'settings-confirm' })).toBeUndefined();
+  expect((await ui.find({ key: 'set-autonomy' }))?.props.value).toBe('propose');
+  await ui.unmount();
+});
+
+test('SET-2 a number is typed; one the CLI refuses shows why and changes nothing', async ($, on) => {
+  const w = project();
+  w.setExit = 1;
+  await start($, on, w);
+  await harness($);
+  const ui = await pane($, SETTINGS);
+  await $.ui.input({ plugin: 'code-kit', key: 'set-hold.minutes', text: '45' });
+  await $.ui.input({ plugin: 'code-kit', key: 'settings-reason', text: 'longer' });
+  expect(await ui.find({ type: 'Text', text: /from 0 \(off\) to 30/ })).toBeDefined();
+  expect(w.settings[1].value).toBe(2);
+  await press($, 'settings-cancel', SETTINGS);
+  expect(await ui.find({ key: 'settings-confirm' })).toBeUndefined();
+  await ui.unmount();
+});
+
+test("SET-2 the reviewer's model can go back to the session's", async ($, on) => {
+  const w = project();
+  w.settings[3].value = 'haiku';
+  await start($, on, w);
+  await harness($);
+  const ui = await pane($, SETTINGS);
+  expect(await ui.find({ type: 'Text', text: /default the session's/ })).toBeDefined();
+  await $.ui.select({
+    plugin: 'code-kit',
+    key: 'set-agents.reviewer.model',
+    value: '',
+    requestId: SETTINGS,
+  });
+  await press($, 'settings-ok', SETTINGS);
+  expect(w.acts).toEqual([]);
+  await $.ui.input({ plugin: 'code-kit', key: 'settings-reason', text: 'same as the lead' });
+  expect(w.acts[0].slice(0, 4)).toEqual(['settings', 'set', 'agents.reviewer.model', 'null']);
+  await ui.unmount();
+});
+
+test('CARD-4 outside a code-kit project, /harness says so and opens nothing', async ($, on) => {
+  const w = project();
+  w.check.exists = false;
+  w.check.valid = false;
+  await start($, on, w);
+  const said = await harness($);
+  expect(String(said?.text)).toMatch(/code-kit/);
+  expect(w.opened).not.toContain(SETTINGS);
+});

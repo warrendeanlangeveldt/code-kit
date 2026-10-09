@@ -128,7 +128,7 @@ Run the probe pane in the person’s VS Code terminal; note what draws (assumpti
 **Lane:** lead
 **Requirements:** HOLD-1
 **Depends on:** ST-9
-**Status:** todo
+**Status:** done
 
 Recognise, from a refused call's result, the refusals a person's approval would allow (new packages, protected files, kit edits) and the approvals that would; the spike showed the same call can then be retried (`docs/spikes/harness.md`).
 
@@ -137,7 +137,7 @@ Recognise, from a refused call's result, the refusals a person's approval would 
 **Lane:** lead
 **Requirements:** SET-1, SET-2, SET-3
 **Depends on:** none
-**Status:** todo
+**Status:** done
 
 The `harness` section, validated; `code-kit settings` (read and `set … --via pane`); the Settings view.
 

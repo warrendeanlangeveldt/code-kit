@@ -1,6 +1,7 @@
 // The project's rules live in .claude/code-kit.json. The hooks read it from the project the session
 // was opened in; a project without one is not governed by the kit, and an invalid one fails closed.
 import { existsSync, readFileSync } from 'node:fs';
+import { harnessProblems, harnessSettings } from './harness.mjs';
 import { join } from 'node:path';
 import { ADAPTERS, applyAdapters } from './adapters/index.mjs';
 
@@ -55,6 +56,7 @@ export function withDefaults(c) {
     checks: c.checks ?? [],
     branches: { protected: c.branches?.protected ?? ['main', 'master'] },
     approvals: { lead: c.approvals?.lead === true, delegate: delegateRules(c.approvals?.delegate) },
+    harness: harnessSettings(c.harness),
   };
 }
 
@@ -191,6 +193,7 @@ export function validate(c) {
     c.branches === undefined || isList(c.branches?.protected),
     '"branches.protected" must be a list of branch names',
   );
+  p.push(...harnessProblems(c.harness));
   return p;
 }
 

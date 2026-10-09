@@ -444,3 +444,120 @@ export function approvalsText(requests) {
   ];
   return lines.join('\n');
 }
+
+// --- the harness settings (SET-2) --------------------------------------------------------------
+
+export const SETTINGS_ID = 'code-kit-settings';
+const CHOICES = {
+  autonomy: ['autonomous', 'propose', 'off'],
+  'agents.reviewer.model': ['', 'haiku', 'sonnet', 'opus'],
+};
+const shown = (v) =>
+  v === null || v === '' ? "the session's" : v === true ? 'on' : v === false ? 'off' : String(v);
+
+/**
+ * The Settings view: each setting from `code-kit settings --json` with a control, and, once one is
+ * changed, a confirmation asking the person's reason before anything is written.
+ */
+export function settingsView(rows, pending, { Box, Text, Select, Input, Button }, handlers) {
+  const control = (r) => {
+    const listed = CHOICES[r.key] ?? (typeof r.default === 'boolean' ? [true, false] : null);
+    // A value the list doesn't name (a model given by its id) is still shown, as the one chosen.
+    const choices =
+      listed && !listed.map(String).includes(String(r.value ?? '')) ? [...listed, r.value] : listed;
+    if (choices)
+      return Select({
+        key: `set-${r.key}`,
+        label: '',
+        value: String(r.value ?? ''),
+        options: choices.map((c) => ({ value: String(c), label: shown(c) })),
+        onSelect: (v) => handlers.onChoose(r.key, v === '' ? 'null' : v),
+      });
+    return Input({
+      key: `set-${r.key}`,
+      label: '',
+      value: String(r.value),
+      submitLabel: 'Set',
+      onSubmit: (v) => handlers.onChoose(r.key, v.trim()),
+    });
+  };
+  const rowsView = rows.map((r) =>
+    Box({
+      key: `setting-${r.key}`,
+      flexDirection: 'column',
+      children: [
+        Box({
+          flexDirection: 'row',
+          columnGap: 2,
+          children: [
+            Box({ width: 28, children: [Text({ bold: true, children: [r.key] })] }),
+            control(r),
+            ...(r.value !== r.default
+              ? [Text({ dimColor: true, children: [`default ${shown(r.default)}`] })]
+              : []),
+          ],
+        }),
+        Text({ dimColor: true, children: [`  ${r.about}`] }),
+      ],
+    }),
+  );
+  const confirm = pending
+    ? [
+        Box({
+          key: 'settings-confirm',
+          flexDirection: 'column',
+          borderStyle: 'round',
+          paddingX: 1,
+          children: [
+            Text({
+              bold: true,
+              children: [
+                `Set ${pending.key} to ${shown(pending.value === 'null' ? null : pending.value)}?`,
+              ],
+            }),
+            Text({
+              dimColor: true,
+              children: [
+                'It goes into .claude/code-kit.json, and the approval log keeps your reason.',
+              ],
+            }),
+            Input({
+              key: 'settings-reason',
+              label: 'Reason',
+              value: pending.reason,
+              submitLabel: 'Change it',
+              autoFocus: true,
+              onInput: handlers.onReason,
+              onSubmit: handlers.onConfirm,
+            }),
+            ...(pending.error ? [Text({ color: 'red', children: [pending.error] })] : []),
+            Box({
+              flexDirection: 'row',
+              columnGap: 2,
+              children: [
+                Button({
+                  key: 'settings-ok',
+                  label: 'Change it',
+                  onPress: () => handlers.onConfirm(pending.reason),
+                }),
+                Button({ key: 'settings-cancel', label: 'Cancel', onPress: handlers.onCancel }),
+              ],
+            }),
+          ],
+        }),
+      ]
+    : [];
+  return Box({
+    flexDirection: 'column',
+    rowGap: 1,
+    children: [
+      Text({ bold: true, color: 'cyan', children: ['HARNESS SETTINGS'] }),
+      ...confirm,
+      Box({ flexDirection: 'column', children: rowsView }),
+      Text({
+        dimColor: true,
+        children: ['Lanes, paths, layers and protected paths change through /code-kit:init.'],
+      }),
+    ],
+  });
+}

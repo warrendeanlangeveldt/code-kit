@@ -22,6 +22,7 @@ import {
   commandItself,
   prefilledReason,
   projectState,
+  settingsView,
 } from '../hooks/mod/view.mjs';
 
 const fixture = JSON.parse(
@@ -587,4 +588,86 @@ test('HOLD-1 a protected file refused at commit is holdable, and results are rea
   assert.equal(resultText({ result: 'Error: PreToolUse' }), 'Error: PreToolUse');
   assert.equal(resultText({ result: { stdout: '' } }), '');
   assert.equal(holdable('some other failure'), null);
+});
+
+test('SET-1 the harness settings: defaults, validation and typed values', async () => {
+  const { harnessSettings, harnessProblems, parseSetting } =
+    await import('../hooks/lib/harness.mjs');
+  assert.deepEqual(harnessSettings(undefined), {
+    autonomy: 'autonomous',
+    hold: { minutes: 2 },
+    stall: { nudgeMinutes: 5, restartMinutes: 10, maxRestarts: 2 },
+    agents: { reviewer: { on: false, model: null } },
+    background: { pauseAtPercent: 80 },
+  });
+  assert.equal(
+    harnessSettings({ autonomy: 'propose', stall: { nudgeMinutes: 3 } }).stall.nudgeMinutes,
+    3,
+  );
+  const wrong = harnessSettings({ autonomy: 'always', hold: { minutes: 90 } });
+  assert.equal(wrong.autonomy, 'autonomous');
+  assert.equal(wrong.hold.minutes, 2);
+  assert.equal(harnessSettings('yes').autonomy, 'autonomous');
+  assert.deepEqual(harnessProblems(undefined), []);
+  assert.deepEqual(
+    harnessProblems({ autonomy: 'propose', agents: { reviewer: { on: true, model: 'sonnet' } } }),
+    [],
+  );
+  const bad = harnessProblems({
+    autonomy: 'yolo',
+    hold: { minutes: 90 },
+    stall: { nudgeMinutes: 10, restartMinutes: 5 },
+    colour: 'red',
+  });
+  for (const text of [
+    'harness.autonomy',
+    'harness.hold.minutes',
+    'harness.colour',
+    'restartMinutes" must be more than',
+  ])
+    assert.ok(
+      bad.some((p) => p.includes(text)),
+      `${text} in ${bad.join(' / ')}`,
+    );
+  const c = clone();
+  c.harness = { autonomy: 'nope' };
+  assert.match(validate(c).join(' '), /harness\.autonomy/);
+  assert.equal(parseSetting('hold.minutes', '5'), 5);
+  assert.equal(parseSetting('agents.reviewer.on', 'true'), true);
+  assert.equal(parseSetting('agents.reviewer.model', 'null'), null);
+  assert.equal(parseSetting('autonomy', 'propose'), 'propose');
+  assert.equal(withDefaults(clone()).harness.autonomy, 'autonomous');
+});
+
+test('SET-2 the settings view: a control per setting, a model id kept, and the confirmation once one changes', () => {
+  const el = (type) => (props) => ({ type, props, children: props.children ?? [] });
+  const els = {
+    Box: el('Box'),
+    Text: el('Text'),
+    Select: el('Select'),
+    Input: el('Input'),
+    Button: el('Button'),
+  };
+  const all = (n) => [
+    n,
+    ...(n.children ?? []).flatMap((c) => (c && typeof c === 'object' ? all(c) : [])),
+  ];
+  const rows = [
+    { key: 'autonomy', value: 'off', default: 'autonomous', about: 'a' },
+    { key: 'hold.minutes', value: 2, default: 2, about: 'b' },
+    { key: 'agents.reviewer.model', value: 'claude-haiku-4-5', default: null, about: 'c' },
+  ];
+  const h = { onChoose() {}, onReason() {}, onConfirm() {}, onCancel() {} };
+  const quiet = all(settingsView(rows, null, els, h));
+  assert.equal(quiet.find((n) => n.props.key === 'set-autonomy').type, 'Select');
+  assert.equal(quiet.find((n) => n.props.key === 'set-hold.minutes').type, 'Input');
+  const model = quiet.find((n) => n.props.key === 'set-agents.reviewer.model');
+  assert.ok(model.props.options.some((o) => o.value === 'claude-haiku-4-5'));
+  assert.ok(quiet.some((n) => n.type === 'Text' && n.children.includes('default autonomous')));
+  assert.ok(!quiet.some((n) => n.props.key === 'settings-confirm'));
+  const asking = all(
+    settingsView(rows, { key: 'hold.minutes', value: '5', reason: '', error: null }, els, h),
+  );
+  assert.ok(asking.some((n) => n.type === 'Text' && n.children.includes('Set hold.minutes to 5?')));
+  assert.ok(asking.some((n) => n.props.key === 'settings-reason'));
 });
