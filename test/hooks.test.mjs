@@ -2412,6 +2412,23 @@ try {
     1,
     'There is no story ST-99',
   );
+  // timeline: when each story's work happened, for the lanes' bars.
+  const timed = JSON.parse(vCli('timeline', '--json').stdout || '{}');
+  const st2 = timed.stories?.find((s) => s.id === 'ST-2');
+  expect(
+    "VIEW-2 timeline gives a story branch's start, last commit and send-backs",
+    truth(
+      st2 &&
+        st2.branch === 'web/st-2' &&
+        st2.started > 0 &&
+        st2.lastCommit >= st2.started &&
+        st2.merged === null &&
+        st2.sentBack.length === 1 &&
+        timed.now >= st2.lastCommit,
+      JSON.stringify(st2),
+    ),
+    0,
+  );
   // A story with commits whose dependency isn't done is blocked on it, not finished.
   const planNow = readFileSync(join(v.dir, 'docs/spec/plan.md'), 'utf8');
   vPut(

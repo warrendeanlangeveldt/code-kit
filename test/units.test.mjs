@@ -943,3 +943,57 @@ test('TRACE-1 and TRACE-4 the map: cell states, rows by spec, the legend, moving
   assert.equal(moveCell(reqs, 'B-2', 1, { rows: true }), 'A-1');
   assert.equal(moveCell([], 'A-1', 1), null);
 });
+
+test('VIEW-2 and VIEW-3 the pictures: raster cells, poses, bars and their runs', async () => {
+  const { rasterCells, sprite, poseOf, barCells, runs, axisStart, spriteSvg, tintOf } =
+    await import('../hooks/mod/art.mjs');
+  // Two pixels a cell: a half block coloured top over bottom, the terminal's default where empty.
+  const grid = [
+    [0xff0000, null],
+    [0x00ff00, null],
+  ];
+  const words = new Uint32Array([0x2580, 0xff0000, 0x00ff00, 0x20, 0x01000000, 0x01000000]);
+  assert.equal(rasterCells(grid), Buffer.from(words.buffer).toString('base64'));
+  const half = [[null], [0x0000ff]];
+  assert.equal(
+    rasterCells(half),
+    Buffer.from(new Uint32Array([0x2584, 0x0000ff, 0x01000000]).buffer).toString('base64'),
+  );
+  assert.equal(sprite('working', 0, 0x4aa3ff).length, 6);
+  assert.notDeepEqual(sprite('working', 0, 1), sprite('working', 1, 1));
+  assert.deepEqual(sprite('working', 0, 1, { lead: true })[0].filter(Boolean).length, 4);
+  assert.match(spriteSvg('working', 0x4aa3ff), /<animate attributeName="visibility"/);
+  assert.doesNotMatch(spriteSvg('quiet', 0x4aa3ff), /<animate/);
+  assert.equal(tintOf('web', ['lead', 'web', 'api']), tintOf('web', ['lead', 'web', 'api']));
+  assert.notEqual(tintOf('web', ['lead', 'web', 'api']), tintOf('api', ['lead', 'web', 'api']));
+  const lane = { name: 'web', state: 'building', active: true };
+  assert.equal(poseOf(lane), 'working');
+  assert.equal(poseOf(lane, { waiting: true }), 'waiting');
+  assert.equal(poseOf(lane, { live: { level: 'quiet' } }), 'quiet');
+  assert.equal(poseOf(lane, { flagged: true }), 'stalled');
+  assert.equal(poseOf({ ...lane, active: false }, { shown: 'queued' }), 'done');
+  assert.equal(poseOf({ ...lane, active: false, state: 'idle' }), 'idle');
+  const now = 100 * 60000;
+  const t = {
+    state: 'review',
+    started: now - 40 * 60000,
+    lastCommit: now - 5 * 60000,
+    merged: null,
+    sentBack: [now - 20 * 60000],
+    approvals: [{ at: now - 30 * 60000 }],
+  };
+  const start = axisStart([t], now);
+  assert.equal(start, now - 40 * 60000);
+  const cells = barCells(t, { start, now, width: 40 });
+  assert.deepEqual(
+    runs(cells).map((r) => `${r.kind}:${r.n}`),
+    ['building:10', 'approval:1', 'building:9', 'sentBack:1', 'building:14', 'review:5'],
+  );
+  const merged = barCells(
+    { ...t, state: 'done', merged: now - 2 * 60000 },
+    { start, now, width: 40 },
+  );
+  assert.equal(merged[38], 'merged');
+  assert.equal(merged[39], 'none');
+  assert.equal(axisStart([], now), now - 3600000);
+});

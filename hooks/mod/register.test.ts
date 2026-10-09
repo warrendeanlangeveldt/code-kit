@@ -2,6 +2,7 @@
 // which `npm test` runs when it's available. The CLI, git and the agents are stubbed with what they
 // report; the CLI itself is tested in test/hooks.test.mjs, and the drawing in test/units.test.mjs.
 import { expect, mock, test } from 'claude-code/testing';
+import { rasterCells, sprite, tintOf } from './art.mjs';
 
 const PANE = 'code-kit-lanes';
 const APPROVE = 'code-kit-approve';
@@ -102,6 +103,8 @@ function project() {
     registered: [] as any[],
     queue: [] as any[],
     requirements: [] as any[],
+    times: [] as any[],
+    blits: [] as string[],
     story: {
       id: 'ST-4',
       title: 'Booking form',
@@ -174,6 +177,8 @@ function stub(on: any, w: World) {
       return ran(w.verifyExit, w.verifyExit ? '' : w.verifyOut, w.verifyExit ? w.verifyOut : '');
     if (sub === 'stops') return ran(0, JSON.stringify(w.stops));
     if (sub === 'story') return ran(0, JSON.stringify(w.story));
+    if (sub === 'timeline')
+      return ran(0, JSON.stringify({ base: 'main', now: 0, stories: w.times }));
     if (sub === 'sent-back') {
       w.acts.push([...argv.slice(2)]);
       return ran(0, `Recorded: ${argv[3]} was sent back.`);
@@ -302,6 +307,10 @@ function stub(on: any, w: World) {
   on('tool.call', { tool: 'AskUserQuestion' }, ($: any, e: any) => ({
     result: { questions: e.questions, answers: { [e.questions[0].question]: w.answer } },
   }));
+  on('ui.blit', ($: any, e: any) => {
+    w.blits.push(e.key);
+    return { value: undefined };
+  });
   on('ui.panes', () => ({ value: [...w.open].map((id) => ({ id, title: id, isShown: true })) }));
   on('ui.open', ($: any, e: any) => {
     w.opened.push(e.id);
@@ -451,9 +460,10 @@ test('PANE-4 with nothing changed it reads the project every 10 seconds while th
   const before = w.runs;
   await clock.advance(8000); // four quiet ticks: git only
   expect(w.runs - before).toBe(4);
-  // The fifth reads it all (check, status, next, requests, stops, queue) between two looks at git.
+  // The fifth reads it all (check, status, next, requests, stops, queue, timeline) between two looks
+  // at git.
   await clock.advance(2000);
-  expect(w.runs - before).toBe(12);
+  expect(w.runs - before).toBe(13);
 });
 
 test('CARD-4 outside a code-kit project, /lanes says so, opens nothing, and there is no band', async ($, on) => {
@@ -1987,5 +1997,121 @@ test('TRACE-3 the map follows the project: a commit that finishes a requirement 
   w.refs += ' ddd refs/heads/web/st-9\n';
   await clock.advance(2000);
   expect((await ui.find({ key: 'map-legend' }))?.text).toMatch(/■ 21 done and tested/);
+  await ui.unmount();
+});
+
+// --- timelines and characters ---------------------------------------------------------------------
+
+test('VIEW-2 a lane dispatched 40 minutes ago and in review for 5 shows 35 minutes building and 5 in review, to now', async ($, on) => {
+  const w = project();
+  w.stories[0] = { ...w.stories[0], state: 'review' };
+  const clock = await start($, on, w);
+  const now = clock.now() + 2000;
+  w.times = [
+    {
+      id: 'ST-4',
+      lane: 'web',
+      branch: 'web/st-4',
+      state: 'review',
+      started: now - 40 * 60000,
+      lastCommit: now - 5 * 60000,
+      merged: null,
+      sentBack: [],
+      approvals: [],
+    },
+  ];
+  w.refs += ' eee refs/heads/web/st-4-again\n';
+  await clock.advance(2000);
+  await lanes($);
+  const ui = await pane($, PANE);
+  const bar = (await ui.find({ key: 'bar-web' }))?.text.trim() ?? '';
+  const building = [...bar].filter((c) => c === '█').length;
+  const review = [...bar].filter((c) => c === '▒').length;
+  expect(building + review).toBe(66);
+  expect(Math.abs(building - (66 * 35) / 40)).toBeLessThanOrEqual(1);
+  expect(bar.endsWith('▒')).toBe(true);
+  await ui.unmount();
+});
+
+test('VIEW-3 each lane has its character: web works, api waits on a held call, the lead rests', async ($, on) => {
+  const w = project();
+  w.refusal =
+    'Blocked: a new dependency (zod) needs a person\'s approval. Write a short change request for the lead.\n  ! echo "<what you are approving>" > .claude/approvals/api/dep-zod\n(a person runs it; it allows installing it for the api lane, until the install is committed, at most 7 days)\nCommand: npm install zod';
+  w.agents = [
+    { id: 'a1', type: 'web-engineer', description: 'ST-4', status: 'running' },
+    { id: 'a2', type: 'api-engineer', description: 'ST-5', status: 'running' },
+  ];
+  const clock = await start($, on, w);
+  w.holdWaits = true;
+  const call = $.tool.call({
+    tool: 'Bash',
+    tool_use_id: 'tu-z',
+    command: 'npm install zod',
+    agentId: 'a2',
+  } as any);
+  for (let i = 0; i < 50 && !w.waiting.has('tu-z'); i++) await clock.advance(1);
+  await lanes($);
+  const ui = await pane($, PANE);
+  const names = ['lead', 'web', 'api', 'core'];
+  const cells = async (lane: string) => (await ui.find({ key: `char-${lane}` }))?.props.cells;
+  expect(await cells('web')).toBe(rasterCells(sprite('working', 0, tintOf('web', names))));
+  expect(await cells('api')).toBe(rasterCells(sprite('waiting', 0, tintOf('api', names))));
+  expect(await cells('lead')).toBe(
+    rasterCells(sprite('idle', 0, tintOf('lead', names), { lead: true })),
+  );
+  // The working character repaints in place; the waiting one doesn't.
+  await clock.advance(2000);
+  await clock.advance(1200);
+  expect(w.blits).toContain('char-web');
+  expect(w.blits).not.toContain('char-api');
+  await ui.unmount();
+  w.waiting.get('tu-z')?.('timed out');
+  await call;
+});
+
+test('VIEW-3 nothing repaints when no agent is working', async ($, on) => {
+  const w = project();
+  const clock = await start($, on, w);
+  await lanes($);
+  const ui = await pane($, PANE);
+  await clock.advance(6000);
+  expect(w.blits).toEqual([]);
+  await ui.unmount();
+});
+
+test('VIEW-2 and VIEW-3 on Desktop the characters and timelines are SVG', async ($, on) => {
+  const w = project();
+  w.agents = [{ id: 'a1', type: 'web-engineer', description: 'ST-4', status: 'running' }];
+  const clock = await start($, on, w);
+  const now = clock.now() + 2000;
+  w.times = [
+    {
+      id: 'ST-4',
+      lane: 'web',
+      branch: 'web/st-4',
+      state: 'in progress',
+      started: now - 600000,
+      lastCommit: null,
+      merged: null,
+      sentBack: [],
+      approvals: [],
+    },
+  ];
+  w.refs += ' fff refs/heads/x\n';
+  await clock.advance(2000);
+  await lanes($);
+  const ui = await $.ui.mount({
+    plugin: 'code-kit',
+    component: 'Pane',
+    requestId: PANE,
+    surface: 'desktop',
+    viewport: { columns: 120, rows: 40 },
+    props: { title: PANE, isFocused: true, bodyColumns: 80, placement: 'dock' },
+  });
+  const svgs = await ui.findAll({ type: 'Svg' });
+  expect(
+    svgs.some((s) => s.props.alt === 'web: working' && String(s.props.source).includes('<animate')),
+  ).toBe(true);
+  expect(svgs.some((s) => s.props.alt === "web's timeline")).toBe(true);
   await ui.unmount();
 });

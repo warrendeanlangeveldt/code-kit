@@ -15,6 +15,7 @@ import {
   SETTINGS_ID,
   approvalsText,
   agentsAtWork,
+  shownState,
   attribution,
   approvePane,
   band,
@@ -33,6 +34,7 @@ import {
   withUsage,
 } from './view.mjs';
 import { holdable } from './hold.mjs';
+import { axisStart, barCells, poseOf, rasterCells, sprite, tintOf } from './art.mjs';
 import {
   DEFAULT_UI,
   SENDBACK_ID,
@@ -100,6 +102,11 @@ let leadLast = null; // { tool, at }
 let sendingBack = null; // { lane, branch, story, reason, error }
 let storyOpen = null; // the drill-down's story (VIEW-7): { id, lane, data, error }
 const personAsks = []; // prompts the person asked for (stop an agent), waiting for the lead to be idle
+// VIEW-3: the characters' animation, and the surface the Lanes pane was last drawn on.
+let frame = 0;
+let animation = null; // the timer repainting working characters, while one works
+let paneSurface = null;
+let paneColumns = 80;
 // The reviewer (spec 07): each branch's review at its head, and the agent type registered for it.
 const reviews = new Map(); // branch → { branch, head, story, state, startedAt, findings, why?, error? }
 let reviewerAgent = null; // the registered agent's full name
@@ -179,6 +186,8 @@ export function register(on) {
         const requests = valid ? await json('requests') : null;
         const stops = valid ? ((await json('stops', '--session', session)) ?? []) : [];
         const queue = valid ? ((await json('queue')) ?? []) : [];
+        // VIEW-2: when each story's work happened, for the lanes' timelines.
+        const timeline = valid && check.docs?.plan ? await json('timeline') : null;
         const atWork = agentsAtWork(await $.agent.list());
         model = {
           state: projectState(check, status, nextStep, atWork),
@@ -186,6 +195,7 @@ export function register(on) {
           stops,
           queue,
           status,
+          timeline,
           check,
           base: status?.base ?? null,
         };
@@ -693,6 +703,34 @@ export function register(on) {
         }
         if (loop.pending.length) await act.step('tick');
       },
+      // VIEW-3: working characters repaint in place while the pane shows them; nothing runs otherwise.
+      animate: async () => {
+        const open = (await $.ui.panes()).some((p) => p.id === PANE_ID);
+        const now = await $.clock.now();
+        const art = artNow(now, liveNow(now));
+        const working = Object.keys(art.poses).filter((n) => art.poses[n] === 'working');
+        if (!open || paneSurface !== 'terminal' || !working.length) {
+          animation?.cancel();
+          animation = null;
+          return;
+        }
+        if (animation) return;
+        animation = $.clock.every(400, async () => {
+          frame = (frame + 1) % 2;
+          const at = await $.clock.now();
+          const still = artNow(at, liveNow(at));
+          for (const name of Object.keys(still.poses).filter((n) => still.poses[n] === 'working'))
+            await $.ui
+              .blit({
+                requestId: PANE_ID,
+                key: `char-${name}`,
+                cells: rasterCells(
+                  sprite('working', frame, still.tints[name], { lead: name === 'lead' }),
+                ),
+              })
+              .catch(() => {});
+        });
+      },
       // --- panes v2: the selected lane's acts (VIEW-6) ----------------------------------------
       // A prompt the person asked for: submitted now if the lead is idle, else when it next is.
       askLead: async (prompt, kind, target) => {
@@ -833,6 +871,7 @@ export function register(on) {
       busy = true;
       try {
         await act.stalls();
+        await act.animate();
         const now = await act.fingerprint();
         const paneOpen = (await $.ui.panes()).some((p) => p.id === PANE_ID);
         quiet += 1;
@@ -1064,6 +1103,37 @@ export function register(on) {
   };
 
   // VIEW-4: each lane's current or last tool call, and how long ago.
+  // VIEW-2, VIEW-3: each lane's pose and tint, and its story's bar on the shared axis.
+  const artNow = (now, live) => {
+    const lanesNow = model.state?.kind === 'ok' ? model.state.lanes : [];
+    const names = lanesNow.map((l) => l.name);
+    const queue = model.queue ?? [];
+    const asking = new Set([
+      ...[...held.values()].map((c) => c.lane ?? 'lead'),
+      ...(model.requests?.open ?? []).map((r) => r.lane ?? 'lead'),
+    ]);
+    const stalled = new Set([...flagged.values()].map((f) => f.lane));
+    const times = (model.timeline?.stories ?? []).filter((t) =>
+      lanesNow.some((l) => l.story?.id === t.id),
+    );
+    const start = axisStart(times, now);
+    const width = Math.max(10, Math.min(120, paneColumns - 14));
+    const poses = {};
+    const tints = {};
+    const bars = {};
+    for (const l of lanesNow) {
+      poses[l.name] = poseOf(l, {
+        live: live[l.name],
+        waiting: asking.has(l.name),
+        flagged: stalled.has(l.name),
+        shown: shownState(l, queue),
+      });
+      tints[l.name] = tintOf(l.name, names);
+      const t = times.find((x) => x.id === l.story?.id);
+      if (t) bars[l.name] = barCells(t, { start, now, width });
+    }
+    return { surface: paneSurface, frame, poses, tints, bars, svgWidth: width * 6 };
+  };
   const liveNow = (now) => {
     const stall = harness().stall;
     const live = {};
@@ -1120,6 +1190,8 @@ export function register(on) {
 
   on('ui.render', { component: 'Pane', requestId: PANE_ID }, async ($, e) => {
     const now = await $.clock.now();
+    paneSurface = e.surface;
+    paneColumns = e.props.bodyColumns ?? paneColumns;
     const { usage, plan } = usageNow();
     const lanesNow = model.state?.kind === 'ok' ? model.state.lanes : [];
     return lanesFrame(
@@ -1134,6 +1206,7 @@ export function register(on) {
         requests: model.requests?.open ?? [],
         ui: paneUi,
         status: model.status ?? null,
+        art: artNow(now, liveNow(now)),
         placement: e.props.placement,
         story: storyOpen ? storyNow(storyOpen, now, usage) : null,
       },

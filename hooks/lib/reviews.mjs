@@ -37,3 +37,21 @@ export function sentBack(root) {
   }
   return found;
 }
+
+/** Every send-back recorded, oldest first: [{ at, branch, sha, reason }]. */
+export function sendBacks(root) {
+  let lines = [];
+  try {
+    lines = readFileSync(reviewsFile(root), 'utf8').split('\n').filter(Boolean);
+  } catch {
+    return [];
+  }
+  return lines.flatMap((line) => {
+    try {
+      const r = JSON.parse(line);
+      return r.verdict === 'sent back' && r.branch ? [r] : [];
+    } catch {
+      return [];
+    }
+  });
+}

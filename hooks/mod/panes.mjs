@@ -241,6 +241,7 @@ export function lanesFrame(view, els, on) {
                 search: ui.search,
                 selected: ui.selected,
                 live: view.live ?? {},
+                art: view.art ?? null,
               }),
               ...loopSection(loop, text, Box),
             ];

@@ -11,11 +11,11 @@ code-kit is a Claude Code plugin: hooks (`hooks/`), skills (`skills/<name>/SKILL
   - `layers.mjs`: imports;
   - `dependencies.mjs`: the packages a command adds, and the files installing them changes;
   - `registry.mjs`: what the npm registry says about a package, for delegated approvals;
-  - `harness.mjs`: the harness settings; `queue.mjs`: the merge queue;
+  - `harness.mjs`: the harness settings; `queue.mjs`: the merge queue; `timeline.mjs`: when each story's work happened;
   - `checks.mjs`, `verify.mjs`, `plan.mjs`, `trace.mjs`, `next.mjs`;
   - `adapters/`: tools that share a project, such as Context Graph.
-- `hooks/mod/`: the mod, for Claude Code 2.1.287 or later: `register.mjs` (its hooks and the person's acts), `view.mjs`, `panes.mjs`, `loop.mjs`, `hold.mjs` and `review.mjs` (what it draws and decides, as pure functions) and `register.test.ts` (run by `claude plugin test`, through `test/mod.mjs`). It reads the CLI's JSON and never enforces anything.
-- `bin/code-kit.mjs`: the CLI (`check`, `who`, `unowned`, `diff`, `baseline`, `graph`, `verify`, `status`, `next`, `adapters`, `trace`, `approve`, `merge`, `requests`, `stops`, `sent-back`, `settings`, `hold`, `queue`, `story`).
+- `hooks/mod/`: the mod, for Claude Code 2.1.287 or later: `register.mjs` (its hooks and the person's acts), `view.mjs`, `panes.mjs`, `art.mjs`, `loop.mjs`, `hold.mjs` and `review.mjs` (what it draws and decides, as pure functions) and `register.test.ts` (run by `claude plugin test`, through `test/mod.mjs`). It reads the CLI's JSON and never enforces anything.
+- `bin/code-kit.mjs`: the CLI (`check`, `who`, `unowned`, `diff`, `baseline`, `graph`, `verify`, `status`, `next`, `adapters`, `trace`, `approve`, `merge`, `requests`, `stops`, `sent-back`, `settings`, `hold`, `queue`, `story`, `timeline`).
 - `skills/`: instructions for Claude, not code. They call the CLI as `node "${CLAUDE_PLUGIN_ROOT}/bin/code-kit.mjs"`.
 - `test/units.test.mjs` (pure functions), `test/hooks.test.mjs` (every hook end to end in throwaway git repositories), `test/fixture.json` (the config they use), `test/mod.mjs` (the mod's tests, skipped on older Claude Code).
 

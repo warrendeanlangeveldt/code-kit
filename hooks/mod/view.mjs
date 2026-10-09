@@ -7,6 +7,8 @@ export const NOT_CODE_KIT = "This project doesn't use code-kit.";
 const LEAD = 'lead';
 
 /** A CLI run's stdout as JSON, or null when it printed none. */
+import { BAR, POSE_GLYPH, rasterCells, runs, sprite, spriteSvg, timelineSvg } from './art.mjs';
+
 export function parseJson(stdout) {
   try {
     return JSON.parse(stdout);
@@ -119,17 +121,66 @@ export function shownState(lane, queue = []) {
  */
 export function lanesPane(
   state,
-  { Box, Text },
+  els,
   usage = null,
   plan = null,
   loop = null,
-  { filter = null, search = '', selected = null, live = {} } = {},
+  { filter = null, search = '', selected = null, live = {}, art = null } = {},
 ) {
+  const { Box, Text } = els;
   const text = (value, style = {}) => Text({ ...style, children: [value] });
   if (!state || state.kind === 'none') return text(NOT_CODE_KIT, { dimColor: true });
   if (state.kind === 'invalid')
     return text('The config is invalid: run code-kit check.', { color: 'red' });
   const width = Math.max(...state.lanes.map((l) => l.name.length));
+  // VIEW-3: the lane's character: half-block cells in the terminal, SVG on Desktop, its glyph elsewhere.
+  const character = (l) => {
+    const pose = art.poses[l.name] ?? 'idle';
+    const lead = l.name === LEAD;
+    if (art.surface === 'terminal' && els.Raster)
+      return els.Raster({
+        key: `char-${l.name}`,
+        columns: 6,
+        rows: 3,
+        cells: rasterCells(sprite(pose, art.frame, art.tints[l.name], { lead })),
+      });
+    if (els.Svg)
+      return els.Svg({
+        source: spriteSvg(pose, art.tints[l.name], { lead }),
+        alt: `${l.name}: ${pose}`,
+        width: 24,
+        height: 24,
+        ...(pose === 'working' ? { isInteractive: true } : {}),
+      });
+    return text(POSE_GLYPH[pose]);
+  };
+  // VIEW-2: the lane's story on the shared time axis.
+  const bar = (l) => {
+    const cells = art?.bars?.[l.name];
+    if (!cells) return [];
+    if (art.surface !== 'terminal' && els.Svg)
+      return [
+        els.Svg({
+          source: timelineSvg([{ cells }], { width: art.svgWidth ?? 480 }),
+          alt: `${l.name}'s timeline`,
+        }),
+      ];
+    return [
+      Box({
+        key: `bar-${l.name}`,
+        flexDirection: 'row',
+        children: [
+          text('    '),
+          ...runs(cells).map((run) =>
+            text(
+              BAR[run.kind].glyph.repeat(run.n),
+              BAR[run.kind].color ? { color: BAR[run.kind].color } : {},
+            ),
+          ),
+        ],
+      }),
+    ];
+  };
   const inQueue = new Set(
     (loop?.queue ?? [])
       .filter((e) => ['waiting', 'merging'].includes(e.state))
@@ -147,66 +198,69 @@ export function lanesPane(
           .some((s) => s.toLowerCase().includes(needle))),
   );
   const LIVE = { quiet: 'yellow', stalled: 'red' };
-  const rows = shown.map((l) =>
-    Box({
-      key: `lane-${l.name}`,
-      flexDirection: 'column',
-      children: [
-        Box({
-          flexDirection: 'row',
-          columnGap: 2,
-          children: [
-            text(l.name === selected ? '›' : l.active ? '●' : ' ', {
-              color: l.name === selected ? 'cyan' : 'green',
-            }),
-            text(l.name.padEnd(width), {
-              bold: true,
-              ...(l.name === selected ? { color: 'cyan' } : {}),
-            }),
+  const rows = shown.map((l) => {
+    const lines = [
+      Box({
+        flexDirection: 'row',
+        columnGap: 2,
+        children: [
+          text(l.name === selected ? '›' : l.active ? '●' : ' ', {
+            color: l.name === selected ? 'cyan' : 'green',
+          }),
+          text(l.name.padEnd(width), {
+            bold: true,
+            ...(l.name === selected ? { color: 'cyan' } : {}),
+          }),
+          text(
+            (queued(l) ? 'queued' : l.state).padEnd(9),
+            queued(l)
+              ? { color: 'cyan' }
+              : STATE_COLOR[l.state]
+                ? { color: STATE_COLOR[l.state] }
+                : {},
+          ),
+          text(l.agent ?? 'the main session', { dimColor: true }),
+          ...(live[l.name]
+            ? [
+                text(`${live[l.name].tool} · ${live[l.name].ago}`, {
+                  wrap: 'truncate-end',
+                  ...(LIVE[live[l.name].level]
+                    ? { color: LIVE[live[l.name].level] }
+                    : { dimColor: true }),
+                }),
+              ]
+            : []),
+          ...(loop?.laneNotes?.[l.name]
+            ? [
+                text(loop.laneNotes[l.name], {
+                  color: loop.laneNotes[l.name] === 'stalled' ? 'red' : 'yellow',
+                }),
+              ]
+            : []),
+          ...(usage?.lanes[l.name] ? [text(tokens(usage.lanes[l.name]), { dimColor: true })] : []),
+        ],
+      }),
+      ...(l.story
+        ? [
             text(
-              (queued(l) ? 'queued' : l.state).padEnd(9),
-              queued(l)
-                ? { color: 'cyan' }
-                : STATE_COLOR[l.state]
-                  ? { color: STATE_COLOR[l.state] }
-                  : {},
+              `    ${l.story.id} ${l.story.title}${l.branch ? ` · ${l.branch}` : ''}${
+                l.state === 'blocked' ? ` · waits on ${l.story.waitingOn.join(', ')}` : ''
+              }`,
+              { dimColor: true, wrap: 'truncate-end' },
             ),
-            text(l.agent ?? 'the main session', { dimColor: true }),
-            ...(live[l.name]
-              ? [
-                  text(`${live[l.name].tool} · ${live[l.name].ago}`, {
-                    wrap: 'truncate-end',
-                    ...(LIVE[live[l.name].level]
-                      ? { color: LIVE[live[l.name].level] }
-                      : { dimColor: true }),
-                  }),
-                ]
-              : []),
-            ...(loop?.laneNotes?.[l.name]
-              ? [
-                  text(loop.laneNotes[l.name], {
-                    color: loop.laneNotes[l.name] === 'stalled' ? 'red' : 'yellow',
-                  }),
-                ]
-              : []),
-            ...(usage?.lanes[l.name]
-              ? [text(tokens(usage.lanes[l.name]), { dimColor: true })]
-              : []),
-          ],
-        }),
-        ...(l.story
-          ? [
-              text(
-                `    ${l.story.id} ${l.story.title}${l.branch ? ` · ${l.branch}` : ''}${
-                  l.state === 'blocked' ? ` · waits on ${l.story.waitingOn.join(', ')}` : ''
-                }`,
-                { dimColor: true, wrap: 'truncate-end' },
-              ),
-            ]
-          : []),
-      ],
-    }),
-  );
+          ]
+        : []),
+      ...bar(l),
+    ];
+    return art
+      ? Box({
+          key: `lane-${l.name}`,
+          flexDirection: 'row',
+          columnGap: 1,
+          children: [character(l), Box({ flexDirection: 'column', children: lines })],
+        })
+      : Box({ key: `lane-${l.name}`, flexDirection: 'column', children: lines });
+  });
   const notes = [];
   if (state.planGaps)
     notes.push(

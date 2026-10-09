@@ -200,7 +200,7 @@ The pane’s new frame and keyboard model.
 **Lane:** lead
 **Requirements:** VIEW-2, VIEW-3
 **Depends on:** ST-19
-**Status:** todo
+**Status:** done
 
 Timelines per lane and the lane agents’ characters, animated in place.
 

@@ -46,6 +46,7 @@ import { nextStep } from '../hooks/lib/next.mjs';
 import { traceFile } from '../hooks/lib/trace.mjs';
 import { buildStatus, specCheckRows } from '../hooks/lib/plan.mjs';
 import { recordSentBack } from '../hooks/lib/reviews.mjs';
+import { storyTimes } from '../hooks/lib/timeline.mjs';
 import { dequeue, enqueue, lastMerged, readQueue, settle, waiting } from '../hooks/lib/queue.mjs';
 import { SETTINGS, parseSetting, settingOf, withSetting } from '../hooks/lib/harness.mjs';
 import {
@@ -550,6 +551,26 @@ function queue() {
   left.forEach((e, i) => out(`  ${i + 1}. ${e.branch} (passed review ${e.passed})`));
 }
 
+/** When each story's work happened, for the mod's timelines (VIEW-2). */
+function timeline() {
+  const { config } = load();
+  const { specs, plan } = config.docs ?? {};
+  if (!specs || !plan)
+    die(
+      'timeline needs docs.specs and docs.plan in the config. The spec-design skill writes both.',
+    );
+  const from = base(config, false);
+  const { stories } = buildStatus('.', config, from, tracked());
+  const times = storyTimes(resolve('.'), stories, from);
+  if (flag('--json'))
+    return out(JSON.stringify({ base: from, now: Date.now(), stories: times }, null, 2));
+  const when = (ms) => (ms ? new Date(ms).toISOString().replace('T', ' ').slice(0, 16) : '-');
+  for (const s of times)
+    out(
+      `${s.id} ${s.branch}: started ${when(s.started)}, last commit ${when(s.lastCommit)}, merged ${when(s.merged)}`,
+    );
+}
+
 /** The most of a story's diff `story` prints; past it the text is cut and says so. */
 const DIFF_KEPT = 256 * 1024;
 
@@ -1027,6 +1048,7 @@ const commands = {
   hold: () => (rest.length === 1 ? hold(rest[0]) : usage()),
   queue,
   story: () => (rest.length === 1 ? story(rest[0]) : usage()),
+  timeline,
   'sent-back': () => (rest.length === 1 ? sentBackCommand(rest[0]) : usage()),
   trace: () => (rest.length ? trace(rest) : usage()),
   adapters,
@@ -1050,7 +1072,7 @@ function usage() {
       '              | settings [--json] | settings set <key> <value> --reason "…" [--via pane]\n' +
       '              | hold <id> [--minutes N] | hold <id> --answer approved|refused\n' +
       '              | queue [--json] | queue add|drop <branch> | queue merge --delegated|--person\n' +
-      '              | story <id> [--json]',
+      '              | story <id> [--json] | timeline [--json]',
   );
 }
 await (commands[command] ?? usage)();
