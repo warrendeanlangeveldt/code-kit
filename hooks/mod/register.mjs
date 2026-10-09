@@ -35,6 +35,15 @@ import {
 import { holdable } from './hold.mjs';
 import { leadPrompt, nudgeText, restartPrompt, stallDue, stepKey, stepLabel } from './loop.mjs';
 import { harnessSettings } from '../lib/harness.mjs';
+import {
+  REVIEW_WAIT_MS,
+  findingsCount,
+  leadReviewPrompt,
+  readReport,
+  reviewerSpec,
+  startReviewerPrompt,
+  withVerify,
+} from './review.mjs';
 
 // What the session knows of the project, read again when it changes.
 let model = { state: null, requests: null, stops: [] };
@@ -74,6 +83,10 @@ const activityOf = (agentId, now) => {
   return a;
 };
 const harness = () => harnessSettings(model.check?.harness);
+// The reviewer (spec 07): each branch's review at its head, and the agent type registered for it.
+const reviews = new Map(); // branch → { branch, head, story, state, startedAt, findings, why?, error? }
+let reviewerAgent = null; // the registered agent's full name
+let reviewerModel = null; // the model it was registered with ('' for the session's)
 const refusals = new Map(); // tool_use_id → the refusal text a hook gave (CARD-1)
 const expanded = new Set(); // cards showing their raw text
 const REFUSALS_KEPT = 200;
@@ -156,6 +169,124 @@ export function register(on) {
           check,
           base: status?.base ?? null,
         };
+        if (model.state.kind === 'ok') await act.registerReviewer();
+        $.ui.invalidate('ui.render');
+      },
+      // REVW-2: the reviewer, read-only by the hooks' rule for agents outside the lanes. Registered
+      // again when its model setting changes.
+      registerReviewer: async () => {
+        const wanted = harness().agents.reviewer.model ?? '';
+        if (reviewerModel === wanted) return;
+        reviewerModel = wanted;
+        const spec = reviewerSpec({
+          cli,
+          checklist: `${$.plugin.root}/skills/review/SKILL.md`,
+          model: wanted || undefined,
+        });
+        reviewerAgent =
+          (
+            await $.agent.register(spec).catch((err) => {
+              $.ui.log(`code-kit: the reviewer agent isn't available: ${err?.message ?? err}`);
+              return null;
+            })
+          )?.agent ?? null;
+      },
+      // REVW-1, REVW-4, LOOP-4: for stories in review, start the reviewer at each branch's head, and
+      // once it has reported (or failed, or was skipped) prompt the lead's review with its findings.
+      // Null while every review is still running.
+      reviewStep: async (step) => {
+        const now = await $.clock.now();
+        const plan = planOf(rateLimits, harness().background.pauseAtPercent);
+        for (const id of (step.args ?? '').split(/\s+/).filter(Boolean)) {
+          const story = (model.state.stories ?? []).find((s) => s.id === id);
+          if (!story?.branch) continue;
+          const head = (
+            await $.process.run(['git', 'rev-parse', '--verify', '--quiet', story.branch], { cwd })
+          ).stdout.trim();
+          if (!head) continue;
+          let review = reviews.get(story.branch);
+          if (!review || review.head !== head) {
+            // USE-4: past the plan's pause point, no reviewer starts; the lead reviews alone.
+            review = {
+              branch: story.branch,
+              head,
+              story: id,
+              startedAt: now,
+              findings: [],
+              ...(plan.paused
+                ? {
+                    state: 'skipped',
+                    why: `background agents paused, the plan at ${plan.percent}%`,
+                  }
+                : { state: 'running' }),
+            };
+            reviews.set(story.branch, review);
+            if (!plan.paused)
+              return {
+                prompt: startReviewerPrompt({
+                  agent: reviewerAgent,
+                  story,
+                  branch: story.branch,
+                  head,
+                }),
+                kind: 'reviewer',
+                target: story.branch,
+                key: `reviewer:${story.branch}@${head}`,
+                label: `Start the reviewer on ${story.branch}`,
+              };
+            await act.record('skipped', `review of ${story.branch}`);
+          }
+          if (review.state === 'running') {
+            if (now - review.startedAt < REVIEW_WAIT_MS) continue;
+            review.state = 'failed';
+            review.error = 'no report within 15 minutes';
+          }
+          return {
+            prompt: leadReviewPrompt(id, review),
+            kind: 'review',
+            target: id,
+            key: `review:${story.branch}@${head}`,
+            label: `Review ${id}`,
+          };
+        }
+        return null;
+      },
+      // REVW-3: the reviewer's report, read from the turn it ended with; a failed verify is a blocker.
+      reviewed: async (agentId, answer) => {
+        let review = [...reviews.values()].find((r) => r.agentId === agentId);
+        if (!review) {
+          const agent = ((await $.agent.list()) ?? []).find((a) => a.id === agentId);
+          if (!agent || !reviewerAgent || agent.type !== reviewerAgent) return;
+          review = [...reviews.values()].find(
+            (r) => r.state === 'running' && agent.description?.includes(r.branch),
+          );
+          if (!review) return;
+          review.agentId = agentId;
+        }
+        const report = readReport(answer);
+        if (report.error) {
+          review.state = 'failed';
+          review.error = report.error;
+        } else {
+          review.state = 'done';
+          review.findings = report.findings;
+          // With the branch checked out in a worktree, verify there too: its problems are blockers.
+          const story = (model.state?.stories ?? []).find((s) => s.id === review.story);
+          if (story?.worktree) {
+            const ran = await $.process.run(['node', cli, 'verify', '--no-checks', '--json'], {
+              cwd: story.worktree,
+              timeoutMs: 120000,
+            });
+            if (ran.exitCode !== 0) {
+              const problems = Object.values(parseJson(ran.stdout)?.found ?? {}).flat();
+              review.findings = withVerify(review.findings, { passed: false, problems });
+            }
+          }
+        }
+        await act.record(
+          'reviewed',
+          `${review.branch}: ${review.state === 'done' ? findingsCount(review.findings) : review.error}`,
+        );
         $.ui.invalidate('ui.render');
       },
       // What a refresh waits on, read cheaply: branches and HEAD, the config and the plan, requests,
@@ -410,25 +541,34 @@ export function register(on) {
           $.ui.invalidate('ui.render');
           return;
         }
-        const prompt = leadPrompt(step);
+        let prompt = leadPrompt(step);
+        let kind = step.step;
+        let target = step.args ?? '';
+        let key = stepKey(step);
+        let label = stepLabel(step);
+        // LOOP-4: with the reviewer on, a branch is reviewed in the background before the lead's review.
+        if (step.step === 'review' && harness().agents.reviewer.on && reviewerAgent) {
+          const due = await act.reviewStep(step);
+          if (!due) return;
+          ({ prompt, kind, target, key, label } = due);
+        }
         if (!prompt) return;
         // Never the same step twice while the project stands still.
-        const key = stepKey(step);
         const print = await act.fingerprint();
         if (key === loop.lastKey && print === loop.lastPrint) return;
         loop.lastKey = key;
         loop.lastPrint = print;
         if (h.autonomy === 'propose') {
-          loop.proposal = { step, prompt, label: stepLabel(step) };
+          loop.proposal = { prompt, label, kind, target };
           $.ui.invalidate('ui.render');
           return;
         }
-        await act.submit(prompt, step.step, step.args ?? '');
+        await act.submit(prompt, kind, target);
       },
       go: async () => {
         if (!loop.proposal || leadTurn) return;
-        const { prompt, step } = loop.proposal;
-        await act.submit(prompt, step.step, step.args ?? '');
+        const { prompt, kind, target } = loop.proposal;
+        await act.submit(prompt, kind, target);
       },
       // LOOP-6: pausing stops new steps at once; a turn in progress finishes.
       pause: async () => {
@@ -698,6 +838,8 @@ export function register(on) {
       $.ui.invalidate('ui.render');
     }
     const res = await next(e);
+    // REVW-3: a subagent's last turn may be the reviewer's report.
+    if (e.agentId && act) await act.reviewed(e.agentId, e.answer).catch(() => {});
     // LOOP-1: the lead is idle; the loop's next step, if one is due (submitted from turn.complete,
     // as the spike found it must be). The prompt it submits isn't awaited: that turn isn't this hook's.
     if (!e.agentId && (!leadTurn || leadTurn === e.turnId)) {
@@ -734,6 +876,11 @@ export function register(on) {
       steps: loop.steps,
       laneNotes,
       now,
+      reviews: [...reviews.values()].map((r) => ({
+        ...r,
+        summary: findingsCount(r.findings),
+        blockers: r.findings.filter((f) => f.severity === 'blocker').length,
+      })),
     };
   };
 

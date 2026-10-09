@@ -782,3 +782,38 @@ test('LOOP-1 to LOOP-3 the loop: prompts for steps, and what a quiet agent is du
   assert.equal(stallDue(10 * 60000, { ...fresh, nudged: true }, 2, stall), 'flag');
   assert.equal(stallDue(30 * 60000, { nudged: true, stopped: true }, 2, stall), null);
 });
+
+test("REVW-3 the reviewer's report: graded findings, a failed verify a blocker, and reports that don't read", async () => {
+  const { readReport, withVerify, findingsCount, leadReviewPrompt } =
+    await import('../hooks/mod/review.mjs');
+  const block = (o) => `Done.\n\`\`\`json\n${JSON.stringify(o)}\n\`\`\``;
+  const read = readReport(
+    block({
+      verify: { passed: false, problems: ['lane: apps/api/x.ts'] },
+      findings: [
+        { severity: 'concern', where: 'a.ts:1', text: 'x', rule: 'REQ-1' },
+        { severity: 'urgent', text: 'not a severity' },
+      ],
+    }),
+  );
+  assert.deepEqual(read.findings, [
+    { severity: 'blocker', text: 'verify: lane: apps/api/x.ts', rule: 'code-kit verify' },
+    { severity: 'concern', text: 'x', where: 'a.ts:1', rule: 'REQ-1' },
+  ]);
+  assert.match(readReport('No block at all.').error, /no findings block/);
+  assert.match(readReport('```json\n{nope\n```').error, /isn't valid JSON/);
+  const named = [{ severity: 'blocker', text: 'verify fails: lane: apps/api/x.ts' }];
+  assert.equal(withVerify(named, { passed: false, problems: ['lane: apps/api/x.ts'] }).length, 1);
+  assert.equal(withVerify([], { passed: true, problems: [] }).length, 0);
+  assert.equal(findingsCount(read.findings), '1 blocker, 1 concern');
+  assert.equal(findingsCount([]), 'no findings');
+  assert.match(
+    leadReviewPrompt('ST-4', {
+      state: 'done',
+      branch: 'web/st-4',
+      head: 'abcdef1234567890',
+      findings: [],
+    }),
+    /found nothing to fix on web\/st-4 at abcdef123456\.$/,
+  );
+});

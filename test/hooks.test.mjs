@@ -173,6 +173,12 @@ try {
   expect('lead may not write an unowned path', write('random/x.ts'), 2);
   expect('an unmapped agent is read-only', write('docs/notes.md', 'Explore'), 2, 'read-only');
   expect(
+    "REVW-2 code-kit's reviewer is read-only: it can't write",
+    write('apps/web/x.ts', 'code-kit:reviewer'),
+    2,
+    'read-only',
+  );
+  expect(
     'lane agent without spec-check is blocked',
     write('supabase/migrations/1_x.sql', 'db-engineer'),
     2,
@@ -508,6 +514,7 @@ try {
     'zod',
   );
   expect('a read-only agent never installs', bash(addLodash, 'Explore'), 2, 'read-only');
+  expect('nor may the reviewer install', bash(addLodash, 'code-kit:reviewer'), 2, 'read-only');
   put('package.json', '{ "dependencies": { "lodash": "4" } }\n');
   put('apps/office/package.json', '{ "dependencies": { "lodash": "4" } }\n');
   expect(

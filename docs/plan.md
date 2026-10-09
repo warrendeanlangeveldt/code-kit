@@ -164,7 +164,7 @@ Prompting the lead when idle, stalls, autonomy, pause and done.
 **Lane:** lead
 **Requirements:** REVW-1, REVW-2, REVW-3, REVW-4, LOOP-4
 **Depends on:** ST-10, ST-15
-**Status:** todo
+**Status:** done
 
 Started by prompting the lead (auto mode refuses a mod's own spawn) per finished branch; graded findings into the lead’s review.
 

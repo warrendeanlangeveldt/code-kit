@@ -98,6 +98,8 @@ function project() {
     delegated: [] as string[][],
     holds: [] as string[][],
     draft: '', // what the person has typed in the prompt
+    heads: { 'web/st-4': 'abc123def4567890\n' } as Record<string, string>,
+    registered: [] as any[],
     sent: [] as { to: any; text: string }[],
     holdWaits: false, // false: the hold ends at once, as if timed out (tests about cards, not hold)
     waiting: new Map<string, (answer: string) => void>(),
@@ -113,6 +115,7 @@ function stub(on: any, w: World) {
       value: { exitCode, stdout, stderr },
     });
     const sub = argv[2];
+    if (argv[0] === 'git' && argv[1] === 'rev-parse') return ran(0, w.heads[argv.at(-1)!] ?? '');
     if (argv[0] === 'git') return ran(0, w.refs);
     if (sub === 'check') return ran(w.check.valid ? 0 : 1, JSON.stringify(w.check));
     if (sub === 'status')
@@ -210,6 +213,10 @@ function stub(on: any, w: World) {
       : { result: { stdout: 'added 1 package', stderr: '', interrupted: false } };
   });
   on('agent.list', () => ({ value: w.agents }));
+  on('agent.register', ($: any, e: any) => {
+    w.registered.push(e);
+    return { value: { agent: `code-kit:${e.name}` } };
+  });
   on('prompt.read', () => ({ value: { text: w.draft, cursor: w.draft.length } }));
   on('session.send', ($: any, e: any) => {
     w.sent.push({ to: e.to, text: e.text });
@@ -1428,4 +1435,126 @@ test('LOOP-7 when every story is done the loop stops, and the band says so until
   ui = await bandUi($);
   expect(await ui.find({ type: 'Text', text: /Milestone done/ })).toBeUndefined();
   await ui.unmount();
+});
+
+// --- the reviewer -----------------------------------------------------------------------------------
+
+/** ST-4 finished on web/st-4, the reviewer on. */
+function reviewing() {
+  const w = project();
+  w.stories[0] = { ...w.stories[0], state: 'review', requirements: ['BOOK-1'] };
+  w.next = { step: 'review', args: 'ST-4', then: [] };
+  (w.check as any).harness = { agents: { reviewer: { on: true } } };
+  return w;
+}
+const report = (json: object) =>
+  'Reviewed web/st-4.\n\n\`\`\`json\n' + JSON.stringify(json) + '\n\`\`\`\n';
+
+test('REVW-1 with the reviewer on, a finished branch has the lead start one in the background, and the pane shows it running', async ($, on) => {
+  const w = reviewing();
+  const clock = await start($, on, w);
+  expect(w.registered[0]).toMatchObject({
+    name: 'reviewer',
+    tools: ['Read', 'Grep', 'Glob', 'Bash'],
+  });
+  await leadTurn($);
+  await settle(clock);
+  expect(w.prompts[0]).toMatch(
+    /^Start code-kit's reviewer in the background for web\/st-4: use the Agent tool with subagent_type "code-kit:reviewer", run_in_background true, description "Review web\/st-4 \(ST-4\)".*at abc123def456 for ST-4 Booking form \(requirements BOOK-1\)/,
+  );
+  await clock.advance(3 * 60000);
+  await lanes($);
+  const ui = await pane($, PANE);
+  expect((await ui.find({ key: 'review-web/st-4' }))?.text).toMatch(/running 3m/);
+  await ui.unmount();
+  // While it runs, the lead isn't asked to review.
+  await leadTurn($, 't-2');
+  await settle(clock);
+  expect(w.prompts).toHaveLength(1);
+});
+
+test("REVW-3 and REVW-4 the reviewer's findings, a failed verify as a blocker, go into the lead's review", async ($, on) => {
+  const w = reviewing();
+  const clock = await start($, on, w);
+  await leadTurn($);
+  await settle(clock);
+  w.agents = [
+    {
+      id: 'r1',
+      type: 'code-kit:reviewer',
+      description: 'Review web/st-4 (ST-4)',
+      status: 'completed',
+    },
+  ];
+  await $.turn.complete({
+    turnId: 't-r1',
+    agentId: 'r1',
+    answer: report({
+      verify: { passed: false, problems: ['apps/api/x.ts is outside the web lane'] },
+      findings: [{ severity: 'nit', where: 'apps/web/form.tsx:3', text: 'Unused import.' }],
+    }),
+    durationMs: 1,
+    isAborted: false,
+  } as any);
+  await leadTurn($, 't-2');
+  await settle(clock);
+  expect(w.prompts[1]).toBe(
+    [
+      "Review ST-4: run /code-kit:review ST-4. code-kit's reviewer found 1 blocker, 1 nit on web/st-4 at abc123def456:",
+      '- blocker: verify: apps/api/x.ts is outside the web lane (code-kit verify)',
+      '- nit apps/web/form.tsx:3: Unused import.',
+      'A blocker means you send the branch back. Concerns and nits are yours to weigh.',
+    ].join('\n'),
+  );
+  await lanes($);
+  const ui = await pane($, PANE);
+  expect((await ui.find({ key: 'review-web/st-4' }))?.text).toMatch(/done · 1 blocker, 1 nit/);
+  await ui.unmount();
+});
+
+test("REVW-1 a reviewer that hasn't reported in 15 minutes is passed over: the lead reviews without it", async ($, on) => {
+  const w = reviewing();
+  const clock = await start($, on, w);
+  await leadTurn($);
+  await settle(clock);
+  await clock.advance(15 * 60000 + 2000);
+  await leadTurn($, 't-2');
+  await settle(clock);
+  expect(w.prompts[1]).toMatch(/didn't report: no report within 15 minutes\. Review it yourself/);
+});
+
+test('REVW-1 a branch that moves gets a new review', async ($, on) => {
+  const w = reviewing();
+  const clock = await start($, on, w);
+  await leadTurn($);
+  await settle(clock);
+  w.heads['web/st-4'] = 'fff000111222333\n';
+  await leadTurn($, 't-2');
+  await settle(clock);
+  expect(w.prompts[1]).toMatch(/^Start code-kit's reviewer.*at fff000111222/);
+});
+
+test('USE-4 past the pause point no reviewer starts: the review is skipped and the lead reviews alone', async ($, on) => {
+  const w = reviewing();
+  w.limits = [{ kind: 'five_hour', percentUsed: 81 }];
+  const clock = await start($, on, w);
+  await leadTurn($);
+  await settle(clock);
+  expect(w.prompts).toEqual([
+    'Review ST-4: run /code-kit:review ST-4. (No background review: background agents paused, the plan at 81%.)',
+  ]);
+  await lanes($);
+  const ui = await pane($, PANE);
+  expect((await ui.find({ key: 'review-web/st-4' }))?.text).toMatch(
+    /skipped: background agents paused/,
+  );
+  await ui.unmount();
+});
+
+test("REVW-2 the reviewer's model is the setting's, registered again when it changes", async ($, on) => {
+  const w = reviewing();
+  (w.check as any).harness = { agents: { reviewer: { on: true, model: 'haiku' } } };
+  await start($, on, w);
+  expect(w.registered.at(-1)).toMatchObject({ name: 'reviewer', model: 'haiku' });
+  expect(w.registered.at(-1).tools).not.toContain('Write');
 });

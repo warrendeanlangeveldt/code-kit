@@ -83,7 +83,15 @@ export function projectState(check, status, next = null, atWork = new Set()) {
     lanes,
     ready,
     planGaps: status ? (status.problems ?? []).length : null,
-    stories: stories.map((s) => ({ id: s.id, lane: s.lane, state: s.state })),
+    stories: stories.map((s) => ({
+      id: s.id,
+      title: s.title,
+      lane: s.lane,
+      state: s.state,
+      branch: s.branch ?? null,
+      worktree: s.worktree ?? null,
+      requirements: s.requirements ?? [],
+    })),
   };
 }
 
@@ -173,6 +181,7 @@ export function lanesPane(state, { Box, Text }, usage = null, plan = null, loop 
       Box({ flexDirection: 'column', children: rows }),
       Box({ flexDirection: 'column', children: ready }),
       ...usageSection(usage, plan, text, Box),
+      ...reviewsSection(loop, text, Box),
       ...loopSection(loop, text, Box),
     ],
   });
@@ -185,6 +194,42 @@ export function ago(ms) {
   if (s < 60) return `${s}s ago`;
   if (s < 3600) return `${Math.floor(s / 60)}m ago`;
   return `${Math.floor(s / 3600)}h ago`;
+}
+
+/** REVW-1: each branch's background review, running with its clock, or what it found. */
+function reviewsSection(loop, text, Box) {
+  const reviews = loop?.reviews ?? [];
+  if (!reviews.length) return [];
+  const said = (r) =>
+    r.state === 'running'
+      ? `running ${ago(loop.now - r.startedAt).replace(' ago', '')}`
+      : r.state === 'done'
+        ? `done · ${r.summary}`
+        : r.state === 'skipped'
+          ? `skipped: ${r.why}`
+          : `failed: ${r.error}`;
+  return [
+    Box({
+      flexDirection: 'column',
+      children: [
+        text('Reviews', { bold: true }),
+        ...reviews.map((r) =>
+          Box({
+            key: `review-${r.branch}`,
+            flexDirection: 'row',
+            columnGap: 2,
+            children: [
+              text(r.branch),
+              text(said(r), {
+                color: r.blockers ? 'red' : r.state === 'running' ? 'blue' : undefined,
+                dimColor: r.state === 'skipped',
+              }),
+            ],
+          }),
+        ),
+      ],
+    }),
+  ];
 }
 
 /** The loop's record (spec 05): its state and its latest steps, newest first. */
