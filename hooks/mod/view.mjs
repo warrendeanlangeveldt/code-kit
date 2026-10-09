@@ -351,6 +351,25 @@ export function refusalCard(raw) {
       request: request(`write ${m[1]}`),
       raw: text,
     };
+  m = first.match(/^(\S+) is (.+); committing it needs a person's approval in force\./);
+  if (m)
+    return {
+      kind: 'approval',
+      title: `Commit refused: ${m[1]}`,
+      why: `It's ${m[2]}.`,
+      todo: 'A person approves it, here or with the `!` command, for 60 minutes.',
+      request: request(`commit ${m[1]}`),
+      raw: text,
+    };
+  if (/^the \.claude kit is changed only by the lead or with a person's approval\./.test(first))
+    return {
+      kind: 'kit',
+      title: 'Kit edit refused',
+      why: "The .claude kit is changed only by the lead or with a person's approval.",
+      todo: 'A person approves it, here or with the `!` command, for 60 minutes.',
+      request: request('change the .claude kit'),
+      raw: text,
+    };
   m = first.match(/^a new dependency \((.+?)\) needs a person's approval\./);
   if (m)
     return {

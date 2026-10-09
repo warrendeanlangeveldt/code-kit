@@ -570,3 +570,21 @@ test('files any agent may write have a reviewer: the lead, or the lane an entry 
   c.anyActor = [{ glob: 'x', reviewer: 'nobody-lane' }];
   assert.match(validate(c).join(' '), /"anyActor"/);
 });
+
+test('HOLD-1 a protected file refused at commit is holdable, and results are read in every shape', async () => {
+  const { holdable, resultText } = await import('../hooks/mod/hold.mjs');
+  const refusal =
+    'PreToolUse:Bash hook error: Blocked: design/approved-screens.json is the register of approved designs; committing it needs a person\'s approval in force. Ask the lead to run\n  ! echo "<what you are approving>" > .claude/approvals/web/design\n(a person runs it; …)';
+  assert.deepEqual(holdable(refusal), {
+    kind: 'approval',
+    title: 'Commit refused: design/approved-screens.json',
+    names: ['design'],
+    lane: 'web',
+    what: 'commit design/approved-screens.json',
+  });
+  assert.equal(resultText({ deny: 'x' }), 'x');
+  assert.equal(resultText({ isError: true, text: 'y', result: 'z' }), 'y');
+  assert.equal(resultText({ result: 'Error: PreToolUse' }), 'Error: PreToolUse');
+  assert.equal(resultText({ result: { stdout: '' } }), '');
+  assert.equal(holdable('some other failure'), null);
+});

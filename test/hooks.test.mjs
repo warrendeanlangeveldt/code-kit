@@ -16,6 +16,7 @@ import { homedir, tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { refusalCard } from '../hooks/mod/view.mjs';
+import { holdable } from '../hooks/mod/hold.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const hooks = join(here, '..', 'hooks');
@@ -1199,6 +1200,35 @@ try {
         forced.command === 'git push --force' &&
         forced.request === null,
       JSON.stringify(forced),
+    ),
+    0,
+  );
+  // HOLD-1: which refusals a person's approval would allow, read from the hooks' real text.
+  const holdOf = (res) => holdable(res.stderr);
+  expect(
+    'HOLD-1 a refused install is holdable, for its dependency approval and lane',
+    truth(
+      JSON.stringify(holdOf(bash('npm install dayjs', 'web-engineer'))?.names) ===
+        '["dep-dayjs"]' && holdOf(bash('npm install dayjs', 'web-engineer')).lane === 'web',
+    ),
+    0,
+  );
+  expect(
+    'so is a protected write, for its approval',
+    truth(holdOf(write('design/approved-screens.json', 'web-engineer'))?.names.join() === 'design'),
+    0,
+  );
+  expect(
+    "and a lane's kit edit through the shell, for the kit approval",
+    truth(holdOf(bash('echo x > .claude/agents/web.md', 'web-engineer'))?.names.join() === 'kit'),
+    0,
+  );
+  expect(
+    "but not another lane's file, a force-push or the approval log",
+    truth(
+      holdOf(write('workers/jobs/z.ts', 'web-engineer')) === null &&
+        holdOf(bash('git push --force')) === null &&
+        holdOf(bash('cat .claude/approval-log.jsonl > x')) === null,
     ),
     0,
   );
