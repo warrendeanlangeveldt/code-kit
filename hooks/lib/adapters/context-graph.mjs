@@ -7,7 +7,8 @@
 // lead act on what the person says in chat (`approvals.lead`). A delegated ratification, signed
 // `Ctx-Ratified-By: <ratifier> (delegated)`, is the lead's own act under the repository's [delegate]
 // rules: only the lead may write that trailer, and Context Graph's gate checks the kinds it covers.
-// Ratifying with `--commit`, and dropping a proposal, are the person's acts in ctx too, so no actor runs
+// Ratifying with `--commit`, dropping a proposal and changing the harness settings are the person's acts
+// in ctx too, so no actor runs
 // them; only a command in command position counts, so text that mentions one isn't refused.
 import { execFileSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
@@ -30,7 +31,7 @@ function ctx(root, args) {
 }
 
 const CTX = String.raw`(?:ctx|node\s+["']?[^\s"']*ctx\.mjs["']?|npx\s+(?:--yes\s+)?@warren-dean/context-graph(?:@\S+)?)`;
-const PERSONS_ACT = String.raw`(?:^|[;&|\n])\s*${CTX}\s+(?:ratify\b[^;&|\n]*\s--commit\b|drop\b)`;
+const PERSONS_ACT = String.raw`(?:^|[;&|\n])\s*${CTX}\s+(?:ratify\b[^;&|\n]*\s--commit\b|drop\b|settings\s+set\b)`;
 
 export default {
   name: 'context-graph',
@@ -58,7 +59,7 @@ export default {
       },
       {
         pattern: PERSONS_ACT,
-        why: "Ratifying a Context Graph proposal with --commit, and dropping one, are the person's own acts: they run them themselves, with a `!` command, or from the Context Graph pane.",
+        why: "Ratifying a Context Graph proposal with --commit, dropping one, and changing Context Graph's harness settings are the person's own acts: they run them themselves, with a `!` command, or from the Context Graph pane.",
       },
     ],
     restricted: [

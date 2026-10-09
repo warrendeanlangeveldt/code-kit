@@ -686,7 +686,22 @@ try {
       ),
       0,
     );
-    expect('--via takes only pane', kit('approve', 'dep-x', '--reason', 'y', '--via', 'chat'), 1);
+    expect(
+      "--via takes pane or a tool's name, nothing else",
+      kit('approve', 'dep-x', '--reason', 'y', '--via', 'Chat Pane!'),
+      1,
+    );
+    expect(
+      "--via <tool> marks the approval as given in that tool's pane",
+      truth(
+        kit('approve', 'kit', '--reason', 'the reviewer model', '--via', 'context-graph').status ===
+          0 &&
+          readFileSync(join(repo, '.claude/approvals/kit'), 'utf8').includes(
+            'the reviewer model (approved in the context-graph pane)',
+          ),
+      ),
+      0,
+    );
     put('.claude/code-kit.json', relayFixture);
     expect(
       'ACT-2 no agent approves as the person, even with chat approvals on',
@@ -2111,6 +2126,7 @@ try {
     'cd src && ' + 'ctx drop src.small --reason no',
     'node "/x/adapters/claude-code/ctx.mjs" drop src.small --reason no',
     'npx @warren-dean/context-graph ratify C:events --commit',
+    'ctx settings set card_writer true --reason "try it"',
   ])
     expect(
       `no Claude actor runs the person's ctx act: ${act}`,

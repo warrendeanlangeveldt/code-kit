@@ -1005,11 +1005,15 @@ async function approve(given) {
       `Not an approval or package name: ${bad.join(', ')}. Use the name the refusal gave, e.g. kit or dep-zod, or the package's name.`,
     );
   const marks = {};
-  if (via !== undefined && via !== 'pane')
-    die('--via takes only "pane": the code-kit mod passes it for a press in its pane.');
-  if (via === 'pane' && delegated)
+  // A press in a pane: code-kit's own (pane), or another tool's that shares the project, by its name.
+  if (via !== undefined && !/^[a-z][a-z0-9-]{0,39}$/.test(via))
+    die(
+      '--via takes "pane" (a press in the code-kit pane) or the name of the tool whose pane it was, such as context-graph.',
+    );
+  if (via !== undefined && delegated)
     die("An approval is either the person's (--via pane) or the lead's (--delegated), not both.");
-  if (via === 'pane') for (const n of names) marks[n] = PANE;
+  if (via !== undefined)
+    for (const n of names) marks[n] = via === 'pane' ? PANE : `(approved in the ${via} pane)`;
   if (delegated) {
     const rules = config.approvals.delegate;
     if (!rules)
