@@ -244,6 +244,22 @@ export function prefilledReason(request) {
 
 const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
 
+/** What a held call would do, as a person reads it (HOLD-2): "install dayjs", "commit docs/brief.md". */
+export function heldVerb(call) {
+  if (call.kind === 'dependency') return `install ${call.names.map(approvalLabel).join(', ')}`;
+  if (call.kind === 'kit') return 'change the .claude kit';
+  return call.what;
+}
+
+/** Minutes and seconds left, as 1:53. */
+export function timeLeft(ms) {
+  const s = Math.max(0, Math.ceil(ms / 1000));
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+}
+
+const sameAsk = (a, b) =>
+  a.names.join(',') === b.names.join(',') && (a.lane ?? null) === (b.lane ?? null);
+
 /**
  * The band's lines (BAND-2): one per kind of thing waiting, each with its actions, and none when
  * nothing waits. `reviewing` holds the stories the person has asked the lead to review (ACT-3);
@@ -258,12 +274,29 @@ export function bandLines({
   notice = null,
   usage = null,
   plan = null,
+  held = [],
+  now = 0,
 }) {
   const lines = [];
   if (notice)
     lines.push({ kind: 'notice', text: notice, actions: [{ id: 'dismiss', label: 'Dismiss' }] });
   if (!state || state.kind !== 'ok') return lines;
-  const open = requests?.open ?? [];
+  // HOLD-2: calls held for the person, oldest first, with the time left on the oldest.
+  if (held.length) {
+    const [call] = [...held].sort((a, b) => a.since - b.since);
+    const left = timeLeft(call.since + call.minutes * 60000 - now);
+    lines.push({
+      kind: 'held',
+      text: `${held.length > 1 ? `${held.length} calls held: ` : ''}${call.who} wants to ${heldVerb(call)} · ${left}`,
+      held: call,
+      actions: [
+        { id: 'approveHeld', label: 'Approve' },
+        { id: 'refuseHeld', label: 'Refuse' },
+      ],
+    });
+  }
+  // A held call's request is asked on its own line above, not again here.
+  const open = (requests?.open ?? []).filter((r) => !held.some((h) => sameAsk(h, r)));
   if (open.length)
     lines.push({
       kind: 'approvals',
@@ -321,6 +354,7 @@ export function bandLines({
 export function band(lines, { Box, Text, Button }, onAction) {
   const COLOR = {
     notice: 'red',
+    held: 'yellow',
     approvals: 'yellow',
     review: 'blue',
     finish: 'red',

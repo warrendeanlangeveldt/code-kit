@@ -92,6 +92,13 @@ function project() {
       { key: 'agents.reviewer.model', value: null, default: null, about: "The reviewer's model" },
     ] as any[],
     setExit: 0,
+    allowed: false, // an approval in force: the hooks beneath let the call through
+    bashRuns: 0,
+    delegateExit: 1,
+    delegated: [] as string[][],
+    holds: [] as string[][],
+    holdWaits: false, // false: the hold ends at once, as if timed out (tests about cards, not hold)
+    waiting: new Map<string, (answer: string) => void>(),
   };
 }
 type World = ReturnType<typeof project>;
@@ -122,9 +129,35 @@ function stub(on: any, w: World) {
     if (sub === 'verify')
       return ran(w.verifyExit, w.verifyExit ? '' : w.verifyOut, w.verifyExit ? w.verifyOut : '');
     if (sub === 'stops') return ran(0, JSON.stringify(w.stops));
+    if (sub === 'approve' && argv.includes('--delegated')) {
+      w.delegated.push([...argv.slice(2)]);
+      if (w.delegateExit === 0) w.allowed = true;
+      return ran(w.delegateExit, '', w.delegateExit ? 'Nothing was approved.' : '');
+    }
+    if (sub === 'hold') {
+      const id = argv[3];
+      const at = argv.indexOf('--answer');
+      if (at > 0) {
+        w.acts.push([...argv.slice(2)]);
+        w.waiting.get(id)?.(argv[at + 1]);
+        return ran(0, '');
+      }
+      w.holds.push([...argv.slice(2)]);
+      if (!w.holdWaits) return ran(0, 'timed out\n');
+      // Waits, as `code-kit hold` does, until the band answers or the test times it out.
+      return new Promise((done) =>
+        w.waiting.set(id, (answer) => {
+          w.waiting.delete(id);
+          done(ran(0, `${answer}\n`));
+        }),
+      );
+    }
     if (sub === 'approve') {
       w.acts.push([...argv.slice(2)]);
-      if (w.approveExit === 0) w.requests = [];
+      if (w.approveExit === 0) {
+        w.requests = [];
+        w.allowed = true;
+      }
       return ran(w.approveExit, '', w.approveExit ? 'approve needs --reason' : '');
     }
     if (sub === 'merge') {
@@ -139,7 +172,7 @@ function stub(on: any, w: World) {
         return ran(
           1,
           '',
-          '"harness.hold.minutes" must be a number of minutes from 0 (off) to 30\nNothing was changed.',
+          '"harness.hold.minutes" must be a number of minutes from 0 (off) to 10\nNothing was changed.',
         );
       const row = w.settings.find((s) => s.key === argv[4]);
       const raw = argv[5];
@@ -168,9 +201,12 @@ function stub(on: any, w: World) {
   on('tool.call', { tool: 'Write' }, () =>
     w.refusal ? { deny: w.refusal } : { result: { type: 'create' } },
   );
-  on('tool.call', { tool: 'Bash' }, () =>
-    w.refusal ? { deny: w.refusal } : { result: { stdout: '', stderr: '', interrupted: false } },
-  );
+  on('tool.call', { tool: 'Bash' }, () => {
+    w.bashRuns += 1;
+    return w.refusal && !w.allowed
+      ? { deny: w.refusal }
+      : { result: { stdout: 'added 1 package', stderr: '', interrupted: false } };
+  });
   on('agent.list', () => ({ value: w.agents }));
   on('session.usage', () => ({ value: { startedAt: 0, context: {}, rateLimits: w.limits } }));
   on('session.measure', ($: any, e: any) => ({ changed: e.changed }));
@@ -238,10 +274,10 @@ async function request($: any, agentId: string | undefined, thousands: number) {
 }
 
 /** A session started on the project, with the mock clock. */
-async function start($: any, on: any, w: World) {
+async function start($: any, on: any, w: World, interactive = true) {
   stub(on, w);
   const clock = mock.clock(on);
-  await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true });
+  await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: interactive });
   await clock.advance(2000); // the first look at the project
   return clock;
 }
@@ -840,7 +876,7 @@ test('SET-2 a number is typed; one the CLI refuses shows why and changes nothing
   const ui = await pane($, SETTINGS);
   await $.ui.input({ plugin: 'code-kit', key: 'set-hold.minutes', text: '45' });
   await $.ui.input({ plugin: 'code-kit', key: 'settings-reason', text: 'longer' });
-  expect(await ui.find({ type: 'Text', text: /from 0 \(off\) to 30/ })).toBeDefined();
+  expect(await ui.find({ type: 'Text', text: /from 0 \(off\) to 10/ })).toBeDefined();
   expect(w.settings[1].value).toBe(2);
   await press($, 'settings-cancel', SETTINGS);
   expect(await ui.find({ key: 'settings-confirm' })).toBeUndefined();
@@ -1012,4 +1048,193 @@ test('USE-4 the pause point is the harness setting', async ($, on) => {
   ui = await bandUi($);
   expect(await ui.find({ type: 'Text', text: /plan at 91%/ })).toBeDefined();
   await ui.unmount();
+});
+
+// --- hold and ask -----------------------------------------------------------------------------------
+
+const webInstall =
+  'Blocked: a new dependency (dayjs) needs a person\'s approval. Write a short change request for the lead.\n  ! echo "<what you are approving>" > .claude/approvals/web/dep-dayjs\n(a person runs it; it allows installing it for the web lane, until the install is committed, at most 7 days)\nCommand: npm install dayjs';
+
+/** A lane's call, left running while the test answers it; returned once the mod has it held. */
+async function heldCall($: any, w: World, clock: any, id = 'tu-h1') {
+  w.holdWaits = true;
+  const call = $.tool.call({
+    tool: 'Bash',
+    tool_use_id: id,
+    command: 'npm install dayjs',
+    agentId: 'a1',
+  } as any);
+  for (let i = 0; i < 50 && !w.waiting.has(id); i++) await clock.advance(1);
+  expect(w.waiting.has(id)).toBe(true);
+  return { call };
+}
+/** A call refused, whichever shape the refusal came back in. */
+const refused = (res: any) => Boolean(res?.deny || res?.isError);
+const refusalText = (res: any) => String(res?.deny ?? res?.text ?? '');
+
+test('HOLD-1 and HOLD-2 a lane installing a new package is held, and the band asks with the time left', async ($, on) => {
+  const w = project();
+  w.refusal = webInstall;
+  const clock = await start($, on, w);
+  await heldCall($, w, clock);
+  let ui = await bandUi($);
+  expect(
+    await ui.find({ type: 'Text', text: /^web wants to install dayjs · 2:00$/ }),
+  ).toBeDefined();
+  expect((await ui.find({ key: 'band-approveHeld' }))?.props.hotkey).toBe('1');
+  expect((await ui.find({ key: 'band-refuseHeld' }))?.props.hotkey).toBe('2');
+  await ui.unmount();
+  await clock.advance(7000);
+  ui = await bandUi($);
+  expect(await ui.find({ type: 'Text', text: /· 1:53$/ })).toBeDefined();
+  await ui.unmount();
+  w.waiting.get('tu-h1')?.('timed out');
+});
+
+test('HOLD-3 on Approve the approval is written as the pane writes it, and the same call runs', async ($, on) => {
+  const w = project();
+  w.refusal = webInstall;
+  const clock = await start($, on, w);
+  const { call } = await heldCall($, w, clock);
+  const shown = await bandUi($);
+  await press($, 'band-approveHeld');
+  await shown.unmount();
+  expect(w.opened).toContain(APPROVE);
+  const confirm = await pane($, APPROVE);
+  await press($, 'approve-confirm', APPROVE);
+  expect(w.acts).toEqual([
+    [
+      'approve',
+      'dep-dayjs',
+      '--lane',
+      'web',
+      '--reason',
+      'Approve dayjs for the web lane: npm install dayjs',
+      '--via',
+      'pane',
+    ],
+    ['hold', 'tu-h1', '--answer', 'approved'],
+  ]);
+  const res: any = await call;
+  expect(refused(res)).toBe(false);
+  expect(w.bashRuns).toBe(2);
+  const ui = await bandUi($);
+  expect(await ui.find({ type: 'Text', text: /wants to/ })).toBeUndefined();
+  await ui.unmount();
+  await confirm.unmount();
+});
+
+test("HOLD-3 an approval that can't be written refuses the call, and the band says nothing was approved", async ($, on) => {
+  const w = project();
+  w.refusal = webInstall;
+  w.approveExit = 1;
+  const clock = await start($, on, w);
+  const { call } = await heldCall($, w, clock);
+  const shown = await bandUi($);
+  await press($, 'band-approveHeld');
+  await shown.unmount();
+  const confirm = await pane($, APPROVE);
+  await press($, 'approve-confirm', APPROVE);
+  await confirm.unmount();
+  const res: any = await call;
+  expect(refused(res)).toBe(true);
+  expect(refusalText(res)).toMatch(/needs a person's approval/);
+  const ui = await bandUi($);
+  expect(await ui.find({ type: 'Text', text: /Nothing was approved/ })).toBeDefined();
+  await ui.unmount();
+});
+
+test('HOLD-4 Refuse, or no answer in the hold time, lets the refusal through and the request stays', async ($, on) => {
+  const w = project();
+  w.refusal = webInstall;
+  const clock = await start($, on, w);
+  let { call } = await heldCall($, w, clock);
+  const shown = await bandUi($);
+  await press($, 'band-refuseHeld');
+  await shown.unmount();
+  let res: any = await call;
+  expect(refused(res)).toBe(true);
+  expect(w.bashRuns).toBe(1);
+  ({ call } = await heldCall($, w, clock, 'tu-h2'));
+  expect(w.holds.at(-1)).toEqual(['hold', 'tu-h2', '--minutes', '2']);
+  w.waiting.get('tu-h2')?.('timed out');
+  res = await call;
+  expect(refused(res)).toBe(true);
+  w.requests = [{ ...dayjs, names: ['dep-dayjs'] }];
+  await clock.advance(60000);
+  const ui = await bandUi($);
+  expect(await ui.find({ type: 'Text', text: '1 approval waiting' })).toBeDefined();
+  await ui.unmount();
+});
+
+test('HOLD-5 within the delegated rules the call is approved as delegated and runs, without asking', async ($, on) => {
+  const w = project();
+  w.refusal = webInstall;
+  w.delegateExit = 0;
+  await start($, on, w);
+  const res: any = await $.tool.call({
+    tool: 'Bash',
+    tool_use_id: 'tu-d',
+    command: 'npm install dayjs',
+    agentId: 'a1',
+  } as any);
+  expect(refused(res)).toBe(false);
+  expect(w.delegated[0]).toEqual(
+    expect.arrayContaining(['approve', 'dep-dayjs', '--lane', 'web', '--delegated']),
+  );
+  expect(w.holds).toEqual([]);
+});
+
+test('HOLD-5 with autonomy propose the delegated rules are not tried; the call is held', async ($, on) => {
+  const w = project();
+  w.refusal = webInstall;
+  w.delegateExit = 0;
+  (w.check as any).harness = { autonomy: 'propose', hold: { minutes: 2 } };
+  const clock = await start($, on, w);
+  await heldCall($, w, clock);
+  expect(w.delegated).toEqual([]);
+  w.waiting.get('tu-h1')?.('timed out');
+});
+
+test('HOLD-6 with nobody to ask, or hold off, the call is refused at once', async ($, on) => {
+  const w = project();
+  w.refusal = webInstall;
+  await start($, on, w, false);
+  const res: any = await $.tool.call({
+    tool: 'Bash',
+    tool_use_id: 'tu-p',
+    command: 'npm install dayjs',
+  } as any);
+  expect(refused(res)).toBe(true);
+  expect(w.holds).toEqual([]);
+});
+
+test('HOLD-6 hold.minutes 0 switches holding off', async ($, on) => {
+  const w = project();
+  w.refusal = webInstall;
+  (w.check as any).harness = { autonomy: 'autonomous', hold: { minutes: 0 } };
+  await start($, on, w);
+  const res: any = await $.tool.call({
+    tool: 'Bash',
+    tool_use_id: 'tu-0',
+    command: 'npm install dayjs',
+  } as any);
+  expect(refused(res)).toBe(true);
+  expect(w.holds).toEqual([]);
+  expect(w.delegated).toEqual([]);
+});
+
+test('HOLD-1 a refusal no approval allows (force-push) is refused at once, unheld', async ($, on) => {
+  const w = project();
+  w.refusal =
+    'Blocked: force-pushing rewrites history others may have pulled.\nCommand: git push --force';
+  await start($, on, w);
+  const res: any = await $.tool.call({
+    tool: 'Bash',
+    tool_use_id: 'tu-f',
+    command: 'git push --force',
+  } as any);
+  expect(refused(res)).toBe(true);
+  expect(w.holds).toEqual([]);
+  expect(w.delegated).toEqual([]);
 });

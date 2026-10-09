@@ -1346,6 +1346,42 @@ try {
       "the person's own act",
     );
     expect('but listing them is fine', sBash('code-kit settings --json'), 0);
+
+    // HOLD-3, HOLD-4: a held call waits in `code-kit hold` until the band answers, or the hold time ends.
+    const waiting = (id, minutes) =>
+      new Promise((done) => {
+        const child = spawn(
+          'node',
+          [join(here, '..', 'bin', 'code-kit.mjs'), 'hold', id, '--minutes', minutes],
+          { cwd: s.dir },
+        );
+        let said = '';
+        child.stdout.on('data', (d) => (said += d));
+        child.on('close', () => done(said.trim()));
+      });
+    const approved = waiting('toolu_held1', '1');
+    await new Promise((r) => setTimeout(r, 400));
+    const answered = sCli('hold', 'toolu_held1', '--answer', 'approved');
+    expect(
+      'HOLD-3 hold waits until the band answers, and prints the answer',
+      truth(answered.status === 0 && (await approved) === 'approved', answered.stderr),
+      0,
+    );
+    expect(
+      'and the answer is used up',
+      truth(!existsSync(join(s.dir, '.claude/state/held/toolu_held1'))),
+      0,
+    );
+    expect(
+      'HOLD-4 with no answer in the hold time it times out',
+      truth((await waiting('toolu_held2', '0.01')) === 'timed out'),
+      0,
+    );
+    expect(
+      'an id that could reach outside the folder is refused',
+      sCli('hold', '../config', '--answer', 'approved'),
+      1,
+    );
   }
 
   const check = cli('check');

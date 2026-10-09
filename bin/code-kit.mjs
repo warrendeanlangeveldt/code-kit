@@ -25,7 +25,15 @@
 //                         record approvals a person gave in chat (with approvals.lead on, the lead runs it)
 // --config <file> reads a draft (.claude/code-kit.draft.json) instead of .claude/code-kit.json.
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, posix, resolve } from 'node:path';
 import { BASELINE_FILE, loadBaseline } from '../hooks/lib/baseline.mjs';
@@ -80,6 +88,8 @@ const laneName = option('--lane');
 const intoName = option('--into');
 const via = option('--via');
 const sessionId = option('--session');
+const minutesGiven = option('--minutes');
+const answerGiven = option('--answer');
 const FLAGS = ['--write', '--no-checks', '--json', '--delegated', '--person'];
 const flag = (name) => args.includes(name);
 const writeBaseline = flag('--write');
@@ -534,6 +544,35 @@ function stops() {
     out(`${s.agentType ?? 'the lead'}${s.session ? ` (session ${s.session})` : ''}: ${s.title}`);
 }
 
+// Hold and ask (spec 06): a call the mod holds waits here, in the mod's `$.process.run`, for the
+// person's answer, which the band writes with `hold <id> --answer approved|refused` into
+// .claude/state/held/<id>. It prints `approved`, `refused` or `timed out` (after hold.minutes).
+async function hold(id) {
+  const { config } = load();
+  if (!/^[A-Za-z0-9_-]{1,128}$/.test(id))
+    die(`Not a held call's id: ${id}. Give the tool call's id, as the code-kit mod does.`);
+  const dir = resolve('.claude/state/held');
+  const answerFile = join(dir, id);
+  const answer = answerGiven;
+  if (answer !== undefined) {
+    if (!['approved', 'refused'].includes(answer)) die('--answer takes "approved" or "refused".');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(answerFile, `${answer}\n`);
+    return out(`The held call ${id} is ${answer}.`);
+  }
+  const minutes = Number(minutesGiven ?? config.harness.hold.minutes);
+  const until = Date.now() + minutes * 60000;
+  while (Date.now() < until) {
+    if (existsSync(answerFile)) {
+      const given = readFileSync(answerFile, 'utf8').trim();
+      rmSync(answerFile, { force: true });
+      return out(given === 'approved' ? 'approved' : 'refused');
+    }
+    await new Promise((done) => setTimeout(done, 200));
+  }
+  out('timed out');
+}
+
 function verify() {
   const { config } = load();
   const from = base(config, true);
@@ -769,6 +808,7 @@ const commands = {
   requests,
   stops,
   settings,
+  hold: () => (rest.length === 1 ? hold(rest[0]) : usage()),
   'sent-back': () => (rest.length === 1 ? sentBackCommand(rest[0]) : usage()),
   trace: () => (rest.length ? trace(rest) : usage()),
   adapters,
@@ -789,7 +829,8 @@ function usage() {
       '              | approve <name>... --reason "…" [--lane name]   [--config file]\n' +
       '              | merge <branch> --delegated|--person [--into branch] | requests [--json]\n' +
       '              | stops [--session id] [--json] | sent-back <branch> [--reason "…"]\n' +
-      '              | settings [--json] | settings set <key> <value> --reason "…" [--via pane]',
+      '              | settings [--json] | settings set <key> <value> --reason "…" [--via pane]\n' +
+      '              | hold <id> [--minutes N] | hold <id> --answer approved|refused',
   );
 }
 await (commands[command] ?? usage)();

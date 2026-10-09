@@ -32,6 +32,7 @@ import {
   usageSummary,
   withUsage,
 } from './view.mjs';
+import { holdable } from './hold.mjs';
 
 // What the session knows of the project, read again when it changes.
 let model = { state: null, requests: null, stops: [] };
@@ -46,6 +47,8 @@ let pendingSetting = null; // a change waiting for the person's reason: { key, v
 let ledger = {}; // the session's tokens by agent and story (USE-1)
 let rateLimits = []; // the session's limits, as session.measure last gave them
 const agentsSeen = new Map(); // agent id → its $.agent.list() entry, kept once it leaves the list
+const held = new Map(); // tool_use_id → a call held for the person (HOLD-2)
+let where = null; // { cli, cwd, interactive }, from session start
 const refusals = new Map(); // tool_use_id → the refusal text a hook gave (CARD-1)
 const expanded = new Set(); // cards showing their raw text
 const REFUSALS_KEPT = 200;
@@ -86,6 +89,10 @@ export function register(on) {
     const cli = `${$.plugin.root}/bin/code-kit.mjs`;
     const cwd = e.cwd ?? (await $.session.cwd());
     const session = await $.session.id();
+    where = { cli, cwd, interactive: e.isInteractive !== false };
+    // The held call's answer, for the `code-kit hold` it waits in.
+    const answerHeld = (id, answer) =>
+      $.process.run(['node', cli, 'hold', id, '--answer', answer], { cwd });
     const json = async (...args) => {
       const ran = await $.process.run(['node', cli, ...args, '--json'], { cwd });
       return ran.exitCode === 0 ? parseJson(ran.stdout) : null;
@@ -165,7 +172,12 @@ export function register(on) {
       },
       // ACT-1: the confirmation, prefilled from the request.
       approve: async (line) => {
-        approving = { request: line.request, reason: prefilledReason(line.request), error: null };
+        approving = {
+          request: line.request,
+          reason: prefilledReason(line.request),
+          error: null,
+          heldId: line.heldId ?? null,
+        };
         await $.ui.open({ id: APPROVE_ID, title: 'Approve', focus: true, closeOnEscape: true });
         $.ui.invalidate('ui.render');
       },
@@ -195,13 +207,25 @@ export function register(on) {
           const why = (ran.stderr || ran.stdout).trim().split('\n')[0];
           notice = `Nothing was approved: ${why}`;
           approving = { ...approving, error: notice };
+          // HOLD-3: a held call whose approval couldn't be written is refused as the hooks refused it.
+          if (approving.heldId) await answerHeld(approving.heldId, 'refused');
           $.ui.invalidate('ui.render');
           return;
         }
+        if (approving.heldId) await answerHeld(approving.heldId, 'approved');
         approving = null;
         notice = null;
         await $.ui.close({ id: APPROVE_ID });
         await act.reload();
+      },
+      // HOLD-2: Approve opens ACT-1's confirmation for the held call; Refuse lets the refusal through.
+      approveHeld: (line) =>
+        act.approve({
+          request: { names: line.held.names, lane: line.held.lane, what: line.held.what },
+          heldId: line.held.id,
+        }),
+      refuseHeld: async (line) => {
+        await answerHeld(line.held.id, 'refused');
       },
       cancelApproval: async () => {
         approving = null;
@@ -346,6 +370,10 @@ export function register(on) {
         busy = false;
       }
     });
+    // HOLD-2: the countdown on a held call, redrawn each second while one waits.
+    $.clock.every(1000, () => {
+      if (held.size) $.ui.invalidate('ui.render');
+    });
     return next(e);
   });
 
@@ -364,6 +392,8 @@ export function register(on) {
   );
 
   // CARD-1: the text a code-kit hook refused a call with, kept for the call's result to draw as a card.
+  // HOLD-1 to HOLD-6: a refusal a person's approval would allow is held while the band asks. The hooks
+  // stay the judge: the call is run again once the approval is written, and refused as before otherwise.
   on('tool.call', async ($, e, next) => {
     const res = await next(e);
     const text = res?.deny ?? (res?.isError ? (res.text ?? String(res.result ?? '')) : null);
@@ -371,8 +401,53 @@ export function register(on) {
       refusals.set(e.tool_use_id, text);
       if (refusals.size > REFUSALS_KEPT) refusals.delete(refusals.keys().next().value);
     }
-    return res;
-  }).catch(($, e, next) => next(e)); // it only watches: whatever fails here, the call goes on as it would
+    const ask = text ? holdable(text) : null;
+    const settings = model.check?.harness;
+    const minutes = settings?.hold?.minutes ?? 2;
+    // HOLD-6: nobody to ask (claude -p, the SDK), or hold switched off: refused as today.
+    if (!ask || !where?.interactive || minutes <= 0 || model.state?.kind !== 'ok') return res;
+    const id = e.tool_use_id;
+    // HOLD-5: under autonomy, the project's delegated rules decide first, without asking.
+    if ((settings?.autonomy ?? 'autonomous') === 'autonomous') {
+      const delegated = await $.process.run(
+        [
+          'node',
+          where.cli,
+          'approve',
+          ...ask.names,
+          ...(ask.lane ? ['--lane', ask.lane] : []),
+          '--delegated',
+          '--reason',
+          `Held call within the delegated rules: ${ask.what}`,
+        ],
+        { cwd: where.cwd, timeoutMs: 60000 },
+      );
+      if (delegated.exitCode === 0) return next(e);
+    }
+    const agent = e.agentId ? agentsSeen.get(e.agentId) : null;
+    held.set(id, {
+      id,
+      who: ask.lane ?? agent?.type ?? (e.agentId ? 'an agent' : 'the lead'),
+      kind: ask.kind,
+      names: ask.names,
+      lane: ask.lane,
+      what: ask.what,
+      since: await $.clock.now(),
+      minutes,
+    });
+    $.ui.invalidate('ui.render');
+    // The wait is a process the band's answer ends (`code-kit hold`), so it isn't the hook's own time.
+    const waited = await $.process
+      .run(['node', where.cli, 'hold', id, '--minutes', String(minutes)], {
+        cwd: where.cwd,
+        timeoutMs: minutes * 60000 + 15000,
+      })
+      .catch(() => null);
+    held.delete(id);
+    $.ui.invalidate('ui.render');
+    // HOLD-3: the same call, now with the approval in force; HOLD-4: refused as the hooks refused it.
+    return waited?.stdout.trim() === 'approved' ? next(e) : res;
+  }).catch(($, e, next) => next(e)); // whatever fails here, the call goes on as it would
   // A refused call's text: kept from its tool.call, or the output its row carries (what the model read).
   const refusalOf = (id, output) =>
     refusalCard(refusals.get(id) ?? (typeof output === 'string' ? output : null));
@@ -447,7 +522,14 @@ export function register(on) {
   // BAND-2: absent when nothing waits. Its lines go above whatever else the band holds (another
   // plugin's lines, such as Context Graph's, or Claude Code's own), which it keeps.
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
-    const lines = bandLines({ ...model, reviewing, notice, ...usageNow() });
+    const lines = bandLines({
+      ...model,
+      reviewing,
+      notice,
+      ...usageNow(),
+      held: [...held.values()],
+      now: await $.clock.now(),
+    });
     if (!lines.length || !act) return next(e);
     const ours = band(lines, $.ui.resolve(e), (id, line) => act[id](line));
     const below = await next(e);

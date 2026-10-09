@@ -146,9 +146,9 @@ The `harness` section, validated; `code-kit settings` (read and `set … --via p
 **Lane:** lead
 **Requirements:** HOLD-2, HOLD-3, HOLD-4, HOLD-5, HOLD-6
 **Depends on:** ST-12, ST-13
-**Status:** todo
+**Status:** done
 
-The mod holds what the judge says a person’s approval would allow, asks in the band, and lets it through or refuses.
+The mod holds what a person’s approval would allow (read from the refusal), asks in the band, and lets it through or refuses.
 
 ### ST-15 The loop engine
 
