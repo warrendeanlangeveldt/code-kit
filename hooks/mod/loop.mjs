@@ -3,7 +3,7 @@
 // existing skills, and the hooks judge every call as before.
 
 /** The steps the loop hands the lead; the rest (spec-design, init, check) wait for the person. */
-const LEAD_STEPS = new Set(['dispatch', 'review', 'lead']);
+const LEAD_STEPS = new Set(['dispatch', 'review', 'lead', 'merge']);
 
 /**
  * The prompt for a step from `code-kit next --json` (LOOP-1), or null when it isn't the lead's to
@@ -11,9 +11,14 @@ const LEAD_STEPS = new Set(['dispatch', 'review', 'lead']);
  * names the skill rather than starting with it: Claude Code refuses a mod's prompt that begins with
  * `/`, which would run a command as the person.
  */
-export function leadPrompt(step) {
+export function leadPrompt(step, { cli = 'code-kit' } = {}) {
   if (!step || !LEAD_STEPS.has(step.step)) return null;
   const ids = (step.args ?? '').split(/\s+/).filter(Boolean);
+  // MQ-2: the head of the merge queue, where the lead merges within the delegated rules.
+  if (step.step === 'merge')
+    return ids.length
+      ? `Merge ${ids[0]}, next in the merge queue: run node "${cli}" queue merge --delegated. It verifies the branch against the base as it is now, and sends it back to its lane if it conflicts or fails.`
+      : null;
   if (step.step === 'dispatch')
     return ids.length
       ? `Dispatch ${ids.join(', ')}: run /code-kit:dispatch ${ids.join(' ')}.`
@@ -34,7 +39,9 @@ export const stepKey = (step) => `${step.step}:${step.args ?? ''}`;
 /** The band's words for a step (LOOP-5): "Dispatch ST-7, ST-9". */
 export function stepLabel(step) {
   const ids = (step.args ?? '').split(/\s+/).filter(Boolean).join(', ');
-  const verb = { dispatch: 'Dispatch', review: 'Review', lead: 'Build' }[step.step] ?? step.step;
+  const verb =
+    { dispatch: 'Dispatch', review: 'Review', lead: 'Build', merge: 'Merge' }[step.step] ??
+    step.step;
   return ids ? `${verb} ${ids}` : verb;
 }
 

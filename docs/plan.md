@@ -173,7 +173,7 @@ Started by prompting the lead (auto mode refuses a mod's own spawn) per finished
 **Lane:** lead
 **Requirements:** MQ-1, MQ-2, MQ-3, MQ-4
 **Depends on:** ST-15
-**Status:** todo
+**Status:** done
 
 `code-kit queue` and its state; merges in order; conflicts sent back.
 

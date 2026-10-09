@@ -66,7 +66,8 @@ for (const [re, why, text] of ALWAYS) {
 }
 const packages = addedPackages(cmd);
 const approves = runs(cmd, new RegExp(String.raw`^${CODE_KIT}\s+approve\b`));
-const delegatedMerge = runs(cmd, new RegExp(String.raw`^${CODE_KIT}\s+merge\b`));
+const delegatedMerge = runs(cmd, new RegExp(String.raw`^${CODE_KIT}\s+(?:queue\s+)?merge\b`));
+const queues = runs(cmd, new RegExp(String.raw`^${CODE_KIT}\s+queue\s+(?:add|drop)\b`));
 const commits = runs(cmd, new RegExp(String.raw`^${GIT}commit\b`));
 if (error) {
   if (commits) block(`Blocked: ${error}\nFix the config before committing.`);
@@ -144,6 +145,10 @@ if ((delegatedMerge && /\s--person\b/.test(cmd)) || (approves && /\s--via\b/.tes
 if (runs(cmd, new RegExp(String.raw`^${CODE_KIT}\s+settings\s+set\b`)))
   block(
     `Blocked: changing the harness settings is the person's own act, from the code-kit pane (/harness) or their terminal. Tell them what you'd change and why, and stop.\nCommand: ${cmd}`,
+  );
+if (queues && actor.kind !== 'lead')
+  block(
+    `Blocked: only the lead puts branches in the merge queue, after its review passes them. Finish your story and commit it on your branch; the lead reviews it.\nCommand: ${cmd}`,
   );
 if (delegatedMerge && actor.kind !== 'lead')
   block(

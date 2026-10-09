@@ -46,6 +46,7 @@ import { nextStep } from '../hooks/lib/next.mjs';
 import { traceFile } from '../hooks/lib/trace.mjs';
 import { buildStatus } from '../hooks/lib/plan.mjs';
 import { recordSentBack } from '../hooks/lib/reviews.mjs';
+import { dequeue, enqueue, lastMerged, readQueue, settle, waiting } from '../hooks/lib/queue.mjs';
 import { SETTINGS, parseSetting, settingOf, withSetting } from '../hooks/lib/harness.mjs';
 import {
   APPROVAL_MINUTES,
@@ -133,6 +134,7 @@ function checkJson() {
   report.adapters = config.adapters;
   report.docs = config.docs ?? null;
   report.harness = config.harness;
+  report.delegatesMerge = Boolean(config.approvals.delegate?.merge);
   out(JSON.stringify(report, null, 2));
 }
 
@@ -333,8 +335,16 @@ function configAt(ref) {
   return effectiveConfig(raw, '.');
 }
 
-function merge(branch) {
-  const { config } = load();
+/** Why a merge didn't happen: `refused` (the rules), `verify` (problems) or `conflict`. */
+class MergeStop extends Error {
+  constructor(kind, message) {
+    super(message);
+    this.kind = kind;
+  }
+}
+
+/** Who merges, from the flags: the lead within the delegated rules, or the person. */
+function mergeMode() {
   const byPerson = flag('--person');
   if (!flag('--delegated') && !byPerson)
     die(
@@ -342,23 +352,45 @@ function merge(branch) {
     );
   if (flag('--delegated') && byPerson)
     die("A merge is either the lead's (--delegated) or the person's (--person), not both.");
+  return byPerson;
+}
+
+function merge(branch) {
+  const { config } = load();
+  const byPerson = mergeMode();
+  try {
+    out(mergeOne(branch, config, byPerson).message);
+  } catch (e) {
+    if (e instanceof MergeStop) die(e.message);
+    throw e;
+  }
+}
+
+/**
+ * Verifies `branch`, checks included, and merges it into the base (`--into`, or the first protected
+ * branch). Returns { into, message }; throws a MergeStop when nothing was merged.
+ */
+function mergeOne(branch, config, byPerson) {
+  const refuse = (message) => {
+    throw new MergeStop('refused', message);
+  };
   const into = intoName ?? config.branches.protected[0];
   // Whether the lead may merge, and which branches are protected, are the target's rules.
   const target = configAt(into);
   if (!byPerson && !target.approvals.delegate?.merge)
-    die(
+    refuse(
       `${into} doesn't delegate merges to the lead ("approvals.delegate.merge" isn't true in its ${file}). A person merges after review.`,
     );
   if (!target.branches.protected.includes(into))
-    die(`${into} isn't a protected branch; merge into it with git.`);
-  if (target.branches.protected.includes(branch)) die(`${branch} is itself a protected branch.`);
+    refuse(`${into} isn't a protected branch; merge into it with git.`);
+  if (target.branches.protected.includes(branch)) refuse(`${branch} is itself a protected branch.`);
   const root = resolve('.');
   const g = (cwd, ...a) =>
     execFileSync('git', ['-C', cwd, ...a], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
   try {
     g(root, 'rev-parse', '--verify', '--quiet', `refs/heads/${branch}`);
   } catch {
-    die(`There is no branch ${branch}.`);
+    refuse(`There is no branch ${branch}.`);
   }
   const checkedOut = (b) =>
     g(root, 'worktree', 'list', '--porcelain')
@@ -370,7 +402,7 @@ function merge(branch) {
       fail(`${b} has uncommitted changes in ${dir}; commit or stash them first.`);
   };
   const temporary = [];
-  // die() exits at once, so every way out of here removes the temporary worktrees first.
+  // A stop is thrown at once, so every way out of here removes the temporary worktrees first.
   const cleanup = () => {
     for (const dir of temporary.splice(0)) {
       try {
@@ -380,9 +412,9 @@ function merge(branch) {
       }
     }
   };
-  const fail = (message) => {
+  const fail = (message, kind = 'refused') => {
     cleanup();
-    die(message);
+    throw new MergeStop(kind, message);
   };
   const worktree = (b, detach) => {
     const dir = mkdtempSync(join(tmpdir(), 'code-kit-merge-'));
@@ -410,6 +442,7 @@ function merge(branch) {
     if (problems.length)
       fail(
         `Nothing was merged. code-kit verify found ${problems.length} problem(s) on ${branch} (checked in ${verifyIn}):\n  ${problems.join('\n  ')}\nSend it back to its lane, or fix it, then merge again.`,
+        'verify',
       );
     const mergeIn = checkedOut(into) ?? worktree(into, false);
     clean(mergeIn, into);
@@ -432,14 +465,89 @@ function merge(branch) {
       }
       fail(
         `Nothing was merged: ${branch} doesn't merge cleanly into ${into}. Merge ${into} into ${branch} and resolve it there, then merge again.\n${String(e.stderr ?? e.message).trim()}`,
+        'conflict',
       );
     }
-    out(
-      `Merged ${branch} into ${into}: verify passed on ${changed.length} file(s)${lane ? `, held to ${heldTo(lane)}` : ''}.`,
-    );
+    return {
+      into,
+      message: `Merged ${branch} into ${into}: verify passed on ${changed.length} file(s)${lane ? `, held to ${heldTo(lane)}` : ''}.`,
+    };
   } finally {
     cleanup();
   }
+}
+
+/**
+ * The merge queue (spec 09): `queue` lists it; `queue add <branch>` puts a branch the lead's review
+ * passed at the back; `queue drop <branch>` takes one out; `queue merge --delegated|--person` merges
+ * the head, verified against the base as it is now. A head that conflicts or fails verify is sent
+ * back to its lane (recorded as `sent-back` records it) and leaves the queue; the next one is then head.
+ */
+function queue() {
+  const { config } = load();
+  const root = resolve('.');
+  const [sub, branch] = rest;
+  if (sub === 'add' || sub === 'drop') {
+    if (!branch) die(`code-kit queue ${sub} <branch>`);
+    if (sub === 'drop')
+      return out(
+        dequeue(root, branch)
+          ? `Took ${branch} out of the merge queue.`
+          : `${branch} isn't waiting in the merge queue.`,
+      );
+    try {
+      execFileSync('git', ['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`], {
+        stdio: 'ignore',
+      });
+    } catch {
+      die(`There is no branch ${branch}.`);
+    }
+    if (!enqueue(root, branch)) return out(`${branch} is already in the merge queue.`);
+    const place = waiting(readQueue(root)).length;
+    return out(`Queued ${branch} to merge${place > 1 ? `, ${place - 1} ahead of it` : ', next'}.`);
+  }
+  if (sub === 'merge') {
+    const byPerson = mergeMode();
+    const entries = readQueue(root);
+    const head = waiting(entries)[0];
+    if (!head) return out('The merge queue is empty.');
+    try {
+      const { message } = mergeOne(head.branch, config, byPerson);
+      settle(root, head.branch, 'merged');
+      const left = waiting(readQueue(root));
+      return out(
+        `${message}${left.length ? ` Next in the queue: ${left[0].branch}.` : ' The queue is empty.'}`,
+      );
+    } catch (e) {
+      if (!(e instanceof MergeStop)) throw e;
+      // MQ-3: a conflict or a failed verify goes back to the lane; a refusal leaves the queue as it is.
+      if (e.kind === 'refused') die(e.message);
+      const into = intoName ?? config.branches.protected[0];
+      const after = lastMerged(entries);
+      const why =
+        e.kind === 'conflict'
+          ? `conflicts with ${into}${after ? ` after ${after}` : ''}`
+          : `fails verify against ${into}${after ? ` after ${after}` : ''}`;
+      const sha = execFileSync('git', ['rev-parse', '--verify', `${head.branch}^{commit}`], {
+        encoding: 'utf8',
+      }).trim();
+      recordSentBack(root, head.branch, sha, why);
+      settle(root, head.branch, 'sent back', why);
+      die(
+        `${e.message}\n${head.branch} is sent back to its lane (${why}) and leaves the queue; its fix rejoins after the next review.`,
+      );
+    }
+  }
+  if (sub !== undefined)
+    die(
+      'code-kit queue [--json] | queue add <branch> | queue drop <branch> | queue merge --delegated|--person',
+    );
+  const entries = readQueue(root);
+  if (flag('--json')) return out(JSON.stringify(entries, null, 2));
+  const left = waiting(entries);
+  if (!left.length) out('The merge queue is empty.');
+  else out(`${left.length} waiting to merge, in order:`);
+  left.forEach((e, i) => out(`  ${i + 1}. ${e.branch} (passed review ${e.passed})`));
 }
 
 // Open approval requests and the approvals in force, for the person and the mod's band.
@@ -809,6 +917,7 @@ const commands = {
   stops,
   settings,
   hold: () => (rest.length === 1 ? hold(rest[0]) : usage()),
+  queue,
   'sent-back': () => (rest.length === 1 ? sentBackCommand(rest[0]) : usage()),
   trace: () => (rest.length ? trace(rest) : usage()),
   adapters,
@@ -830,7 +939,8 @@ function usage() {
       '              | merge <branch> --delegated|--person [--into branch] | requests [--json]\n' +
       '              | stops [--session id] [--json] | sent-back <branch> [--reason "…"]\n' +
       '              | settings [--json] | settings set <key> <value> --reason "…" [--via pane]\n' +
-      '              | hold <id> [--minutes N] | hold <id> --answer approved|refused',
+      '              | hold <id> [--minutes N] | hold <id> --answer approved|refused\n' +
+      '              | queue [--json] | queue add|drop <branch> | queue merge --delegated|--person',
   );
 }
 await (commands[command] ?? usage)();

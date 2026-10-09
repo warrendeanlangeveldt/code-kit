@@ -993,6 +993,149 @@ try {
     m.git('checkout', '-q', 'main');
   }
 
+  // --- the merge queue: in the order reviews passed, each verified against the base as it is then ---
+  {
+    const q = newRepo(false);
+    cleanups.push(q.dir);
+    mkdirSync(join(q.dir, '.claude'), { recursive: true });
+    writeFileSync(
+      join(q.dir, '.claude/code-kit.json'),
+      JSON.stringify({ ...JSON.parse(fixture), approvals: { delegate: { merge: true } } }),
+    );
+    writeFileSync(join(q.dir, '.gitignore'), '.claude/approvals/\n.claude/state/\n');
+    q.git('add', '-A');
+    q.git('commit', '-q', '-m', 'kit');
+    const qPut = (rel, body) => {
+      mkdirSync(dirname(join(q.dir, rel)), { recursive: true });
+      writeFileSync(join(q.dir, rel), body);
+    };
+    const qKit = (...args) =>
+      spawnSync('node', [kitCli, ...args], { cwd: q.dir, encoding: 'utf8' });
+    const qHook = (command, agent) =>
+      spawnSync('node', [join(hooks, 'guard-bash.mjs')], {
+        input: JSON.stringify({
+          cwd: q.dir,
+          tool_input: { command },
+          ...(agent ? { agent_type: agent } : {}),
+        }),
+        env: { ...process.env, CLAUDE_PROJECT_DIR: q.dir },
+        encoding: 'utf8',
+      });
+    for (const [branch, file, body] of [
+      ['web/st-a', 'apps/office/lib/shared.ts', 'export const shared = "a";\n'],
+      ['web/st-b', 'apps/office/lib/shared.ts', 'export const shared = "b";\n'],
+      ['web/st-c', 'apps/office/lib/c.ts', 'export const c = 1;\n'],
+    ]) {
+      q.git('checkout', '-q', '-b', branch, 'main');
+      qPut(file, body);
+      q.git('add', '-A');
+      q.git('commit', '-q', '-m', branch);
+    }
+    q.git('checkout', '-q', 'main');
+    expect(
+      'MQ-1 a lane may not queue a branch',
+      qHook(`node "${kitCli}" queue add web/st-a`, 'web-engineer'),
+      2,
+      'only the lead puts branches in the merge queue',
+    );
+    expect('the lead may', qHook(`node "${kitCli}" queue add web/st-a`), 0);
+    expect(
+      'no lane merges the queue',
+      qHook(`node "${kitCli}" queue merge --delegated`, 'web-engineer'),
+      2,
+      'only the lead merges',
+    );
+    expect(
+      'and no agent merges it as the person',
+      qHook(`node "${kitCli}" queue merge --person`),
+      2,
+      "the person's own act",
+    );
+    const says = (res, text) =>
+      truth(res.status === 0 && res.stdout.includes(text), res.stdout + res.stderr);
+    for (const b of ['web/st-a', 'web/st-b', 'web/st-c']) qKit('queue', 'add', b);
+    expect(
+      'a branch already waiting keeps its place',
+      says(qKit('queue', 'add', 'web/st-a'), 'already in the merge queue'),
+      0,
+    );
+    expect(
+      'MQ-4 the queue lists the branches in the order their reviews passed',
+      truth(
+        JSON.parse(qKit('queue', '--json').stdout)
+          .map((e) => `${e.branch}:${e.state}`)
+          .join() === 'web/st-a:waiting,web/st-b:waiting,web/st-c:waiting',
+      ),
+      0,
+    );
+    expect(
+      'there is no branch to queue',
+      qKit('queue', 'add', 'web/st-z'),
+      1,
+      'There is no branch',
+    );
+    expect(
+      'MQ-1 the head merges first, verified',
+      says(qKit('queue', 'merge', '--delegated'), 'Next in the queue: web/st-b'),
+      0,
+    );
+    const conflict = qKit('queue', 'merge', '--delegated');
+    expect(
+      'MQ-3 a branch that no longer merges cleanly is sent back, with why',
+      truth(
+        conflict.status === 1 &&
+          conflict.stderr.includes('sent back to its lane (conflicts with main after web/st-a)'),
+        conflict.stderr,
+      ),
+      0,
+    );
+    expect(
+      'recorded as a send-back, as the review would',
+      truth(
+        readFileSync(join(q.dir, '.claude/state/reviews.jsonl'), 'utf8').includes(
+          '"reason":"conflicts with main after web/st-a"',
+        ),
+      ),
+      0,
+    );
+    expect(
+      'and main is as web/st-a left it',
+      truth(readFileSync(join(q.dir, 'apps/office/lib/shared.ts'), 'utf8').includes('"a"')),
+      0,
+    );
+    expect(
+      'the next one merges',
+      says(qKit('queue', 'merge', '--delegated'), 'The queue is empty.'),
+      0,
+    );
+    expect(
+      'MQ-4 merged and sent-back entries stay listed with their state',
+      truth(
+        JSON.parse(qKit('queue', '--json').stdout)
+          .map((e) => `${e.branch}:${e.state}`)
+          .join() === 'web/st-a:merged,web/st-b:sent back,web/st-c:merged',
+      ),
+      0,
+    );
+    expect(
+      'an empty queue merges nothing',
+      says(qKit('queue', 'merge', '--delegated'), 'empty'),
+      0,
+    );
+    qKit('queue', 'add', 'web/st-b');
+    expect(
+      'a branch can be taken out',
+      says(qKit('queue', 'drop', 'web/st-b'), 'Took web/st-b out'),
+      0,
+    );
+    expect(
+      'the merge needs --delegated or --person',
+      qKit('queue', 'merge'),
+      1,
+      'needs --delegated',
+    );
+  }
+
   // --- approvals reach lanes in their own worktrees ----------------------------------------------
   git('worktree', 'add', '-q', '.claude/worktrees/dep', '-b', 'web/st-7');
   const laneTree = join(repo, '.claude/worktrees/dep');
@@ -2195,6 +2338,46 @@ try {
   vCommit('ST-2 fix');
   v.git('checkout', '-q', 'main');
   nextIs('once the lane commits its fix, the branch goes to review again', v.dir, 'review', 'ST-2');
+  // The merge queue: a branch whose review passed isn't reviewed again; the person merges it here.
+  vCli('queue', 'add', 'web/st-2');
+  const waitingMerge = nextIn(v.dir);
+  expect(
+    'MQ-2 a queued branch is not reviewed again, and waits for the person where merges are not delegated',
+    truth(
+      waitingMerge.step !== 'review' &&
+        waitingMerge.attention.some((a) =>
+          a.includes('web/st-2 passed review and waits for the person'),
+        ),
+      JSON.stringify(waitingMerge),
+    ),
+    0,
+  );
+  const vConfig = readFileSync(join(v.dir, '.claude/code-kit.json'), 'utf8');
+  writeFileSync(
+    join(v.dir, '.claude/code-kit.json'),
+    JSON.stringify({ ...JSON.parse(vConfig), approvals: { delegate: { merge: true } } }),
+  );
+  nextIs(
+    'MQ-2 where merges are delegated, the lead merges the head first',
+    v.dir,
+    'merge',
+    'web/st-2',
+  );
+  writeFileSync(
+    join(v.dir, '.claude/code-kit.json'),
+    JSON.stringify({
+      ...JSON.parse(vConfig),
+      approvals: { delegate: { merge: true } },
+      harness: { autonomy: 'propose' },
+    }),
+  );
+  expect(
+    'but not under autonomy propose: the person merges',
+    truth(nextIn(v.dir).step !== 'merge'),
+    0,
+  );
+  writeFileSync(join(v.dir, '.claude/code-kit.json'), vConfig);
+  vCli('queue', 'drop', 'web/st-2');
   // A story with commits whose dependency isn't done is blocked on it, not finished.
   const planNow = readFileSync(join(v.dir, 'docs/spec/plan.md'), 'utf8');
   vPut(

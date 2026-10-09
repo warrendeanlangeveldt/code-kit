@@ -161,11 +161,13 @@ export function register(on) {
         const nextStep = valid ? await json('next') : null;
         const requests = valid ? await json('requests') : null;
         const stops = valid ? ((await json('stops', '--session', session)) ?? []) : [];
+        const queue = valid ? ((await json('queue')) ?? []) : [];
         const atWork = agentsAtWork(await $.agent.list());
         model = {
           state: projectState(check, status, nextStep, atWork),
           requests,
           stops,
+          queue,
           check,
           base: status?.base ?? null,
         };
@@ -302,6 +304,7 @@ export function register(on) {
           await stamp('.claude/code-kit.json'),
           plan ? await stamp(plan) : '',
           await stamp('.claude/state/requests.jsonl'),
+          await stamp('.claude/state/merge-queue.json'),
           await listing('.claude/approvals'),
           await listing('.claude/state/stop-blocks'),
           [...agentsAtWork(await $.agent.list())].sort().join(','),
@@ -420,6 +423,27 @@ export function register(on) {
         await act.reload();
       },
       // CARD-2: no model call; the transcript shows it.
+      // MQ-2: the head of the queue, merged by the person: verified first, sent back if it fails.
+      mergeQueue: async (line) => {
+        const answer = await $.ui
+          .ask(
+            `Merge ${line.branch}, next in the merge queue, into ${model.base ?? 'the base branch'}? code-kit verify runs first; if it conflicts or fails, it goes back to its lane.`,
+            ['Merge', 'Cancel'],
+          )
+          .catch(() => 'Cancel');
+        if (answer !== 'Merge') return;
+        const ran = await $.process.run(['node', cli, 'queue', 'merge', '--person'], {
+          cwd,
+          timeoutMs: 600000,
+        });
+        result = {
+          ok: ran.exitCode === 0,
+          title: ran.exitCode === 0 ? `Merged ${line.branch}` : `Not merged: ${line.branch}`,
+          text: `${ran.stdout}${ran.stderr}`.trim(),
+        };
+        await $.ui.open({ id: RESULT_ID, title: 'Merge', focus: true, closeOnEscape: true });
+        await act.reload();
+      },
       approvals: async () => {
         await act.reload();
         if (model.state.kind === 'none') return { text: NOT_CODE_KIT };
@@ -541,7 +565,7 @@ export function register(on) {
           $.ui.invalidate('ui.render');
           return;
         }
-        let prompt = leadPrompt(step);
+        let prompt = leadPrompt(step, { cli });
         let kind = step.step;
         let target = step.args ?? '';
         let key = stepKey(step);
@@ -886,7 +910,10 @@ export function register(on) {
 
   on('ui.render', { component: 'Pane', requestId: PANE_ID }, async ($, e) => {
     const { usage, plan } = usageNow();
-    return lanesPane(model.state, $.ui.resolve(e), usage, plan, loopNow(await $.clock.now()));
+    return lanesPane(model.state, $.ui.resolve(e), usage, plan, {
+      ...loopNow(await $.clock.now()),
+      queue: model.queue ?? [],
+    });
   });
 
   // BAND-2: absent when nothing waits. Its lines go above whatever else the band holds (another

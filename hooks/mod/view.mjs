@@ -113,6 +113,13 @@ export function lanesPane(state, { Box, Text }, usage = null, plan = null, loop 
   if (state.kind === 'invalid')
     return text('The config is invalid: run code-kit check.', { color: 'red' });
   const width = Math.max(...state.lanes.map((l) => l.name.length));
+  const inQueue = new Set(
+    (loop?.queue ?? [])
+      .filter((e) => ['waiting', 'merging'].includes(e.state))
+      .map((e) => e.branch),
+  );
+  // MQ-4: a branch in the merge queue is shown as queued, not as waiting for review.
+  const queued = (l) => Boolean(l.branch && inQueue.has(l.branch));
   const rows = state.lanes.map((l) =>
     Box({
       key: `lane-${l.name}`,
@@ -124,7 +131,14 @@ export function lanesPane(state, { Box, Text }, usage = null, plan = null, loop 
           children: [
             text(l.active ? '●' : ' ', { color: 'green' }),
             text(l.name.padEnd(width), { bold: true }),
-            text(l.state.padEnd(9), STATE_COLOR[l.state] ? { color: STATE_COLOR[l.state] } : {}),
+            text(
+              (queued(l) ? 'queued' : l.state).padEnd(9),
+              queued(l)
+                ? { color: 'cyan' }
+                : STATE_COLOR[l.state]
+                  ? { color: STATE_COLOR[l.state] }
+                  : {},
+            ),
             text(l.agent ?? 'the main session', { dimColor: true }),
             ...(loop?.laneNotes?.[l.name]
               ? [
@@ -181,6 +195,7 @@ export function lanesPane(state, { Box, Text }, usage = null, plan = null, loop 
       Box({ flexDirection: 'column', children: rows }),
       Box({ flexDirection: 'column', children: ready }),
       ...usageSection(usage, plan, text, Box),
+      ...queueSection(loop, text, Box),
       ...reviewsSection(loop, text, Box),
       ...loopSection(loop, text, Box),
     ],
@@ -194,6 +209,39 @@ export function ago(ms) {
   if (s < 60) return `${s}s ago`;
   if (s < 3600) return `${Math.floor(s / 60)}m ago`;
   return `${Math.floor(s / 3600)}h ago`;
+}
+
+/** MQ-4: the merge queue in order, then what it merged or sent back lately. */
+function queueSection(loop, text, Box) {
+  const entries = loop?.queue ?? [];
+  if (!entries.length) return [];
+  const open = entries.filter((e) => ['waiting', 'merging'].includes(e.state));
+  const settled = entries
+    .filter((e) => !['waiting', 'merging'].includes(e.state))
+    .slice(-3)
+    .reverse();
+  const row = (e, label, style = {}) =>
+    Box({
+      key: `queue-${e.branch}-${e.state}`,
+      flexDirection: 'row',
+      columnGap: 2,
+      children: [
+        text(label.padEnd(3), { dimColor: true }),
+        text(e.branch),
+        text(e.state, style),
+        ...(e.reason ? [text(e.reason, { dimColor: true })] : []),
+      ],
+    });
+  return [
+    Box({
+      flexDirection: 'column',
+      children: [
+        text('Merge queue', { bold: true }),
+        ...open.map((e, i) => row(e, `${i + 1}.`, { color: 'cyan' })),
+        ...settled.map((e) => row(e, '·', { color: e.state === 'merged' ? 'green' : 'magenta' })),
+      ],
+    }),
+  ];
 }
 
 /** REVW-1: each branch's background review, running with its clock, or what it found. */
@@ -365,6 +413,8 @@ export function bandLines({
   held = [],
   now = 0,
   loop = null,
+  queue = [],
+  check = null,
 }) {
   const lines = [];
   if (notice)
@@ -450,6 +500,17 @@ export function bandLines({
       text: `background agents paused: plan at ${plan.percent}%`,
       actions: [],
     });
+  // MQ-2: where the lead doesn't merge, the head of the queue waits for the person's Merge.
+  const next = queue.find((e) => ['waiting', 'merging'].includes(e.state));
+  const leadMerges =
+    check?.delegatesMerge && (check?.harness?.autonomy ?? 'autonomous') === 'autonomous';
+  if (next && !leadMerges)
+    lines.push({
+      kind: 'queue',
+      text: `${next.branch} is next to merge`,
+      branch: next.branch,
+      actions: [{ id: 'mergeQueue', label: 'Merge' }],
+    });
   // LOOP-7: the milestone is done; LOOP-6: the loop's own state, with Pause or Resume.
   if (loop?.state === 'done')
     lines.push({
@@ -477,6 +538,7 @@ export function band(lines, { Box, Text, Button }, onAction) {
   const COLOR = {
     notice: 'red',
     held: 'yellow',
+    queue: 'blue',
     stalled: 'red',
     proposal: 'cyan',
     loop: 'green',

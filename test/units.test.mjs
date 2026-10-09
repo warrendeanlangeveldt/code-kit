@@ -770,6 +770,10 @@ test('LOOP-1 to LOOP-3 the loop: prompts for steps, and what a quiet agent is du
   assert.match(leadPrompt({ step: 'lead', args: 'ST-6' }), /^Build ST-6 yourself.*lead\/st-6/);
   for (const step of ['spec-design', 'init', 'wait', 'done'])
     assert.equal(leadPrompt({ step }), null);
+  assert.equal(
+    leadPrompt({ step: 'merge', args: 'web/st-4' }, { cli: '/k/bin/code-kit.mjs' }).split(':')[0],
+    'Merge web/st-4, next in the merge queue',
+  );
   assert.ok(!leadPrompt({ step: 'dispatch', args: 'ST-1' }).startsWith('/'));
   assert.equal(stepKey({ step: 'dispatch', args: 'ST-1' }), 'dispatch:ST-1');
   assert.equal(stepLabel({ step: 'dispatch', args: 'ST-7 ST-9' }), 'Dispatch ST-7, ST-9');

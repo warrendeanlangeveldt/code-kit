@@ -6,6 +6,7 @@ import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join, posix } from 'node:path';
 import { loadConfig } from './config.mjs';
 import { buildStatus, readStories, LEAD } from './plan.mjs';
+import { readQueue, waiting } from './queue.mjs';
 
 export const DRAFT_FILE = '.claude/code-kit.draft.json';
 export const BRIEF_STATES = ['framed', 'explored', 'scoped', 'specified', 'planned', 'ready'];
@@ -52,7 +53,8 @@ const hasMarkdown = (dir) => {
 
 /**
  * { step, why, args, then, attention }. `step` is a skill (spec-design, init, check, dispatch,
- * review), `wait` (lanes are building) or `done`. `base(config)` resolves the branch lanes merge into.
+ * review), `merge` (the head of the merge queue, where the lead merges), `wait` (lanes are
+ * building) or `done`. `base(config)` resolves the branch lanes merge into.
  */
 export function nextStep(root, base) {
   const attention = [];
@@ -149,7 +151,12 @@ export function nextStep(root, base) {
       `The plan's status lines are out of date for ${status.drift.map((d) => d.story).join(', ')}.`,
     );
 
-  const ids = (state) => status.stories.filter((s) => s.state === state).map((s) => s.id);
+  // A branch already in the merge queue has passed its review: it isn't reviewed again.
+  const queued = waiting(readQueue(root)).map((e) => e.branch);
+  const ids = (state) =>
+    status.stories
+      .filter((s) => s.state === state && !(state === 'review' && queued.includes(s.branch)))
+      .map((s) => s.id);
   const [review, building, blocked, fixes] = ['review', 'in progress', 'blocked', 'sent back'].map(
     ids,
   );
@@ -167,6 +174,20 @@ export function nextStep(root, base) {
   if (unbuildable.length)
     attention.push(
       `${unbuildable.join(', ')} can't be dispatched until the plan's gaps are fixed.`,
+    );
+  // The merge queue (spec 09): branches the lead's review passed. Under autonomy, where merges are
+  // delegated, the lead merges the head first, so dependents see it; otherwise the person does.
+  const leadMerges =
+    Boolean(config.approvals.delegate?.merge) && config.harness.autonomy === 'autonomous';
+  if (queued.length && !leadMerges)
+    attention.push(
+      `${queued.join(', ')} passed review and ${queued.length === 1 ? 'waits' : 'wait'} for the person to merge (code-kit queue merge --person, or Merge in the code-kit band).`,
+    );
+  if (queued.length && leadMerges)
+    return result(
+      'merge',
+      `${queued[0]} passed review and is next in the merge queue${queued.length > 1 ? ` (then ${queued.slice(1).join(', ')})` : ''}.`,
+      { args: queued[0] },
     );
   const then = [];
   // A sent-back story goes back to its lane with the review's findings, before new work starts.
@@ -210,6 +231,11 @@ export function nextStep(root, base) {
     return result(
       'spec-design',
       `${blocked.join(', ')} wait on stories that can't finish: the plan has a dependency cycle or a missing story.`,
+    );
+  if (queued.length)
+    return result(
+      'wait',
+      `${queued.join(', ')} ${queued.length === 1 ? 'waits' : 'wait'} to be merged.`,
     );
   return result(
     'done',

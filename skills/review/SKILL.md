@@ -51,7 +51,14 @@ Read the story, every requirement it cites, and the full diff (`git diff <base>.
 Report the table, `verify`'s result and one of:
 
 - **Files any agent may write** (`anyActor`, such as a lockfile or recorded decisions) have no owning lane, but they have a reviewer: `trace <file>` names it (the lead unless the config names a lane). Review those changes as that reviewer would, or ask that lane's agent.
-- **Merge.** Everything passes. The lead merges the branch into its own branch (`git merge --no-ff <branch>`), sets the story's `**Status:**` to `done` in the plan, and commits. `main` and the other protected branches are merged by a person, through a pull request, after `verify` passes in CI. When the branch is merged, remove its worktree.
+- **Merge.** Everything passes. Put the branch in the merge queue, set the story's `**Status:**` to `done` in the plan, and commit:
+
+  ```bash
+  node "${CLAUDE_PLUGIN_ROOT}/bin/code-kit.mjs" queue add <branch>
+  ```
+
+  Branches merge from the queue one at a time, in the order their reviews passed, each verified against the base as it is then. Where `approvals.delegate.merge` is on and the harness's autonomy is `autonomous`, you merge the head: `code-kit queue merge --delegated` (code-kit's loop asks you when it's its turn). Otherwise the person merges it, with Merge in the code-kit band or `code-kit queue merge --person`. A head that no longer merges cleanly, or fails verify against the moved base, is sent back to its lane on its own; dispatch the fix as for any send-back. When the branch is merged, remove its worktree.
+
 - **Send back.** List each problem, where it is, and what "fixed" looks like. Record the send-back, so `status` and `next` read the branch as waiting for its fix rather than finished:
 
   ```bash

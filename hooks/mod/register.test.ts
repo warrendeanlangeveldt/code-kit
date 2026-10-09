@@ -100,6 +100,7 @@ function project() {
     draft: '', // what the person has typed in the prompt
     heads: { 'web/st-4': 'abc123def4567890\n' } as Record<string, string>,
     registered: [] as any[],
+    queue: [] as any[],
     sent: [] as { to: any; text: string }[],
     holdWaits: false, // false: the hold ends at once, as if timed out (tests about cards, not hold)
     waiting: new Map<string, (answer: string) => void>(),
@@ -134,6 +135,12 @@ function stub(on: any, w: World) {
     if (sub === 'verify')
       return ran(w.verifyExit, w.verifyExit ? '' : w.verifyOut, w.verifyExit ? w.verifyOut : '');
     if (sub === 'stops') return ran(0, JSON.stringify(w.stops));
+    if (sub === 'queue' && argv[3] === 'merge') {
+      w.acts.push([...argv.slice(2)]);
+      w.queue = w.queue.map((e, i) => (i === 0 ? { ...e, state: 'merged' } : e));
+      return ran(0, 'Merged web/st-4 into main: verify passed on 2 file(s). The queue is empty.');
+    }
+    if (sub === 'queue') return ran(0, JSON.stringify(w.queue));
     if (sub === 'approve' && argv.includes('--delegated')) {
       w.delegated.push([...argv.slice(2)]);
       if (w.delegateExit === 0) w.allowed = true;
@@ -401,9 +408,9 @@ test('PANE-4 with nothing changed it reads the project every 10 seconds while th
   const before = w.runs;
   await clock.advance(8000); // four quiet ticks: git only
   expect(w.runs - before).toBe(4);
-  // The fifth reads it all (check, status, next, requests, stops) between two looks at git.
+  // The fifth reads it all (check, status, next, requests, stops, queue) between two looks at git.
   await clock.advance(2000);
-  expect(w.runs - before).toBe(11);
+  expect(w.runs - before).toBe(12);
 });
 
 test('CARD-4 outside a code-kit project, /lanes says so, opens nothing, and there is no band', async ($, on) => {
@@ -1557,4 +1564,65 @@ test("REVW-2 the reviewer's model is the setting's, registered again when it cha
   await start($, on, w);
   expect(w.registered.at(-1)).toMatchObject({ name: 'reviewer', model: 'haiku' });
   expect(w.registered.at(-1).tools).not.toContain('Write');
+});
+
+// --- the merge queue --------------------------------------------------------------------------------
+
+test('MQ-2 where the lead merges, the loop prompts it to merge the head of the queue', async ($, on) => {
+  const w = project();
+  w.next = { step: 'merge', args: 'web/st-4', then: [] };
+  const clock = await start($, on, w);
+  await leadTurn($);
+  await settle(clock);
+  expect(w.prompts[0]).toMatch(
+    /^Merge web\/st-4, next in the merge queue: run node ".*\/bin\/code-kit\.mjs" queue merge --delegated\./,
+  );
+});
+
+test('MQ-2 where the person merges, the head of the queue waits in the band for their Merge', async ($, on) => {
+  const w = project();
+  w.queue = [{ branch: 'web/st-4', passed: '2026-10-10T00:00:00Z', state: 'waiting' }];
+  await start($, on, w);
+  const ui = await bandUi($);
+  expect(await ui.find({ type: 'Text', text: 'web/st-4 is next to merge' })).toBeDefined();
+  await press($, 'band-mergeQueue');
+  await ui.unmount();
+  expect(w.acts).toEqual([['queue', 'merge', '--person']]);
+  expect(w.opened).toContain(RESULT);
+});
+
+test('MQ-2 where the lead merges under autonomy, the band offers no Merge', async ($, on) => {
+  const w = project();
+  (w.check as any).delegatesMerge = true;
+  w.queue = [{ branch: 'web/st-4', passed: '2026-10-10T00:00:00Z', state: 'waiting' }];
+  await start($, on, w);
+  const ui = await bandUi($);
+  expect(await ui.find({ type: 'Text', text: /next to merge/ })).toBeUndefined();
+  await ui.unmount();
+});
+
+test('MQ-4 the pane shows the queue in order, what it merged and sent back, and the lane as queued', async ($, on) => {
+  const w = project();
+  w.stories[0] = { ...w.stories[0], state: 'review' };
+  w.queue = [
+    { branch: 'api/st-2', passed: '2026-10-10T00:00:00Z', state: 'merged' },
+    {
+      branch: 'api/st-3',
+      passed: '2026-10-10T00:01:00Z',
+      state: 'sent back',
+      reason: 'conflicts with main after api/st-2',
+    },
+    { branch: 'web/st-4', passed: '2026-10-10T00:02:00Z', state: 'waiting' },
+  ];
+  await start($, on, w);
+  await lanes($);
+  const ui = await pane($, PANE);
+  expect((await ui.find({ key: 'queue-web/st-4-waiting' }))?.text).toMatch(
+    /1\.\s*web\/st-4\s*waiting/,
+  );
+  expect((await ui.find({ key: 'queue-api/st-3-sent back' }))?.text).toMatch(
+    /conflicts with main after api\/st-2/,
+  );
+  expect((await ui.find({ key: 'lane-web' }))?.text).toMatch(/queued/);
+  await ui.unmount();
 });
