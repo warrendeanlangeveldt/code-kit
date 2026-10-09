@@ -125,7 +125,7 @@ export function lanesPane(
   usage = null,
   plan = null,
   loop = null,
-  { filter = null, search = '', selected = null, live = {}, art = null } = {},
+  { filter = null, search = '', selected = null, live = {}, art = null, combined = null } = {},
 ) {
   const { Box, Text } = els;
   const text = (value, style = {}) => Text({ ...style, children: [value] });
@@ -238,6 +238,19 @@ export function lanesPane(
               ]
             : []),
           ...(usage?.lanes[l.name] ? [text(tokens(usage.lanes[l.name]), { dimColor: true })] : []),
+          // JOIN-2: with an adapter that knows, the lane's edits without understanding and cards owed.
+          ...(combined?.[l.name]
+            ? [
+                text(
+                  `${combined[l.name].without} edit${combined[l.name].without === 1 ? '' : 's'} without understanding`,
+                  combined[l.name].without ? { color: 'red' } : { dimColor: true },
+                ),
+                text(
+                  `${combined[l.name].owed} card${combined[l.name].owed === 1 ? '' : 's'} owed`,
+                  combined[l.name].owed ? { color: 'yellow' } : { dimColor: true },
+                ),
+              ]
+            : []),
         ],
       }),
       ...(l.story

@@ -188,6 +188,11 @@ export function register(on) {
         const queue = valid ? ((await json('queue')) ?? []) : [];
         // VIEW-2: when each story's work happened, for the lanes' timelines.
         const timeline = valid && check.docs?.plan ? await json('timeline') : null;
+        // JOIN-1: what the active adapters know of the lanes' work, where any does.
+        const adapters =
+          valid && check.adapters?.length
+            ? ((await json('adapters', '--session', session)) ?? [])
+            : [];
         const atWork = agentsAtWork(await $.agent.list());
         model = {
           state: projectState(check, status, nextStep, atWork),
@@ -196,6 +201,7 @@ export function register(on) {
           queue,
           status,
           timeline,
+          adapters,
           check,
           base: status?.base ?? null,
         };
@@ -1103,6 +1109,28 @@ export function register(on) {
   };
 
   // VIEW-4: each lane's current or last tool call, and how long ago.
+  // JOIN-2: each lane's facts from the adapters: edits without understanding and cards owed.
+  const factsOf = (lane) => {
+    const key = lane.agent ?? 'lead';
+    const out = { withoutUnderstanding: [], cardsOwed: [] };
+    for (const a of model.adapters ?? []) {
+      const f = a.lanes?.[key];
+      if (!f) continue;
+      out.withoutUnderstanding.push(...f.withoutUnderstanding);
+      out.cardsOwed.push(...f.cardsOwed.filter((c) => !out.cardsOwed.includes(c)));
+    }
+    return out;
+  };
+  const combinedNow = () => {
+    if (!(model.adapters ?? []).some((a) => a.lanes)) return null;
+    const lanesNow = model.state?.kind === 'ok' ? model.state.lanes : [];
+    return Object.fromEntries(
+      lanesNow.map((l) => {
+        const f = factsOf(l);
+        return [l.name, { without: f.withoutUnderstanding.length, owed: f.cardsOwed.length }];
+      }),
+    );
+  };
   // VIEW-2, VIEW-3: each lane's pose and tint, and its story's bar on the shared axis.
   const artNow = (now, live) => {
     const lanesNow = model.state?.kind === 'ok' ? model.state.lanes : [];
@@ -1174,6 +1202,7 @@ export function register(on) {
         : [],
       file: paneUi.file,
       now,
+      understanding: lane && (model.adapters ?? []).some((a) => a.lanes) ? factsOf(lane) : null,
     };
   };
   // The band's lines, which the pane pins as what needs the person (VIEW-5).
@@ -1207,6 +1236,7 @@ export function register(on) {
         ui: paneUi,
         status: model.status ?? null,
         art: artNow(now, liveNow(now)),
+        combined: combinedNow(),
         placement: e.props.placement,
         story: storyOpen ? storyNow(storyOpen, now, usage) : null,
       },
@@ -1247,6 +1277,12 @@ export function register(on) {
             paneUi = { ...paneUi, file };
             $.ui.invalidate('ui.render');
           },
+          // JOIN-4: a file in the adapter's own view, through the command it names.
+          onOpenIn: (adapter, path) =>
+            $.command.run({ command: adapter.open.command, args: path }).catch((err) => {
+              notice = `Couldn't open ${path} in ${adapter.name}: ${err?.message ?? err}`;
+              $.ui.invalidate('ui.render');
+            }),
           onAct: (id) => {
             const lane = lanesNow.find((l) => l.name === storyOpen?.lane);
             if (lane) act?.laneAct(id, lane);

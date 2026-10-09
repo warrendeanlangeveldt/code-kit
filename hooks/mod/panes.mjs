@@ -242,6 +242,7 @@ export function lanesFrame(view, els, on) {
                 selected: ui.selected,
                 live: view.live ?? {},
                 art: view.art ?? null,
+                combined: view.combined ?? null,
               }),
               ...loopSection(loop, text, Box),
             ];
@@ -438,7 +439,7 @@ const SEVERITY_TITLE = { blocker: 'Blockers', concern: 'Concerns', nit: 'Nits' }
  * it; `actions` the lane's acts. `on`: onBack(), onFile(path), onAct(id).
  */
 export function storyPane(
-  { story, review, tokens: usedTokens, outlier, steps, actions, file, now },
+  { story, review, tokens: usedTokens, outlier, steps, actions, file, now, understanding = null },
   els,
   on,
 ) {
@@ -628,10 +629,95 @@ export function storyPane(
       })
     : null;
 
+  // JOIN-2 to JOIN-4: what the adapters know: the lane's edits without understanding and the files
+  // still unread, its cards owed, and the rules on the story's files; each file opens in the
+  // adapter's own view.
+  const opener = (d.adapters ?? []).find((a) => a.open) ?? null;
+  const openFile = (path, key) =>
+    opener
+      ? Button({ key, label: path, plain: true, onPress: () => on.onOpenIn(opener, path) })
+      : text(path);
+  const combined = [];
+  if (understanding?.withoutUnderstanding.length)
+    combined.push(
+      section(
+        'story-understanding',
+        `Edited without understanding (${understanding.withoutUnderstanding.length})`,
+        understanding.withoutUnderstanding.map((e, i) =>
+          Box({
+            key: `unread-${i}`,
+            flexDirection: 'row',
+            columnGap: 2,
+            children: [
+              openFile(e.path, `unread-file-${i}`),
+              text(e.unread.length ? `still unread: ${e.unread.join(', ')}` : '', { color: 'red' }),
+            ],
+          }),
+        ),
+      ),
+    );
+  if (understanding?.cardsOwed.length)
+    combined.push(
+      section(
+        'story-cards',
+        `Cards owed (${understanding.cardsOwed.length})`,
+        understanding.cardsOwed.map((c, i) => openFile(c, `owed-${i}`)),
+      ),
+    );
+  const rules = new Map();
+  for (const a of d.adapters ?? [])
+    for (const [path, f] of Object.entries(a.files ?? {}))
+      for (const r of f.rules ?? []) {
+        const entry = rules.get(r.id) ?? { ...r, paths: [] };
+        entry.paths.push(path);
+        rules.set(r.id, entry);
+      }
+  if (rules.size)
+    combined.push(
+      section(
+        'story-rules',
+        `Rules on its files (${rules.size})`,
+        [...rules.values()]
+          .sort((a, b) => Number(a.proposed) - Number(b.proposed))
+          .map((r) =>
+            Box({
+              key: `rule-${r.id}`,
+              children: [
+                text(
+                  `${r.proposed ? 'proposed' : 'agreed  '}  ${r.id}  ${r.text}  (${r.paths.length} file${r.paths.length === 1 ? '' : 's'})`,
+                  { ...(r.proposed ? { dimColor: true } : {}), wrap: 'truncate-end' },
+                ),
+              ],
+            }),
+          ),
+      ),
+    );
+  const viewIn =
+    opener && shown
+      ? Button({
+          key: 'story-open-in',
+          label: `View ${shown.path} in ${opener.name}`,
+          hotkey: 'v',
+          plain: true,
+          onPress: () => on.onOpenIn(opener, shown.path),
+        })
+      : null;
+
   return Box({
     flexDirection: 'column',
     rowGap: 1,
-    children: [head, acts, requirements, findings, verify, usage, recent, diff].filter(Boolean),
+    children: [
+      head,
+      acts,
+      requirements,
+      findings,
+      verify,
+      ...combined,
+      usage,
+      recent,
+      diff,
+      viewIn,
+    ].filter(Boolean),
   });
 }
 

@@ -2244,6 +2244,67 @@ try {
     0,
   );
 
+  // JOIN-1 to JOIN-3: what Context Graph knows of the lanes' work, through its adapter. A stand-in
+  // ctx on the PATH answers as ctx does, so the test needs no install.
+  {
+    const bin = mkdtempSync(join(tmpdir(), 'code-kit-ctx-'));
+    cleanups.push(bin);
+    writeFileSync(
+      join(bin, 'ctx'),
+      `#!/usr/bin/env node
+const [cmd, ...rest] = process.argv.slice(2);
+if (cmd === 'agents') console.log(JSON.stringify(rest.includes('s1') ? [
+  { agent: 'a1', agentType: 'web-engineer', read: [], searched: [], cardsOwed: ['src/a.ts'],
+    edited: [{ path: 'src/a.ts', understood: false, missing: ['src/b.ts'] }, { path: 'src/c.ts', understood: true, missing: [] }] },
+  { agent: 'main', agentType: null, read: [], searched: [], cardsOwed: [], edited: [] },
+] : []));
+else if (cmd === 'file') console.log(JSON.stringify({ path: rest[0], rules: [
+  { id: 'K:no-fetch', mode: 'E', text: 'No fetch in components' },
+  { id: 'K:dates', mode: 'G?', text: 'Dates through lib/date' },
+] }));
+else process.exit(1);
+`,
+      { mode: 0o755 },
+    );
+    const withCtx = (...args) =>
+      spawnSync('node', [join(here, '..', 'bin', 'code-kit.mjs'), ...args], {
+        cwd: r.dir,
+        encoding: 'utf8',
+        env: { ...process.env, PATH: `${bin}:${process.env.PATH}` },
+      });
+    const facts = JSON.parse(withCtx('adapters', '--json', '--session', 's1').stdout || '[]');
+    const web = facts.find((f) => f.name === 'context-graph')?.lanes?.['web-engineer'];
+    expect(
+      'JOIN-2 adapters --json gives each agent type its edits without understanding and cards owed',
+      truth(
+        web?.withoutUnderstanding.length === 1 &&
+          web.withoutUnderstanding[0].path === 'src/a.ts' &&
+          web.withoutUnderstanding[0].unread.join() === 'src/b.ts' &&
+          web.cardsOwed.join() === 'src/a.ts' &&
+          facts[0].open?.command === 'graph',
+        JSON.stringify(facts),
+      ),
+      0,
+    );
+    const without = spawnSync(
+      process.execPath,
+      [join(here, '..', 'bin', 'code-kit.mjs'), 'adapters', '--json'],
+      {
+        cwd: r.dir,
+        encoding: 'utf8',
+        env: { ...process.env, PATH: '/usr/bin:/bin' },
+      },
+    );
+    expect(
+      'JOIN-1 without ctx available there are no combined facts',
+      truth(
+        without.status === 0 && JSON.parse(without.stdout).length === 0,
+        without.stdout + without.stderr,
+      ),
+      0,
+    );
+  }
+
   // --- next: the step to take, from the project's state -----------------------------------------
   const nextIn = (dir) => {
     const res = spawnSync('node', [join(here, '..', 'bin', 'code-kit.mjs'), 'next', '--json'], {

@@ -41,7 +41,7 @@ import { matchesAny } from '../hooks/lib/glob.mjs';
 import { CONFIG_FILE, effectiveConfig, validate } from '../hooks/lib/config.mjs';
 import { diffConfigs, ownershipMoves } from '../hooks/lib/diff.mjs';
 import { CODE, importsOf, layerOf, layerProblems, targetOf } from '../hooks/lib/layers.mjs';
-import { ADAPTERS, activeAdapters } from '../hooks/lib/adapters/index.mjs';
+import { ADAPTERS, activeAdapters, adapterFacts } from '../hooks/lib/adapters/index.mjs';
 import { nextStep } from '../hooks/lib/next.mjs';
 import { traceFile } from '../hooks/lib/trace.mjs';
 import { buildStatus, specCheckRows } from '../hooks/lib/plan.mjs';
@@ -609,6 +609,7 @@ function story(id) {
     specCheck: null,
     diff: null,
     verify: null,
+    adapters: [],
   };
   if (s.branchExists) {
     const g = (...a) => execFileSync('git', a, { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
@@ -627,6 +628,10 @@ function story(id) {
         return { path, added: Number(added) || 0, removed: Number(removed) || 0 };
       });
     const text = g('diff', range);
+    // JOIN-3: what the active adapters know of the story's files (rules on them, agreed and proposed).
+    report.adapters = adapterFacts(load().raw, resolve('.'), {
+      paths: files.map((f) => f.path),
+    }).map(({ name, files: facts, open }) => ({ name, files: facts ?? {}, open }));
     report.diff = {
       files,
       text:
@@ -934,6 +939,9 @@ function next() {
 
 function adapters() {
   const { raw } = load();
+  // JOIN-1: with --json, what the active adapters know of the lanes' work in a session (--session).
+  if (flag('--json'))
+    return out(JSON.stringify(adapterFacts(raw, resolve('.'), { session: sessionId }), null, 2));
   const active = activeAdapters(raw, '.').map((a) => a.name);
   for (const a of ADAPTERS) {
     const off = raw.adapters?.[a.name] === false;

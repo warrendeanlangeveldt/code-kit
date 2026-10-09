@@ -231,6 +231,6 @@ Milestone 5 is Context Graph's harness, planned in its own `docs/plan.md`.
 **Lane:** lead
 **Requirements:** JOIN-1, JOIN-2, JOIN-3, JOIN-4
 **Depends on:** ST-21
-**Status:** todo
+**Status:** done
 
 With Context Graph installed: understanding, cards owed and rules per lane.

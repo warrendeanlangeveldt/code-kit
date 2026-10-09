@@ -105,6 +105,8 @@ function project() {
     requirements: [] as any[],
     times: [] as any[],
     blits: [] as string[],
+    adapters: [] as any[],
+    commands: [] as any[],
     story: {
       id: 'ST-4',
       title: 'Booking form',
@@ -177,6 +179,7 @@ function stub(on: any, w: World) {
       return ran(w.verifyExit, w.verifyExit ? '' : w.verifyOut, w.verifyExit ? w.verifyOut : '');
     if (sub === 'stops') return ran(0, JSON.stringify(w.stops));
     if (sub === 'story') return ran(0, JSON.stringify(w.story));
+    if (sub === 'adapters') return ran(0, JSON.stringify(w.adapters));
     if (sub === 'timeline')
       return ran(0, JSON.stringify({ base: 'main', now: 0, stories: w.times }));
     if (sub === 'sent-back') {
@@ -307,6 +310,11 @@ function stub(on: any, w: World) {
   on('tool.call', { tool: 'AskUserQuestion' }, ($: any, e: any) => ({
     result: { questions: e.questions, answers: { [e.questions[0].question]: w.answer } },
   }));
+  // Another plugin's command, as the mod asks for it (Context Graph's /graph).
+  on('command.run', ($: any, e: any) => {
+    w.commands.push({ command: e.command, args: e.args });
+    return { text: '' };
+  });
   on('ui.blit', ($: any, e: any) => {
     w.blits.push(e.key);
     return { value: undefined };
@@ -2113,5 +2121,89 @@ test('VIEW-2 and VIEW-3 on Desktop the characters and timelines are SVG', async 
     svgs.some((s) => s.props.alt === 'web: working' && String(s.props.source).includes('<animate')),
   ).toBe(true);
   expect(svgs.some((s) => s.props.alt === "web's timeline")).toBe(true);
+  await ui.unmount();
+});
+
+// --- the combined lane view ---------------------------------------------------------------------------
+
+/** A project where Context Graph's adapter reports on the web lane's agent. */
+function combinedProject() {
+  const w = project();
+  w.stories[0] = { ...w.stories[0], state: 'review' };
+  (w.check as any).adapters = ['context-graph'];
+  w.adapters = [
+    {
+      name: 'context-graph',
+      lanes: {
+        'web-engineer': {
+          withoutUnderstanding: [{ path: 'apps/web/form.tsx', unread: ['apps/web/api.ts'] }],
+          cardsOwed: ['apps/web/form.tsx', 'apps/web/api.ts'],
+        },
+      },
+      open: { command: 'graph' },
+    },
+  ];
+  w.story.adapters = [
+    {
+      name: 'context-graph',
+      files: {
+        'apps/web/form.tsx': {
+          rules: [
+            { id: 'K:no-fetch', text: 'No fetch in components', mode: 'E', proposed: false },
+            { id: 'K:dates', text: 'Dates through lib/date', mode: 'G?', proposed: true },
+          ],
+        },
+        'apps/web/api.ts': {
+          rules: [{ id: 'K:no-fetch', text: 'No fetch in components', mode: 'E', proposed: false }],
+        },
+      },
+      open: { command: 'graph' },
+    },
+  ];
+  return w;
+}
+
+test('JOIN-2 each lane shows its edits without understanding, red above zero, and its cards owed', async ($, on) => {
+  const w = combinedProject();
+  await start($, on, w);
+  await lanes($);
+  const ui = await pane($, PANE);
+  expect((await ui.find({ key: 'lane-web' }))?.text).toMatch(
+    /1 edit without understanding\s*2 cards owed/,
+  );
+  expect((await ui.find({ type: 'Text', text: '1 edit without understanding' }))?.props.color).toBe(
+    'red',
+  );
+  expect((await ui.find({ key: 'lane-api' }))?.text).toMatch(/0 edits without understanding/);
+  await ui.unmount();
+});
+
+test('JOIN-1 without an adapter that knows, the lanes show no such slots', async ($, on) => {
+  const w = project();
+  await start($, on, w);
+  await lanes($);
+  const ui = await pane($, PANE);
+  expect((await ui.find({ key: 'lane-web' }))?.text).not.toMatch(/understanding|owed/);
+  await ui.unmount();
+});
+
+test('JOIN-2 to JOIN-4 the drill-down names the unread files, the cards owed and the rules, and opens a file in Context Graph', async ($, on) => {
+  const w = combinedProject();
+  await start($, on, w);
+  const ui = await onWeb($);
+  await press($, 'open-story', PANE);
+  expect((await ui.find({ key: 'story-understanding' }))?.text).toMatch(
+    /apps\/web\/form.tsx\s*still unread: apps\/web\/api.ts/,
+  );
+  expect((await ui.find({ key: 'story-cards' }))?.text).toMatch(/Cards owed \(2\)/);
+  const rules = (await ui.find({ key: 'story-rules' }))?.text ?? '';
+  expect(rules).toMatch(/agreed\s+K:no-fetch\s+No fetch in components\s+\(2 files\)/);
+  expect(rules.indexOf('K:no-fetch')).toBeLessThan(rules.indexOf('K:dates'));
+  expect(rules).toMatch(/proposed\s+K:dates/);
+  expect((await ui.find({ key: 'story-open-in' }))?.props.hotkey).toBe('v');
+  await press($, 'story-open-in', PANE);
+  expect(w.commands).toContainEqual({ command: 'graph', args: 'apps/web/form.tsx' });
+  await press($, 'unread-file-0', PANE);
+  expect(w.commands.length).toBe(2);
   await ui.unmount();
 });
