@@ -114,7 +114,8 @@ Built plugin by plugin: spikes first, then code-kit's harness and panes, then Co
 | 2026-10-09 | Background agents default to the session's model; each can be changed in Settings. | Quality first; the person controls usage through opt-in and the pause point. | Sonnet for review and Haiku for the rest. Haiku for all. |
 | 2026-10-09 | One set of lane characters, tinted per lane from the theme. | Consistent and learnable. | Chosen per lane. Generated per project (a dependency on image generation). |
 | 2026-10-09 | Side questions (`/why`) are always available, each answer showing its cost. | It only runs when asked. | Opt in. |
-| 2026-10-09 | One judge (`hooks/lib/judge.mjs`) decides what code-kit would do with a call, for the hooks, the CLI and the mod's hold. | The mod must never re-implement a rule. | Copying the hooks' checks into the mod. |
+| 2026-10-09 | Hold reads the hooks' refusal and retries the same call once approved; no separate judge. | Spike B: `next(e)` can run again after a refusal; the hooks stay the only judge. | A judge module shared by hooks and mod (needless once retrying works). |
+| 2026-10-09 | Background agents are started by the lead on the mod's prompt; the mod follows them by `agentId`. | Spike C: auto mode refuses an agent a mod starts itself; the lead's own start passes, and the agent's report starts a lead turn. | The mod spawning agents (refused in auto mode). |
 | 2026-10-09 | Drawing works in VS Code's integrated terminal (it runs the terminal surface); only the VS Code extension's chat panel, `-p`, the SDK and cloud sessions draw nothing. | Seen in use. | v1's assumption that VS Code draws nothing. |
 
 ## Open questions

@@ -59,6 +59,5 @@ When the plan's 5-hour use passes 80%, the reviewer, card writer and curator sto
 
 ## Open questions
 
-| Question                                                                         | Owner  | Blocks |
-| -------------------------------------------------------------------------------- | ------ | ------ |
-| Whether usage per agent is readable from the session's model requests (spike C). | Claude | USE-1  |
+| Question | Owner | Blocks |
+| -------- | ----- | ------ |

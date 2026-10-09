@@ -85,6 +85,5 @@ In a session with no surface to ask on (`claude -p`, the SDK) or with hold switc
 
 ## Open questions
 
-| Question                                                                                                                    | Owner  | Blocks |
-| --------------------------------------------------------------------------------------------------------------------------- | ------ | ------ |
-| Whether a mod can hold a call the hooks would refuse and let the same call run after approval, or must re-run it (spike B). | Claude | HOLD-3 |
+| Question | Owner | Blocks |
+| -------- | ----- | ------ |

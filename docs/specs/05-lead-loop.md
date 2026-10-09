@@ -111,6 +111,5 @@ When every story in the plan is done, the loop stops and the band reads "Milesto
 
 ## Open questions
 
-| Question                                                                        | Owner  | Blocks |
-| ------------------------------------------------------------------------------- | ------ | ------ |
-| Whether a mod can reliably tell the lead is idle and submit a prompt (spike A). | Claude | LOOP-1 |
+| Question | Owner | Blocks |
+| -------- | ----- | ------ |

@@ -37,7 +37,7 @@ Findings are kept with the review for the session and written into the lead's re
 
 ### REVW-1 Started when a branch is ready
 
-When a branch is ready for review and the reviewer is on, the mod starts one reviewer agent for it, in the background, with the branch, its story and requirements, and the review checklist. One reviewer per branch head; a branch that moves gets a new review.
+When a branch is ready for review and the reviewer is on, the mod has the lead start one reviewer agent for it (a prompt to the lead: auto mode refuses an agent a mod starts itself), in the background, with the branch, its story and requirements, and the review checklist. One reviewer per branch head; a branch that moves gets a new review.
 
 **Acceptance**
 
