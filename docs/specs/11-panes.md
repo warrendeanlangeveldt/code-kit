@@ -43,7 +43,7 @@ Anything waiting on the person (held calls, approvals, reviews, merges, stalls, 
 
 ### VIEW-6 Keyboard
 
-j/k move between lanes; Enter opens the selected story; a approves, r reviews, m merges, s sends back, n nudges, x stops the agent, p pauses the loop, 1–4 switch tabs, / filters, Esc goes back or closes. Every action also has a button.
+j/k move between lanes; Enter opens the selected story; a approves, r reviews, m merges, s sends back, n nudges, x stops the agent, p pauses the loop, 1–4 switch tabs, f filters, Esc goes back or closes. Every action also has a button. (A mod's key is a digit or a lowercase letter, so the filter is on f rather than /.)
 
 ### VIEW-7 Story drill-down
 

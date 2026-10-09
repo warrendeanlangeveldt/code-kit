@@ -135,6 +135,10 @@ function stub(on: any, w: World) {
     if (sub === 'verify')
       return ran(w.verifyExit, w.verifyExit ? '' : w.verifyOut, w.verifyExit ? w.verifyOut : '');
     if (sub === 'stops') return ran(0, JSON.stringify(w.stops));
+    if (sub === 'sent-back') {
+      w.acts.push([...argv.slice(2)]);
+      return ran(0, `Recorded: ${argv[3]} was sent back.`);
+    }
     if (sub === 'queue' && argv[3] === 'merge') {
       w.acts.push([...argv.slice(2)]);
       w.queue = w.queue.map((e, i) => (i === 0 ? { ...e, state: 'merged' } : e));
@@ -953,6 +957,7 @@ test("USE-1 a lane agent's requests show on its lane's row and its story", async
   await clock.advance(2000);
   const ui = await pane($, PANE);
   expect((await ui.find({ key: 'lane-web' }))?.text).toContain('200k');
+  await press($, 'tab-usage', PANE);
   expect((await ui.find({ key: 'usage-ST-4' }))?.text).toContain('200k');
   expect((await ui.find({ key: 'lane-api' }))?.text).not.toMatch(/\d+k/);
   await ui.unmount();
@@ -968,6 +973,7 @@ test("USE-1 the lead's requests are the lead's; an agent's brief names its story
   const ui = await pane($, PANE);
   expect((await ui.find({ key: 'lane-lead' }))?.text).toContain('30k');
   expect((await ui.find({ key: 'lane-core' }))?.text).toContain('50k');
+  await press($, 'tab-usage', PANE);
   expect((await ui.find({ key: 'usage-ST-9' }))?.text).toContain('50k');
   await ui.unmount();
 });
@@ -984,6 +990,7 @@ test("USE-2 the background agents' share and the plan's 5-hour use", async ($, o
   await request($, 'a1', 150);
   await request($, 'r1', 50);
   const ui = await pane($, PANE);
+  await press($, 'tab-usage', PANE);
   expect(await ui.find({ type: 'Text', text: 'Background agents  50k (25%)' })).toBeDefined();
   expect(await ui.find({ type: 'Text', text: '62% of the 5-hour window' })).toBeDefined();
   expect(await ui.find({ type: 'Text', text: 'This session  200k tokens' })).toBeDefined();
@@ -1617,12 +1624,165 @@ test('MQ-4 the pane shows the queue in order, what it merged and sent back, and 
   await start($, on, w);
   await lanes($);
   const ui = await pane($, PANE);
+  expect((await ui.find({ key: 'lane-web' }))?.text).toMatch(/queued/);
+  await press($, 'tab-queue', PANE);
   expect((await ui.find({ key: 'queue-web/st-4-waiting' }))?.text).toMatch(
     /1\.\s*web\/st-4\s*waiting/,
   );
   expect((await ui.find({ key: 'queue-api/st-3-sent back' }))?.text).toMatch(
     /conflicts with main after api\/st-2/,
   );
-  expect((await ui.find({ key: 'lane-web' }))?.text).toMatch(/queued/);
+  await ui.unmount();
+});
+
+// --- panes v2 ---------------------------------------------------------------------------------------
+
+const inlinePane = ($: any) =>
+  $.ui.mount({
+    plugin: 'code-kit',
+    component: 'Pane',
+    requestId: PANE,
+    surface: 'terminal',
+    viewport: { columns: 90, rows: 30 },
+    props: { title: PANE, isFocused: true, bodyColumns: 80, placement: 'inline' },
+  });
+
+test('VIEW-1 the header counts the stories by state, and a count filters the lanes', async ($, on) => {
+  const w = project();
+  w.stories = [
+    { id: 'ST-1', title: 'Done', lane: 'api', state: 'done', branch: 'api/st-1', waitingOn: [] },
+    ...w.stories,
+  ];
+  w.limits = [{ kind: 'five_hour', percentUsed: 40 }];
+  await start($, on, w);
+  await lanes($);
+  const ui = await pane($, PANE);
+  expect((await ui.find({ key: 'count-building' }))?.props.label).toBe('● 1 building');
+  expect((await ui.find({ key: 'count-ready' }))?.props.label).toBe('○ 3 ready');
+  expect((await ui.find({ key: 'count-merged' }))?.props.label).toBe('✓ 1 merged');
+  expect(await ui.find({ type: 'Text', text: 'plan 40%' })).toBeDefined();
+  await press($, 'count-building', PANE);
+  expect(await ui.find({ key: 'lane-web' })).toBeDefined();
+  expect(await ui.find({ key: 'lane-api' })).toBeUndefined();
+  await press($, 'count-building', PANE);
+  expect(await ui.find({ key: 'lane-api' })).toBeDefined();
+  await ui.unmount();
+});
+
+test("VIEW-4 each lane shows its agent's last tool call and the time since, amber once quiet", async ($, on) => {
+  const w = project();
+  w.next = { step: 'wait', args: '', then: [] };
+  w.agents = [{ id: 'a1', type: 'web-engineer', description: 'ST-4', status: 'running' }];
+  const clock = await start($, on, w);
+  await $.tool.call({
+    tool: 'Bash',
+    tool_use_id: 'tu-l',
+    command: 'npm test',
+    agentId: 'a1',
+  } as any);
+  await clock.advance(12000);
+  await lanes($);
+  let ui = await pane($, PANE);
+  const live = await ui.find({ type: 'Text', text: /^Bash npm test · / });
+  expect(live?.text).toBe('Bash npm test · 12s ago');
+  expect(live?.props.color).toBeUndefined();
+  await ui.unmount();
+  await clock.advance(5 * 60000);
+  ui = await pane($, PANE);
+  expect((await ui.find({ type: 'Text', text: /^Bash npm test · 5m ago$/ }))?.props.color).toBe(
+    'yellow',
+  );
+  await ui.unmount();
+});
+
+test('VIEW-5 what needs the person is pinned at the top with its letter: a held install, a on Approve', async ($, on) => {
+  const w = project();
+  w.refusal = webInstall;
+  const clock = await start($, on, w);
+  await heldCall($, w, clock);
+  await lanes($);
+  const ui = await pane($, PANE);
+  expect((await ui.find({ key: 'need-held' }))?.text).toMatch(/web wants to install dayjs/);
+  expect((await ui.find({ key: 'need-approveHeld' }))?.props.hotkey).toBe('a');
+  await press($, 'need-approveHeld', PANE);
+  expect(w.opened).toContain(APPROVE);
+  await ui.unmount();
+  w.waiting.get('tu-h1')?.('timed out');
+});
+
+test('VIEW-6 tabs on 1 to 3, j and k move between lanes, and the selected lane has its keys', async ($, on) => {
+  const w = project();
+  w.agents = [{ id: 'a1', type: 'web-engineer', description: 'ST-4', status: 'running' }];
+  await start($, on, w);
+  await lanes($);
+  const ui = await pane($, PANE);
+  expect((await ui.find({ key: 'tab-queue' }))?.props.hotkey).toBe('2');
+  await press($, 'tab-queue', PANE);
+  expect(await ui.find({ type: 'Text', text: 'The merge queue is empty.' })).toBeDefined();
+  await press($, 'tab-lanes', PANE);
+  expect((await ui.find({ key: 'lane-next' }))?.props.hotkey).toBe('j');
+  await press($, 'lane-next', PANE);
+  await press($, 'lane-next', PANE);
+  expect((await ui.find({ key: 'lane-web' }))?.text).toMatch(/^›/);
+  expect((await ui.find({ key: 'act-nudge' }))?.props.hotkey).toBe('n');
+  await press($, 'act-nudge', PANE);
+  expect(w.sent).toEqual([
+    { to: 'a1', text: 'The person asks: report where you are, or carry on.' },
+  ]);
+  w.answer = 'Stop';
+  await press($, 'act-stop', PANE);
+  expect(w.prompts.at(-1)).toMatch(
+    /^The person asked to stop web-engineer \(agent a1\) on ST-4: stop it with TaskStop/,
+  );
+  await press($, 'lane-prev', PANE);
+  expect((await ui.find({ key: 'lane-lead' }))?.text).toMatch(/^›/);
+  await ui.unmount();
+});
+
+test('VIEW-6 s sends the selected story back, with the reason the person gives', async ($, on) => {
+  const w = project();
+  w.stories[0] = { ...w.stories[0], state: 'review' };
+  await start($, on, w);
+  await lanes($);
+  const ui = await pane($, PANE);
+  await press($, 'lane-next', PANE);
+  await press($, 'lane-next', PANE);
+  expect((await ui.find({ key: 'act-sendBack' }))?.props.hotkey).toBe('s');
+  await press($, 'act-sendBack', PANE);
+  expect(w.opened).toContain('code-kit-sendback');
+  const confirm = await pane($, 'code-kit-sendback');
+  await $.ui.input({ plugin: 'code-kit', key: 'sendback-reason', text: '' });
+  expect(await confirm.find({ type: 'Text', text: /Give a reason/ })).toBeDefined();
+  await $.ui.input({
+    plugin: 'code-kit',
+    key: 'sendback-reason',
+    text: 'the cancel button has no test',
+  });
+  expect(w.acts).toEqual([['sent-back', 'web/st-4', '--reason', 'the cancel button has no test']]);
+  expect(w.closed).toContain('code-kit-sendback');
+  await confirm.unmount();
+  await ui.unmount();
+});
+
+test('VIEW-6 f puts the keys in the filter, which narrows the lanes by name, agent or story', async ($, on) => {
+  const w = project();
+  await start($, on, w);
+  await lanes($);
+  const ui = await pane($, PANE);
+  expect((await ui.find({ key: 'filter-focus' }))?.props.hotkey).toBe('f');
+  await $.ui.input({ plugin: 'code-kit', key: 'filter', text: 'api-eng', kind: 'change' });
+  expect(await ui.find({ key: 'lane-api' })).toBeDefined();
+  expect(await ui.find({ key: 'lane-web' })).toBeUndefined();
+  await ui.unmount();
+});
+
+test('VIEW-8 inline, the pane is the header, what needs the person and one line per lane', async ($, on) => {
+  const w = project();
+  await start($, on, w);
+  await lanes($);
+  const ui = await inlinePane($);
+  expect(await ui.find({ key: 'count-building' })).toBeDefined();
+  expect(await ui.find({ key: 'tabs' })).toBeUndefined();
+  expect((await ui.find({ key: 'lane-web' }))?.text).toMatch(/^web\s*building\s*ST-4/);
   await ui.unmount();
 });

@@ -191,7 +191,7 @@ Usage per agent, story and lane; outliers; background agents paused near the pla
 **Lane:** lead
 **Requirements:** VIEW-1, VIEW-4, VIEW-5, VIEW-6, VIEW-8
 **Depends on:** ST-11
-**Status:** todo
+**Status:** done
 
 The pane’s new frame and keyboard model.
 

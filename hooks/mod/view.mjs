@@ -95,7 +95,7 @@ export function projectState(check, status, next = null, atWork = new Set()) {
   };
 }
 
-const STATE_COLOR = {
+export const STATE_COLOR = {
   building: 'blue',
   'in review': 'yellow',
   'sent back': 'magenta',
@@ -103,11 +103,28 @@ const STATE_COLOR = {
   idle: undefined,
 };
 
+/** A lane's state as the pane shows it: `queued` while its branch waits in the merge queue (MQ-4). */
+export function shownState(lane, queue = []) {
+  const waiting = queue.some(
+    (e) => e.branch === lane.branch && ['waiting', 'merging'].includes(e.state),
+  );
+  return lane.branch && waiting ? 'queued' : lane.state;
+}
+
 /**
- * The Lanes pane's body, drawn with the elements `$.ui.resolve(e)` returned; `usage` is
- * usageSummary's, `plan` planOf's (USE-2), either null before there is any.
+ * The Lanes tab's body, drawn with the elements `$.ui.resolve(e)` returned; `usage` is
+ * usageSummary's, `plan` planOf's (USE-2), either null before there is any. `lanesOf` narrows and
+ * marks the rows (VIEW-1, VIEW-6): { filter, search, selected }, and `live` is each lane's last tool
+ * call (VIEW-4): { [lane]: { tool, ago, level } }, level null, 'quiet' or 'stalled'.
  */
-export function lanesPane(state, { Box, Text }, usage = null, plan = null, loop = null) {
+export function lanesPane(
+  state,
+  { Box, Text },
+  usage = null,
+  plan = null,
+  loop = null,
+  { filter = null, search = '', selected = null, live = {} } = {},
+) {
   const text = (value, style = {}) => Text({ ...style, children: [value] });
   if (!state || state.kind === 'none') return text(NOT_CODE_KIT, { dimColor: true });
   if (state.kind === 'invalid')
@@ -120,7 +137,17 @@ export function lanesPane(state, { Box, Text }, usage = null, plan = null, loop 
   );
   // MQ-4: a branch in the merge queue is shown as queued, not as waiting for review.
   const queued = (l) => Boolean(l.branch && inQueue.has(l.branch));
-  const rows = state.lanes.map((l) =>
+  const needle = search.trim().toLowerCase();
+  const shown = state.lanes.filter(
+    (l) =>
+      (!filter || shownState(l, loop?.queue) === filter) &&
+      (!needle ||
+        [l.name, l.agent, l.story?.id, l.story?.title, l.branch]
+          .filter(Boolean)
+          .some((s) => s.toLowerCase().includes(needle))),
+  );
+  const LIVE = { quiet: 'yellow', stalled: 'red' };
+  const rows = shown.map((l) =>
     Box({
       key: `lane-${l.name}`,
       flexDirection: 'column',
@@ -129,8 +156,13 @@ export function lanesPane(state, { Box, Text }, usage = null, plan = null, loop 
           flexDirection: 'row',
           columnGap: 2,
           children: [
-            text(l.active ? '●' : ' ', { color: 'green' }),
-            text(l.name.padEnd(width), { bold: true }),
+            text(l.name === selected ? '›' : l.active ? '●' : ' ', {
+              color: l.name === selected ? 'cyan' : 'green',
+            }),
+            text(l.name.padEnd(width), {
+              bold: true,
+              ...(l.name === selected ? { color: 'cyan' } : {}),
+            }),
             text(
               (queued(l) ? 'queued' : l.state).padEnd(9),
               queued(l)
@@ -140,6 +172,16 @@ export function lanesPane(state, { Box, Text }, usage = null, plan = null, loop 
                   : {},
             ),
             text(l.agent ?? 'the main session', { dimColor: true }),
+            ...(live[l.name]
+              ? [
+                  text(`${live[l.name].tool} · ${live[l.name].ago}`, {
+                    wrap: 'truncate-end',
+                    ...(LIVE[live[l.name].level]
+                      ? { color: LIVE[live[l.name].level] }
+                      : { dimColor: true }),
+                  }),
+                ]
+              : []),
             ...(loop?.laneNotes?.[l.name]
               ? [
                   text(loop.laneNotes[l.name], {
@@ -192,10 +234,11 @@ export function lanesPane(state, { Box, Text }, usage = null, plan = null, loop 
     rowGap: 1,
     children: [
       ...notes,
-      Box({ flexDirection: 'column', children: rows }),
+      Box({
+        flexDirection: 'column',
+        children: rows.length ? rows : [text('No lane matches the filter.', { dimColor: true })],
+      }),
       Box({ flexDirection: 'column', children: ready }),
-      ...usageSection(usage, plan, text, Box),
-      ...queueSection(loop, text, Box),
       ...reviewsSection(loop, text, Box),
       ...loopSection(loop, text, Box),
     ],
@@ -212,7 +255,7 @@ export function ago(ms) {
 }
 
 /** MQ-4: the merge queue in order, then what it merged or sent back lately. */
-function queueSection(loop, text, Box) {
+export function queueSection(loop, text, Box) {
   const entries = loop?.queue ?? [];
   if (!entries.length) return [];
   const open = entries.filter((e) => ['waiting', 'merging'].includes(e.state));
@@ -245,7 +288,7 @@ function queueSection(loop, text, Box) {
 }
 
 /** REVW-1: each branch's background review, running with its clock, or what it found. */
-function reviewsSection(loop, text, Box) {
+export function reviewsSection(loop, text, Box) {
   const reviews = loop?.reviews ?? [];
   if (!reviews.length) return [];
   const said = (r) =>
@@ -281,7 +324,7 @@ function reviewsSection(loop, text, Box) {
 }
 
 /** The loop's record (spec 05): its state and its latest steps, newest first. */
-function loopSection(loop, text, Box) {
+export function loopSection(loop, text, Box) {
   if (!loop || (!loop.steps?.length && loop.state !== 'paused')) return [];
   const steps = [...(loop.steps ?? [])].reverse().slice(0, 8);
   return [
@@ -307,7 +350,7 @@ function loopSection(loop, text, Box) {
 }
 
 /** USE-2: the plan's 5-hour use as a bar, each story's tokens, and the background agents' share. */
-function usageSection(usage, plan, text, Box) {
+export function usageSection(usage, plan, text, Box) {
   const lines = [];
   if (plan?.percent != null)
     lines.push(

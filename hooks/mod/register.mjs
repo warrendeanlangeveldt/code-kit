@@ -20,7 +20,7 @@ import {
   band,
   bandLines,
   finishedStories,
-  lanesPane,
+  ago,
   parseJson,
   planOf,
   prefilledReason,
@@ -33,6 +33,14 @@ import {
   withUsage,
 } from './view.mjs';
 import { holdable } from './hold.mjs';
+import {
+  DEFAULT_UI,
+  SENDBACK_ID,
+  lanesFrame,
+  liveLevel,
+  sendBackPane,
+  toolLine,
+} from './panes.mjs';
 import { leadPrompt, nudgeText, restartPrompt, stallDue, stepKey, stepLabel } from './loop.mjs';
 import { harnessSettings } from '../lib/harness.mjs';
 import {
@@ -83,6 +91,12 @@ const activityOf = (agentId, now) => {
   return a;
 };
 const harness = () => harnessSettings(model.check?.harness);
+// Panes v2 (spec 11): the Lanes pane's own state, the lead's last tool call, and a send-back waiting
+// for the person's reason.
+let paneUi = { ...DEFAULT_UI };
+let leadLast = null; // { tool, at }
+let sendingBack = null; // { lane, branch, story, reason, error }
+const personAsks = []; // prompts the person asked for (stop an agent), waiting for the lead to be idle
 // The reviewer (spec 07): each branch's review at its head, and the agent type registered for it.
 const reviews = new Map(); // branch → { branch, head, story, state, startedAt, findings, why?, error? }
 let reviewerAgent = null; // the registered agent's full name
@@ -672,6 +686,104 @@ export function register(on) {
         }
         if (loop.pending.length) await act.step('tick');
       },
+      // --- panes v2: the selected lane's acts (VIEW-6) ----------------------------------------
+      // A prompt the person asked for: submitted now if the lead is idle, else when it next is.
+      askLead: async (prompt, kind, target) => {
+        await act.record(kind, target, prompt);
+        if (leadTurn) personAsks.push(prompt);
+        else
+          $.prompt.submit({ text: prompt }).catch((err) => {
+            notice = `Couldn't prompt the lead: ${err?.message ?? err}`;
+          });
+        $.ui.invalidate('ui.render');
+      },
+      runningAgentOf: async (lane) =>
+        ((await $.agent.list()) ?? []).find(
+          (a) => a.status === 'running' && a.type === lane.agent,
+        ) ?? null,
+      nudgeLane: async (lane) => {
+        const agent = await act.runningAgentOf(lane);
+        if (!agent) return;
+        await act.record('nudge', `${lane.name} · by the person`);
+        await $.session
+          .send({
+            to: { agentId: agent.id },
+            text: 'The person asks: report where you are, or carry on.',
+          })
+          .catch(() => {});
+        $.ui.invalidate('ui.render');
+      },
+      stopLane: async (lane) => {
+        const agent = await act.runningAgentOf(lane);
+        if (!agent) return;
+        const answer = await $.ui
+          .ask(
+            `Stop ${agent.type} on ${lane.story?.id ?? lane.name}? Its uncommitted work stays in its worktree.`,
+            ['Stop', 'Cancel'],
+          )
+          .catch(() => 'Cancel');
+        if (answer !== 'Stop') return;
+        await act.askLead(
+          `The person asked to stop ${agent.type} (agent ${agent.id})${lane.story ? ` on ${lane.story.id}` : ''}: stop it with TaskStop, and don't dispatch its story again until they say so.`,
+          'stop',
+          lane.name,
+        );
+      },
+      sendBack: async (lane) => {
+        if (!lane.branch) return;
+        sendingBack = {
+          lane: lane.name,
+          branch: lane.branch,
+          story: lane.story?.id ?? lane.branch,
+          reason: '',
+          error: null,
+        };
+        await $.ui.open({ id: SENDBACK_ID, title: 'Send back', focus: true, closeOnEscape: true });
+        $.ui.invalidate('ui.render');
+      },
+      confirmSendBack: async (reason) => {
+        if (!sendingBack) return;
+        if (!reason?.trim()) {
+          sendingBack = { ...sendingBack, error: 'Give a reason: the lane reads it for its fix.' };
+          $.ui.invalidate('ui.render');
+          return;
+        }
+        const ran = await $.process.run(
+          ['node', cli, 'sent-back', sendingBack.branch, '--reason', reason.trim()],
+          { cwd },
+        );
+        if (ran.exitCode !== 0) {
+          sendingBack = { ...sendingBack, error: (ran.stderr || ran.stdout).trim().split('\n')[0] };
+          $.ui.invalidate('ui.render');
+          return;
+        }
+        await act.record('sent back', `${sendingBack.branch}: ${reason.trim()}`);
+        sendingBack = null;
+        await $.ui.close({ id: SENDBACK_ID });
+        await act.reload();
+      },
+      cancelSendBack: async () => {
+        sendingBack = null;
+        await $.ui.close({ id: SENDBACK_ID });
+      },
+      // VIEW-6: a lane's act, from its key or button.
+      laneAct: async (id, lane) => {
+        if (id === 'approve') {
+          const call = [...held.values()].find((c) => (c.lane ?? 'lead') === lane.name);
+          if (call) return act.approveHeld({ held: call });
+          const request = (model.requests?.open ?? []).find(
+            (r) => (r.lane ?? 'lead') === lane.name,
+          );
+          if (request) return act.approve({ request });
+          return;
+        }
+        if (id === 'review' && lane.story)
+          return act.review({ story: { ...lane.story, branch: lane.branch } });
+        if (id === 'merge') return act.mergeQueue({ branch: lane.branch });
+        if (id === 'sendBack') return act.sendBack(lane);
+        if (id === 'nudge') return act.nudgeLane(lane);
+        if (id === 'stop') return act.stopLane(lane);
+      },
       dismiss: async () => {
         notice = null;
         $.ui.invalidate('ui.render');
@@ -728,12 +840,16 @@ export function register(on) {
   // stay the judge: the call is run again once the approval is written, and refused as before otherwise.
   on('tool.call', async ($, e, next) => {
     // LOOP-3: a lane agent's tool call is activity; while it runs, the agent isn't quiet.
-    const busy = e.agentId ? activityOf(e.agentId, await $.clock.now()) : null;
+    const calledAt = await $.clock.now();
+    const busy = e.agentId ? activityOf(e.agentId, calledAt) : null;
     if (busy) {
       busy.inFlight += 1;
       busy.nudged = false;
       busy.stopped = false;
-    }
+      // VIEW-4: the agent's current or last tool call.
+      busy.tool = toolLine(e);
+      busy.at = calledAt;
+    } else if (!e.agentId) leadLast = { tool: toolLine(e), at: calledAt };
     try {
       const res = await next(e);
       const text = res?.deny ?? (res?.isError ? (res.text ?? String(res.result ?? '')) : null);
@@ -868,6 +984,12 @@ export function register(on) {
     // as the spike found it must be). The prompt it submits isn't awaited: that turn isn't this hook's.
     if (!e.agentId && (!leadTurn || leadTurn === e.turnId)) {
       leadTurn = null;
+      // What the person asked for goes first, whatever the loop's state.
+      if (personAsks.length) {
+        const text = personAsks.shift();
+        $.prompt.submit({ text }).catch(() => {});
+        return res;
+      }
       await act?.step('turn').catch(() => {});
     }
     return res;
@@ -908,26 +1030,103 @@ export function register(on) {
     };
   };
 
-  on('ui.render', { component: 'Pane', requestId: PANE_ID }, async ($, e) => {
-    const { usage, plan } = usageNow();
-    return lanesPane(model.state, $.ui.resolve(e), usage, plan, {
-      ...loopNow(await $.clock.now()),
-      queue: model.queue ?? [],
-    });
-  });
-
-  // BAND-2: absent when nothing waits. Its lines go above whatever else the band holds (another
-  // plugin's lines, such as Context Graph's, or Claude Code's own), which it keeps.
-  on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
-    const lines = bandLines({
+  // VIEW-4: each lane's current or last tool call, and how long ago.
+  const liveNow = (now) => {
+    const stall = harness().stall;
+    const live = {};
+    if (leadLast) live.lead = { tool: leadLast.tool, ago: ago(now - leadLast.at), level: null };
+    for (const a of activity.values()) {
+      if (!a.lane || !a.tool) continue;
+      if (live[a.lane] && live[a.lane].at > a.at) continue;
+      live[a.lane] = {
+        tool: a.tool,
+        at: a.at,
+        ago: a.inFlight > 0 ? 'now' : ago(now - a.at),
+        level: liveLevel(now - a.at, stall, {
+          flagged: [...flagged.values()].some((f) => f.lane === a.lane),
+          running: a.inFlight > 0,
+        }),
+      };
+    }
+    return live;
+  };
+  // The band's lines, which the pane pins as what needs the person (VIEW-5).
+  const linesNow = (now) =>
+    bandLines({
       ...model,
       reviewing,
       notice,
       ...usageNow(),
       held: [...held.values()],
-      now: await $.clock.now(),
-      loop: loopNow(await $.clock.now()),
+      now,
+      loop: loopNow(now),
     });
+
+  on('ui.render', { component: 'Pane', requestId: PANE_ID }, async ($, e) => {
+    const now = await $.clock.now();
+    const { usage, plan } = usageNow();
+    const lanesNow = model.state?.kind === 'ok' ? model.state.lanes : [];
+    return lanesFrame(
+      {
+        state: model.state,
+        usage,
+        plan,
+        loop: { ...loopNow(now), queue: model.queue ?? [] },
+        needs: linesNow(now),
+        live: liveNow(now),
+        held: [...held.values()],
+        requests: model.requests?.open ?? [],
+        ui: paneUi,
+        placement: e.props.placement,
+      },
+      $.ui.resolve(e),
+      {
+        onTab: (tab) => {
+          paneUi = { ...paneUi, tab };
+          $.ui.invalidate('ui.render');
+        },
+        onFilter: (state) => {
+          paneUi = { ...paneUi, filter: paneUi.filter === state ? null : state };
+          $.ui.invalidate('ui.render');
+        },
+        onMove: (step) => {
+          if (!lanesNow.length) return;
+          const at = lanesNow.findIndex((l) => l.name === paneUi.selected);
+          const to =
+            at < 0
+              ? step > 0
+                ? 0
+                : lanesNow.length - 1
+              : (at + step + lanesNow.length) % lanesNow.length;
+          paneUi = { ...paneUi, selected: lanesNow[to].name };
+          $.ui.invalidate('ui.render');
+        },
+        onNeed: (id, line) => act?.[id]?.(line),
+        onLane: (id, lane) => act?.laneAct(id, lane),
+        onSearch: (search) => {
+          paneUi = { ...paneUi, search };
+          $.ui.invalidate('ui.render');
+        },
+        onFocusSearch: () => $.ui.focus({ requestId: PANE_ID, key: 'filter' }).catch(() => {}),
+      },
+    );
+  });
+
+  on('ui.render', { component: 'Pane', requestId: SENDBACK_ID }, async ($, e) =>
+    sendBackPane(sendingBack, $.ui.resolve(e), {
+      onInput: (value) => {
+        if (sendingBack) sendingBack = { ...sendingBack, reason: value };
+        $.ui.invalidate('ui.render');
+      },
+      onSubmit: (value) => act.confirmSendBack(value),
+      onCancel: () => act.cancelSendBack(),
+    }),
+  );
+
+  // BAND-2: absent when nothing waits. Its lines go above whatever else the band holds (another
+  // plugin's lines, such as Context Graph's, or Claude Code's own), which it keeps.
+  on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
+    const lines = linesNow(await $.clock.now());
     if (!lines.length || !act) return next(e);
     const ours = band(lines, $.ui.resolve(e), (id, line) => act[id](line));
     const below = await next(e);

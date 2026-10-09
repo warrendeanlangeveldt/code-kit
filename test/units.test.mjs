@@ -821,3 +821,54 @@ test("REVW-3 the reviewer's report: graded findings, a failed verify a blocker, 
     /found nothing to fix on web\/st-4 at abcdef123456\.$/,
   );
 });
+
+test("VIEW-1, VIEW-4, VIEW-6 panes v2: counts, liveness and the selected lane's acts", async () => {
+  const { countsOf, laneActions, toolLine, liveLevel } = await import('../hooks/mod/panes.mjs');
+  const state = {
+    kind: 'ok',
+    lanes: [
+      { name: 'lead', state: 'idle', story: null, branch: null },
+      {
+        name: 'web',
+        state: 'building',
+        story: { id: 'ST-4' },
+        branch: 'web/st-4',
+        active: true,
+        agent: 'web-engineer',
+      },
+      { name: 'api', state: 'in review', story: { id: 'ST-5' }, branch: 'api/st-5' },
+      { name: 'core', state: 'in review', story: { id: 'ST-6' }, branch: 'core/st-6' },
+    ],
+    ready: [{ id: 'ST-9' }],
+    stories: [{ id: 'ST-1', state: 'done' }],
+  };
+  const queue = [{ branch: 'core/st-6', state: 'waiting' }];
+  assert.deepEqual(
+    countsOf(state, queue).map((c) => `${c.glyph} ${c.n} ${c.state}`),
+    ['● 1 building', '◐ 1 in review', '◆ 1 queued', '○ 1 ready', '✓ 1 merged'],
+  );
+  assert.deepEqual(countsOf({ kind: 'none' }), []);
+  const ids = (lane, extra) =>
+    laneActions(lane, { queue, ...extra }).map((a) => `${a.hotkey}:${a.id}`);
+  assert.deepEqual(ids(state.lanes[1]), ['n:nudge', 'x:stop']);
+  assert.deepEqual(ids(state.lanes[2]), ['r:review', 's:sendBack']);
+  assert.deepEqual(ids(state.lanes[3]), ['m:merge']);
+  assert.deepEqual(ids(state.lanes[1], { held: [{ lane: 'web' }] }), [
+    'a:approve',
+    'n:nudge',
+    'x:stop',
+  ]);
+  assert.equal(
+    toolLine({ tool: 'Bash', command: 'npm test -- --watch=false\nmore' }),
+    'Bash npm test -- --watch=false',
+  );
+  assert.equal(toolLine({ tool: 'Edit', file_path: 'apps/web/a.ts' }), 'Edit apps/web/a.ts');
+  assert.equal(toolLine({ tool: 'Bash', command: 'x'.repeat(60) }).length, 45);
+  assert.equal(toolLine({ tool: 'TodoWrite' }), 'TodoWrite');
+  const stall = { nudgeMinutes: 5, restartMinutes: 10 };
+  assert.equal(liveLevel(4 * 60000, stall), null);
+  assert.equal(liveLevel(5 * 60000, stall), 'quiet');
+  assert.equal(liveLevel(10 * 60000, stall), 'stalled');
+  assert.equal(liveLevel(20 * 60000, stall, { running: true }), null);
+  assert.equal(liveLevel(0, stall, { flagged: true }), 'stalled');
+});

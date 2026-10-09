@@ -1,0 +1,379 @@
+// Panes v2 (docs/specs/11-panes.md): the Lanes pane's frame. A counts header, tabs, what needs the
+// person, the tab's body and the keys, as pure functions of what the mod already holds. The Lanes
+// tab's body is view.mjs's lanesPane; the Queue and Usage tabs reuse its sections.
+import {
+  NOT_CODE_KIT,
+  STATE_COLOR,
+  lanesPane,
+  loopSection,
+  queueSection,
+  shownState,
+  usageSection,
+} from './view.mjs';
+
+export const TABS = [
+  { id: 'lanes', label: 'Lanes', hotkey: '1' },
+  { id: 'queue', label: 'Queue', hotkey: '2' },
+  { id: 'usage', label: 'Usage', hotkey: '3' },
+];
+
+/** The pane's own state, kept by the mod between draws. */
+export const DEFAULT_UI = { tab: 'lanes', selected: null, filter: null, search: '' };
+
+/** The glyph each state carries besides its colour (spec 11's quality target). */
+const GLYPH = {
+  building: '●',
+  'in review': '◐',
+  queued: '◆',
+  'sent back': '↩',
+  blocked: '■',
+  ready: '○',
+  merged: '✓',
+};
+
+/**
+ * VIEW-1: the stories counted by state, in the order a build moves through them, only those there
+ * are: [{ state, n, glyph }]. Lanes give building, in review, queued, sent back and blocked; the plan
+ * gives ready and merged.
+ */
+export function countsOf(state, queue = []) {
+  if (state?.kind !== 'ok') return [];
+  const lanes = state.lanes.map((l) => shownState(l, queue));
+  const n = (s) => lanes.filter((x) => x === s).length;
+  const counts = [
+    ['building', n('building')],
+    ['in review', n('in review')],
+    ['queued', n('queued')],
+    ['sent back', n('sent back')],
+    ['blocked', n('blocked')],
+    ['ready', state.ready.length],
+    ['merged', (state.stories ?? []).filter((s) => s.state === 'done').length],
+  ];
+  return counts.filter(([, k]) => k > 0).map(([s, k]) => ({ state: s, n: k, glyph: GLYPH[s] }));
+}
+
+/** VIEW-6's letters for the band's actions, as the needs-you strip draws them. */
+const LETTER = {
+  approve: 'a',
+  approveHeld: 'a',
+  review: 'r',
+  merge: 'm',
+  mergeQueue: 'm',
+  go: 'g',
+  pause: 'p',
+  resume: 'p',
+};
+
+/** The selected lane's own acts (VIEW-6), as its state allows them: [{ id, label, hotkey }]. */
+export function laneActions(lane, { queue = [], held = [], requests = [] } = {}) {
+  if (!lane) return [];
+  const acts = [];
+  const asked = [...held, ...requests].some((r) => (r.lane ?? 'lead') === lane.name);
+  if (asked) acts.push({ id: 'approve', label: 'Approve', hotkey: 'a' });
+  const state = shownState(lane, queue);
+  if (state === 'in review') {
+    acts.push({ id: 'review', label: 'Review', hotkey: 'r' });
+    acts.push({ id: 'sendBack', label: 'Send back', hotkey: 's' });
+  }
+  const head = queue.find((e) => ['waiting', 'merging'].includes(e.state));
+  if (head && head.branch === lane.branch) acts.push({ id: 'merge', label: 'Merge', hotkey: 'm' });
+  if (lane.active && lane.agent) {
+    acts.push({ id: 'nudge', label: 'Nudge', hotkey: 'n' });
+    acts.push({ id: 'stop', label: 'Stop', hotkey: 'x' });
+  }
+  return acts;
+}
+
+/**
+ * The Lanes pane (spec 11). `view` holds what to draw: { state, usage, plan, loop, needs, live,
+ * held, requests, ui, placement }; `needs` are the band's lines (VIEW-5). `on` acts: onTab(id),
+ * onFilter(state), onMove(step), onNeed(id, line), onLane(id, lane), onSearch(text).
+ */
+export function lanesFrame(view, els, on) {
+  const { Box, Text, Button, Input } = els;
+  const text = (value, style = {}) => Text({ ...style, children: [value] });
+  const { state, ui = DEFAULT_UI, loop = null, plan = null } = view;
+  if (!state || state.kind === 'none') return text(NOT_CODE_KIT, { dimColor: true });
+  if (state.kind === 'invalid')
+    return text('The config is invalid: run code-kit check.', { color: 'red' });
+  const queue = loop?.queue ?? [];
+
+  // VIEW-1: the counts, each a filter; the loop's state and the plan's use.
+  const loopWord =
+    loop?.state === 'off'
+      ? 'loop off'
+      : loop?.state === 'paused'
+        ? 'loop paused'
+        : loop?.state === 'done'
+          ? 'milestone done'
+          : 'loop on';
+  const header = Box({
+    key: 'header',
+    flexDirection: 'row',
+    columnGap: 2,
+    flexWrap: 'wrap',
+    children: [
+      ...countsOf(state, queue).map((c) =>
+        Button({
+          key: `count-${c.state}`,
+          label: `${c.glyph} ${c.n} ${c.state}`,
+          plain: true,
+          ...(ui.filter && ui.filter !== c.state ? { dimColor: true } : {}),
+          onPress: () => on.onFilter(c.state),
+        }),
+      ),
+      text(loopWord, { color: loop?.state === 'paused' ? 'yellow' : 'green' }),
+      ...(plan?.percent != null
+        ? [
+            text(`plan ${plan.percent}%`, {
+              color: plan.paused ? 'red' : undefined,
+              dimColor: !plan.paused,
+            }),
+          ]
+        : []),
+    ],
+  });
+
+  // VIEW-5: what waits on the person, pinned at the top with VIEW-6's letters.
+  const used = new Set();
+  const needs = (view.needs ?? []).map((line) => {
+    const actions = line.actions.filter((a) => a.id !== 'lanes');
+    return Box({
+      key: `need-${line.kind}`,
+      flexDirection: 'row',
+      columnGap: 2,
+      children: [
+        text('!', { color: 'yellow', bold: true }),
+        text(line.text, { bold: true }),
+        ...actions.map((a) => {
+          const letter = LETTER[a.id] && !used.has(LETTER[a.id]) ? LETTER[a.id] : undefined;
+          if (letter) used.add(letter);
+          return Button({
+            key: `need-${a.id}`,
+            label: a.label,
+            ...(letter ? { hotkey: letter } : {}),
+            variant: 'primary',
+            onPress: () => on.onNeed(a.id, line),
+          });
+        }),
+      ],
+    });
+  });
+
+  // VIEW-8: inline, the header, what needs the person and one line per lane.
+  if (view.placement === 'inline')
+    return Box({
+      flexDirection: 'column',
+      children: [
+        header,
+        ...needs,
+        ...state.lanes.map((l) => {
+          const live = view.live?.[l.name];
+          const s = shownState(l, queue);
+          return Box({
+            key: `lane-${l.name}`,
+            flexDirection: 'row',
+            columnGap: 1,
+            children: [
+              text(l.name, { bold: true }),
+              text(s, STATE_COLOR[s] ? { color: STATE_COLOR[s] } : { dimColor: true }),
+              ...(l.story ? [text(l.story.id, { dimColor: true })] : []),
+              ...(live
+                ? [
+                    text(`${live.tool} · ${live.ago}`, {
+                      wrap: 'truncate-end',
+                      ...(live.level === 'stalled'
+                        ? { color: 'red' }
+                        : live.level === 'quiet'
+                          ? { color: 'yellow' }
+                          : { dimColor: true }),
+                    }),
+                  ]
+                : []),
+            ],
+          });
+        }),
+      ],
+    });
+
+  // VIEW-6: the tabs, on 1 to 3.
+  const tabs = Box({
+    key: 'tabs',
+    flexDirection: 'row',
+    columnGap: 1,
+    children: TABS.map((t) =>
+      Button({
+        key: `tab-${t.id}`,
+        label: t.label,
+        hotkey: t.hotkey,
+        ...(ui.tab === t.id ? { variant: 'primary' } : { dimColor: true }),
+        onPress: () => on.onTab(t.id),
+      }),
+    ),
+  });
+
+  const selected = state.lanes.find((l) => l.name === ui.selected) ?? null;
+  const body =
+    ui.tab === 'queue'
+      ? queueSection(loop, text, Box)
+      : ui.tab === 'usage'
+        ? usageSection(view.usage, plan, text, Box)
+        : [
+            lanesPane(state, els, view.usage, plan, loop, {
+              filter: ui.filter,
+              search: ui.search,
+              selected: ui.selected,
+              live: view.live ?? {},
+            }),
+            ...loopSection(loop, text, Box),
+          ];
+  const empty =
+    ui.tab === 'queue'
+      ? 'The merge queue is empty.'
+      : ui.tab === 'usage'
+        ? 'No usage measured yet this session.'
+        : null;
+
+  // VIEW-6: j/k move between lanes; the selected lane's acts; f filters.
+  const keys =
+    ui.tab === 'lanes'
+      ? [
+          Box({
+            key: 'keys',
+            flexDirection: 'row',
+            columnGap: 1,
+            flexWrap: 'wrap',
+            children: [
+              Button({
+                key: 'lane-next',
+                label: 'Next lane',
+                hotkey: 'j',
+                plain: true,
+                onPress: () => on.onMove(1),
+              }),
+              Button({
+                key: 'lane-prev',
+                label: 'Previous',
+                hotkey: 'k',
+                plain: true,
+                onPress: () => on.onMove(-1),
+              }),
+              ...(selected
+                ? laneActions(selected, { queue, held: view.held, requests: view.requests }).map(
+                    (a) =>
+                      Button({
+                        key: `act-${a.id}`,
+                        label: `${a.label} ${selected.name}`,
+                        hotkey: used.has(a.hotkey) ? undefined : a.hotkey,
+                        plain: true,
+                        onPress: () => on.onLane(a.id, selected),
+                      }),
+                  )
+                : []),
+              ...(!used.has('p') && loop?.state !== 'off' && loop?.state !== 'done'
+                ? [
+                    Button({
+                      key: 'loop-toggle',
+                      label: loop?.state === 'paused' ? 'Resume loop' : 'Pause loop',
+                      hotkey: 'p',
+                      plain: true,
+                      onPress: () => on.onNeed(loop?.state === 'paused' ? 'resume' : 'pause', null),
+                    }),
+                  ]
+                : []),
+            ],
+          }),
+          Input({
+            key: 'filter',
+            label: 'Filter (f)',
+            value: ui.search,
+            submitLabel: 'Filter',
+            onInput: (v) => on.onSearch(v),
+            onSubmit: (v) => on.onSearch(v),
+          }),
+          Button({
+            key: 'filter-focus',
+            label: 'Filter',
+            hotkey: 'f',
+            plain: true,
+            dimColor: true,
+            onPress: () => on.onFocusSearch(),
+          }),
+        ]
+      : [];
+
+  return Box({
+    flexDirection: 'column',
+    rowGap: 1,
+    children: [
+      header,
+      ...(needs.length ? [Box({ key: 'needs', flexDirection: 'column', children: needs })] : []),
+      tabs,
+      ...(body.length ? body : [text(empty, { dimColor: true })]),
+      ...keys,
+    ],
+  });
+}
+
+/** A tool call as the liveness column reads it (VIEW-4): "Bash npm test", "Edit apps/web/a.ts". */
+export function toolLine(call) {
+  const tool = call?.tool ?? 'tool';
+  const what =
+    call?.command ?? call?.file_path ?? call?.path ?? call?.pattern ?? call?.description ?? '';
+  const short = String(what).split('\n')[0].replace(/\s+/g, ' ').trim();
+  return short ? `${tool} ${short.length > 40 ? `${short.slice(0, 39)}…` : short}` : tool;
+}
+
+/** A lane's liveness (VIEW-4): quiet past the nudge time, stalled past the restart time or flagged. */
+export function liveLevel(quietMs, stall, { flagged = false, running = false } = {}) {
+  if (flagged) return 'stalled';
+  if (running) return null;
+  if (quietMs >= stall.restartMinutes * 60000) return 'stalled';
+  if (quietMs >= stall.nudgeMinutes * 60000) return 'quiet';
+  return null;
+}
+
+export const SENDBACK_ID = 'code-kit-sendback';
+
+/** VIEW-6's send back: the branch and story, and the person's reason, which the lane's fix reads. */
+export function sendBackPane(
+  pending,
+  { Box, Text, Input, Button },
+  { onInput, onSubmit, onCancel },
+) {
+  if (!pending) return Text({ dimColor: true, children: ['Nothing to send back.'] });
+  return Box({
+    flexDirection: 'column',
+    rowGap: 1,
+    children: [
+      Text({ bold: true, children: [`Send ${pending.branch} back to the ${pending.lane} lane`] }),
+      Text({
+        children: [
+          `${pending.story} goes back for its fix, with your reason; the loop dispatches the fix.`,
+        ],
+      }),
+      Input({
+        key: 'sendback-reason',
+        label: 'Reason',
+        value: pending.reason,
+        submitLabel: 'Send back',
+        autoFocus: true,
+        onInput,
+        onSubmit,
+      }),
+      ...(pending.error ? [Text({ color: 'red', children: [pending.error] })] : []),
+      Box({
+        flexDirection: 'row',
+        columnGap: 2,
+        children: [
+          Button({
+            key: 'sendback-confirm',
+            label: 'Send back',
+            onPress: () => onSubmit(pending.reason),
+          }),
+          Button({ key: 'sendback-cancel', label: 'Cancel', onPress: onCancel }),
+        ],
+      }),
+    ],
+  });
+}
