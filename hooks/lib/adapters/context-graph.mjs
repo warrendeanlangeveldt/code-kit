@@ -33,6 +33,9 @@ function ctx(root, args) {
 const CTX = String.raw`(?:ctx|node\s+["']?[^\s"']*ctx\.mjs["']?|npx\s+(?:--yes\s+)?@warren-dean/context-graph(?:@\S+)?)`;
 const PERSONS_ACT = String.raw`^${CTX}\s+(?:ratify\b[^;&|\n]*\s--commit\b|drop\b|settings\s+set\b)`;
 
+/** A commit the person signed with their ratification trailer; agents may not write it. */
+const PERSON_SIGNED = '^Ctx-Ratified-By:(?![^\\n]*\\(delegated\\))\\s*\\S';
+
 export default {
   name: 'context-graph',
   detect: (root) => existsSync(join(root, '.ctx')),
@@ -45,9 +48,15 @@ export default {
         approval: 'ctx',
         why: "Context Graph's rules and concepts",
         // A person's ratification (`ctx ratify --commit`, `ctx drop --commit`) is signed, not logged.
-        signedBy: '^Ctx-Ratified-By:(?![^\\n]*\\(delegated\\))\\s*\\S',
+        signedBy: PERSON_SIGNED,
       },
-      { glob: '.ctx/config.toml', approval: 'ctx', why: "Context Graph's settings" },
+      // Setting Context Graph up is ratified the same way: the person commits it from their terminal.
+      {
+        glob: '.ctx/config.toml',
+        approval: 'ctx',
+        why: "Context Graph's settings",
+        signedBy: PERSON_SIGNED,
+      },
     ],
   },
   shell: {

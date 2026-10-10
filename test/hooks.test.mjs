@@ -2460,6 +2460,15 @@ try {
     failsWith(rVerify(), 'no approval-log entry records this change'),
     0,
   );
+  r.git('reset', '-q', '--hard', 'HEAD~1');
+  writeFileSync(join(r.dir, '.ctx/config.toml'), '[repo]\nratifiers = ["warren"]\n');
+  r.git('add', '-A');
+  r.git('commit', '-q', '-m', 'Set up Context Graph', '--trailer', 'Ctx-Ratified-By: warren');
+  expect(
+    "verify accepts Context Graph's settings committed with the person's ratification trailer",
+    rVerify(),
+    0,
+  );
 
   // JOIN-1 to JOIN-3: what Context Graph knows of the lanes' work, through its adapter. A stand-in
   // ctx on the PATH answers as ctx does, so the test needs no install.
