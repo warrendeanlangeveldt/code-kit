@@ -1049,9 +1049,17 @@ try {
       truth(!m.git('log', '--oneline', 'main').includes('strays')),
       0,
     );
+    // The lane agent's worktree, where its branch is checked out.
+    const laneTree = join(m.dir, '.claude/worktrees/agent-web');
+    m.git('worktree', 'add', '-q', laneTree, 'web/st-1');
     expect(
       'AUT-5 a branch that passes verify is merged',
       mKit('merge', 'web/st-1', '--delegated'),
+      0,
+    );
+    expect(
+      "and the lane agent's clean worktree is removed, the branch kept",
+      truth(!existsSync(laneTree) && m.git('branch', '--list', 'web/st-1').includes('web/st-1')),
       0,
     );
     expect(

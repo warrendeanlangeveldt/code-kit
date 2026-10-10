@@ -471,9 +471,24 @@ function mergeOne(branch, config, byPerson) {
         'conflict',
       );
     }
+    // A lane agent's worktree has done its work once its branch is merged: removed when it holds
+    // nothing uncommitted (the branch stays), so finished lanes don't pile up checkouts.
+    let removed = '';
+    const agentTree = checkedOut(branch);
+    if (
+      agentTree?.includes('/.claude/worktrees/') &&
+      !g(agentTree, 'status', '--porcelain').trim()
+    ) {
+      try {
+        g(root, 'worktree', 'remove', agentTree);
+        removed = ` Removed its worktree, ${agentTree}.`;
+      } catch {
+        // in use, or locked: left as it is
+      }
+    }
     return {
       into,
-      message: `Merged ${branch} into ${into}: verify passed on ${changed.length} file(s)${lane ? `, held to ${heldTo(lane)}` : ''}.`,
+      message: `Merged ${branch} into ${into}: verify passed on ${changed.length} file(s)${lane ? `, held to ${heldTo(lane)}` : ''}.${removed}`,
     };
   } finally {
     cleanup();
