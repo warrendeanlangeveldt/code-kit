@@ -2,8 +2,9 @@
 // PostToolUse (Bash) and part of Stop: shell commands can write files without going through the
 // path guard, so after each one every uncommitted change in the worktree is checked against the
 // same rules (lib/rules.mjs). Anything the actor may not write is reported for revert.
-import { readFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   APPROVAL_LOG,
@@ -39,12 +40,54 @@ export function changedFiles(root) {
     .filter((f) => f !== LANE_FILE);
 }
 
+// A read-only agent (a reviewer, a card writer) works in a checkout it shares, usually the lead's,
+// whose uncommitted work isn't the agent's. So its shell commands are judged by what each one changed:
+// the uncommitted files are noted before the command runs (guard-bash) and compared after it.
+const snapshotFile = (id) => join(tmpdir(), 'code-kit-shell', `${id}.json`);
+const signature = (root, rel) => {
+  try {
+    const s = statSync(join(root, rel));
+    return `${s.size}:${s.mtimeMs}`;
+  } catch {
+    return 'gone';
+  }
+};
+
+/** Notes the uncommitted files and their state before a read-only agent's command runs. */
+export function noteBefore(input) {
+  const root = actorRoot(input);
+  if (!root || !input.tool_use_id) return;
+  const before = Object.fromEntries(changedFiles(root).map((rel) => [rel, signature(root, rel)]));
+  try {
+    mkdirSync(join(tmpdir(), 'code-kit-shell'), { recursive: true });
+    writeFileSync(snapshotFile(input.tool_use_id), JSON.stringify(before));
+  } catch {
+    // without a note, every uncommitted change is judged, as for any actor
+  }
+}
+
+/** What was noted before the command, taken once; null when nothing was. */
+function takeNote(input) {
+  if (!input.tool_use_id) return null;
+  const file = snapshotFile(input.tool_use_id);
+  try {
+    const before = JSON.parse(readFileSync(file, 'utf8'));
+    rmSync(file, { force: true });
+    return before;
+  } catch {
+    return null;
+  }
+}
+
 export function auditProblems(input, config) {
   const root = actorRoot(input);
   if (!root) return [];
   const actor = actorFor(input, root, config);
+  const before = actor.kind === 'readonly' ? takeNote(input) : null;
   return (
     changedFiles(root)
+      // A read-only agent answers for what its command changed, not for the checkout it shares.
+      .filter((rel) => !before || before[rel] !== signature(root, rel))
       .filter((rel) => !(rel === APPROVAL_LOG && appendedOnly(root, rel)))
       // Mid-merge, the incoming branch's changes are its own, not this actor's writes.
       .filter((rel) => !arrivesWithMerge(root, rel))

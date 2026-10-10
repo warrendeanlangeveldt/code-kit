@@ -33,7 +33,7 @@ export function maskQuotes(text) {
       } else if (c === quote) {
         quote = null;
         out += c;
-      } else out += c === '\n' ? '\n' : '_';
+      } else out += '_'; // a newline inside quotes too: it ends no command
     } else if (c === '\\' && i + 1 < text.length) {
       out += '__';
       i++;

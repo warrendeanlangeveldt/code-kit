@@ -173,6 +173,12 @@ try {
   expect('lead may not write an unowned path', write('random/x.ts'), 2);
   expect('an unmapped agent is read-only', write('docs/notes.md', 'Explore'), 2, 'read-only');
   expect(
+    "REVW-2 code-kit's reviewer is read-only: it can't write",
+    write('apps/web/x.ts', 'code-kit:reviewer'),
+    2,
+    'read-only',
+  );
+  expect(
     'lane agent without spec-check is blocked',
     write('supabase/migrations/1_x.sql', 'db-engineer'),
     2,
@@ -212,6 +218,11 @@ try {
 
   // --- secrets, approvals, outside the repository ------------------------------------------------
   expect('nobody writes .env files', write('apps/office/.env.local', 'web-engineer'), 2, 'secrets');
+  expect(
+    "an env file's template is written like any other file",
+    write('apps/office/.env.local.example', 'web-engineer'),
+    0,
+  );
   expect('files outside the project are blocked', write(join('..', 'elsewhere.txt')), 2);
   expect("the lead writes the config's outside paths", write(join('..', 'code-kit', 'x.mjs')), 0);
   expect('a lane may not', write(join('..', 'code-kit', 'x.mjs'), 'web-engineer'), 2);
@@ -325,11 +336,30 @@ try {
     2,
   );
   expect(
+    'reading the log through the shell is refused too, and the refusal says to use the Read tool',
+    bash('cat .claude/approval-log.jsonl | head'),
+    2,
+    'read it with the Read tool',
+  );
+  expect(
     'the lead edits the kit through the shell',
     bash("sed -i '' s/a/b/ .claude/code-kit.json"),
     0,
   );
   expect('a lane may not', bash("sed -i '' s/a/b/ .claude/code-kit.json", 'web-engineer'), 2);
+  expect(
+    'a lane may read the kit in a line that writes elsewhere',
+    bash(
+      '(npm ci >/tmp/ci.log 2>&1; tail -3 /tmp/ci.log); ls .claude/skills 2>/dev/null',
+      'web-engineer',
+    ),
+    0,
+  );
+  expect(
+    'but not write it through a pipe',
+    bash('echo x | tee .claude/agents/web.md', 'web-engineer'),
+    2,
+  );
   expect("the project's blocked commands", bash('supabase db push'), 2, 'Deploying is done by CI');
   expect('restricted commands: an owning lane', bash('supabase db reset', 'db-engineer'), 0);
   expect('restricted commands: the lead', bash('supabase db reset'), 0);
@@ -497,6 +527,13 @@ try {
     'change request',
   );
   expect('flags before the package no longer slip through', bash('npm install -D lodash'), 2);
+  expect(
+    'text that mentions an install, quoted in an echo, adds no dependency',
+    bash(
+      'echo "- gotchas — stage/commit separately; write package.json before npm install" >> NOTES.md',
+    ),
+    0,
+  );
   approveFor('web', 'dep-lodash');
   expect('with its approval the lane installs it', bash(addLodash, 'web-engineer'), 0);
   expect('another lane may not use it', bash(addLodash, 'backend-engineer'), 2);
@@ -508,6 +545,7 @@ try {
     'zod',
   );
   expect('a read-only agent never installs', bash(addLodash, 'Explore'), 2, 'read-only');
+  expect('nor may the reviewer install', bash(addLodash, 'code-kit:reviewer'), 2, 'read-only');
   put('package.json', '{ "dependencies": { "lodash": "4" } }\n');
   put('apps/office/package.json', '{ "dependencies": { "lodash": "4" } }\n');
   expect(
@@ -679,7 +717,22 @@ try {
       ),
       0,
     );
-    expect('--via takes only pane', kit('approve', 'dep-x', '--reason', 'y', '--via', 'chat'), 1);
+    expect(
+      "--via takes pane or a tool's name, nothing else",
+      kit('approve', 'dep-x', '--reason', 'y', '--via', 'Chat Pane!'),
+      1,
+    );
+    expect(
+      "--via <tool> marks the approval as given in that tool's pane",
+      truth(
+        kit('approve', 'kit', '--reason', 'the reviewer model', '--via', 'context-graph').status ===
+          0 &&
+          readFileSync(join(repo, '.claude/approvals/kit'), 'utf8').includes(
+            'the reviewer model (approved in the context-graph pane)',
+          ),
+      ),
+      0,
+    );
     put('.claude/code-kit.json', relayFixture);
     expect(
       'ACT-2 no agent approves as the person, even with chat approvals on',
@@ -874,6 +927,78 @@ try {
     b.git('merge', '--abort');
   }
 
+  // --- the first merge: the base has no code-kit rules committed yet, so it's the person's -----------
+  {
+    const f = newRepo(false);
+    cleanups.push(f.dir);
+    const fKit = (...args) =>
+      spawnSync('node', [kitCli, ...args], { cwd: f.dir, encoding: 'utf8' });
+    f.git('checkout', '-q', '-b', 'lead/st-1');
+    mkdirSync(join(f.dir, '.claude'), { recursive: true });
+    writeFileSync(
+      join(f.dir, '.claude/code-kit.json'),
+      JSON.stringify({ ...JSON.parse(fixture), approvals: { delegate: { merge: true } } }),
+    );
+    writeFileSync(join(f.dir, '.gitignore'), '.claude/approvals/\n.claude/state/\n');
+    mkdirSync(join(f.dir, 'docs/spec'), { recursive: true });
+    writeFileSync(
+      join(f.dir, 'docs/spec/01-booking.md'),
+      '# 01. Booking\n\n### BOOK-1 Request\n\nx\n',
+    );
+    writeFileSync(
+      join(f.dir, 'docs/spec/plan.md'),
+      '# Plan\n\n## M1\n\n### ST-1 Booking form\n\n**Lane:** web\n**Requirements:** BOOK-1\n**Status:** todo\n',
+    );
+    // Committed through the commit hook, which logs the kit's files as it does in a session.
+    spawnSync('node', [join(hooks, 'guard-bash.mjs')], {
+      input: JSON.stringify({
+        cwd: f.dir,
+        tool_input: { command: 'git add -A && git commit -m "switch on code-kit"' },
+      }),
+      env: { ...process.env, CLAUDE_PROJECT_DIR: f.dir },
+      encoding: 'utf8',
+    });
+    f.git('add', '-A');
+    f.git('commit', '-q', '-m', 'switch on code-kit');
+    // The lead carries on from its first branch, where the rules are.
+    f.git('checkout', '-q', '-b', 'lead/st-2');
+    fKit('queue', 'add', 'lead/st-1');
+    const step = JSON.parse(fKit('next', '--json').stdout);
+    expect(
+      'next offers the first merge to the person, not the lead',
+      truth(
+        step.step !== 'merge' &&
+          step.attention.some((a) =>
+            a.includes("this first merge, which brings the rules onto it, is the person's"),
+          ),
+      ),
+      0,
+    );
+    expect(
+      'and check reports merges as not yet delegated',
+      truth(
+        JSON.parse(fKit('check', '--json').stdout).delegatesMerge === false &&
+          JSON.parse(fKit('check', '--json').stdout).firstMerge === true,
+      ),
+      0,
+    );
+    expect(
+      "the lead's merge is refused, saying the person makes it and how",
+      fKit('queue', 'merge', '--delegated'),
+      1,
+      'queue merge --person',
+    );
+    expect('the person makes the first merge', fKit('queue', 'merge', '--person'), 0);
+    expect(
+      'after it, main delegates merges to the lead by its committed rules',
+      truth(
+        JSON.parse(fKit('check', '--json').stdout).delegatesMerge === true &&
+          JSON.parse(fKit('check', '--json').stdout).firstMerge === false,
+      ),
+      0,
+    );
+  }
+
   // --- delegated merges: the lead merges a branch that passes verify --------------------------------
   {
     const mergeFixture = (merge) =>
@@ -924,9 +1049,17 @@ try {
       truth(!m.git('log', '--oneline', 'main').includes('strays')),
       0,
     );
+    // The lane agent's worktree, where its branch is checked out.
+    const laneTree = join(m.dir, '.claude/worktrees/agent-web');
+    m.git('worktree', 'add', '-q', laneTree, 'web/st-1');
     expect(
       'AUT-5 a branch that passes verify is merged',
       mKit('merge', 'web/st-1', '--delegated'),
+      0,
+    );
+    expect(
+      "and the lane agent's clean worktree is removed, the branch kept",
+      truth(!existsSync(laneTree) && m.git('branch', '--list', 'web/st-1').includes('web/st-1')),
       0,
     );
     expect(
@@ -984,6 +1117,149 @@ try {
       "main doesn't delegate merges",
     );
     m.git('checkout', '-q', 'main');
+  }
+
+  // --- the merge queue: in the order reviews passed, each verified against the base as it is then ---
+  {
+    const q = newRepo(false);
+    cleanups.push(q.dir);
+    mkdirSync(join(q.dir, '.claude'), { recursive: true });
+    writeFileSync(
+      join(q.dir, '.claude/code-kit.json'),
+      JSON.stringify({ ...JSON.parse(fixture), approvals: { delegate: { merge: true } } }),
+    );
+    writeFileSync(join(q.dir, '.gitignore'), '.claude/approvals/\n.claude/state/\n');
+    q.git('add', '-A');
+    q.git('commit', '-q', '-m', 'kit');
+    const qPut = (rel, body) => {
+      mkdirSync(dirname(join(q.dir, rel)), { recursive: true });
+      writeFileSync(join(q.dir, rel), body);
+    };
+    const qKit = (...args) =>
+      spawnSync('node', [kitCli, ...args], { cwd: q.dir, encoding: 'utf8' });
+    const qHook = (command, agent) =>
+      spawnSync('node', [join(hooks, 'guard-bash.mjs')], {
+        input: JSON.stringify({
+          cwd: q.dir,
+          tool_input: { command },
+          ...(agent ? { agent_type: agent } : {}),
+        }),
+        env: { ...process.env, CLAUDE_PROJECT_DIR: q.dir },
+        encoding: 'utf8',
+      });
+    for (const [branch, file, body] of [
+      ['web/st-a', 'apps/office/lib/shared.ts', 'export const shared = "a";\n'],
+      ['web/st-b', 'apps/office/lib/shared.ts', 'export const shared = "b";\n'],
+      ['web/st-c', 'apps/office/lib/c.ts', 'export const c = 1;\n'],
+    ]) {
+      q.git('checkout', '-q', '-b', branch, 'main');
+      qPut(file, body);
+      q.git('add', '-A');
+      q.git('commit', '-q', '-m', branch);
+    }
+    q.git('checkout', '-q', 'main');
+    expect(
+      'MQ-1 a lane may not queue a branch',
+      qHook(`node "${kitCli}" queue add web/st-a`, 'web-engineer'),
+      2,
+      'only the lead puts branches in the merge queue',
+    );
+    expect('the lead may', qHook(`node "${kitCli}" queue add web/st-a`), 0);
+    expect(
+      'no lane merges the queue',
+      qHook(`node "${kitCli}" queue merge --delegated`, 'web-engineer'),
+      2,
+      'only the lead merges',
+    );
+    expect(
+      'and no agent merges it as the person',
+      qHook(`node "${kitCli}" queue merge --person`),
+      2,
+      "the person's own act",
+    );
+    const says = (res, text) =>
+      truth(res.status === 0 && res.stdout.includes(text), res.stdout + res.stderr);
+    for (const b of ['web/st-a', 'web/st-b', 'web/st-c']) qKit('queue', 'add', b);
+    expect(
+      'a branch already waiting keeps its place',
+      says(qKit('queue', 'add', 'web/st-a'), 'already in the merge queue'),
+      0,
+    );
+    expect(
+      'MQ-4 the queue lists the branches in the order their reviews passed',
+      truth(
+        JSON.parse(qKit('queue', '--json').stdout)
+          .map((e) => `${e.branch}:${e.state}`)
+          .join() === 'web/st-a:waiting,web/st-b:waiting,web/st-c:waiting',
+      ),
+      0,
+    );
+    expect(
+      'there is no branch to queue',
+      qKit('queue', 'add', 'web/st-z'),
+      1,
+      'There is no branch',
+    );
+    expect(
+      'MQ-1 the head merges first, verified',
+      says(qKit('queue', 'merge', '--delegated'), 'Next in the queue: web/st-b'),
+      0,
+    );
+    const conflict = qKit('queue', 'merge', '--delegated');
+    expect(
+      'MQ-3 a branch that no longer merges cleanly is sent back, with why',
+      truth(
+        conflict.status === 1 &&
+          conflict.stderr.includes('sent back to its lane (conflicts with main after web/st-a)'),
+        conflict.stderr,
+      ),
+      0,
+    );
+    expect(
+      'recorded as a send-back, as the review would',
+      truth(
+        readFileSync(join(q.dir, '.claude/state/reviews.jsonl'), 'utf8').includes(
+          '"reason":"conflicts with main after web/st-a"',
+        ),
+      ),
+      0,
+    );
+    expect(
+      'and main is as web/st-a left it',
+      truth(readFileSync(join(q.dir, 'apps/office/lib/shared.ts'), 'utf8').includes('"a"')),
+      0,
+    );
+    expect(
+      'the next one merges',
+      says(qKit('queue', 'merge', '--delegated'), 'The queue is empty.'),
+      0,
+    );
+    expect(
+      'MQ-4 merged and sent-back entries stay listed with their state',
+      truth(
+        JSON.parse(qKit('queue', '--json').stdout)
+          .map((e) => `${e.branch}:${e.state}`)
+          .join() === 'web/st-a:merged,web/st-b:sent back,web/st-c:merged',
+      ),
+      0,
+    );
+    expect(
+      'an empty queue merges nothing',
+      says(qKit('queue', 'merge', '--delegated'), 'empty'),
+      0,
+    );
+    qKit('queue', 'add', 'web/st-b');
+    expect(
+      'a branch can be taken out',
+      says(qKit('queue', 'drop', 'web/st-b'), 'Took web/st-b out'),
+      0,
+    );
+    expect(
+      'the merge needs --delegated or --person',
+      qKit('queue', 'merge'),
+      1,
+      'needs --delegated',
+    );
   }
 
   // --- approvals reach lanes in their own worktrees ----------------------------------------------
@@ -1305,6 +1581,22 @@ try {
       ),
       0,
     );
+    const checked = JSON.parse(sCli('check', '--json').stdout);
+    expect(
+      'check --json says which harness settings the person chose, the rest being defaults',
+      truth(checked.harnessSet.join() === 'autonomy', JSON.stringify(checked.harnessSet)),
+      0,
+    );
+    expect(
+      'and settings --json marks each as chosen or not',
+      truth(
+        JSON.parse(sCli('settings', '--json').stdout)
+          .filter((r) => r.set)
+          .map((r) => r.key)
+          .join() === 'autonomy',
+      ),
+      0,
+    );
     const bad = sCli('settings', 'set', 'hold.minutes', '99', '--reason', 'longer');
     expect(
       'a value out of range changes nothing',
@@ -1346,6 +1638,42 @@ try {
       "the person's own act",
     );
     expect('but listing them is fine', sBash('code-kit settings --json'), 0);
+
+    // HOLD-3, HOLD-4: a held call waits in `code-kit hold` until the band answers, or the hold time ends.
+    const waiting = (id, minutes) =>
+      new Promise((done) => {
+        const child = spawn(
+          'node',
+          [join(here, '..', 'bin', 'code-kit.mjs'), 'hold', id, '--minutes', minutes],
+          { cwd: s.dir },
+        );
+        let said = '';
+        child.stdout.on('data', (d) => (said += d));
+        child.on('close', () => done(said.trim()));
+      });
+    const approved = waiting('toolu_held1', '1');
+    await new Promise((r) => setTimeout(r, 400));
+    const answered = sCli('hold', 'toolu_held1', '--answer', 'approved');
+    expect(
+      'HOLD-3 hold waits until the band answers, and prints the answer',
+      truth(answered.status === 0 && (await approved) === 'approved', answered.stderr),
+      0,
+    );
+    expect(
+      'and the answer is used up',
+      truth(!existsSync(join(s.dir, '.claude/state/held/toolu_held1'))),
+      0,
+    );
+    expect(
+      'HOLD-4 with no answer in the hold time it times out',
+      truth((await waiting('toolu_held2', '0.01')) === 'timed out'),
+      0,
+    );
+    expect(
+      'an id that could reach outside the folder is refused',
+      sCli('hold', '../config', '--answer', 'approved'),
+      1,
+    );
   }
 
   const check = cli('check');
@@ -1925,6 +2253,7 @@ try {
     'cd src && ' + 'ctx drop src.small --reason no',
     'node "/x/adapters/claude-code/ctx.mjs" drop src.small --reason no',
     'npx @warren-dean/context-graph ratify C:events --commit',
+    'ctx settings set card_writer true --reason "try it"',
   ])
     expect(
       `no Claude actor runs the person's ctx act: ${act}`,
@@ -1932,6 +2261,17 @@ try {
       2,
       "the person's own acts",
     );
+  // A heredoc or a quoted message that mentions one is data, not the act.
+  expect(
+    "a commit message whose line starts with a person's ctx act is not the act",
+    cBash("git commit -F - <<'EOF'\nctx settings set changes one as the person's act\nEOF"),
+    0,
+  );
+  expect(
+    'nor is a quoted message that spans lines',
+    cBash('git commit -m "Notes\nctx drop src.small is the person\'s"'),
+    0,
+  );
   expect('ratifying without a commit is untouched', cBash('ctx ratify C:events'), 0);
   expect(
     'text that only mentions the act is untouched',
@@ -1971,6 +2311,69 @@ try {
     0,
   );
   expect('with .ctx/, any lane writes file cards too', cWrite('.ctx/cards.ctx', 'web-engineer'), 0);
+  // Context Graph's card writer and curator are read-only agents to code-kit, yet record cards and
+  // decisions like any agent: the paths any actor may write are theirs too, and nothing else is.
+  expect(
+    'the card writer, a read-only agent, writes file cards',
+    cWrite('.ctx/cards.ctx', 'context-graph:card-writer'),
+    0,
+  );
+  expect(
+    'and the curator records decisions',
+    cWrite('.ctx/decisions.ctx', 'context-graph:curator'),
+    0,
+  );
+  expect(
+    'but neither writes anything else',
+    cWrite('apps/office/x.ts', 'context-graph:card-writer'),
+    2,
+    'read-only',
+  );
+  {
+    const before = existsSync(join(c.dir, '.ctx/cards.ctx'))
+      ? readFileSync(join(c.dir, '.ctx/cards.ctx'), 'utf8')
+      : '';
+    writeFileSync(
+      join(c.dir, '.ctx/cards.ctx'),
+      `${before}F apps/office/a.ts 0123456789ab 2026-10-10 w A card.\n`,
+    );
+    expect(
+      "nor does the audit flag a card the card writer's shell command wrote",
+      cHook('lane-audit.mjs', as('context-graph:card-writer')),
+      0,
+    );
+    writeFileSync(join(c.dir, '.ctx/cards.ctx'), before);
+  }
+  {
+    // The card writer works in the lead's checkout, where the lead has uncommitted work of its own.
+    mkdirSync(join(c.dir, 'apps/office'), { recursive: true });
+    writeFileSync(join(c.dir, 'apps/office/lead-wip.ts'), 'export const wip = 1;\n');
+    const writer = { ...as('context-graph:card-writer'), tool_use_id: 'tu-card-1' };
+    const shell = (id, command) =>
+      cHook('guard-bash.mjs', { ...writer, tool_use_id: id, tool_input: { command } });
+    shell('tu-card-1', 'node ctx card apps/office/a.ts --text "A card."');
+    const cards = readFileSync(join(c.dir, '.ctx/cards.ctx'), 'utf8');
+    writeFileSync(
+      join(c.dir, '.ctx/cards.ctx'),
+      `${cards}F apps/office/b.ts 0123456789ab 2026-10-10 w B.\n`,
+    );
+    expect(
+      "a read-only agent's command answers for what it changed, not the lead's uncommitted work",
+      cHook('lane-audit.mjs', writer),
+      0,
+    );
+    shell('tu-card-2', 'node ctx card apps/office/a.ts --text "A card." > apps/office/out.ts');
+    writeFileSync(join(c.dir, 'apps/office/out.ts'), 'x\n');
+    expect(
+      'but a file its command wrote outside its paths is still caught',
+      cHook('lane-audit.mjs', { ...writer, tool_use_id: 'tu-card-2' }),
+      2,
+      'apps/office/out.ts',
+    );
+    rmSync(join(c.dir, 'apps/office/out.ts'));
+    rmSync(join(c.dir, 'apps/office/lead-wip.ts'));
+    writeFileSync(join(c.dir, '.ctx/cards.ctx'), cards);
+  }
 
   // --- layer rules before the write --------------------------------------------------------------
   const cEdit = (tool, rel, toolInput) =>
@@ -2057,6 +2460,76 @@ try {
     failsWith(rVerify(), 'no approval-log entry records this change'),
     0,
   );
+  r.git('reset', '-q', '--hard', 'HEAD~1');
+  writeFileSync(join(r.dir, '.ctx/config.toml'), '[repo]\nratifiers = ["warren"]\n');
+  r.git('add', '-A');
+  r.git('commit', '-q', '-m', 'Set up Context Graph', '--trailer', 'Ctx-Ratified-By: warren');
+  expect(
+    "verify accepts Context Graph's settings committed with the person's ratification trailer",
+    rVerify(),
+    0,
+  );
+
+  // JOIN-1 to JOIN-3: what Context Graph knows of the lanes' work, through its adapter. A stand-in
+  // ctx on the PATH answers as ctx does, so the test needs no install.
+  {
+    const bin = mkdtempSync(join(tmpdir(), 'code-kit-ctx-'));
+    cleanups.push(bin);
+    writeFileSync(
+      join(bin, 'ctx'),
+      `#!/usr/bin/env node
+const [cmd, ...rest] = process.argv.slice(2);
+if (cmd === 'agents') console.log(JSON.stringify(rest.includes('s1') ? [
+  { agent: 'a1', agentType: 'web-engineer', read: [], searched: [], cardsOwed: ['src/a.ts'],
+    edited: [{ path: 'src/a.ts', understood: false, missing: ['src/b.ts'] }, { path: 'src/c.ts', understood: true, missing: [] }] },
+  { agent: 'main', agentType: null, read: [], searched: [], cardsOwed: [], edited: [] },
+] : []));
+else if (cmd === 'file') console.log(JSON.stringify({ path: rest[0], rules: [
+  { id: 'K:no-fetch', mode: 'E', text: 'No fetch in components' },
+  { id: 'K:dates', mode: 'G?', text: 'Dates through lib/date' },
+] }));
+else process.exit(1);
+`,
+      { mode: 0o755 },
+    );
+    const withCtx = (...args) =>
+      spawnSync('node', [join(here, '..', 'bin', 'code-kit.mjs'), ...args], {
+        cwd: r.dir,
+        encoding: 'utf8',
+        env: { ...process.env, PATH: `${bin}:${process.env.PATH}` },
+      });
+    const facts = JSON.parse(withCtx('adapters', '--json', '--session', 's1').stdout || '[]');
+    const web = facts.find((f) => f.name === 'context-graph')?.lanes?.['web-engineer'];
+    expect(
+      'JOIN-2 adapters --json gives each agent type its edits without understanding and cards owed',
+      truth(
+        web?.withoutUnderstanding.length === 1 &&
+          web.withoutUnderstanding[0].path === 'src/a.ts' &&
+          web.withoutUnderstanding[0].unread.join() === 'src/b.ts' &&
+          web.cardsOwed.join() === 'src/a.ts' &&
+          facts[0].open?.command === 'graph',
+        JSON.stringify(facts),
+      ),
+      0,
+    );
+    const without = spawnSync(
+      process.execPath,
+      [join(here, '..', 'bin', 'code-kit.mjs'), 'adapters', '--json'],
+      {
+        cwd: r.dir,
+        encoding: 'utf8',
+        env: { ...process.env, PATH: '/usr/bin:/bin' },
+      },
+    );
+    expect(
+      'JOIN-1 without ctx available there are no combined facts',
+      truth(
+        without.status === 0 && JSON.parse(without.stdout).length === 0,
+        without.stdout + without.stderr,
+      ),
+      0,
+    );
+  }
 
   // --- next: the step to take, from the project's state -----------------------------------------
   const nextIn = (dir) => {
@@ -2152,6 +2625,105 @@ try {
   vCommit('ST-2 fix');
   v.git('checkout', '-q', 'main');
   nextIs('once the lane commits its fix, the branch goes to review again', v.dir, 'review', 'ST-2');
+  // The merge queue: a branch whose review passed isn't reviewed again; the person merges it here.
+  vCli('queue', 'add', 'web/st-2');
+  const waitingMerge = nextIn(v.dir);
+  expect(
+    'MQ-2 a queued branch is not reviewed again, and waits for the person where merges are not delegated',
+    truth(
+      waitingMerge.step !== 'review' &&
+        waitingMerge.attention.some((a) =>
+          a.includes('web/st-2 passed review and waits for the person'),
+        ),
+      JSON.stringify(waitingMerge),
+    ),
+    0,
+  );
+  const vConfig = readFileSync(join(v.dir, '.claude/code-kit.json'), 'utf8');
+  writeFileSync(
+    join(v.dir, '.claude/code-kit.json'),
+    JSON.stringify({ ...JSON.parse(vConfig), approvals: { delegate: { merge: true } } }),
+  );
+  expect(
+    "MQ-2 delegation is the base's committed rule: an uncommitted one doesn't let the lead merge",
+    truth(nextIn(v.dir).step !== 'merge'),
+    0,
+  );
+  // Delegation is read from the rules committed on the base, so the change is committed there.
+  v.git('commit', '-q', '-am', 'delegate merges');
+  nextIs(
+    'MQ-2 where merges are delegated, the lead merges the head first',
+    v.dir,
+    'merge',
+    'web/st-2',
+  );
+  writeFileSync(
+    join(v.dir, '.claude/code-kit.json'),
+    JSON.stringify({
+      ...JSON.parse(vConfig),
+      approvals: { delegate: { merge: true } },
+      harness: { autonomy: 'propose' },
+    }),
+  );
+  expect(
+    'but not under autonomy propose: the person merges',
+    truth(nextIn(v.dir).step !== 'merge'),
+    0,
+  );
+  writeFileSync(join(v.dir, '.claude/code-kit.json'), vConfig);
+  v.git('commit', '-q', '-am', 'stop delegating merges');
+  vCli('queue', 'drop', 'web/st-2');
+  // story: one story's facts for the drill-down.
+  vPut(
+    '.claude/state/spec-check/web_st-2.md',
+    '# Spec check\n\n| Requirement | Status (done / partial / missing / conflicts) | Where | Note |\n| --- | --- | --- | --- |\n| BOOK-2 Cancel | done | apps/office/lib/cancel.ts | |\n',
+  );
+  const told = vCli('story', 'st-2', '--json');
+  const facts = JSON.parse(told.stdout || '{}');
+  expect(
+    "VIEW-7 story gives a story's requirements, its spec-check rows, its diff and verify without checks",
+    truth(
+      facts.id === 'ST-2' &&
+        facts.branch === 'web/st-2' &&
+        facts.requirements.map((r) => r.id).join() === 'BOOK-2' &&
+        facts.specCheck?.rows[0]?.requirement === 'BOOK-2' &&
+        facts.specCheck.rows[0].status === 'done' &&
+        facts.diff.files.some((f) => f.path === 'apps/office/lib/cancel.ts' && f.added === 1) &&
+        facts.diff.text.includes('+export const cancel = 1;') &&
+        Object.values(facts.verify.problems).flat().length === 0 &&
+        facts.verify.checks === false,
+      told.stderr || told.stdout.slice(0, 400),
+    ),
+    0,
+  );
+  expect(
+    'and leaves no temporary worktree behind',
+    truth(v.git('worktree', 'list').trim().split('\n').length === 1),
+    0,
+  );
+  expect(
+    'a story the plan has not is refused',
+    vCli('story', 'ST-99', '--json'),
+    1,
+    'There is no story ST-99',
+  );
+  // timeline: when each story's work happened, for the lanes' bars.
+  const timed = JSON.parse(vCli('timeline', '--json').stdout || '{}');
+  const st2 = timed.stories?.find((s) => s.id === 'ST-2');
+  expect(
+    "VIEW-2 timeline gives a story branch's start, last commit and send-backs",
+    truth(
+      st2 &&
+        st2.branch === 'web/st-2' &&
+        st2.started > 0 &&
+        st2.lastCommit >= st2.started &&
+        st2.merged === null &&
+        st2.sentBack.length === 1 &&
+        timed.now >= st2.lastCommit,
+      JSON.stringify(st2),
+    ),
+    0,
+  );
   // A story with commits whose dependency isn't done is blocked on it, not finished.
   const planNow = readFileSync(join(v.dir, 'docs/spec/plan.md'), 'utf8');
   vPut(

@@ -2,7 +2,8 @@
 //
 // Actors:
 // - a lane agent (its agent_type is a lane's "agent") writes only that lane's paths;
-// - any other subagent (research, planning, review) is read-only;
+// - any other subagent (research, planning, review) is read-only, but for the paths any actor may write
+//   (a card or a decision it records, code-kit's own state);
 // - the main session in a worktree with a .lane file acts as that lane (a person running a lane);
 // - the main session otherwise is the lead, who writes the lead's paths and delegates the rest.
 // Protected paths are recorded in the approval log whenever they are committed; only the lead may
@@ -219,8 +220,9 @@ function ownedPaths(actor, config) {
 
 /** Whether `rel` is the actor's own to write: its paths, or the paths any actor may write. */
 export function owns(actor, rel, config) {
-  if (actor.kind === 'readonly') return false;
+  // The paths any actor may write are a read-only agent's too: a card or a decision it records.
   if (matchesAny(rel, config.anyActor)) return true;
+  if (actor.kind === 'readonly') return false;
   const excluded = actor.kind === 'lane' ? config.lanes[actor.lane]?.exclude : [];
   return matchesAny(rel, ownedPaths(actor, config)) && !matchesAny(rel, excluded);
 }
@@ -408,8 +410,10 @@ export function protectedEntry(rel, config) {
   return config.protected.find((p) => globToRegExp(p.glob).test(rel));
 }
 
+/** Files that may hold secrets. An env file's template (`.env.example`, `.env.local.sample`) names
+ * the variables without their values, so it's committed like any other file. */
 export const SECRETS = (rel) =>
-  /(^|\/)\.env(\.|$)/.test(rel) ||
+  (/(^|\/)\.env(\.|$)/.test(rel) && !/\.(example|sample|template|dist)$/.test(rel)) ||
   /(^|\/)secrets?\//.test(rel) ||
   /\.(pem|p8|p12|keystore|jks)$/.test(rel);
 
@@ -436,8 +440,8 @@ export function writeProblem(actor, rel, root, config) {
     recordRequest(root, actor, guarded.approval, rel, guarded.why);
     return `${rel} is ${guarded.why} and needs a person's approval. Ask the lead (a person) to run\n${approvalHowTo(guarded.approval, actor, root, undefined, config)}`;
   }
-  if (actor.kind === 'readonly') return `${actor.label} is read-only; it may not write ${rel}.`;
   if (matchesAny(rel, config.anyActor)) return null;
+  if (actor.kind === 'readonly') return `${actor.label} is read-only; it may not write ${rel}.`;
   if (!owns(actor, rel, config)) return ownershipProblem(actor, rel, config);
   const specs = actor.kind === 'lane' && config.docs?.specs;
   return (specs && specCheckProblem(rel, root)) || screenProblem(rel, root, config);

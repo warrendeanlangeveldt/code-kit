@@ -67,6 +67,7 @@ Write `.claude/code-kit.draft.json`. Follow `${CLAUDE_PLUGIN_ROOT}/README.md` â€
 - **`shell.restricted`:** commands that affect a shared local service, limited to the lanes that own it.
 - **`postEdit`:** the project's existing per-file linters and formatters, with `{file}`.
 - **`checks`:** the typecheck, test, architecture and database commands, each scoped by `files`. Only include commands that pass on the current code, or ones the person chose to keep.
+- **`harness.autonomy`:** ask the person how hands-off they want the build. With the code-kit mod (Claude Code 2.1.287 or later), once the plan has stories, a lead loop can keep the work moving between their prompts: it prompts the lead to dispatch ready stories, review finished ones and merge them where merges are delegated. Offer the three choices in plain words: `autonomous` (it keeps going on its own; they can pause it from the band), `propose` (each step waits in the band for their Go), or `off`. Put their answer in the draft as `"harness": { "autonomy": "â€¦" }`. If they'd rather decide later, leave it out: the loop then asks them in the band before its first step.
 - **`approvals.lead`:** ask the person whether they'll ever approve from a phone or another chat-only client, where a `!` command arrives as plain text. If so, set it to `true`: the lead then records approvals they give in chat (`code-kit approve`), and runs the `shell.block` commands marked `person: true` when they say so. Mark a `shell.block` command `person: true` only if the person wants to be able to have the lead run it on their say-so. Leave the setting out if the lead will run unattended.
 
 Prove the draft:
@@ -105,7 +106,7 @@ Show the person:
 1. the layers and what each may depend on, and for brownfield the existing violations the baseline will record;
 2. the lanes, their agents and their paths;
 3. protected paths, blocked and restricted commands, and checks (including any left out because they fail today);
-   and whether the lead may record approvals given in chat (`approvals.lead`);
+   and whether the lead may record approvals given in chat (`approvals.lead`), and how hands-off the build is (`harness.autonomy`);
 4. the active adapters and what each adds, from `adapters`;
 5. every **question**: where the docs or the code are silent, ambiguous or contradictory. Don't guess; a wrong owner or layer blocks real work.
 
@@ -125,16 +126,16 @@ Once they approve (with any changes):
 7. Run `check` and `unowned` again, without `--config`.
 8. Commit on a branch. The kit records the protected files in `.claude/approval-log.jsonl`.
 
-Report what was set up, what's enforced from now on, how many existing violations the baseline holds, and the open questions.
+Report what was set up, what's enforced from now on, how many existing violations the baseline holds, and the open questions. If the base branch had no `.claude/code-kit.json` committed before, say that the first merge into it is the person's, since that merge brings the rules onto it: once the branch has passed review, they press Merge in the code-kit band, or run `! node "${CLAUDE_PLUGIN_ROOT}/bin/code-kit.mjs" queue merge --person`. After that, the rules committed there decide who merges.
 
-If the project has no `.ctx/` folder, end the report with one line about the companion plugin, and don't install it unless the person asks: "Context Graph can give each lane agent the why behind the files it edits (cards, rules and decisions kept in git), with this spec's requirements and layer rules in them: `/plugin marketplace add warrendeanlangeveldt/context-graph`, then `/plugin install context-graph@context-graph`."
+If the project has no `.ctx/` folder, end the report with one line about the companion plugin. If Context Graph is already installed (its `/context-graph:init` command is available to you), offer to run it now: "Context Graph is installed but has no graph here yet. `/context-graph:init` gives each lane agent the why behind the files it edits (cards, rules and decisions kept in git), with this spec's requirements and layer rules in them. Shall I run it?" If it isn't installed, don't install it unless the person asks: "Context Graph can give each lane agent the why behind the files it edits (cards, rules and decisions kept in git), with this spec's requirements and layer rules in them: `/plugin marketplace add warrendeanlangeveldt/context-graph`, then `/plugin install context-graph@context-graph`."
 
 ## 4. Update an existing setup
 
 Re-run whenever the build has moved on: new apps or packages, folders that moved, a changed plan, or files `unowned` keeps listing.
 
 1. **Re-read** the docs and the repository as in section 1, including the brownfield steps if the code has grown past the docs.
-2. **Draft** the whole config again into `.claude/code-kit.draft.json`, starting from the live one. Keep everything that's still right, so the diff shows only real changes.
+2. **Draft** the whole config again into `.claude/code-kit.draft.json`, starting from the live one. Keep everything that's still right, so the diff shows only real changes. If the live config has no `harness.autonomy`, ask the person about it as in section 2.
 3. **Show the difference:**
 
    ```bash

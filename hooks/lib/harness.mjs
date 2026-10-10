@@ -15,9 +15,9 @@ export const SETTINGS = {
   'hold.minutes': {
     default: 2,
     problem: (v) =>
-      Number.isFinite(v) && v >= 0 && v <= 30
+      Number.isFinite(v) && v >= 0 && v <= 10
         ? null
-        : 'must be a number of minutes from 0 (off) to 30',
+        : 'must be a number of minutes from 0 (off) to 10',
     about: 'How long a call waiting on your approval is held before it is refused',
   },
   'stall.nudgeMinutes': {

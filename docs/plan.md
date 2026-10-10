@@ -146,16 +146,16 @@ The `harness` section, validated; `code-kit settings` (read and `set … --via p
 **Lane:** lead
 **Requirements:** HOLD-2, HOLD-3, HOLD-4, HOLD-5, HOLD-6
 **Depends on:** ST-12, ST-13
-**Status:** todo
+**Status:** done
 
-The mod holds what the judge says a person’s approval would allow, asks in the band, and lets it through or refuses.
+The mod holds what a person’s approval would allow (read from the refusal), asks in the band, and lets it through or refuses.
 
 ### ST-15 The loop engine
 
 **Lane:** lead
 **Requirements:** LOOP-1, LOOP-2, LOOP-3, LOOP-5, LOOP-6, LOOP-7
 **Depends on:** ST-8, ST-10, ST-13
-**Status:** todo
+**Status:** done
 
 Prompting the lead when idle, stalls, autonomy, pause and done.
 
@@ -164,7 +164,7 @@ Prompting the lead when idle, stalls, autonomy, pause and done.
 **Lane:** lead
 **Requirements:** REVW-1, REVW-2, REVW-3, REVW-4, LOOP-4
 **Depends on:** ST-10, ST-15
-**Status:** todo
+**Status:** done
 
 Started by prompting the lead (auto mode refuses a mod's own spawn) per finished branch; graded findings into the lead’s review.
 
@@ -173,7 +173,7 @@ Started by prompting the lead (auto mode refuses a mod's own spawn) per finished
 **Lane:** lead
 **Requirements:** MQ-1, MQ-2, MQ-3, MQ-4
 **Depends on:** ST-15
-**Status:** todo
+**Status:** done
 
 `code-kit queue` and its state; merges in order; conflicts sent back.
 
@@ -191,7 +191,7 @@ Usage per agent, story and lane; outliers; background agents paused near the pla
 **Lane:** lead
 **Requirements:** VIEW-1, VIEW-4, VIEW-5, VIEW-6, VIEW-8
 **Depends on:** ST-11
-**Status:** todo
+**Status:** done
 
 The pane’s new frame and keyboard model.
 
@@ -200,7 +200,7 @@ The pane’s new frame and keyboard model.
 **Lane:** lead
 **Requirements:** VIEW-2, VIEW-3
 **Depends on:** ST-19
-**Status:** todo
+**Status:** done
 
 Timelines per lane and the lane agents’ characters, animated in place.
 
@@ -209,7 +209,7 @@ Timelines per lane and the lane agents’ characters, animated in place.
 **Lane:** lead
 **Requirements:** VIEW-7, REVW-5
 **Depends on:** ST-16, ST-19
-**Status:** todo
+**Status:** done
 
 Spec-check, diff, verify, findings, usage and steps for a story.
 
@@ -218,7 +218,7 @@ Spec-check, diff, verify, findings, usage and steps for a story.
 **Lane:** lead
 **Requirements:** TRACE-1, TRACE-2, TRACE-3, TRACE-4
 **Depends on:** ST-19
-**Status:** todo
+**Status:** done
 
 Requirements by stories and tests, live, with drill-down.
 
@@ -231,6 +231,6 @@ Milestone 5 is Context Graph's harness, planned in its own `docs/plan.md`.
 **Lane:** lead
 **Requirements:** JOIN-1, JOIN-2, JOIN-3, JOIN-4
 **Depends on:** ST-21
-**Status:** todo
+**Status:** done
 
 With Context Graph installed: understanding, cards owed and rules per lane.

@@ -221,3 +221,32 @@ export function buildStatus(root, config, base, files) {
     .map((s) => ({ story: s.id, plan: s.status, actual: s.state }));
   return { stories, requirements: byRequirement, problems, drift };
 }
+
+/**
+ * The rows of a spec-check report's table (skills/spec-check): [{ requirement, status, where, note }],
+ * the first column's requirement id, the status as written (done, partial, missing or conflicts).
+ */
+export function specCheckRows(text) {
+  const lines = String(text).split('\n');
+  const head = lines.findIndex((l) => /^\s*\|\s*Requirement\s*\|/i.test(l));
+  if (head < 0) return [];
+  const rows = [];
+  for (const line of lines.slice(head + 1)) {
+    if (!/^\s*\|/.test(line)) break;
+    const cells = line
+      .trim()
+      .replace(/^\||\|$/g, '')
+      .split('|')
+      .map((c) => c.trim());
+    if (cells.every((c) => /^:?-+:?$/.test(c) || c === '')) continue;
+    const [requirement = '', status = '', where = '', note = ''] = cells;
+    rows.push({
+      requirement: requirement.match(REQUIREMENT_ID)?.[0] ?? requirement,
+      status: status.toLowerCase(),
+      where,
+      note,
+    });
+  }
+  return rows;
+}
+const REQUIREMENT_ID = /\b[A-Z][A-Z0-9]*-\d+\b/;

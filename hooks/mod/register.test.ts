@@ -2,6 +2,7 @@
 // which `npm test` runs when it's available. The CLI, git and the agents are stubbed with what they
 // report; the CLI itself is tested in test/hooks.test.mjs, and the drawing in test/units.test.mjs.
 import { expect, mock, test } from 'claude-code/testing';
+import { rasterCells, sprite, tintOf } from './art.mjs';
 
 const PANE = 'code-kit-lanes';
 const APPROVE = 'code-kit-approve';
@@ -17,6 +18,7 @@ function project() {
       valid: true,
       problems: [] as string[],
       lead: { paths: ['docs/**'] },
+      harnessSet: ['autonomy'] as string[], // the person chose autonomy (the default, autonomous)
       lanes: {
         web: { agent: 'web-engineer', paths: ['apps/web/**'] },
         api: { agent: 'api-engineer', paths: ['apps/api/**'] },
@@ -92,6 +94,62 @@ function project() {
       { key: 'agents.reviewer.model', value: null, default: null, about: "The reviewer's model" },
     ] as any[],
     setExit: 0,
+    allowed: false, // an approval in force: the hooks beneath let the call through
+    bashRuns: 0,
+    delegateExit: 1,
+    delegated: [] as string[][],
+    holds: [] as string[][],
+    draft: '', // what the person has typed in the prompt
+    heads: { 'web/st-4': 'abc123def4567890\n' } as Record<string, string>,
+    registered: [] as any[],
+    queue: [] as any[],
+    requirements: [] as any[],
+    times: [] as any[],
+    blits: [] as string[],
+    adapters: [] as any[],
+    agentsThrow: false,
+    registerFails: 0,
+    commands: [] as any[],
+    story: {
+      id: 'ST-4',
+      title: 'Booking form',
+      lane: 'web',
+      state: 'review',
+      base: 'main',
+      branch: 'web/st-4',
+      worktree: null,
+      requirements: [
+        {
+          id: 'BOOK-1',
+          title: 'Request a booking',
+          spec: 'docs/spec/01.md',
+          state: 'in progress',
+          tests: [],
+        },
+      ],
+      specCheck: {
+        file: '.claude/state/spec-check/web_st-4.md',
+        rows: [{ requirement: 'BOOK-1', status: 'partial', where: 'apps/web/form.tsx', note: '' }],
+      },
+      diff: {
+        files: [
+          { path: 'apps/web/form.tsx', added: 2, removed: 0 },
+          { path: 'apps/web/api.ts', added: 1, removed: 0 },
+        ],
+        text:
+          'diff --git a/apps/web/form.tsx b/apps/web/form.tsx\nnew file mode 100644\nindex 0000000..1111111\n--- /dev/null\n+++ b/apps/web/form.tsx\n@@ -0,0 +1,2 @@\n+export const form = 1;\n+export const x = 2;\n' +
+          'diff --git a/apps/web/api.ts b/apps/web/api.ts\nindex 2222222..3333333 100644\n--- a/apps/web/api.ts\n+++ b/apps/web/api.ts\n@@ -1 +1,2 @@\n a\n+b\n',
+        truncated: false,
+      },
+      verify: {
+        checks: false,
+        where: 'a temporary worktree',
+        problems: { Ownership: ["apps/api/x.ts: not the web lane's"], Checks: [] },
+      },
+    } as any,
+    sent: [] as { to: any; text: string }[],
+    holdWaits: false, // false: the hold ends at once, as if timed out (tests about cards, not hold)
+    waiting: new Map<string, (answer: string) => void>(),
   };
 }
 type World = ReturnType<typeof project>;
@@ -104,6 +162,7 @@ function stub(on: any, w: World) {
       value: { exitCode, stdout, stderr },
     });
     const sub = argv[2];
+    if (argv[0] === 'git' && argv[1] === 'rev-parse') return ran(0, w.heads[argv.at(-1)!] ?? '');
     if (argv[0] === 'git') return ran(0, w.refs);
     if (sub === 'check') return ran(w.check.valid ? 0 : 1, JSON.stringify(w.check));
     if (sub === 'status')
@@ -112,7 +171,7 @@ function stub(on: any, w: World) {
         JSON.stringify({
           base: 'main',
           stories: w.stories,
-          requirements: {},
+          requirements: w.requirements,
           problems: [],
           drift: [],
         }),
@@ -122,9 +181,49 @@ function stub(on: any, w: World) {
     if (sub === 'verify')
       return ran(w.verifyExit, w.verifyExit ? '' : w.verifyOut, w.verifyExit ? w.verifyOut : '');
     if (sub === 'stops') return ran(0, JSON.stringify(w.stops));
+    if (sub === 'story') return ran(0, JSON.stringify(w.story));
+    if (sub === 'adapters') return ran(0, JSON.stringify(w.adapters));
+    if (sub === 'timeline')
+      return ran(0, JSON.stringify({ base: 'main', now: 0, stories: w.times }));
+    if (sub === 'sent-back') {
+      w.acts.push([...argv.slice(2)]);
+      return ran(0, `Recorded: ${argv[3]} was sent back.`);
+    }
+    if (sub === 'queue' && argv[3] === 'merge') {
+      w.acts.push([...argv.slice(2)]);
+      w.queue = w.queue.map((e, i) => (i === 0 ? { ...e, state: 'merged' } : e));
+      return ran(0, 'Merged web/st-4 into main: verify passed on 2 file(s). The queue is empty.');
+    }
+    if (sub === 'queue') return ran(0, JSON.stringify(w.queue));
+    if (sub === 'approve' && argv.includes('--delegated')) {
+      w.delegated.push([...argv.slice(2)]);
+      if (w.delegateExit === 0) w.allowed = true;
+      return ran(w.delegateExit, '', w.delegateExit ? 'Nothing was approved.' : '');
+    }
+    if (sub === 'hold') {
+      const id = argv[3];
+      const at = argv.indexOf('--answer');
+      if (at > 0) {
+        w.acts.push([...argv.slice(2)]);
+        w.waiting.get(id)?.(argv[at + 1]);
+        return ran(0, '');
+      }
+      w.holds.push([...argv.slice(2)]);
+      if (!w.holdWaits) return ran(0, 'timed out\n');
+      // Waits, as `code-kit hold` does, until the band answers or the test times it out.
+      return new Promise((done) =>
+        w.waiting.set(id, (answer) => {
+          w.waiting.delete(id);
+          done(ran(0, `${answer}\n`));
+        }),
+      );
+    }
     if (sub === 'approve') {
       w.acts.push([...argv.slice(2)]);
-      if (w.approveExit === 0) w.requests = [];
+      if (w.approveExit === 0) {
+        w.requests = [];
+        w.allowed = true;
+      }
       return ran(w.approveExit, '', w.approveExit ? 'approve needs --reason' : '');
     }
     if (sub === 'merge') {
@@ -139,9 +238,13 @@ function stub(on: any, w: World) {
         return ran(
           1,
           '',
-          '"harness.hold.minutes" must be a number of minutes from 0 (off) to 30\nNothing was changed.',
+          '"harness.hold.minutes" must be a number of minutes from 0 (off) to 10\nNothing was changed.',
         );
       const row = w.settings.find((s) => s.key === argv[4]);
+      if (argv[4] === 'autonomy') {
+        (w.check as any).harness = { ...(w.check as any).harness, autonomy: argv[5] };
+        w.check.harnessSet = [...new Set([...w.check.harnessSet, 'autonomy'])];
+      }
       const raw = argv[5];
       row.value =
         raw === 'null'
@@ -168,10 +271,31 @@ function stub(on: any, w: World) {
   on('tool.call', { tool: 'Write' }, () =>
     w.refusal ? { deny: w.refusal } : { result: { type: 'create' } },
   );
-  on('tool.call', { tool: 'Bash' }, () =>
-    w.refusal ? { deny: w.refusal } : { result: { stdout: '', stderr: '', interrupted: false } },
-  );
-  on('agent.list', () => ({ value: w.agents }));
+  on('tool.call', { tool: 'Bash' }, () => {
+    w.bashRuns += 1;
+    return w.refusal && !w.allowed
+      ? { deny: w.refusal }
+      : { result: { stdout: 'added 1 package', stderr: '', interrupted: false } };
+  });
+  on('agent.list', () => {
+    if (w.agentsThrow) throw new Error('no session is bound in this process');
+    return { value: w.agents };
+  });
+  on('agent.register', ($: any, e: any) => {
+    if (w.registerFails > 0) {
+      w.registerFails -= 1;
+      throw new Error('no session is bound in this process');
+    }
+    w.registered.push(e);
+    return { value: { agent: `code-kit:${e.name}` } };
+  });
+  on('prompt.read', () => ({ value: { text: w.draft, cursor: w.draft.length } }));
+  on('session.send', ($: any, e: any) => {
+    w.sent.push({ to: e.to, text: e.text });
+    return { isDelivered: true };
+  });
+  on('turn.start', ($: any, e: any) => e);
+  on('turn.complete', () => ({ text: '' }));
   on('session.usage', () => ({ value: { startedAt: 0, context: {}, rateLimits: w.limits } }));
   on('session.measure', ($: any, e: any) => ({ changed: e.changed }));
   // A model request, answered with the usage the test gave it.
@@ -200,6 +324,15 @@ function stub(on: any, w: World) {
   on('tool.call', { tool: 'AskUserQuestion' }, ($: any, e: any) => ({
     result: { questions: e.questions, answers: { [e.questions[0].question]: w.answer } },
   }));
+  // Another plugin's command, as the mod asks for it (Context Graph's /graph).
+  on('command.run', ($: any, e: any) => {
+    w.commands.push({ command: e.command, args: e.args });
+    return { text: '' };
+  });
+  on('ui.blit', ($: any, e: any) => {
+    w.blits.push(e.key);
+    return { value: undefined };
+  });
   on('ui.panes', () => ({ value: [...w.open].map((id) => ({ id, title: id, isShown: true })) }));
   on('ui.open', ($: any, e: any) => {
     w.opened.push(e.id);
@@ -238,10 +371,10 @@ async function request($: any, agentId: string | undefined, thousands: number) {
 }
 
 /** A session started on the project, with the mock clock. */
-async function start($: any, on: any, w: World) {
+async function start($: any, on: any, w: World, interactive = true) {
   stub(on, w);
   const clock = mock.clock(on);
-  await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true });
+  await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: interactive });
   await clock.advance(2000); // the first look at the project
   return clock;
 }
@@ -349,9 +482,10 @@ test('PANE-4 with nothing changed it reads the project every 10 seconds while th
   const before = w.runs;
   await clock.advance(8000); // four quiet ticks: git only
   expect(w.runs - before).toBe(4);
-  // The fifth reads it all (check, status, next, requests, stops) between two looks at git.
+  // The fifth reads it all (check, status, next, requests, stops, queue, timeline) between two looks
+  // at git.
   await clock.advance(2000);
-  expect(w.runs - before).toBe(11);
+  expect(w.runs - before).toBe(13);
 });
 
 test('CARD-4 outside a code-kit project, /lanes says so, opens nothing, and there is no band', async ($, on) => {
@@ -557,8 +691,6 @@ test('BAND-2 a failing finish check shows, with Lanes opening the pane', async (
 test('ACT-3 the story shows as being reviewed until the lead has reported', async ($, on) => {
   const w = project();
   w.stories[0] = { ...w.stories[0], state: 'review' };
-  on('turn.start', ($: any, e: any) => e);
-  on('turn.complete', () => ({ text: '' }));
   await start($, on, w);
   const ui = await bandUi($);
   await press($, 'band-review');
@@ -840,7 +972,7 @@ test('SET-2 a number is typed; one the CLI refuses shows why and changes nothing
   const ui = await pane($, SETTINGS);
   await $.ui.input({ plugin: 'code-kit', key: 'set-hold.minutes', text: '45' });
   await $.ui.input({ plugin: 'code-kit', key: 'settings-reason', text: 'longer' });
-  expect(await ui.find({ type: 'Text', text: /from 0 \(off\) to 30/ })).toBeDefined();
+  expect(await ui.find({ type: 'Text', text: /from 0 \(off\) to 10/ })).toBeDefined();
   expect(w.settings[1].value).toBe(2);
   await press($, 'settings-cancel', SETTINGS);
   expect(await ui.find({ key: 'settings-confirm' })).toBeUndefined();
@@ -896,6 +1028,7 @@ test("USE-1 a lane agent's requests show on its lane's row and its story", async
   await clock.advance(2000);
   const ui = await pane($, PANE);
   expect((await ui.find({ key: 'lane-web' }))?.text).toContain('200k');
+  await press($, 'tab-usage', PANE);
   expect((await ui.find({ key: 'usage-ST-4' }))?.text).toContain('200k');
   expect((await ui.find({ key: 'lane-api' }))?.text).not.toMatch(/\d+k/);
   await ui.unmount();
@@ -911,6 +1044,7 @@ test("USE-1 the lead's requests are the lead's; an agent's brief names its story
   const ui = await pane($, PANE);
   expect((await ui.find({ key: 'lane-lead' }))?.text).toContain('30k');
   expect((await ui.find({ key: 'lane-core' }))?.text).toContain('50k');
+  await press($, 'tab-usage', PANE);
   expect((await ui.find({ key: 'usage-ST-9' }))?.text).toContain('50k');
   await ui.unmount();
 });
@@ -927,6 +1061,7 @@ test("USE-2 the background agents' share and the plan's 5-hour use", async ($, o
   await request($, 'a1', 150);
   await request($, 'r1', 50);
   const ui = await pane($, PANE);
+  await press($, 'tab-usage', PANE);
   expect(await ui.find({ type: 'Text', text: 'Background agents  50k (25%)' })).toBeDefined();
   expect(await ui.find({ type: 'Text', text: '62% of the 5-hour window' })).toBeDefined();
   expect(await ui.find({ type: 'Text', text: 'This session  200k tokens' })).toBeDefined();
@@ -1011,5 +1146,1305 @@ test('USE-4 the pause point is the harness setting', async ($, on) => {
   await $.session.measure({ context: {} as any, rateLimits: w.limits, changed: ['rateLimits'] });
   ui = await bandUi($);
   expect(await ui.find({ type: 'Text', text: /plan at 91%/ })).toBeDefined();
+  await ui.unmount();
+});
+
+// --- hold and ask -----------------------------------------------------------------------------------
+
+const webInstall =
+  'Blocked: a new dependency (dayjs) needs a person\'s approval. Write a short change request for the lead.\n  ! echo "<what you are approving>" > .claude/approvals/web/dep-dayjs\n(a person runs it; it allows installing it for the web lane, until the install is committed, at most 7 days)\nCommand: npm install dayjs';
+
+/** A lane's call, left running while the test answers it; returned once the mod has it held. */
+async function heldCall($: any, w: World, clock: any, id = 'tu-h1') {
+  w.holdWaits = true;
+  const call = $.tool.call({
+    tool: 'Bash',
+    tool_use_id: id,
+    command: 'npm install dayjs',
+    agentId: 'a1',
+  } as any);
+  for (let i = 0; i < 50 && !w.waiting.has(id); i++) await clock.advance(1);
+  expect(w.waiting.has(id)).toBe(true);
+  return { call };
+}
+/** A call refused, whichever shape the refusal came back in. */
+const refused = (res: any) => Boolean(res?.deny || res?.isError);
+const refusalText = (res: any) => String(res?.deny ?? res?.text ?? '');
+
+test('HOLD-1 and HOLD-2 a lane installing a new package is held, and the band asks with the time left', async ($, on) => {
+  const w = project();
+  w.refusal = webInstall;
+  const clock = await start($, on, w);
+  await heldCall($, w, clock);
+  let ui = await bandUi($);
+  expect(
+    await ui.find({ type: 'Text', text: /^web wants to install dayjs · 2:00$/ }),
+  ).toBeDefined();
+  expect((await ui.find({ key: 'band-approveHeld' }))?.props.hotkey).toBe('1');
+  expect((await ui.find({ key: 'band-refuseHeld' }))?.props.hotkey).toBe('2');
+  await ui.unmount();
+  await clock.advance(7000);
+  ui = await bandUi($);
+  expect(await ui.find({ type: 'Text', text: /· 1:53$/ })).toBeDefined();
+  await ui.unmount();
+  w.waiting.get('tu-h1')?.('timed out');
+});
+
+test('HOLD-3 on Approve the approval is written as the pane writes it, and the same call runs', async ($, on) => {
+  const w = project();
+  w.refusal = webInstall;
+  const clock = await start($, on, w);
+  const { call } = await heldCall($, w, clock);
+  const shown = await bandUi($);
+  await press($, 'band-approveHeld');
+  await shown.unmount();
+  expect(w.opened).toContain(APPROVE);
+  const confirm = await pane($, APPROVE);
+  await press($, 'approve-confirm', APPROVE);
+  expect(w.acts).toEqual([
+    [
+      'approve',
+      'dep-dayjs',
+      '--lane',
+      'web',
+      '--reason',
+      'Approve dayjs for the web lane: npm install dayjs',
+      '--via',
+      'pane',
+    ],
+    ['hold', 'tu-h1', '--answer', 'approved'],
+  ]);
+  const res: any = await call;
+  expect(refused(res)).toBe(false);
+  expect(w.bashRuns).toBe(2);
+  const ui = await bandUi($);
+  expect(await ui.find({ type: 'Text', text: /wants to/ })).toBeUndefined();
+  await ui.unmount();
+  await confirm.unmount();
+});
+
+test("HOLD-3 an approval that can't be written refuses the call, and the band says nothing was approved", async ($, on) => {
+  const w = project();
+  w.refusal = webInstall;
+  w.approveExit = 1;
+  const clock = await start($, on, w);
+  const { call } = await heldCall($, w, clock);
+  const shown = await bandUi($);
+  await press($, 'band-approveHeld');
+  await shown.unmount();
+  const confirm = await pane($, APPROVE);
+  await press($, 'approve-confirm', APPROVE);
+  await confirm.unmount();
+  const res: any = await call;
+  expect(refused(res)).toBe(true);
+  expect(refusalText(res)).toMatch(/needs a person's approval/);
+  const ui = await bandUi($);
+  expect(await ui.find({ type: 'Text', text: /Nothing was approved/ })).toBeDefined();
+  await ui.unmount();
+});
+
+test('HOLD-4 Refuse, or no answer in the hold time, lets the refusal through and the request stays', async ($, on) => {
+  const w = project();
+  w.refusal = webInstall;
+  const clock = await start($, on, w);
+  let { call } = await heldCall($, w, clock);
+  const shown = await bandUi($);
+  await press($, 'band-refuseHeld');
+  await shown.unmount();
+  let res: any = await call;
+  expect(refused(res)).toBe(true);
+  expect(w.bashRuns).toBe(1);
+  ({ call } = await heldCall($, w, clock, 'tu-h2'));
+  expect(w.holds.at(-1)).toEqual(['hold', 'tu-h2', '--minutes', '2']);
+  w.waiting.get('tu-h2')?.('timed out');
+  res = await call;
+  expect(refused(res)).toBe(true);
+  w.requests = [{ ...dayjs, names: ['dep-dayjs'] }];
+  await clock.advance(60000);
+  const ui = await bandUi($);
+  expect(await ui.find({ type: 'Text', text: '1 approval waiting' })).toBeDefined();
+  await ui.unmount();
+});
+
+test('HOLD-5 within the delegated rules the call is approved as delegated and runs, without asking', async ($, on) => {
+  const w = project();
+  w.refusal = webInstall;
+  w.delegateExit = 0;
+  await start($, on, w);
+  const res: any = await $.tool.call({
+    tool: 'Bash',
+    tool_use_id: 'tu-d',
+    command: 'npm install dayjs',
+    agentId: 'a1',
+  } as any);
+  expect(refused(res)).toBe(false);
+  expect(w.delegated[0]).toEqual(
+    expect.arrayContaining(['approve', 'dep-dayjs', '--lane', 'web', '--delegated']),
+  );
+  expect(w.holds).toEqual([]);
+});
+
+test('HOLD-5 with autonomy propose the delegated rules are not tried; the call is held', async ($, on) => {
+  const w = project();
+  w.refusal = webInstall;
+  w.delegateExit = 0;
+  (w.check as any).harness = { autonomy: 'propose', hold: { minutes: 2 } };
+  const clock = await start($, on, w);
+  await heldCall($, w, clock);
+  expect(w.delegated).toEqual([]);
+  w.waiting.get('tu-h1')?.('timed out');
+});
+
+test('HOLD-6 with nobody to ask, or hold off, the call is refused at once', async ($, on) => {
+  const w = project();
+  w.refusal = webInstall;
+  await start($, on, w, false);
+  const res: any = await $.tool.call({
+    tool: 'Bash',
+    tool_use_id: 'tu-p',
+    command: 'npm install dayjs',
+  } as any);
+  expect(refused(res)).toBe(true);
+  expect(w.holds).toEqual([]);
+});
+
+test('HOLD-6 hold.minutes 0 switches holding off', async ($, on) => {
+  const w = project();
+  w.refusal = webInstall;
+  (w.check as any).harness = { autonomy: 'autonomous', hold: { minutes: 0 } };
+  await start($, on, w);
+  const res: any = await $.tool.call({
+    tool: 'Bash',
+    tool_use_id: 'tu-0',
+    command: 'npm install dayjs',
+  } as any);
+  expect(refused(res)).toBe(true);
+  expect(w.holds).toEqual([]);
+  expect(w.delegated).toEqual([]);
+});
+
+test('HOLD-1 a refusal no approval allows (force-push) is refused at once, unheld', async ($, on) => {
+  const w = project();
+  w.refusal =
+    'Blocked: force-pushing rewrites history others may have pulled.\nCommand: git push --force';
+  await start($, on, w);
+  const res: any = await $.tool.call({
+    tool: 'Bash',
+    tool_use_id: 'tu-f',
+    command: 'git push --force',
+  } as any);
+  expect(refused(res)).toBe(true);
+  expect(w.holds).toEqual([]);
+  expect(w.delegated).toEqual([]);
+});
+
+// --- the lead loop ----------------------------------------------------------------------------------
+
+/** One lead turn, start to end: the person's prompt, or one the loop submitted. */
+async function leadTurn($: any, id = 't-1') {
+  await $.turn.start({ turnId: id, text: '' } as any);
+  await $.turn.complete({ turnId: id, answer: 'Done.', durationMs: 1, isAborted: false } as any);
+}
+/** Lets the loop's work after a turn settle. */
+const settle = async (clock: any) => {
+  for (let i = 0; i < 5; i++) await clock.advance(1);
+};
+
+test('LOOP-1 and LOOP-2 with the lead idle, the loop dispatches every ready story in one prompt and records it', async ($, on) => {
+  const w = project();
+  w.next = { step: 'dispatch', args: 'ST-9 ST-10 ST-11 ST-12', then: [] };
+  const clock = await start($, on, w);
+  await leadTurn($);
+  await settle(clock);
+  expect(w.prompts).toEqual([
+    'Dispatch ST-9, ST-10, ST-11, ST-12: run /code-kit:dispatch ST-9 ST-10 ST-11 ST-12.',
+  ]);
+  await lanes($);
+  const ui = await pane($, PANE);
+  expect((await ui.find({ key: 'step-0' }))?.text).toMatch(/dispatch\s*ST-9 ST-10 ST-11 ST-12/);
+  await ui.unmount();
+});
+
+test('LOOP-1 nothing is submitted mid-turn, or while the person has a draft, or twice for the same step', async ($, on) => {
+  const w = project();
+  const clock = await start($, on, w);
+  await $.turn.start({ turnId: 't-1', text: '' } as any);
+  await clock.advance(4000);
+  expect(w.prompts).toEqual([]);
+  w.draft = 'half a thought';
+  await $.turn.complete({ turnId: 't-1', answer: '', durationMs: 1, isAborted: false } as any);
+  await settle(clock);
+  expect(w.prompts).toEqual([]);
+  w.draft = '';
+  await leadTurn($, 't-2');
+  await settle(clock);
+  expect(w.prompts).toEqual(['Dispatch ST-9: run /code-kit:dispatch ST-9.']);
+  await leadTurn($, 't-3');
+  await settle(clock);
+  expect(w.prompts).toHaveLength(1);
+});
+
+test("LOOP-1 review and the lead's own stories are prompted with their skill", async ($, on) => {
+  const w = project();
+  w.next = { step: 'review', args: 'ST-4', then: [] };
+  const clock = await start($, on, w);
+  await leadTurn($);
+  await settle(clock);
+  w.next = { step: 'lead', args: 'ST-6', then: [] };
+  w.refs += ' ccc refs/heads/web/st-4-moved\n';
+  await leadTurn($, 't-2');
+  await settle(clock);
+  expect(w.prompts[0]).toBe('Review ST-4: run /code-kit:review ST-4.');
+  expect(w.prompts[1]).toMatch(/^Build ST-6 yourself.*lead\/st-6/);
+});
+
+test('LOOP-8 a step the lead was asked for twice and that is still next goes to the person, while lanes keep committing', async ($, on) => {
+  const w = project();
+  w.next = { step: 'merge', args: 'lead/st-1', then: [] };
+  const clock = await start($, on, w);
+  for (const [i, turn] of ['t-1', 't-2', 't-3', 't-4'].entries()) {
+    // A lane commits between the lead's turns: the project moves, but not this step.
+    w.refs += ` c${i} refs/heads/core/st-${i}\n`;
+    await leadTurn($, turn);
+    await settle(clock);
+  }
+  expect(w.prompts).toHaveLength(2);
+  expect(w.prompts.every((p: string) => p.startsWith('Merge lead/st-1'))).toBe(true);
+  const ui = await bandUi($);
+  expect(
+    await ui.find({
+      type: 'Text',
+      text: 'Merge lead/st-1: still next after 2 prompts. Ask the lead again?',
+    }),
+  ).toBeDefined();
+  await press($, 'band-go');
+  await ui.unmount();
+  expect(w.prompts).toHaveLength(3);
+  // Once the step changes, the loop goes on by itself.
+  w.next = { step: 'dispatch', args: 'ST-9', then: [] };
+  await leadTurn($, 't-5');
+  await settle(clock);
+  expect(w.prompts.at(-1)).toBe('Dispatch ST-9: run /code-kit:dispatch ST-9.');
+});
+
+test('LOOP-5 under propose the band offers the step, and nothing goes until Go', async ($, on) => {
+  const w = project();
+  (w.check as any).harness = { autonomy: 'propose' };
+  const clock = await start($, on, w);
+  await leadTurn($);
+  await settle(clock);
+  expect(w.prompts).toEqual([]);
+  const ui = await bandUi($);
+  expect(await ui.find({ type: 'Text', text: 'Dispatch ST-9?' })).toBeDefined();
+  await press($, 'band-go');
+  await ui.unmount();
+  expect(w.prompts).toEqual(['Dispatch ST-9: run /code-kit:dispatch ST-9.']);
+});
+
+test('LOOP-5 under off the loop takes no step, and the band shows no loop', async ($, on) => {
+  const w = project();
+  (w.check as any).harness = { autonomy: 'off' };
+  const clock = await start($, on, w);
+  await leadTurn($);
+  await settle(clock);
+  expect(w.prompts).toEqual([]);
+  const ui = await bandUi($);
+  expect(await ui.find({ type: 'Text', text: /loop/ })).toBeUndefined();
+  await ui.unmount();
+});
+
+test('LOOP-6 Pause stops new steps until Resume', async ($, on) => {
+  const w = project();
+  w.next = { step: 'review', args: 'ST-4', then: [] };
+  const clock = await start($, on, w);
+  await leadTurn($);
+  await settle(clock);
+  let ui = await bandUi($);
+  expect(await ui.find({ type: 'Text', text: 'loop on · last: review ST-4' })).toBeDefined();
+  await press($, 'band-pause');
+  await ui.unmount();
+  w.next = { step: 'dispatch', args: 'ST-9', then: [] };
+  await leadTurn($, 't-2');
+  await settle(clock);
+  expect(w.prompts).toEqual(['Review ST-4: run /code-kit:review ST-4.']);
+  ui = await bandUi($);
+  expect(await ui.find({ type: 'Text', text: 'loop paused' })).toBeDefined();
+  await press($, 'band-resume');
+  await ui.unmount();
+  expect(w.prompts).toEqual([
+    'Review ST-4: run /code-kit:review ST-4.',
+    'Dispatch ST-9: run /code-kit:dispatch ST-9.',
+  ]);
+});
+
+test('LOOP-3 a quiet lane agent is nudged at 5 minutes, restarted through the lead at 10, and flagged after 2 restarts', async ($, on) => {
+  const w = project();
+  w.next = { step: 'wait', args: '', then: [] };
+  w.agents = [
+    { id: 'a1', type: 'web-engineer', description: 'ST-4 booking form', status: 'running' },
+  ];
+  const clock = await start($, on, w);
+  // First seen at the next look (2 s), so quiet for 5 minutes a look later.
+  await clock.advance(5 * 60000 + 2000);
+  expect(w.sent).toEqual([
+    {
+      to: 'a1',
+      text: 'No tool call for 5 minutes: report where you are, or carry on.',
+    },
+  ]);
+  await lanes($);
+  let ui = await pane($, PANE);
+  expect((await ui.find({ key: 'lane-web' }))?.text).toMatch(/nudged/);
+  await ui.unmount();
+  await clock.advance(5 * 60000);
+  expect(w.prompts[0]).toMatch(
+    /^web-engineer \(agent a1\) on ST-4 has made no tool call for 10 minutes\. Stop it with TaskStop.*\/code-kit:dispatch ST-4$/,
+  );
+  ui = await pane($, PANE);
+  expect((await ui.find({ key: 'lane-web' }))?.text).toMatch(/restarted 1\/2/);
+  await ui.unmount();
+  // The lane's agent is started again, and stalls again, twice more.
+  for (const id of ['a2', 'a3']) {
+    w.agents = [{ id, type: 'web-engineer', description: 'ST-4 booking form', status: 'running' }];
+    await clock.advance(10 * 60000 + 2000);
+  }
+  expect(w.prompts).toHaveLength(2);
+  const band = await bandUi($);
+  expect(await band.find({ type: 'Text', text: 'web stalled 3 times on ST-4' })).toBeDefined();
+  expect(await band.find({ key: 'band-resumeStall' })).toBeDefined();
+  await band.unmount();
+});
+
+test('LOOP-3 an agent waiting on a held call (or running a long command) is never quiet', async ($, on) => {
+  const w = project();
+  w.next = { step: 'wait', args: '', then: [] };
+  w.refusal = webInstall;
+  (w.check as any).harness = { hold: { minutes: 10 } };
+  w.agents = [{ id: 'a1', type: 'web-engineer', description: 'ST-4', status: 'running' }];
+  const clock = await start($, on, w);
+  const { call } = await heldCall($, w, clock);
+  await clock.advance(6 * 60000);
+  expect(w.sent).toEqual([]);
+  w.waiting.get('tu-h1')?.('timed out');
+  await call;
+  // Its quiet time starts again when the call ends: nudged 5 minutes after, not at once.
+  await clock.advance(2000);
+  expect(w.sent).toEqual([]);
+  await clock.advance(5 * 60000);
+  expect(w.sent.map((m) => m.to)).toEqual(['a1']);
+});
+
+test('LOOP-7 when every story is done the loop stops, and the band says so until dismissed', async ($, on) => {
+  const w = project();
+  w.stories = w.stories.map((s) => ({ ...s, state: 'done' }));
+  w.next = { step: 'done', args: '', then: [] };
+  const clock = await start($, on, w);
+  await leadTurn($);
+  await settle(clock);
+  expect(w.prompts).toEqual([]);
+  let ui = await bandUi($);
+  expect(await ui.find({ type: 'Text', text: 'Milestone done: 4 stories merged' })).toBeDefined();
+  await press($, 'band-dismissDone');
+  await ui.unmount();
+  ui = await bandUi($);
+  expect(await ui.find({ type: 'Text', text: /Milestone done/ })).toBeUndefined();
+  await ui.unmount();
+});
+
+// --- the reviewer -----------------------------------------------------------------------------------
+
+/** ST-4 finished on web/st-4, the reviewer on. */
+function reviewing() {
+  const w = project();
+  w.stories[0] = { ...w.stories[0], state: 'review', requirements: ['BOOK-1'] };
+  w.next = { step: 'review', args: 'ST-4', then: [] };
+  (w.check as any).harness = { agents: { reviewer: { on: true } } };
+  return w;
+}
+const report = (json: object) =>
+  'Reviewed web/st-4.\n\n\`\`\`json\n' + JSON.stringify(json) + '\n\`\`\`\n';
+
+test('REVW-1 with the reviewer on, a finished branch has the lead start one in the background, and the pane shows it running', async ($, on) => {
+  const w = reviewing();
+  const clock = await start($, on, w);
+  expect(w.registered[0]).toMatchObject({
+    name: 'reviewer',
+    tools: ['Read', 'Grep', 'Glob', 'Bash'],
+  });
+  await leadTurn($);
+  await settle(clock);
+  expect(w.prompts[0]).toMatch(
+    /^Start code-kit's reviewer in the background for web\/st-4: use the Agent tool with subagent_type "code-kit:reviewer", run_in_background true, description "Review web\/st-4 \(ST-4\)".*at abc123def456 for ST-4 Booking form \(requirements BOOK-1\)/,
+  );
+  await clock.advance(3 * 60000);
+  await lanes($);
+  const ui = await pane($, PANE);
+  expect((await ui.find({ key: 'review-web/st-4' }))?.text).toMatch(/running 3m/);
+  await ui.unmount();
+  // While it runs, the lead isn't asked to review.
+  await leadTurn($, 't-2');
+  await settle(clock);
+  expect(w.prompts).toHaveLength(1);
+});
+
+test("REVW-3 and REVW-4 the reviewer's findings, a failed verify as a blocker, go into the lead's review", async ($, on) => {
+  const w = reviewing();
+  const clock = await start($, on, w);
+  await leadTurn($);
+  await settle(clock);
+  w.agents = [
+    {
+      id: 'r1',
+      type: 'code-kit:reviewer',
+      description: 'Review web/st-4 (ST-4)',
+      status: 'completed',
+    },
+  ];
+  await $.turn.complete({
+    turnId: 't-r1',
+    agentId: 'r1',
+    answer: report({
+      verify: { passed: false, problems: ['apps/api/x.ts is outside the web lane'] },
+      findings: [{ severity: 'nit', where: 'apps/web/form.tsx:3', text: 'Unused import.' }],
+    }),
+    durationMs: 1,
+    isAborted: false,
+  } as any);
+  await leadTurn($, 't-2');
+  await settle(clock);
+  expect(w.prompts[1]).toBe(
+    [
+      "Review ST-4: run /code-kit:review ST-4. code-kit's reviewer found 1 blocker, 1 nit on web/st-4 at abc123def456:",
+      '- blocker: verify: apps/api/x.ts is outside the web lane (code-kit verify)',
+      '- nit apps/web/form.tsx:3: Unused import.',
+      'A blocker means you send the branch back. Concerns and nits are yours to weigh.',
+    ].join('\n'),
+  );
+  await lanes($);
+  const ui = await pane($, PANE);
+  expect((await ui.find({ key: 'review-web/st-4' }))?.text).toMatch(/done · 1 blocker, 1 nit/);
+  await ui.unmount();
+});
+
+test("REVW-1 a reviewer that hasn't reported in 15 minutes is passed over: the lead reviews without it", async ($, on) => {
+  const w = reviewing();
+  const clock = await start($, on, w);
+  await leadTurn($);
+  await settle(clock);
+  await clock.advance(15 * 60000 + 2000);
+  await leadTurn($, 't-2');
+  await settle(clock);
+  expect(w.prompts[1]).toMatch(/didn't report: no report within 15 minutes\. Review it yourself/);
+});
+
+test('REVW-1 a branch that moves gets a new review', async ($, on) => {
+  const w = reviewing();
+  const clock = await start($, on, w);
+  await leadTurn($);
+  await settle(clock);
+  w.heads['web/st-4'] = 'fff000111222333\n';
+  await leadTurn($, 't-2');
+  await settle(clock);
+  expect(w.prompts[1]).toMatch(/^Start code-kit's reviewer.*at fff000111222/);
+});
+
+test('USE-4 past the pause point no reviewer starts: the review is skipped and the lead reviews alone', async ($, on) => {
+  const w = reviewing();
+  w.limits = [{ kind: 'five_hour', percentUsed: 81 }];
+  const clock = await start($, on, w);
+  await leadTurn($);
+  await settle(clock);
+  expect(w.prompts).toEqual([
+    'Review ST-4: run /code-kit:review ST-4. (No background review: background agents paused, the plan at 81%.)',
+  ]);
+  await lanes($);
+  const ui = await pane($, PANE);
+  expect((await ui.find({ key: 'review-web/st-4' }))?.text).toMatch(
+    /skipped: background agents paused/,
+  );
+  await ui.unmount();
+});
+
+test("REVW-2 the reviewer's model is the setting's, registered again when it changes", async ($, on) => {
+  const w = reviewing();
+  (w.check as any).harness = { agents: { reviewer: { on: true, model: 'haiku' } } };
+  await start($, on, w);
+  expect(w.registered.at(-1)).toMatchObject({ name: 'reviewer', model: 'haiku' });
+  expect(w.registered.at(-1).tools).not.toContain('Write');
+});
+
+// --- the merge queue --------------------------------------------------------------------------------
+
+test('MQ-2 where the lead merges, the loop prompts it to merge the head of the queue', async ($, on) => {
+  const w = project();
+  w.next = { step: 'merge', args: 'web/st-4', then: [] };
+  const clock = await start($, on, w);
+  await leadTurn($);
+  await settle(clock);
+  expect(w.prompts[0]).toMatch(
+    /^Merge web\/st-4, next in the merge queue: run node ".*\/bin\/code-kit\.mjs" queue merge --delegated\./,
+  );
+});
+
+test('MQ-2 where the person merges, the head of the queue waits in the band for their Merge', async ($, on) => {
+  const w = project();
+  w.queue = [{ branch: 'web/st-4', passed: '2026-10-10T00:00:00Z', state: 'waiting' }];
+  await start($, on, w);
+  const ui = await bandUi($);
+  expect(await ui.find({ type: 'Text', text: 'web/st-4 is next to merge' })).toBeDefined();
+  await press($, 'band-mergeQueue');
+  await ui.unmount();
+  expect(w.acts).toEqual([['queue', 'merge', '--person']]);
+  expect(w.opened).toContain(RESULT);
+});
+
+test('MQ-2 the first merge, before the base has code-kit rules committed, is offered to the person', async ($, on) => {
+  const w = project();
+  (w.check as any).firstMerge = true;
+  w.queue = [{ branch: 'lead/st-1', passed: '2026-10-10T00:00:00Z', state: 'waiting' }];
+  await start($, on, w);
+  const ui = await bandUi($);
+  expect(
+    await ui.find({
+      type: 'Text',
+      text: 'lead/st-1 is next to merge: the first merge is yours, then the lead merges',
+    }),
+  ).toBeDefined();
+  await ui.unmount();
+});
+
+test('MQ-2 where the lead merges under autonomy, the band offers no Merge', async ($, on) => {
+  const w = project();
+  (w.check as any).delegatesMerge = true;
+  w.queue = [{ branch: 'web/st-4', passed: '2026-10-10T00:00:00Z', state: 'waiting' }];
+  await start($, on, w);
+  const ui = await bandUi($);
+  expect(await ui.find({ type: 'Text', text: /next to merge/ })).toBeUndefined();
+  await ui.unmount();
+});
+
+test('MQ-4 the pane shows the queue in order, what it merged and sent back, and the lane as queued', async ($, on) => {
+  const w = project();
+  w.stories[0] = { ...w.stories[0], state: 'review' };
+  w.queue = [
+    { branch: 'api/st-2', passed: '2026-10-10T00:00:00Z', state: 'merged' },
+    {
+      branch: 'api/st-3',
+      passed: '2026-10-10T00:01:00Z',
+      state: 'sent back',
+      reason: 'conflicts with main after api/st-2',
+    },
+    { branch: 'web/st-4', passed: '2026-10-10T00:02:00Z', state: 'waiting' },
+  ];
+  await start($, on, w);
+  await lanes($);
+  const ui = await pane($, PANE);
+  expect((await ui.find({ key: 'lane-web' }))?.text).toMatch(/queued/);
+  await press($, 'tab-queue', PANE);
+  expect((await ui.find({ key: 'queue-web/st-4-waiting' }))?.text).toMatch(
+    /1\.\s*web\/st-4\s*waiting/,
+  );
+  expect((await ui.find({ key: 'queue-api/st-3-sent back' }))?.text).toMatch(
+    /conflicts with main after api\/st-2/,
+  );
+  await ui.unmount();
+});
+
+// --- panes v2 ---------------------------------------------------------------------------------------
+
+const inlinePane = ($: any) =>
+  $.ui.mount({
+    plugin: 'code-kit',
+    component: 'Pane',
+    requestId: PANE,
+    surface: 'terminal',
+    viewport: { columns: 90, rows: 30 },
+    props: { title: PANE, isFocused: true, bodyColumns: 80, placement: 'inline' },
+  });
+
+test('VIEW-1 the header counts the stories by state, and a count filters the lanes', async ($, on) => {
+  const w = project();
+  w.stories = [
+    { id: 'ST-1', title: 'Done', lane: 'api', state: 'done', branch: 'api/st-1', waitingOn: [] },
+    ...w.stories,
+  ];
+  w.limits = [{ kind: 'five_hour', percentUsed: 40 }];
+  await start($, on, w);
+  await lanes($);
+  const ui = await pane($, PANE);
+  expect((await ui.find({ key: 'count-building' }))?.props.label).toBe('● 1 building');
+  expect((await ui.find({ key: 'count-ready' }))?.props.label).toBe('○ 3 ready');
+  expect((await ui.find({ key: 'count-merged' }))?.props.label).toBe('✓ 1 merged');
+  expect(await ui.find({ type: 'Text', text: 'plan 40%' })).toBeDefined();
+  await press($, 'count-building', PANE);
+  expect(await ui.find({ key: 'lane-web' })).toBeDefined();
+  expect(await ui.find({ key: 'lane-api' })).toBeUndefined();
+  await press($, 'count-building', PANE);
+  expect(await ui.find({ key: 'lane-api' })).toBeDefined();
+  await ui.unmount();
+});
+
+test("VIEW-4 each lane shows its agent's last tool call and the time since, amber once quiet", async ($, on) => {
+  const w = project();
+  w.next = { step: 'wait', args: '', then: [] };
+  w.agents = [{ id: 'a1', type: 'web-engineer', description: 'ST-4', status: 'running' }];
+  const clock = await start($, on, w);
+  await $.tool.call({
+    tool: 'Bash',
+    tool_use_id: 'tu-l',
+    command: 'npm test',
+    agentId: 'a1',
+  } as any);
+  await clock.advance(12000);
+  await lanes($);
+  let ui = await pane($, PANE);
+  const live = await ui.find({ type: 'Text', text: /^Bash npm test · / });
+  expect(live?.text).toBe('Bash npm test · 12s ago');
+  expect(live?.props.color).toBeUndefined();
+  await ui.unmount();
+  await clock.advance(5 * 60000);
+  ui = await pane($, PANE);
+  expect((await ui.find({ type: 'Text', text: /^Bash npm test · 5m ago$/ }))?.props.color).toBe(
+    'yellow',
+  );
+  await ui.unmount();
+});
+
+test('VIEW-5 what needs the person is pinned at the top with its letter: a held install, a on Approve', async ($, on) => {
+  const w = project();
+  w.refusal = webInstall;
+  const clock = await start($, on, w);
+  await heldCall($, w, clock);
+  await lanes($);
+  const ui = await pane($, PANE);
+  expect((await ui.find({ key: 'need-held' }))?.text).toMatch(/web wants to install dayjs/);
+  expect((await ui.find({ key: 'need-approveHeld' }))?.props.hotkey).toBe('a');
+  await press($, 'need-approveHeld', PANE);
+  expect(w.opened).toContain(APPROVE);
+  await ui.unmount();
+  w.waiting.get('tu-h1')?.('timed out');
+});
+
+test('VIEW-6 tabs on 1 to 3, j and k move between lanes, and the selected lane has its keys', async ($, on) => {
+  const w = project();
+  w.agents = [{ id: 'a1', type: 'web-engineer', description: 'ST-4', status: 'running' }];
+  await start($, on, w);
+  await lanes($);
+  const ui = await pane($, PANE);
+  expect((await ui.find({ key: 'tab-queue' }))?.props.hotkey).toBe('2');
+  await press($, 'tab-queue', PANE);
+  expect(await ui.find({ type: 'Text', text: 'The merge queue is empty.' })).toBeDefined();
+  await press($, 'tab-lanes', PANE);
+  expect((await ui.find({ key: 'lane-next' }))?.props.hotkey).toBe('j');
+  await press($, 'lane-next', PANE);
+  await press($, 'lane-next', PANE);
+  expect((await ui.find({ key: 'lane-web' }))?.text).toMatch(/^›/);
+  expect((await ui.find({ key: 'act-nudge' }))?.props.hotkey).toBe('n');
+  await press($, 'act-nudge', PANE);
+  expect(w.sent).toEqual([
+    { to: 'a1', text: 'The person asks: report where you are, or carry on.' },
+  ]);
+  w.answer = 'Stop';
+  await press($, 'act-stop', PANE);
+  expect(w.prompts.at(-1)).toMatch(
+    /^The person asked to stop web-engineer \(agent a1\) on ST-4: stop it with TaskStop/,
+  );
+  await press($, 'lane-prev', PANE);
+  expect((await ui.find({ key: 'lane-lead' }))?.text).toMatch(/^›/);
+  await ui.unmount();
+});
+
+test('VIEW-6 s sends the selected story back, with the reason the person gives', async ($, on) => {
+  const w = project();
+  w.stories[0] = { ...w.stories[0], state: 'review' };
+  await start($, on, w);
+  await lanes($);
+  const ui = await pane($, PANE);
+  await press($, 'lane-next', PANE);
+  await press($, 'lane-next', PANE);
+  expect((await ui.find({ key: 'act-sendBack' }))?.props.hotkey).toBe('s');
+  await press($, 'act-sendBack', PANE);
+  expect(w.opened).toContain('code-kit-sendback');
+  const confirm = await pane($, 'code-kit-sendback');
+  await $.ui.input({ plugin: 'code-kit', key: 'sendback-reason', text: '' });
+  expect(await confirm.find({ type: 'Text', text: /Give a reason/ })).toBeDefined();
+  await $.ui.input({
+    plugin: 'code-kit',
+    key: 'sendback-reason',
+    text: 'the cancel button has no test',
+  });
+  expect(w.acts).toEqual([['sent-back', 'web/st-4', '--reason', 'the cancel button has no test']]);
+  expect(w.closed).toContain('code-kit-sendback');
+  await confirm.unmount();
+  await ui.unmount();
+});
+
+test('VIEW-6 f puts the keys in the filter, which narrows the lanes by name, agent or story', async ($, on) => {
+  const w = project();
+  await start($, on, w);
+  await lanes($);
+  const ui = await pane($, PANE);
+  expect((await ui.find({ key: 'filter-focus' }))?.props.hotkey).toBe('f');
+  await $.ui.input({ plugin: 'code-kit', key: 'filter', text: 'api-eng', kind: 'change' });
+  expect(await ui.find({ key: 'lane-api' })).toBeDefined();
+  expect(await ui.find({ key: 'lane-web' })).toBeUndefined();
+  await ui.unmount();
+});
+
+test('VIEW-8 inline, the pane is the header, what needs the person and one line per lane', async ($, on) => {
+  const w = project();
+  await start($, on, w);
+  await lanes($);
+  const ui = await inlinePane($);
+  expect(await ui.find({ key: 'count-building' })).toBeDefined();
+  expect(await ui.find({ key: 'tabs' })).toBeUndefined();
+  expect((await ui.find({ key: 'lane-web' }))?.text).toMatch(/^web\s*building\s*ST-4/);
+  await ui.unmount();
+});
+
+// --- the story drill-down ---------------------------------------------------------------------------
+
+/** The Lanes pane with web's lane selected. */
+async function onWeb($: any) {
+  await lanes($);
+  const ui = await pane($, PANE);
+  await press($, 'lane-next', PANE);
+  await press($, 'lane-next', PANE);
+  return ui;
+}
+
+test('VIEW-7 Enter on a lane opens its story: requirements with the spec-check, verify, the diff and its acts', async ($, on) => {
+  const w = project();
+  w.stories[0] = { ...w.stories[0], state: 'review' };
+  await start($, on, w);
+  const ui = await onWeb($);
+  const open = await ui.find({ key: 'open-story' });
+  expect(open?.props.label).toBe('Open ST-4');
+  expect(open?.props.hotkey).toBe('o');
+  expect(open?.props.autoFocus).toBe(true);
+  await press($, 'open-story', PANE);
+  expect((await ui.find({ key: 'story-head' }))?.text).toMatch(
+    /ST-4 Booking form\s*web · review · web\/st-4/,
+  );
+  expect((await ui.find({ key: 'req-BOOK-1' }))?.text).toMatch(/spec-check: partial/);
+  expect((await ui.find({ key: 'story-verify' }))?.text).toMatch(/Ownership: apps\/api\/x.ts/);
+  expect((await ui.find({ key: 'file-0' }))?.props.label).toBe('apps/web/form.tsx +2 -0');
+  const code = await ui.find({ type: 'Code' });
+  expect(code?.props.format).toBe('diff');
+  expect(String(code?.props.source)).toMatch(/^--- \/dev\/null\n\+\+\+ b\/apps\/web\/form.tsx\n@@/);
+  await press($, 'file-1', PANE);
+  expect(String((await ui.find({ type: 'Code' }))?.props.source)).toMatch(
+    /\+\+\+ b\/apps\/web\/api.ts/,
+  );
+  expect((await ui.find({ key: 'story-review' }))?.props.hotkey).toBe('r');
+  expect((await ui.find({ key: 'story-sendBack' }))?.props.hotkey).toBe('s');
+  await press($, 'story-back', PANE);
+  expect(await ui.find({ key: 'tabs' })).toBeDefined();
+  await ui.unmount();
+});
+
+test("REVW-5 the drill-down shows the reviewer's findings by severity, each a way into the diff", async ($, on) => {
+  const w = reviewing();
+  const clock = await start($, on, w);
+  await leadTurn($);
+  await settle(clock);
+  w.agents = [
+    {
+      id: 'r1',
+      type: 'code-kit:reviewer',
+      description: 'Review web/st-4 (ST-4)',
+      status: 'completed',
+    },
+  ];
+  await $.turn.complete({
+    turnId: 't-r1',
+    agentId: 'r1',
+    answer: report({
+      verify: { passed: true, problems: [] },
+      findings: [
+        { severity: 'nit', where: 'apps/web/form.tsx:2', text: 'x is unused.' },
+        {
+          severity: 'concern',
+          where: 'apps/web/api.ts:2',
+          text: 'No error handling.',
+          rule: 'BOOK-1',
+        },
+      ],
+    }),
+    durationMs: 1,
+    isAborted: false,
+  } as any);
+  const ui = await onWeb($);
+  await press($, 'open-story', PANE);
+  const findings = (await ui.find({ key: 'story-findings' }))?.text ?? '';
+  expect(findings).toMatch(/Review of abc123d/);
+  expect(findings.indexOf('Concerns')).toBeLessThan(findings.indexOf('Nits'));
+  await press($, 'finding-concern-0', PANE);
+  expect(String((await ui.find({ type: 'Code' }))?.props.source)).toMatch(/apps\/web\/api.ts/);
+  await ui.unmount();
+});
+
+// --- the traceability map ---------------------------------------------------------------------------
+
+/** 40 requirements over two specs: 30 done (20 tested), 4 in progress, 3 todo, 3 without a story. */
+function requirementsMap() {
+  const reqs: any[] = [];
+  for (let i = 1; i <= 40; i++) {
+    const state = i <= 30 ? 'done' : i <= 34 ? 'in progress' : i <= 37 ? 'todo' : 'no story';
+    reqs.push({
+      id: `BOOK-${i}`,
+      title: `Requirement ${i}`,
+      file: i <= 20 ? 'docs/spec/01-booking.md' : 'docs/spec/02-payments.md',
+      removed: false,
+      state,
+      stories: state === 'no story' ? [] : ['ST-4'],
+      tests: i <= 20 ? [`apps/web/b${i}.test.ts`] : [],
+    });
+  }
+  return reqs;
+}
+
+test('TRACE-1 the map: a cell per requirement, a row per spec, and a legend with the gaps counted', async ($, on) => {
+  const w = project();
+  w.requirements = requirementsMap();
+  await start($, on, w);
+  await lanes($);
+  const ui = await pane($, PANE);
+  expect((await ui.find({ key: 'tab-map' }))?.props.hotkey).toBe('4');
+  await press($, 'tab-map', PANE);
+  const legend = (await ui.find({ key: 'map-legend' }))?.text ?? '';
+  expect(legend).toMatch(/■ 20 done and tested/);
+  expect(legend).toMatch(/✗ 3 without a story/);
+  expect((await ui.find({ key: 'map-row-01-booking' }))?.text.replace(/\s/g, '')).toBe(
+    '01-booking' + '■'.repeat(20),
+  );
+  const cells = await Promise.all(w.requirements.map((r) => ui.find({ key: `cell-${r.id}` })));
+  expect(cells.filter((c) => c?.text === '✗')).toHaveLength(3);
+  await ui.unmount();
+});
+
+test('TRACE-2 selecting a cell, by keys or the list, shows its spec, stories with their branches, and tests', async ($, on) => {
+  const w = project();
+  w.requirements = requirementsMap();
+  w.stories[0] = { ...w.stories[0], branchExists: true };
+  await start($, on, w);
+  await lanes($);
+  const ui = await pane($, PANE);
+  await press($, 'tab-map', PANE);
+  expect((await ui.find({ key: 'map-detail' }))?.text).toMatch(/BOOK-1 Requirement 1/);
+  await press($, 'cell-next', PANE);
+  expect(JSON.stringify((await ui.find({ key: 'cell-BOOK-2' }))?.children)).toMatch(
+    /"inverse":true/,
+  );
+  await press($, 'row-next', PANE);
+  expect(JSON.stringify((await ui.find({ key: 'cell-BOOK-21' }))?.children)).toMatch(
+    /"inverse":true/,
+  );
+  await $.ui.select({ plugin: 'code-kit', key: 'map-select', value: 'BOOK-3', requestId: PANE });
+  const detail = (await ui.find({ key: 'map-detail' }))?.text ?? '';
+  expect(detail).toMatch(/docs\/spec\/01-booking.md · done and tested/);
+  expect(detail).toMatch(/ST-4 Booking form · web · in progress · web\/st-4/);
+  expect(detail).toMatch(/apps\/web\/b3.test.ts/);
+  await $.ui.select({ plugin: 'code-kit', key: 'map-select', value: 'BOOK-40', requestId: PANE });
+  expect((await ui.find({ key: 'map-detail' }))?.text).toMatch(/No story delivers it yet/);
+  await ui.unmount();
+});
+
+test('TRACE-3 the map follows the project: a commit that finishes a requirement shows within 2 seconds', async ($, on) => {
+  const w = project();
+  w.requirements = requirementsMap();
+  const clock = await start($, on, w);
+  await lanes($);
+  const ui = await pane($, PANE);
+  await press($, 'tab-map', PANE);
+  w.requirements = w.requirements.map((r) =>
+    r.id === 'BOOK-31' ? { ...r, state: 'done', tests: ['t'] } : r,
+  );
+  w.refs += ' ddd refs/heads/web/st-9\n';
+  await clock.advance(2000);
+  expect((await ui.find({ key: 'map-legend' }))?.text).toMatch(/■ 21 done and tested/);
+  await ui.unmount();
+});
+
+// --- timelines and characters ---------------------------------------------------------------------
+
+test('VIEW-2 a lane dispatched 40 minutes ago and in review for 5 shows 35 minutes building and 5 in review, to now', async ($, on) => {
+  const w = project();
+  w.stories[0] = { ...w.stories[0], state: 'review' };
+  const clock = await start($, on, w);
+  const now = clock.now() + 2000;
+  w.times = [
+    {
+      id: 'ST-4',
+      lane: 'web',
+      branch: 'web/st-4',
+      state: 'review',
+      started: now - 40 * 60000,
+      lastCommit: now - 5 * 60000,
+      merged: null,
+      sentBack: [],
+      approvals: [],
+    },
+  ];
+  w.refs += ' eee refs/heads/web/st-4-again\n';
+  await clock.advance(2000);
+  await lanes($);
+  const ui = await pane($, PANE);
+  const bar = (await ui.find({ key: 'bar-web' }))?.text.trim() ?? '';
+  const building = [...bar].filter((c) => c === '█').length;
+  const review = [...bar].filter((c) => c === '▒').length;
+  expect(building + review).toBe(66);
+  expect(Math.abs(building - (66 * 35) / 40)).toBeLessThanOrEqual(1);
+  expect(bar.endsWith('▒')).toBe(true);
+  await ui.unmount();
+});
+
+test('VIEW-3 each lane has its character: web works, api waits on a held call, the lead rests', async ($, on) => {
+  const w = project();
+  w.refusal =
+    'Blocked: a new dependency (zod) needs a person\'s approval. Write a short change request for the lead.\n  ! echo "<what you are approving>" > .claude/approvals/api/dep-zod\n(a person runs it; it allows installing it for the api lane, until the install is committed, at most 7 days)\nCommand: npm install zod';
+  w.agents = [
+    { id: 'a1', type: 'web-engineer', description: 'ST-4', status: 'running' },
+    { id: 'a2', type: 'api-engineer', description: 'ST-5', status: 'running' },
+  ];
+  const clock = await start($, on, w);
+  w.holdWaits = true;
+  const call = $.tool.call({
+    tool: 'Bash',
+    tool_use_id: 'tu-z',
+    command: 'npm install zod',
+    agentId: 'a2',
+  } as any);
+  for (let i = 0; i < 50 && !w.waiting.has('tu-z'); i++) await clock.advance(1);
+  await lanes($);
+  const ui = await pane($, PANE);
+  const names = ['lead', 'web', 'api', 'core'];
+  const cells = async (lane: string) => (await ui.find({ key: `char-${lane}` }))?.props.cells;
+  expect(await cells('web')).toBe(rasterCells(sprite('working', 0, tintOf('web', names))));
+  expect(await cells('api')).toBe(rasterCells(sprite('waiting', 0, tintOf('api', names))));
+  expect(await cells('lead')).toBe(
+    rasterCells(sprite('idle', 0, tintOf('lead', names), { lead: true })),
+  );
+  // The working character repaints in place; the waiting one doesn't.
+  await clock.advance(2000);
+  await clock.advance(1200);
+  expect(w.blits).toContain('char-web');
+  expect(w.blits).not.toContain('char-api');
+  await ui.unmount();
+  w.waiting.get('tu-z')?.('timed out');
+  await call;
+});
+
+test('VIEW-3 nothing repaints when no agent is working', async ($, on) => {
+  const w = project();
+  const clock = await start($, on, w);
+  await lanes($);
+  const ui = await pane($, PANE);
+  await clock.advance(6000);
+  expect(w.blits).toEqual([]);
+  await ui.unmount();
+});
+
+test('VIEW-2 and VIEW-3 on Desktop the characters and timelines are SVG', async ($, on) => {
+  const w = project();
+  w.agents = [{ id: 'a1', type: 'web-engineer', description: 'ST-4', status: 'running' }];
+  const clock = await start($, on, w);
+  const now = clock.now() + 2000;
+  w.times = [
+    {
+      id: 'ST-4',
+      lane: 'web',
+      branch: 'web/st-4',
+      state: 'in progress',
+      started: now - 600000,
+      lastCommit: null,
+      merged: null,
+      sentBack: [],
+      approvals: [],
+    },
+  ];
+  w.refs += ' fff refs/heads/x\n';
+  await clock.advance(2000);
+  await lanes($);
+  const ui = await $.ui.mount({
+    plugin: 'code-kit',
+    component: 'Pane',
+    requestId: PANE,
+    surface: 'desktop',
+    viewport: { columns: 120, rows: 40 },
+    props: { title: PANE, isFocused: true, bodyColumns: 80, placement: 'dock' },
+  });
+  const svgs = await ui.findAll({ type: 'Svg' });
+  expect(
+    svgs.some((s) => s.props.alt === 'web: working' && String(s.props.source).includes('<animate')),
+  ).toBe(true);
+  expect(svgs.some((s) => s.props.alt === "web's timeline")).toBe(true);
+  await ui.unmount();
+});
+
+// --- the combined lane view ---------------------------------------------------------------------------
+
+/** A project where Context Graph's adapter reports on the web lane's agent. */
+function combinedProject() {
+  const w = project();
+  w.stories[0] = { ...w.stories[0], state: 'review' };
+  (w.check as any).adapters = ['context-graph'];
+  w.adapters = [
+    {
+      name: 'context-graph',
+      lanes: {
+        'web-engineer': {
+          withoutUnderstanding: [{ path: 'apps/web/form.tsx', unread: ['apps/web/api.ts'] }],
+          cardsOwed: ['apps/web/form.tsx', 'apps/web/api.ts'],
+        },
+      },
+      open: { command: 'graph' },
+    },
+  ];
+  w.story.adapters = [
+    {
+      name: 'context-graph',
+      files: {
+        'apps/web/form.tsx': {
+          rules: [
+            { id: 'K:no-fetch', text: 'No fetch in components', mode: 'E', proposed: false },
+            { id: 'K:dates', text: 'Dates through lib/date', mode: 'G?', proposed: true },
+          ],
+        },
+        'apps/web/api.ts': {
+          rules: [{ id: 'K:no-fetch', text: 'No fetch in components', mode: 'E', proposed: false }],
+        },
+      },
+      open: { command: 'graph' },
+    },
+  ];
+  return w;
+}
+
+test('JOIN-2 each lane shows its edits without understanding, red above zero, and its cards owed', async ($, on) => {
+  const w = combinedProject();
+  await start($, on, w);
+  await lanes($);
+  const ui = await pane($, PANE);
+  expect((await ui.find({ key: 'lane-web' }))?.text).toMatch(
+    /1 edit without understanding\s*2 cards owed/,
+  );
+  expect((await ui.find({ type: 'Text', text: '1 edit without understanding' }))?.props.color).toBe(
+    'red',
+  );
+  expect((await ui.find({ key: 'lane-api' }))?.text).toMatch(/0 edits without understanding/);
+  await ui.unmount();
+});
+
+test('JOIN-1 without an adapter that knows, the lanes show no such slots', async ($, on) => {
+  const w = project();
+  await start($, on, w);
+  await lanes($);
+  const ui = await pane($, PANE);
+  expect((await ui.find({ key: 'lane-web' }))?.text).not.toMatch(/understanding|owed/);
+  await ui.unmount();
+});
+
+test('JOIN-2 to JOIN-4 the drill-down names the unread files, the cards owed and the rules, and opens a file in Context Graph', async ($, on) => {
+  const w = combinedProject();
+  await start($, on, w);
+  const ui = await onWeb($);
+  await press($, 'open-story', PANE);
+  expect((await ui.find({ key: 'story-understanding' }))?.text).toMatch(
+    /apps\/web\/form.tsx\s*still unread: apps\/web\/api.ts/,
+  );
+  expect((await ui.find({ key: 'story-cards' }))?.text).toMatch(/Cards owed \(2\)/);
+  const rules = (await ui.find({ key: 'story-rules' }))?.text ?? '';
+  expect(rules).toMatch(/agreed\s+K:no-fetch\s+No fetch in components\s+\(2 files\)/);
+  expect(rules.indexOf('K:no-fetch')).toBeLessThan(rules.indexOf('K:dates'));
+  expect(rules).toMatch(/proposed\s+K:dates/);
+  expect((await ui.find({ key: 'story-open-in' }))?.props.hotkey).toBe('v');
+  await press($, 'story-open-in', PANE);
+  expect(w.commands).toContainEqual({ command: 'graph', args: 'apps/web/form.tsx' });
+  await press($, 'unread-file-0', PANE);
+  expect(w.commands.length).toBe(2);
+  await ui.unmount();
+});
+
+test("with no session bound (claude -p before it mounts), the agent list's failure leaves the project's refresh working", async ($, on) => {
+  const w = project();
+  w.agentsThrow = true;
+  const clock = await start($, on, w);
+  await lanes($);
+  w.stories[0] = { ...w.stories[0], state: 'review' };
+  w.refs += ' abc refs/heads/web/st-4-done\n';
+  await clock.advance(2000);
+  const ui = await pane($, PANE);
+  expect((await ui.find({ key: 'lane-web' }))?.text).toMatch(/in review/);
+  await ui.unmount();
+});
+
+test('REVW-2 a reviewer that could not be registered yet is registered at a later refresh, then used', async ($, on) => {
+  const w = reviewing();
+  w.registerFails = 1;
+  const clock = await start($, on, w);
+  expect(w.registered).toEqual([]);
+  w.refs += ' abc refs/heads/x\n';
+  await clock.advance(2000);
+  expect(w.registered.map((s) => s.name)).toEqual(['reviewer']);
+  await leadTurn($);
+  await settle(clock);
+  expect(w.prompts[0]).toMatch(/^Start code-kit's reviewer/);
+});
+
+// --- the first offer: how hands-off the loop is -----------------------------------------------------
+
+/** A project where nobody has chosen autonomy yet: the default stands in. */
+function unchosen() {
+  const w = project();
+  w.check.harnessSet = [];
+  return w;
+}
+
+test('until autonomy is chosen, the loop offers its first step: keep going, ask each time, or off', async ($, on) => {
+  const w = unchosen();
+  const clock = await start($, on, w);
+  await leadTurn($);
+  await settle(clock);
+  expect(w.prompts).toEqual([]);
+  const ui = await bandUi($);
+  expect(
+    await ui.find({
+      type: 'Text',
+      text: 'code-kit can keep the build moving between your prompts. Next: Dispatch ST-9.',
+    }),
+  ).toBeDefined();
+  expect((await ui.find({ key: 'band-keepGoing' }))?.props.label).toMatch(/Keep going$/);
+  expect(await ui.find({ key: 'band-askEach' })).toBeDefined();
+  expect(await ui.find({ key: 'band-loopOff' })).toBeDefined();
+  await ui.unmount();
+});
+
+test("Keep going records autonomous as the person's choice and takes the step", async ($, on) => {
+  const w = unchosen();
+  const clock = await start($, on, w);
+  await leadTurn($);
+  await settle(clock);
+  const ui = await bandUi($);
+  await press($, 'band-keepGoing');
+  await ui.unmount();
+  expect(w.acts[0]).toEqual([
+    'settings',
+    'set',
+    'autonomy',
+    'autonomous',
+    '--reason',
+    'Chosen when code-kit first offered to keep the build moving between prompts',
+    '--via',
+    'pane',
+  ]);
+  expect(w.prompts).toEqual(['Dispatch ST-9: run /code-kit:dispatch ST-9.']);
+  // From then on it acts on its own.
+  w.next = { step: 'review', args: 'ST-4', then: [] };
+  await leadTurn($, 't-2');
+  await settle(clock);
+  expect(w.prompts[1]).toBe('Review ST-4: run /code-kit:review ST-4.');
+});
+
+test('Ask each time records propose, and the step waits for Go', async ($, on) => {
+  const w = unchosen();
+  const clock = await start($, on, w);
+  await leadTurn($);
+  await settle(clock);
+  let ui = await bandUi($);
+  await press($, 'band-askEach');
+  await ui.unmount();
+  expect(w.acts[0]?.slice(0, 4)).toEqual(['settings', 'set', 'autonomy', 'propose']);
+  expect(w.prompts).toEqual([]);
+  ui = await bandUi($);
+  expect(await ui.find({ type: 'Text', text: 'Dispatch ST-9?' })).toBeDefined();
+  await press($, 'band-go');
+  await ui.unmount();
+  expect(w.prompts).toEqual(['Dispatch ST-9: run /code-kit:dispatch ST-9.']);
+});
+
+test('Off records off, and the loop does nothing', async ($, on) => {
+  const w = unchosen();
+  const clock = await start($, on, w);
+  await leadTurn($);
+  await settle(clock);
+  let ui = await bandUi($);
+  await press($, 'band-loopOff');
+  await ui.unmount();
+  expect(w.acts[0]?.slice(0, 4)).toEqual(['settings', 'set', 'autonomy', 'off']);
+  await leadTurn($, 't-2');
+  await settle(clock);
+  expect(w.prompts).toEqual([]);
+  ui = await bandUi($);
+  expect(await ui.find({ type: 'Text', text: /keep the build moving|Dispatch/ })).toBeUndefined();
+  await ui.unmount();
+});
+
+// --- an idle lane's detail --------------------------------------------------------------------------
+
+test('VIEW-6 a selected idle lane shows what it owns and its stories, Enter opens its next one, and the header counts it', async ($, on) => {
+  const w = project();
+  w.stories = [
+    { id: 'ST-1', title: 'Schema', lane: 'api', state: 'done', branch: 'api/st-1', waitingOn: [] },
+    {
+      id: 'ST-2',
+      title: 'Endpoints',
+      lane: 'api',
+      state: 'blocked',
+      branch: 'api/st-2',
+      waitingOn: ['ST-9'],
+    },
+    {
+      id: 'ST-9',
+      title: 'Pricing',
+      lane: 'core',
+      state: 'ready',
+      branch: 'core/st-9',
+      waitingOn: [],
+    },
+  ];
+  await start($, on, w);
+  await lanes($);
+  const ui = await pane($, PANE);
+  expect(await ui.find({ type: 'Text', text: '1 of 3 stories done' })).toBeDefined();
+  expect((await ui.find({ key: 'count-idle' }))?.props.label).toMatch(/· \d+ idle/);
+  for (let i = 0; i < 3; i++) await press($, 'lane-next', PANE);
+  const api = (await ui.find({ key: 'lane-api' }))?.text ?? '';
+  expect(api).toMatch(/owns apps\/api\/\*\*/);
+  expect(api).toMatch(/ST-1 Schema · done/);
+  expect(api).toMatch(/ST-2 Endpoints · blocked on ST-9/);
+  expect((await ui.find({ key: 'open-story' }))?.props.label).toBe('Open ST-2');
+  await press($, 'open-story', PANE);
+  expect(await ui.find({ key: 'story-head' })).toBeDefined();
+  await ui.unmount();
+});
+
+test('VIEW-6 the filter is one row, its key beside the box', async ($, on) => {
+  const w = project();
+  await start($, on, w);
+  await lanes($);
+  const ui = await pane($, PANE);
+  const row = await ui.find({ key: 'filter-row' });
+  expect(row).toBeDefined();
+  expect((await ui.find({ key: 'filter-focus' }))?.props.hotkey).toBe('f');
+  expect(await ui.findAll({ key: 'filter' })).toHaveLength(1);
+  await ui.unmount();
+});
+
+test('the lead reads working while its turn runs, and idle once it ends; an agent at work outside a story too', async ($, on) => {
+  const w = project();
+  w.agents = [
+    { id: 'a9', type: 'api-engineer', description: 'look at the logs', status: 'running' },
+  ];
+  const clock = await start($, on, w);
+  await lanes($);
+  const ui = await pane($, PANE);
+  expect((await ui.find({ key: 'lane-api' }))?.text).toMatch(/api\s*working/);
+  await $.turn.start({ turnId: 't-1', text: '' } as any);
+  expect((await ui.find({ key: 'lane-lead' }))?.text).toMatch(/lead\s*working/);
+  expect((await ui.find({ key: 'count-working' }))?.props.label).toBe('▶ 2 working');
+  await $.turn.complete({ turnId: 't-1', answer: '', durationMs: 1, isAborted: false } as any);
+  await settle(clock);
+  expect((await ui.find({ key: 'lane-lead' }))?.text).toMatch(/lead\s*idle/);
   await ui.unmount();
 });

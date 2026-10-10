@@ -11,6 +11,9 @@
 //             shell.block (`person: true` marks a person's act the lead may do for them under
 //             approvals.lead); restricted: commands only the lead and the listed lanes may run
 //   setup     lines for init to apply or tell the person: ignore files, merge drivers, instructions
+//   facts     what the tool knows of the lanes' work, for the mod's combined view: { available(root),
+//             lanes(root, { session }) → { [agent type or 'lead']: { withoutUnderstanding, cardsOwed } },
+//             files(root, paths) → { [path]: { rules } }, open: { command } (its view of a file) }
 //
 // The core only ever calls applyAdapters() and activeAdapters(); it never names a tool.
 import contextGraph from './context-graph.mjs';
@@ -20,6 +23,21 @@ export const ADAPTERS = [contextGraph];
 /** Adapters detected in `root` and not switched off by the config's `adapters` map. */
 export function activeAdapters(raw, root) {
   return ADAPTERS.filter((a) => raw.adapters?.[a.name] !== false && a.detect(root));
+}
+
+/**
+ * What the active adapters that know of the lanes' work report (JOIN-1): [{ name, lanes?, files?, open }],
+ * only those whose tool is available here. `paths` asks for those files' facts too.
+ */
+export function adapterFacts(raw, root, { session = null, paths = null } = {}) {
+  return activeAdapters(raw, root)
+    .filter((a) => a.facts && a.facts.available(root))
+    .map((a) => ({
+      name: a.name,
+      ...(a.facts.lanes ? { lanes: a.facts.lanes(root, { session }) } : {}),
+      ...(paths && a.facts.files ? { files: a.facts.files(root, paths) } : {}),
+      open: a.facts.open ?? null,
+    }));
 }
 
 /** The effective config with every active adapter's contributions merged in. */

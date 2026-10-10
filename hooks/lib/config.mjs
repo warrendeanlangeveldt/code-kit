@@ -1,5 +1,6 @@
 // The project's rules live in .claude/code-kit.json. The hooks read it from the project the session
 // was opened in; a project without one is not governed by the kit, and an invalid one fails closed.
+import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { harnessProblems, harnessSettings } from './harness.mjs';
 import { join } from 'node:path';
@@ -27,6 +28,43 @@ export function loadConfig(projectDir) {
   const problems = validate(raw);
   if (problems.length) return { error: `${CONFIG_FILE} is invalid:\n  ${problems.join('\n  ')}` };
   return { config: effectiveConfig(raw, projectDir) };
+}
+
+/**
+ * The config as committed on `ref`: what governs merging into it, so a branch's own config can't grant
+ * itself a merge its target doesn't allow. `{ config }`, `{ error }` when it's invalid, or `{}` when
+ * `ref` has none committed yet (the first merge, which brings code-kit's rules onto it).
+ */
+export function committedConfig(root, ref, file = CONFIG_FILE) {
+  let text;
+  try {
+    text = execFileSync('git', ['-C', root, 'show', `${ref}:${file}`], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+  } catch {
+    return {};
+  }
+  let raw;
+  try {
+    raw = JSON.parse(text);
+  } catch (e) {
+    return { error: `${file} on ${ref} is not valid JSON: ${e.message}` };
+  }
+  const problems = validate(raw);
+  if (problems.length)
+    return { error: `${file} on ${ref} is invalid:\n  ${problems.join('\n  ')}` };
+  return { config: effectiveConfig(raw, root) };
+}
+
+/**
+ * Whether the lead may merge into the base (the first protected branch), by the rules committed there:
+ * `{ into, delegated, first }`, `first` when the base has no config committed yet.
+ */
+export function mergeDelegation(root, config, file = CONFIG_FILE) {
+  const into = config.branches.protected[0];
+  const { config: target, error } = committedConfig(root, into, file);
+  return { into, delegated: Boolean(target?.approvals.delegate?.merge), first: !target && !error };
 }
 
 /** The rules the hooks enforce: the project's config, the kit's defaults, and any active adapters. */
@@ -252,10 +290,13 @@ function validateLayers(c, need, each) {
 function validateShell(s, lanes, need) {
   if (!need(isObj(s), '"shell" must be an object')) return;
   const rule = (r) => isObj(r) && isRegExp(r.pattern) && isStr(r.why);
-  const blockRule = (r) => rule(r) && [undefined, true, false].includes(r.person);
+  const blockRule = (r) =>
+    rule(r) &&
+    [undefined, true, false].includes(r.person) &&
+    [undefined, true, false].includes(r.command);
   need(
     s.block === undefined || (Array.isArray(s.block) && s.block.every(blockRule)),
-    '"shell.block" must be a list of { pattern, why, person? }',
+    '"shell.block" must be a list of { pattern, why, person?, command? }',
   );
   const restricted =
     s.restricted === undefined ||

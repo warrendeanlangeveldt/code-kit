@@ -40,7 +40,7 @@ A lane agent, as the loop sees it: `working` → `quiet` (no tool call for 5 min
 
 ### LOOP-1 Prompts the lead when it's idle
 
-When no turn is running and the prompt holds no draft, the loop asks `next` what to do and, if it's a step the lead takes (`dispatch`, `lead`, `review`), submits that step to the lead as a prompt naming the skill and its argument, for example `/code-kit:dispatch ST-7 ST-9`. It never submits while a turn runs or while the person is typing, and submits at most one prompt per idle period.
+When no turn is running and the prompt holds no draft, the loop asks `next` what to do and, if it's a step the lead takes (`dispatch`, `lead`, `review`), submits that step to the lead as a prompt naming the skill and its argument, for example "Dispatch ST-7, ST-9: run /code-kit:dispatch ST-7 ST-9." (Claude Code refuses a mod's prompt that begins with `/`). It never submits while a turn runs or while the person is typing, and submits at most one prompt per idle period.
 
 - **Who:** the mod; only in a project with `.claude/code-kit.json`.
 - **Errors:** if `next` fails, the band shows its error and the loop waits for the next change.
@@ -103,6 +103,14 @@ The band shows the loop's state ("loop on", "loop paused") with a Pause or Resum
 ### LOOP-7 Done
 
 When every story in the plan is done, the loop stops and the band reads "Milestone done: N stories merged" until dismissed.
+
+### LOOP-8 A step that doesn't take goes to the person
+
+The lead is prompted with one step at most twice in a row. A step still next after that didn't take (the lead couldn't, or wouldn't), and lanes committing elsewhere don't make a third prompt useful: the band offers it instead, "Merge lead/st-1: still next after 2 prompts. Ask the lead again?", with Go. A different step, or none for the lead, starts the count again.
+
+**Acceptance**
+
+- Given `next` reporting the same merge after each of four lead turns while lanes commit, then the lead is prompted twice, the band offers the third, and Go submits it.
 
 ## Quality targets
 

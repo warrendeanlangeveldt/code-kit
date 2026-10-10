@@ -9,8 +9,9 @@ import { appendFileSync, existsSync, readFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { join, resolve } from 'node:path';
 import { addedPackages, dependencyApproval, isDependencyFile } from './lib/dependencies.mjs';
-import { CODE_KIT, GIT, codeOf, runs } from './lib/shell.mjs';
+import { CODE_KIT, GIT, codeOf, commandsOf, runs } from './lib/shell.mjs';
 import { block, start } from './lib/hook.mjs';
+import { noteBefore } from './lane-audit.mjs';
 import {
   APPROVAL_LOG,
   actorFor,
@@ -54,10 +55,14 @@ const ALWAYS = [
     'Piping downloads into a shell is not allowed.',
     codeOf(cmd),
   ],
-  [/\.claude\/approvals/, 'Approvals are created only by a person, with a `!` shell command.', cmd],
+  [
+    /\.claude\/approvals/,
+    "Approvals are created only by a person, with a `!` shell command. A shell command may not name them, even to read them; read them with the Read tool (or Glob to list them), which can't write.",
+    cmd,
+  ],
   [
     /approval-log\.jsonl/,
-    'The approval audit log is appended only by the commit hook; nobody edits it.',
+    "The approval audit log is appended only by the commit hook; nobody edits it. A shell command may not name it, even to read it; read it with the Read tool, which can't write.",
     cmd,
   ],
 ];
@@ -66,7 +71,8 @@ for (const [re, why, text] of ALWAYS) {
 }
 const packages = addedPackages(cmd);
 const approves = runs(cmd, new RegExp(String.raw`^${CODE_KIT}\s+approve\b`));
-const delegatedMerge = runs(cmd, new RegExp(String.raw`^${CODE_KIT}\s+merge\b`));
+const delegatedMerge = runs(cmd, new RegExp(String.raw`^${CODE_KIT}\s+(?:queue\s+)?merge\b`));
+const queues = runs(cmd, new RegExp(String.raw`^${CODE_KIT}\s+queue\s+(?:add|drop)\b`));
 const commits = runs(cmd, new RegExp(String.raw`^${GIT}commit\b`));
 if (error) {
   if (commits) block(`Blocked: ${error}\nFix the config before committing.`);
@@ -119,11 +125,16 @@ if (runs(cmd, new RegExp(String.raw`^${GIT}push\b.*\b(${branches})\b`))) {
 
 const sessionIn = sessionRoot(input, project);
 const actor = actorFor(input, sessionIn ?? project, config);
+// A read-only agent's command is judged afterwards by what it changed (lane-audit).
+if (actor.kind === 'readonly') noteBefore(input);
 // The lead acts for the person only where the config says the person may approve from chat.
 const forPerson = actor.kind === 'lead' && config.approvals.lead;
 
-for (const { pattern, why, person } of config.shell.block) {
-  if (!new RegExp(pattern).test(cmd) || (person && forPerson)) continue;
+for (const { pattern, why, person, command } of config.shell.block) {
+  // `command: true`: the pattern names a command, matched from the start of each one the line runs, so a
+  // heredoc or a quoted message that mentions it isn't refused. Otherwise it reads the whole text.
+  const matched = command ? runs(cmd, new RegExp(pattern)) : new RegExp(pattern).test(cmd);
+  if (!matched || (person && forPerson)) continue;
   const hint =
     person && actor.kind === 'lead'
       ? '\nTo let the lead run it when the person says so in chat, a person sets "approvals": { "lead": true } in the config.'
@@ -144,6 +155,10 @@ if ((delegatedMerge && /\s--person\b/.test(cmd)) || (approves && /\s--via\b/.tes
 if (runs(cmd, new RegExp(String.raw`^${CODE_KIT}\s+settings\s+set\b`)))
   block(
     `Blocked: changing the harness settings is the person's own act, from the code-kit pane (/harness) or their terminal. Tell them what you'd change and why, and stop.\nCommand: ${cmd}`,
+  );
+if (queues && actor.kind !== 'lead')
+  block(
+    `Blocked: only the lead puts branches in the merge queue, after its review passes them. Finish your story and commit it on your branch; the lead reviews it.\nCommand: ${cmd}`,
   );
 if (delegatedMerge && actor.kind !== 'lead')
   block(
@@ -224,15 +239,16 @@ if (writesHistory && config.branches.protected.includes(branch)) {
   );
 }
 
-// Kit files edited through the shell follow the same rule as edits through Write/Edit.
-const touchesKit =
-  /\.claude\/(hooks|agents|skills|settings[^/]*\.json|README\.md|code-kit\.json)/.test(cmd);
+// Kit files edited through the shell follow the same rule as edits through Write/Edit: a command that
+// names a kit file and writes, judged one simple command at a time, so a redirect elsewhere in the line
+// (`npm install > /tmp/log; ls .claude/skills`) isn't taken for a write to the kit. A write the shell
+// hides (a script, a variable) is still caught after the call, as a change outside the actor's paths.
+const KIT_PATH = /\.claude\/(hooks|agents|skills|settings[^/]*\.json|README\.md|code-kit\.json)/;
 // a real redirect into a file; `2>&1` and `>/dev/null` are not writes
-const writes =
-  /((?<![0-9&])>>?\s*(?!&|\/dev\/null)\S|\btee\b|\bsed\s+-i|\bperl\s+-i|\bmv\b|\bcp\b|\brm\b|\bpython3?\b|\bnode\s+-e|\btruncate\b|\bchmod\b|\bln\b)/.test(
-    cmd,
-  );
-if (touchesKit && writes && actor.kind !== 'lead' && !approval(root, 'kit', actor)) {
+const WRITES =
+  /((?<![0-9&])>>?\s*(?!&|\/dev\/null)\S|\btee\b|\bsed\s+-i|\bperl\s+-i|\bmv\b|\bcp\b|\brm\b|\bpython3?\b|\bnode\s+-e|\btruncate\b|\bchmod\b|\bln\b)/;
+const kitWrite = commandsOf(cmd).some((c) => KIT_PATH.test(c.text) && WRITES.test(c.text));
+if (kitWrite && actor.kind !== 'lead' && !approval(root, 'kit', actor)) {
   recordRequest(
     root,
     actor,
