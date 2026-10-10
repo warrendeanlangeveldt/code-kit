@@ -2,6 +2,43 @@
 
 What changed in each release of code-kit, newest first. Versions follow the plugin manifest and the npm package `@warren-dean/code-kit`. Each release is also on [GitHub Releases](https://github.com/warrendeanlangeveldt/code-kit/releases).
 
+## 0.7.0 (2026-10-10)
+
+The rest of the harness, in the mod (Claude Code 2.1.287 or later), and fixes from building a whole app with it.
+
+**The lead keeps the build moving**
+
+- **The lead loop.** When the lead is idle, the mod prompts it with the next step `code-kit next` reports: dispatch the ready stories, review a finished branch, build the lead's own story, or merge the head of the queue. `harness.autonomy` decides how hands-off it is: `autonomous` takes each step, `propose` offers it in the band with Go, `off` does nothing. Until you choose, `init` asks, and the loop offers its first step with Keep going, Ask each time and Off.
+- **A step that doesn't take goes to you.** The lead is prompted with one step at most twice in a row; after that the band offers it ("Merge lead/st-1: still next after 2 prompts. Ask the lead again?").
+- **Stalls.** A lane agent with no tool call for `harness.stall.nudgeMinutes` is nudged; at `restartMinutes` the lead stops it and dispatches its story again; after `maxRestarts` the band asks you.
+- **Pause and Resume** in the band, and "Milestone done" when every story is.
+- **Hold and ask.** A call your approval would allow (a new package, a protected file, a kit edit) waits up to `harness.hold.minutes` while the band asks you, then runs once you approve, or is refused.
+
+**Review and merge**
+
+- **The reviewer agent.** With `harness.agents.reviewer.on`, a read-only agent reviews each finished branch in the background, grades its findings blocker, concern or nit, and the lead's review starts from them. A blocker means the branch goes back.
+- **The merge queue.** Branches that pass review merge one at a time, in the order they passed, each verified against the base as it is then. One that conflicts or fails is sent back to its lane. `code-kit queue` lists it, `queue add|drop` changes it, `queue merge --delegated|--person` merges the head.
+- **The first merge is yours.** Who may merge is read from the config committed on the base, so before the base has one, `next`, the band and the refusal all say the first merge, which brings code-kit's rules onto it, is yours (Merge in the band, or `code-kit queue merge --person`). After it, the lead merges where the rules delegate it.
+- A merged lane's worktree is removed when it holds nothing uncommitted. Its branch is kept.
+
+**What you see**
+
+- **The Lanes pane, redone.** Counts in the header, what needs you with a letter each, tabs for Lanes, Queue, Usage and Map, keys on every action, a pixel character per lane that shows what it's doing, and a timeline of each story's work.
+- **The story drill-down:** its requirements, spec-check, review findings, verify, usage, the steps taken and the diff.
+- **The traceability map:** every requirement as a cell, by spec, coloured by its state, live.
+- **Context Graph in the lanes,** when it's installed: each lane's cards owed, its understanding of the files it edits, and the rules on them.
+- New commands: `code-kit story <id>`, `code-kit timeline`, `code-kit hold`, `code-kit queue`.
+
+**Fixes**
+
+- Text a command carries isn't a command: a quoted `echo` that mentions `npm install` adds no dependency, a heredoc or quoted newline doesn't end a command, and a redirect elsewhere in a line isn't a write to the kit.
+- A read-only agent (a reviewer, a card writer) is judged by what its own shell command changed, not by the lead's uncommitted work in the checkout it shares. Read-only agents may write the paths any actor may, such as Context Graph's cards and decisions.
+- An env file's template (`.env.example`, `.env.local.sample`) isn't treated as a secret.
+- Context Graph's settings committed with your `Ctx-Ratified-By` trailer pass verify, as its graph does.
+- Refusing a shell command that names the approval log or an approval now says to read it with the Read tool.
+- `init` offers `/context-graph:init` when Context Graph is installed but has no graph.
+- The mod keeps working in a headless session where the agent list or registration fails.
+
 ## 0.6.0 (2026-10-10)
 
 The first parts of the harness, in the mod (Claude Code 2.1.287 or later):
