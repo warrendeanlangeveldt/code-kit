@@ -845,7 +845,7 @@ test("VIEW-1, VIEW-4, VIEW-6 panes v2: counts, liveness and the selected lane's 
   const queue = [{ branch: 'core/st-6', state: 'waiting' }];
   assert.deepEqual(
     countsOf(state, queue).map((c) => `${c.glyph} ${c.n} ${c.state}`),
-    ['● 1 building', '◐ 1 in review', '◆ 1 queued', '○ 1 ready', '✓ 1 merged'],
+    ['● 1 building', '◐ 1 in review', '◆ 1 queued', '○ 1 ready', '✓ 1 merged', '· 1 idle'],
   );
   assert.deepEqual(countsOf({ kind: 'none' }), []);
   const ids = (lane, extra) =>
@@ -1006,4 +1006,27 @@ test('shell: a newline inside quotes ends no command', async () => {
     ),
     ['git commit -m "Notes\nctx drop src.small is the person\'s"', 'npm test'],
   );
+});
+
+test("VIEW-6 an idle lane: its stories in plan order, the one Enter opens, and the plan's progress", async () => {
+  const { laneStories, storyToOpen, planProgress } = await import('../hooks/mod/panes.mjs');
+  const state = {
+    stories: [
+      { id: 'ST-1', lane: 'web', state: 'done' },
+      { id: 'ST-2', lane: 'api', state: 'done' },
+      { id: 'ST-3', lane: 'web', state: 'blocked', waitingOn: ['ST-2'] },
+      { id: 'ST-4', lane: 'web', state: 'ready' },
+    ],
+  };
+  const web = { name: 'web', story: null };
+  assert.deepEqual(
+    laneStories(web, state).map((s) => s.id),
+    ['ST-1', 'ST-3', 'ST-4'],
+  );
+  assert.equal(storyToOpen(web, state).id, 'ST-3');
+  assert.equal(storyToOpen({ name: 'api', story: null }, state).id, 'ST-2');
+  assert.equal(storyToOpen({ name: 'web', story: { id: 'ST-9' } }, state).id, 'ST-9');
+  assert.equal(storyToOpen({ name: 'qa', story: null }, state), null);
+  assert.equal(planProgress(state), '2 of 4 stories done');
+  assert.equal(planProgress({ stories: [] }), null);
 });

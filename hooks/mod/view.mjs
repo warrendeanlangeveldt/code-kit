@@ -93,6 +93,7 @@ export function projectState(check, status, next = null, atWork = new Set()) {
       branch: s.branch ?? null,
       worktree: s.worktree ?? null,
       requirements: s.requirements ?? [],
+      waitingOn: s.waitingOn ?? [],
     })),
   };
 }
@@ -125,7 +126,15 @@ export function lanesPane(
   usage = null,
   plan = null,
   loop = null,
-  { filter = null, search = '', selected = null, live = {}, art = null, combined = null } = {},
+  {
+    filter = null,
+    search = '',
+    selected = null,
+    live = {},
+    art = null,
+    combined = null,
+    detail = null,
+  } = {},
 ) {
   const { Box, Text } = els;
   const text = (value, style = {}) => Text({ ...style, children: [value] });
@@ -264,6 +273,27 @@ export function lanesPane(
           ]
         : []),
       ...bar(l),
+      // VIEW-6: the selected lane's detail: the paths it owns and its stories, each with its state.
+      ...(l.name === selected && detail
+        ? [
+            text(`    owns ${detail.owns.length ? detail.owns.join(', ') : 'nothing yet'}`, {
+              dimColor: true,
+              wrap: 'truncate-end',
+            }),
+            ...(detail.stories.length
+              ? detail.stories.map((s) =>
+                  text(
+                    `    ${s.id} ${s.title} · ${s.state}${s.state === 'blocked' && s.waitingOn.length ? ` on ${s.waitingOn.join(', ')}` : ''}`,
+                    {
+                      dimColor: s.state === 'done',
+                      ...(s.state === 'blocked' ? { color: 'red' } : {}),
+                      wrap: 'truncate-end',
+                    },
+                  ),
+                )
+              : [text('    no stories in the plan', { dimColor: true })]),
+          ]
+        : []),
     ];
     return art
       ? Box({

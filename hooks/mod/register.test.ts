@@ -2335,3 +2335,54 @@ test('Off records off, and the loop does nothing', async ($, on) => {
   expect(await ui.find({ type: 'Text', text: /keep the build moving|Dispatch/ })).toBeUndefined();
   await ui.unmount();
 });
+
+// --- an idle lane's detail --------------------------------------------------------------------------
+
+test('VIEW-6 a selected idle lane shows what it owns and its stories, Enter opens its next one, and the header counts it', async ($, on) => {
+  const w = project();
+  w.stories = [
+    { id: 'ST-1', title: 'Schema', lane: 'api', state: 'done', branch: 'api/st-1', waitingOn: [] },
+    {
+      id: 'ST-2',
+      title: 'Endpoints',
+      lane: 'api',
+      state: 'blocked',
+      branch: 'api/st-2',
+      waitingOn: ['ST-9'],
+    },
+    {
+      id: 'ST-9',
+      title: 'Pricing',
+      lane: 'core',
+      state: 'ready',
+      branch: 'core/st-9',
+      waitingOn: [],
+    },
+  ];
+  await start($, on, w);
+  await lanes($);
+  const ui = await pane($, PANE);
+  expect(await ui.find({ type: 'Text', text: '1 of 3 stories done' })).toBeDefined();
+  expect((await ui.find({ key: 'count-idle' }))?.props.label).toMatch(/· \d+ idle/);
+  for (let i = 0; i < 3; i++) await press($, 'lane-next', PANE);
+  const api = (await ui.find({ key: 'lane-api' }))?.text ?? '';
+  expect(api).toMatch(/owns apps\/api\/\*\*/);
+  expect(api).toMatch(/ST-1 Schema · done/);
+  expect(api).toMatch(/ST-2 Endpoints · blocked on ST-9/);
+  expect((await ui.find({ key: 'open-story' }))?.props.label).toBe('Open ST-2');
+  await press($, 'open-story', PANE);
+  expect(await ui.find({ key: 'story-head' })).toBeDefined();
+  await ui.unmount();
+});
+
+test('VIEW-6 the filter is one row, its key beside the box', async ($, on) => {
+  const w = project();
+  await start($, on, w);
+  await lanes($);
+  const ui = await pane($, PANE);
+  const row = await ui.find({ key: 'filter-row' });
+  expect(row).toBeDefined();
+  expect((await ui.find({ key: 'filter-focus' }))?.props.hotkey).toBe('f');
+  expect(await ui.findAll({ key: 'filter' })).toHaveLength(1);
+  await ui.unmount();
+});

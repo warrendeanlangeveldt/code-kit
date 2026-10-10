@@ -30,6 +30,7 @@ const GLYPH = {
   queued: '◆',
   'sent back': '↩',
   blocked: '■',
+  idle: '·',
   ready: '○',
   merged: '✓',
 };
@@ -51,8 +52,28 @@ export function countsOf(state, queue = []) {
     ['blocked', n('blocked')],
     ['ready', state.ready.length],
     ['merged', (state.stories ?? []).filter((s) => s.state === 'done').length],
+    ['idle', n('idle')],
   ];
   return counts.filter(([, k]) => k > 0).map(([s, k]) => ({ state: s, n: k, glyph: GLYPH[s] }));
+}
+
+/** A lane's stories in plan order. */
+export const laneStories = (lane, state) =>
+  (state?.stories ?? []).filter((s) => s.lane === lane.name);
+
+/** The story Enter opens on a lane: the one it's on, else its next not done, else its last done. */
+export function storyToOpen(lane, state) {
+  if (lane.story) return lane.story;
+  const own = laneStories(lane, state);
+  return own.find((s) => s.state !== 'done') ?? own.at(-1) ?? null;
+}
+
+/** VIEW-1: how much of the plan is done, as words: "3 of 25 stories done". */
+export function planProgress(state) {
+  const all = state?.stories ?? [];
+  return all.length
+    ? `${all.filter((s) => s.state === 'done').length} of ${all.length} stories done`
+    : null;
 }
 
 /** VIEW-6's letters for the band's actions, as the needs-you strip draws them. */
@@ -126,6 +147,7 @@ export function lanesFrame(view, els, on) {
           onPress: () => on.onFilter(c.state),
         }),
       ),
+      ...(planProgress(state) ? [text(planProgress(state), { dimColor: true })] : []),
       text(loopWord, { color: loop?.state === 'paused' ? 'yellow' : 'green' }),
       ...(plan?.percent != null
         ? [
@@ -243,6 +265,12 @@ export function lanesFrame(view, els, on) {
                 selected: ui.selected,
                 live: view.live ?? {},
                 art: view.art ?? null,
+                detail: selected
+                  ? {
+                      owns: view.paths?.[selected.name] ?? [],
+                      stories: laneStories(selected, state),
+                    }
+                  : null,
                 combined: view.combined ?? null,
               }),
               ...loopSection(loop, text, Box),
@@ -255,6 +283,7 @@ export function lanesFrame(view, els, on) {
         : null;
 
   // VIEW-6: j/k move between lanes; the selected lane's acts; f filters.
+  const opening = selected ? storyToOpen(selected, state) : null;
   const keys =
     ui.tab === 'lanes'
       ? [
@@ -264,15 +293,15 @@ export function lanesFrame(view, els, on) {
             columnGap: 1,
             flexWrap: 'wrap',
             children: [
-              ...(selected?.story
+              ...(opening
                 ? [
                     Button({
                       key: 'open-story',
-                      label: `Open ${selected.story.id}`,
+                      label: `Open ${opening.id}`,
                       hotkey: 'o',
                       variant: 'primary',
                       autoFocus: true,
-                      onPress: () => on.onOpen(selected),
+                      onPress: () => on.onOpen({ ...selected, story: opening }),
                     }),
                   ]
                 : []),
@@ -315,21 +344,29 @@ export function lanesFrame(view, els, on) {
                 : []),
             ],
           }),
-          Input({
-            key: 'filter',
-            label: 'Filter (f)',
-            value: ui.search,
-            submitLabel: 'Filter',
-            onInput: (v) => on.onSearch(v),
-            onSubmit: (v) => on.onSearch(v),
-          }),
-          Button({
-            key: 'filter-focus',
-            label: 'Filter',
-            hotkey: 'f',
-            plain: true,
-            dimColor: true,
-            onPress: () => on.onFocusSearch(),
+          // One row: f puts the keys in the filter.
+          Box({
+            key: 'filter-row',
+            flexDirection: 'row',
+            columnGap: 1,
+            children: [
+              Button({
+                key: 'filter-focus',
+                label: 'Filter',
+                hotkey: 'f',
+                plain: true,
+                onPress: () => on.onFocusSearch(),
+              }),
+              Input({
+                key: 'filter',
+                label: '',
+                value: ui.search,
+                placeholder: 'lane, agent or story',
+                submitLabel: 'Filter',
+                onInput: (v) => on.onSearch(v),
+                onSubmit: (v) => on.onSearch(v),
+              }),
+            ],
           }),
         ]
       : [];

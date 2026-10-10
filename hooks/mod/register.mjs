@@ -1281,6 +1281,13 @@ export function register(on) {
         requests: model.requests?.open ?? [],
         ui: paneUi,
         status: model.status ?? null,
+        // VIEW-6: what each lane owns, for the selected lane's detail.
+        paths: {
+          lead: model.check?.lead?.paths ?? [],
+          ...Object.fromEntries(
+            Object.entries(model.check?.lanes ?? {}).map(([n, l]) => [n, l.paths ?? []]),
+          ),
+        },
         art: artNow(now, liveNow(now)),
         combined: combinedNow(),
         placement: e.props.placement,
@@ -1308,7 +1315,10 @@ export function register(on) {
           paneUi = { ...paneUi, selected: lanesNow[to].name };
           $.ui.invalidate('ui.render');
           // VIEW-6: Enter opens the selected lane's story: the focus waits on its Open button.
-          if (lanesNow[to].story)
+          if (
+            lanesNow[to].story ||
+            (model.state?.stories ?? []).some((s) => s.lane === lanesNow[to].name)
+          )
             $.ui.focus({ requestId: PANE_ID, key: 'open-story' }).catch(() => {});
         },
         onOpen: (lane) => act?.openStory(lane),
