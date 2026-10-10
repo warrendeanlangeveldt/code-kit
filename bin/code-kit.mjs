@@ -55,6 +55,7 @@ import { recordSentBack } from '../hooks/lib/reviews.mjs';
 import { storyTimes } from '../hooks/lib/timeline.mjs';
 import { dequeue, enqueue, lastMerged, readQueue, settle, waiting } from '../hooks/lib/queue.mjs';
 import { SETTINGS, parseSetting, settingOf, withSetting } from '../hooks/lib/harness.mjs';
+import { readLoop, writeLoop } from '../hooks/lib/loop-state.mjs';
 import {
   APPROVAL_MINUTES,
   approvalLifetime,
@@ -1069,8 +1070,31 @@ async function approve(given) {
   );
 }
 
+/**
+ * The lead loop's pause (LOOP-6): `loop` says whether the person paused it; `loop pause|resume`, the
+ * person's act from the code-kit band, records it, so other tools' background work pauses with it.
+ */
+function loopCommand() {
+  const root = resolve('.');
+  const [sub] = rest;
+  if (sub === 'pause' || sub === 'resume') {
+    writeLoop(root, sub === 'pause');
+    return out(sub === 'pause' ? 'The lead loop is paused.' : 'The lead loop is running.');
+  }
+  if (sub !== undefined) die('code-kit loop [--json] | loop pause | loop resume');
+  const state = readLoop(root);
+  out(
+    flag('--json')
+      ? JSON.stringify(state)
+      : state.paused
+        ? `The lead loop is paused (since ${state.at}).`
+        : 'The lead loop is running.',
+  );
+}
+
 const commands = {
   check,
+  loop: loopCommand,
   approve: () => (rest.length ? approve(rest) : usage()),
   merge: () => (rest.length === 1 ? merge(rest[0]) : usage()),
   requests,
@@ -1103,6 +1127,7 @@ function usage() {
       '              | settings [--json] | settings set <key> <value> --reason "…" [--via pane]\n' +
       '              | hold <id> [--minutes N] | hold <id> --answer approved|refused\n' +
       '              | queue [--json] | queue add|drop <branch> | queue merge --delegated|--person\n' +
+      '              | loop [--json] | loop pause|resume\n' +
       '              | story <id> [--json] | timeline [--json]',
   );
 }

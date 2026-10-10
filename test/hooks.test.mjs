@@ -989,6 +989,25 @@ try {
       'queue merge --person',
     );
     expect('the person makes the first merge', fKit('queue', 'merge', '--person'), 0);
+    // LOOP-6: the loop's pause, recorded for other tools.
+    const loopNow = () => JSON.parse(fKit('loop', '--json').stdout);
+    expect('the loop starts unpaused', truth(loopNow().paused === false), 0);
+    fKit('loop', 'pause');
+    expect('code-kit loop pause records the pause', truth(loopNow().paused === true), 0);
+    fKit('loop', 'resume');
+    expect('and resume clears it', truth(loopNow().paused === false), 0);
+    const fHook = (command) =>
+      spawnSync('node', [join(hooks, 'guard-bash.mjs')], {
+        input: JSON.stringify({ cwd: f.dir, tool_input: { command } }),
+        env: { ...process.env, CLAUDE_PROJECT_DIR: f.dir },
+        encoding: 'utf8',
+      });
+    expect(
+      'no agent pauses or resumes the loop',
+      fHook(`node "${kitCli}" loop resume`),
+      2,
+      "the person's own act",
+    );
     expect(
       'after it, main delegates merges to the lead by its committed rules',
       truth(

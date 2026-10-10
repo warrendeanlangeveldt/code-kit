@@ -162,6 +162,9 @@ export function register(on) {
       const ran = await $.process.run(['node', cli, ...args, '--json'], { cwd });
       return ran.exitCode === 0 ? parseJson(ran.stdout) : null;
     };
+    // A session starts with the loop running: a pause recorded by an earlier one no longer holds.
+    if ((await json('loop').catch(() => null))?.paused)
+      await $.process.run(['node', cli, 'loop', 'resume'], { cwd }).catch(() => {});
     const stamp = async (path) => {
       const s = await $.fs.stat(`${cwd}/${path}`).catch(() => null);
       return s ? `${path}@${s.mtimeMs}` : `${path}-`;
@@ -701,11 +704,14 @@ export function register(on) {
       pause: async () => {
         loop.paused = true;
         loop.proposal = null;
+        // Recorded, so other tools' background work in this project pauses with the loop.
+        await $.process.run(['node', cli, 'loop', 'pause'], { cwd }).catch(() => {});
         await act.record('pause', 'the loop');
         $.ui.invalidate('ui.render');
       },
       resume: async () => {
         loop.paused = false;
+        await $.process.run(['node', cli, 'loop', 'resume'], { cwd }).catch(() => {});
         loop.lastKey = null;
         await act.record('resume', 'the loop');
         $.ui.invalidate('ui.render');

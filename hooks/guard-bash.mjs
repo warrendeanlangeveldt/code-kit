@@ -151,6 +151,11 @@ if ((delegatedMerge && /\s--person\b/.test(cmd)) || (approves && /\s--via\b/.tes
   block(
     `Blocked: merging or approving as the person is the person's own act, from the code-kit pane or their terminal. Ask them, and stop.\nCommand: ${cmd}`,
   );
+// Pausing and resuming the lead loop is the person's, from the band or their terminal.
+if (runs(cmd, new RegExp(String.raw`^${CODE_KIT}\s+loop\s+(pause|resume)\b`)))
+  block(
+    `Blocked: pausing or resuming the lead loop is the person's own act, from the code-kit band or their terminal. Ask them, and stop.\nCommand: ${cmd}`,
+  );
 // The harness settings are the person's to change, from the pane or their terminal.
 if (runs(cmd, new RegExp(String.raw`^${CODE_KIT}\s+settings\s+set\b`)))
   block(

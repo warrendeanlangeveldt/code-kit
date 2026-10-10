@@ -148,6 +148,7 @@ function project() {
       },
     } as any,
     sent: [] as { to: any; text: string }[],
+    loopPaused: false, // the pause recorded by `code-kit loop`
     holdWaits: false, // false: the hold ends at once, as if timed out (tests about cards, not hold)
     waiting: new Map<string, (answer: string) => void>(),
   };
@@ -185,6 +186,12 @@ function stub(on: any, w: World) {
     if (sub === 'adapters') return ran(0, JSON.stringify(w.adapters));
     if (sub === 'timeline')
       return ran(0, JSON.stringify({ base: 'main', now: 0, stories: w.times }));
+    if (sub === 'loop' && ['pause', 'resume'].includes(argv[3])) {
+      w.acts.push([...argv.slice(2)]);
+      w.loopPaused = argv[3] === 'pause';
+      return ran(0, '');
+    }
+    if (sub === 'loop') return ran(0, JSON.stringify({ paused: w.loopPaused, at: null }));
     if (sub === 'sent-back') {
       w.acts.push([...argv.slice(2)]);
       return ran(0, `Recorded: ${argv[3]} was sent back.`);
@@ -1474,6 +1481,29 @@ test('LOOP-6 Pause stops new steps until Resume', async ($, on) => {
   expect(w.prompts).toEqual([
     'Review ST-4: run /code-kit:review ST-4.',
     'Dispatch ST-9: run /code-kit:dispatch ST-9.',
+  ]);
+});
+
+test('LOOP-6 the pause is recorded for other tools, and a new session starts with the loop running', async ($, on) => {
+  const w = project();
+  w.loopPaused = true; // left by an earlier session
+  w.next = { step: 'review', args: 'ST-4', then: [] };
+  const clock = await start($, on, w);
+  expect(w.acts).toContainEqual(['loop', 'resume']);
+  expect(w.loopPaused).toBe(false);
+  await leadTurn($);
+  await settle(clock);
+  w.acts = [];
+  let ui = await bandUi($);
+  await press($, 'band-pause');
+  await ui.unmount();
+  expect(w.acts).toEqual([['loop', 'pause']]);
+  ui = await bandUi($);
+  await press($, 'band-resume');
+  await ui.unmount();
+  expect(w.acts).toEqual([
+    ['loop', 'pause'],
+    ['loop', 'resume'],
   ]);
 });
 

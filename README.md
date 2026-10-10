@@ -341,6 +341,8 @@ code-kit settings set <key> <value> --reason "…"               # change one, a
 code-kit queue [--json]                                      # the merge queue: branches whose review passed, in order
 code-kit queue add|drop <branch>                              # the lead queues a branch its review passed, or takes it out
 code-kit queue merge --delegated|--person                     # merge the head, verified against the base as it is now; a conflict or failed verify sends it back to its lane
+code-kit loop [--json]                                        # whether the person paused the lead loop; other tools' background work pauses with it
+code-kit loop pause|resume                                    # the person's act, as Pause and Resume in the band
 code-kit story <id> [--json]                                  # one story's requirements, spec-check report, diff against the base and verify (without checks), for the drill-down
 code-kit timeline [--json]                                    # when each story's work happened: its branch made, last commit, merge, send-backs and approvals
 code-kit adapters [--json --session id]                       # the adapters in use; with --json, what they know of each lane's work in a session
