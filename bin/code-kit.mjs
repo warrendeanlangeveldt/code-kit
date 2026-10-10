@@ -135,6 +135,8 @@ function checkJson() {
   report.adapters = config.adapters;
   report.docs = config.docs ?? null;
   report.harness = config.harness;
+  // The harness settings the person chose, as opposed to defaults: the mod asks before acting on autonomy.
+  report.harnessSet = Object.keys(SETTINGS).filter((k) => settingOf(raw.harness, k) !== undefined);
   report.delegatesMerge = Boolean(config.approvals.delegate?.merge);
   out(JSON.stringify(report, null, 2));
 }
@@ -733,6 +735,8 @@ function settings() {
     value: settingOf(config.harness, key),
     default: s.default,
     about: s.about,
+    // Chosen in the config, or the default standing in.
+    set: settingOf(raw.harness, key) !== undefined,
   }));
   if (flag('--json')) return out(JSON.stringify(rows, null, 2));
   for (const r of rows)

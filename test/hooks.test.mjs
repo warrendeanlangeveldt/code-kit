@@ -1470,6 +1470,22 @@ try {
       ),
       0,
     );
+    const checked = JSON.parse(sCli('check', '--json').stdout);
+    expect(
+      'check --json says which harness settings the person chose, the rest being defaults',
+      truth(checked.harnessSet.join() === 'autonomy', JSON.stringify(checked.harnessSet)),
+      0,
+    );
+    expect(
+      'and settings --json marks each as chosen or not',
+      truth(
+        JSON.parse(sCli('settings', '--json').stdout)
+          .filter((r) => r.set)
+          .map((r) => r.key)
+          .join() === 'autonomy',
+      ),
+      0,
+    );
     const bad = sCli('settings', 'set', 'hold.minutes', '99', '--reason', 'longer');
     expect(
       'a value out of range changes nothing',

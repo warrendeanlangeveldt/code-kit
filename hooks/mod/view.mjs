@@ -556,7 +556,18 @@ export function bandLines({
       ],
     });
   // LOOP-5: under autonomy propose, each step waits for Go.
-  if (loop?.proposal)
+  if (loop?.proposal?.first)
+    // The first time, the person chooses how hands-off the loop is (until then nothing is taken on its own).
+    lines.push({
+      kind: 'proposal',
+      text: `code-kit can keep the build moving between your prompts. Next: ${loop.proposal.label}.`,
+      actions: [
+        { id: 'keepGoing', label: 'Keep going' },
+        { id: 'askEach', label: 'Ask each time' },
+        { id: 'loopOff', label: 'Off' },
+      ],
+    });
+  else if (loop?.proposal)
     lines.push({
       kind: 'proposal',
       text: `${loop.proposal.label}?`,
@@ -919,6 +930,14 @@ export function settingsView(rows, pending, { Box, Text, Select, Input, Button }
             control(r),
             ...(r.value !== r.default
               ? [Text({ dimColor: true, children: [`default ${shown(r.default)}`] })]
+              : []),
+            ...(r.key === 'autonomy' && r.set === false
+              ? [
+                  Text({
+                    color: 'yellow',
+                    children: ['not chosen yet: the loop asks before its first step'],
+                  }),
+                ]
               : []),
           ],
         }),

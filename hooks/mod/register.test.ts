@@ -18,6 +18,7 @@ function project() {
       valid: true,
       problems: [] as string[],
       lead: { paths: ['docs/**'] },
+      harnessSet: ['autonomy'] as string[], // the person chose autonomy (the default, autonomous)
       lanes: {
         web: { agent: 'web-engineer', paths: ['apps/web/**'] },
         api: { agent: 'api-engineer', paths: ['apps/api/**'] },
@@ -240,6 +241,10 @@ function stub(on: any, w: World) {
           '"harness.hold.minutes" must be a number of minutes from 0 (off) to 10\nNothing was changed.',
         );
       const row = w.settings.find((s) => s.key === argv[4]);
+      if (argv[4] === 'autonomy') {
+        (w.check as any).harness = { ...(w.check as any).harness, autonomy: argv[5] };
+        w.check.harnessSet = [...new Set([...w.check.harnessSet, 'autonomy'])];
+      }
       const raw = argv[5];
       row.value =
         raw === 'null'
@@ -2241,4 +2246,92 @@ test('REVW-2 a reviewer that could not be registered yet is registered at a late
   await leadTurn($);
   await settle(clock);
   expect(w.prompts[0]).toMatch(/^Start code-kit's reviewer/);
+});
+
+// --- the first offer: how hands-off the loop is -----------------------------------------------------
+
+/** A project where nobody has chosen autonomy yet: the default stands in. */
+function unchosen() {
+  const w = project();
+  w.check.harnessSet = [];
+  return w;
+}
+
+test('until autonomy is chosen, the loop offers its first step: keep going, ask each time, or off', async ($, on) => {
+  const w = unchosen();
+  const clock = await start($, on, w);
+  await leadTurn($);
+  await settle(clock);
+  expect(w.prompts).toEqual([]);
+  const ui = await bandUi($);
+  expect(
+    await ui.find({
+      type: 'Text',
+      text: 'code-kit can keep the build moving between your prompts. Next: Dispatch ST-9.',
+    }),
+  ).toBeDefined();
+  expect((await ui.find({ key: 'band-keepGoing' }))?.props.label).toMatch(/Keep going$/);
+  expect(await ui.find({ key: 'band-askEach' })).toBeDefined();
+  expect(await ui.find({ key: 'band-loopOff' })).toBeDefined();
+  await ui.unmount();
+});
+
+test("Keep going records autonomous as the person's choice and takes the step", async ($, on) => {
+  const w = unchosen();
+  const clock = await start($, on, w);
+  await leadTurn($);
+  await settle(clock);
+  const ui = await bandUi($);
+  await press($, 'band-keepGoing');
+  await ui.unmount();
+  expect(w.acts[0]).toEqual([
+    'settings',
+    'set',
+    'autonomy',
+    'autonomous',
+    '--reason',
+    'Chosen when code-kit first offered to keep the build moving between prompts',
+    '--via',
+    'pane',
+  ]);
+  expect(w.prompts).toEqual(['Dispatch ST-9: run /code-kit:dispatch ST-9.']);
+  // From then on it acts on its own.
+  w.next = { step: 'review', args: 'ST-4', then: [] };
+  await leadTurn($, 't-2');
+  await settle(clock);
+  expect(w.prompts[1]).toBe('Review ST-4: run /code-kit:review ST-4.');
+});
+
+test('Ask each time records propose, and the step waits for Go', async ($, on) => {
+  const w = unchosen();
+  const clock = await start($, on, w);
+  await leadTurn($);
+  await settle(clock);
+  let ui = await bandUi($);
+  await press($, 'band-askEach');
+  await ui.unmount();
+  expect(w.acts[0]?.slice(0, 4)).toEqual(['settings', 'set', 'autonomy', 'propose']);
+  expect(w.prompts).toEqual([]);
+  ui = await bandUi($);
+  expect(await ui.find({ type: 'Text', text: 'Dispatch ST-9?' })).toBeDefined();
+  await press($, 'band-go');
+  await ui.unmount();
+  expect(w.prompts).toEqual(['Dispatch ST-9: run /code-kit:dispatch ST-9.']);
+});
+
+test('Off records off, and the loop does nothing', async ($, on) => {
+  const w = unchosen();
+  const clock = await start($, on, w);
+  await leadTurn($);
+  await settle(clock);
+  let ui = await bandUi($);
+  await press($, 'band-loopOff');
+  await ui.unmount();
+  expect(w.acts[0]?.slice(0, 4)).toEqual(['settings', 'set', 'autonomy', 'off']);
+  await leadTurn($, 't-2');
+  await settle(clock);
+  expect(w.prompts).toEqual([]);
+  ui = await bandUi($);
+  expect(await ui.find({ type: 'Text', text: /keep the build moving|Dispatch/ })).toBeUndefined();
+  await ui.unmount();
 });

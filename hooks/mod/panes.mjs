@@ -63,6 +63,7 @@ const LETTER = {
   merge: 'm',
   mergeQueue: 'm',
   go: 'g',
+  keepGoing: 'g',
   pause: 'p',
   resume: 'p',
 };

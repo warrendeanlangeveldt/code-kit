@@ -624,12 +624,53 @@ export function register(on) {
         if (key === loop.lastKey && print === loop.lastPrint) return;
         loop.lastKey = key;
         loop.lastPrint = print;
-        if (h.autonomy === 'propose') {
-          loop.proposal = { prompt, label, kind, target };
+        // Until the person has chosen how hands-off the loop is, its first step is offered, not taken.
+        const chosen = (model.check?.harnessSet ?? []).includes('autonomy');
+        if (h.autonomy === 'propose' || !chosen) {
+          loop.proposal = { prompt, label, kind, target, first: !chosen };
           $.ui.invalidate('ui.render');
           return;
         }
         await act.submit(prompt, kind, target);
+      },
+      // The first offer's answers: the person's choice of autonomy, recorded as theirs, then acted on.
+      chooseAutonomy: async (value) => {
+        const ran = await $.process.run(
+          [
+            'node',
+            cli,
+            'settings',
+            'set',
+            'autonomy',
+            value,
+            '--reason',
+            'Chosen when code-kit first offered to keep the build moving between prompts',
+            '--via',
+            'pane',
+          ],
+          { cwd },
+        );
+        if (ran.exitCode !== 0) {
+          notice = `Nothing was changed: ${(ran.stderr || ran.stdout).trim().split('\n')[0]}`;
+          $.ui.invalidate('ui.render');
+          return false;
+        }
+        await act.reload();
+        return true;
+      },
+      keepGoing: async () => {
+        if (!(await act.chooseAutonomy('autonomous'))) return;
+        await act.go();
+      },
+      askEach: async () => {
+        if (!(await act.chooseAutonomy('propose'))) return;
+        if (loop.proposal) loop.proposal = { ...loop.proposal, first: false };
+        $.ui.invalidate('ui.render');
+      },
+      loopOff: async () => {
+        if (!(await act.chooseAutonomy('off'))) return;
+        loop.proposal = null;
+        $.ui.invalidate('ui.render');
       },
       go: async () => {
         if (!loop.proposal || leadTurn) return;
