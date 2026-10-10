@@ -218,6 +218,11 @@ try {
 
   // --- secrets, approvals, outside the repository ------------------------------------------------
   expect('nobody writes .env files', write('apps/office/.env.local', 'web-engineer'), 2, 'secrets');
+  expect(
+    "an env file's template is written like any other file",
+    write('apps/office/.env.local.example', 'web-engineer'),
+    0,
+  );
   expect('files outside the project are blocked', write(join('..', 'elsewhere.txt')), 2);
   expect("the lead writes the config's outside paths", write(join('..', 'code-kit', 'x.mjs')), 0);
   expect('a lane may not', write(join('..', 'code-kit', 'x.mjs'), 'web-engineer'), 2);

@@ -410,8 +410,10 @@ export function protectedEntry(rel, config) {
   return config.protected.find((p) => globToRegExp(p.glob).test(rel));
 }
 
+/** Files that may hold secrets. An env file's template (`.env.example`, `.env.local.sample`) names
+ * the variables without their values, so it's committed like any other file. */
 export const SECRETS = (rel) =>
-  /(^|\/)\.env(\.|$)/.test(rel) ||
+  (/(^|\/)\.env(\.|$)/.test(rel) && !/\.(example|sample|template|dist)$/.test(rel)) ||
   /(^|\/)secrets?\//.test(rel) ||
   /\.(pem|p8|p12|keystore|jks)$/.test(rel);
 
