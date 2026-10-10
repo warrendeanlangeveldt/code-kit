@@ -17,6 +17,12 @@ It also carries the work from idea to merged code: spec an idea into requirement
   <img src="https://raw.githubusercontent.com/warrendeanlangeveldt/code-kit/main/assets/workflow.svg" alt="How code-kit works: the specs create the agents, skills and rules; the lead agent delegates stories to lane agents and takes decisions and approvals to you; lanes send scope and dependency requests back to the lead; hooks enforce ownership, layers, approvals and spec-check while each lane implements, tests and commits; the lead reviews against the requirements and CI runs verify." width="820">
 </p>
 
+<p align="center">
+  <a href="https://warrendeanlangeveldt.github.io"><img src="https://warrendeanlangeveldt.github.io/assets/media/harness.gif" alt="code-kit and Context Graph in a Claude Code session: the band above the prompt, the lanes, the code map lighting up as agents read and edit, and the module graph" width="900"></a>
+</p>
+
+**See it in action at [warrendeanlangeveldt.github.io](https://warrendeanlangeveldt.github.io)**, with a live replay of a real build.
+
 ## Quick start
 
 You need Claude Code, Node 22 or later, and git. Then, in Claude Code:
