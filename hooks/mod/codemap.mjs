@@ -50,6 +50,7 @@ const nameOf = (path, all) => {
 const NODE_H = 4;
 const ROW_GAP = 1;
 const COL_GAP = 6;
+const GUTTER = 3;
 
 /**
  * MAP-1: the map laid out in character cells: a column per layer (in the map's order), its files
@@ -61,7 +62,12 @@ export function layout(map, width = 100) {
   const n = Math.max(1, layers.length);
   const colW = Math.max(16, Math.min(30, Math.floor((width - COL_GAP * (n - 1)) / n)));
   const all = map.files.map((f) => f.path);
-  const columns = layers.map((layer, i) => ({ layer, x: i * (colW + COL_GAP), width: colW }));
+  // A gutter of GUTTER cells left of each column carries the imports between files of one layer.
+  const columns = layers.map((layer, i) => ({
+    layer,
+    x: GUTTER + i * (colW + COL_GAP),
+    width: colW,
+  }));
   const nodes = {};
   let height = 2;
   for (const c of columns) {
@@ -130,6 +136,18 @@ export function mapRows(map, { glow = {}, selected = null, width = 100 } = {}) {
       const b = L.nodes[target];
       const ca = colOf(f.path);
       const cb = colOf(target);
+      // MAP-1: within one layer, a bracket in the column's gutter joins the two files.
+      if (ca === cb) {
+        const x = a.x - 2;
+        const ya = a.y + 1;
+        const yb = b.y + 1;
+        line(a.x - 1, ya, 'we');
+        line(x, ya, yb > ya ? 'es' : 'ne');
+        for (let y = Math.min(ya, yb) + 1; y < Math.max(ya, yb); y++) line(x, y, 'ns');
+        line(x, yb, yb > ya ? 'ne' : 'es');
+        line(b.x - 1, yb, 'we');
+        continue;
+      }
       if (Math.abs(ca - cb) !== 1) continue;
       const left = ca < cb ? a : b;
       const right = ca < cb ? b : a;

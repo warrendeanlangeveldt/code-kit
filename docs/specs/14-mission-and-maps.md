@@ -46,7 +46,7 @@ The selected lane's stories show as cards: id and state, title, requirements, an
 
 ### MAP-1 The code map
 
-The Code map tab (2) draws a story's code: its files (from the commits that name it and its open branch) in a column per layer, in the config's layer order, then tests; each import between files of neighbouring layers is a line. The story is the one chosen, else the selected lane's, else one being built; the stories in progress are offered to choose from. `code-kit map <story> --json` gives the files, their layers, lanes and imports, and what the active adapters know of each.
+The Code map tab (2) draws a story's code: its files (from the commits that name it and its open branch) in a column per layer, in the config's layer order, then tests; each import between files of neighbouring layers is a line, and an import between files of one layer a bracket in the column's gutter. The story is the one chosen, else the selected lane's, else one being built; the stories in progress are offered to choose from. `code-kit map <story> --json` gives the files, their layers, lanes and imports, and what the active adapters know of each.
 
 **Acceptance**
 
