@@ -8,7 +8,7 @@ const LEAD = 'lead';
 
 /** A CLI run's stdout as JSON, or null when it printed none. */
 import { BAR, POSE_GLYPH, rasterCells, runs, sprite, spriteSvg, timelineSvg } from './art.mjs';
-import { missionLines } from './mission.mjs';
+import { missionLines, nextText } from './mission.mjs';
 
 export function parseJson(stdout) {
   try {
@@ -103,6 +103,7 @@ export function projectState(check, status, next = null, atWork = new Set()) {
 export const STATE_COLOR = {
   building: 'blue',
   working: 'green',
+  orchestrating: 'yellow',
   'in review': 'yellow',
   'sent back': 'magenta',
   blocked: 'red',
@@ -114,6 +115,10 @@ export const STATE_COLOR = {
  * `working` while its agent (or the lead, mid-turn) is at work on nothing the plan names.
  */
 export function shownState(lane, queue = []) {
+  // LANES-2: the lead mid-turn is orchestrating unless it builds its own story; between turns, a story
+  // of its own that waits on another is the story's state, not the lead's.
+  if (lane.name === LEAD && lane.active && lane.state !== 'building') return 'orchestrating';
+  if (lane.name === LEAD && lane.state === 'blocked') return 'idle';
   if (lane.state === 'idle' && lane.active) return 'working';
   const waiting = queue.some(
     (e) => e.branch === lane.branch && ['waiting', 'merging'].includes(e.state),
@@ -214,11 +219,42 @@ export function lanesPane(
           .some((s) => s.toLowerCase().includes(needle))),
   );
   const LIVE = { quiet: 'yellow', stalled: 'red' };
+  // LANES-2: fixed columns that never wrap: name, state, then the story (and the agent's current tool
+  // beneath it), then tokens; another tool's facts only when they aren't zero.
+  const STATE_WIDTH = 13;
   const rows = shown.map((l) => {
+    const s = shownState(l, loop?.queue);
+    const facts = combined?.[l.name];
+    const chips = [
+      ...(facts?.without
+        ? [text(`${facts.without} edited without understanding`, { color: 'red' })]
+        : []),
+      ...(facts?.owed
+        ? [text(`${facts.owed} card${facts.owed === 1 ? '' : 's'} owed`, { color: 'yellow' })]
+        : []),
+      ...(loop?.laneNotes?.[l.name]
+        ? [
+            text(loop.laneNotes[l.name], {
+              color: loop.laneNotes[l.name] === 'stalled' ? 'red' : 'yellow',
+            }),
+          ]
+        : []),
+    ];
+    const story = l.story
+      ? `${l.story.id} ${l.story.title}${
+          l.story.state === 'blocked' && l.story.waitingOn?.length
+            ? ` · waits on ${l.story.waitingOn.join(', ')}`
+            : l.branch
+              ? ` · ${l.branch}`
+              : ''
+        }`
+      : l.name === LEAD
+        ? 'the main session'
+        : (l.agent ?? '');
     const lines = [
       Box({
         flexDirection: 'row',
-        columnGap: 2,
+        columnGap: 1,
         children: [
           text(l.name === selected ? '›' : l.active ? '●' : ' ', {
             color: l.name === selected ? 'cyan' : 'green',
@@ -228,86 +264,52 @@ export function lanesPane(
             ...(l.name === selected ? { color: 'cyan' } : {}),
           }),
           text(
-            shownState(l, loop?.queue).padEnd(9),
-            shownState(l, loop?.queue) === 'queued'
+            s.padEnd(STATE_WIDTH),
+            s === 'queued'
               ? { color: 'cyan' }
-              : STATE_COLOR[shownState(l, loop?.queue)]
-                ? { color: STATE_COLOR[shownState(l, loop?.queue)] }
-                : {},
+              : STATE_COLOR[s]
+                ? { color: STATE_COLOR[s] }
+                : { dimColor: true },
           ),
-          text(l.agent ?? 'the main session', { dimColor: true }),
-          ...(live[l.name]
-            ? [
+          Box({
+            flexGrow: 1,
+            flexShrink: 1,
+            children: [text(story, { wrap: 'truncate-end', dimColor: !l.story })],
+          }),
+          ...chips,
+          ...(usage?.lanes[l.name]
+            ? [text(tokens(usage.lanes[l.name]).padStart(6), { dimColor: true })]
+            : []),
+        ],
+      }),
+      // VIEW-4: what its agent is doing now, and since when, beneath the story.
+      ...(live[l.name]
+        ? [
+            Box({
+              flexDirection: 'row',
+              columnGap: 1,
+              children: [
+                text(''.padEnd(width + STATE_WIDTH + 3)),
                 text(`${live[l.name].tool} · ${live[l.name].ago}`, {
                   wrap: 'truncate-end',
                   ...(LIVE[live[l.name].level]
                     ? { color: LIVE[live[l.name].level] }
                     : { dimColor: true }),
                 }),
-              ]
-            : []),
-          ...(loop?.laneNotes?.[l.name]
-            ? [
-                text(loop.laneNotes[l.name], {
-                  color: loop.laneNotes[l.name] === 'stalled' ? 'red' : 'yellow',
-                }),
-              ]
-            : []),
-          ...(usage?.lanes[l.name] ? [text(tokens(usage.lanes[l.name]), { dimColor: true })] : []),
-          // JOIN-2: with an adapter that knows, the lane's edits without understanding and cards owed.
-          ...(combined?.[l.name]
-            ? [
-                text(
-                  `${combined[l.name].without} edit${combined[l.name].without === 1 ? '' : 's'} without understanding`,
-                  combined[l.name].without ? { color: 'red' } : { dimColor: true },
-                ),
-                text(
-                  `${combined[l.name].owed} card${combined[l.name].owed === 1 ? '' : 's'} owed`,
-                  combined[l.name].owed ? { color: 'yellow' } : { dimColor: true },
-                ),
-              ]
-            : []),
-        ],
-      }),
-      ...(l.story
-        ? [
-            text(
-              `    ${l.story.id} ${l.story.title}${l.branch ? ` · ${l.branch}` : ''}${
-                l.state === 'blocked' ? ` · waits on ${l.story.waitingOn.join(', ')}` : ''
-              }`,
-              { dimColor: true, wrap: 'truncate-end' },
-            ),
+              ],
+            }),
           ]
         : []),
       ...bar(l),
-      // VIEW-6: the selected lane's detail: the paths it owns and its stories, each with its state.
-      ...(l.name === selected && detail
-        ? [
-            text(`    owns ${detail.owns.length ? detail.owns.join(', ') : 'nothing yet'}`, {
-              dimColor: true,
-              wrap: 'truncate-end',
-            }),
-            ...(detail.stories.length
-              ? detail.stories.map((s) =>
-                  text(
-                    `    ${s.id} ${s.title} · ${s.state}${s.state === 'blocked' && s.waitingOn.length ? ` on ${s.waitingOn.join(', ')}` : ''}`,
-                    {
-                      dimColor: s.state === 'done',
-                      ...(s.state === 'blocked' ? { color: 'red' } : {}),
-                      wrap: 'truncate-end',
-                    },
-                  ),
-                )
-              : [text('    no stories in the plan', { dimColor: true })]),
-          ]
-        : []),
+      // LANES-3: the selected lane's stories as cards, then what it owns.
+      ...(l.name === selected && detail ? laneDetail(detail, els, width) : []),
     ];
     return art
       ? Box({
           key: `lane-${l.name}`,
           flexDirection: 'row',
           columnGap: 1,
-          children: [character(l), Box({ flexDirection: 'column', children: lines })],
+          children: [character(l), Box({ flexDirection: 'column', flexGrow: 1, children: lines })],
         })
       : Box({ key: `lane-${l.name}`, flexDirection: 'column', children: lines });
   });
@@ -337,6 +339,7 @@ export function lanesPane(
     flexDirection: 'column',
     rowGap: 1,
     children: [
+      ...loopCard(loop, els),
       ...notes,
       Box({
         flexDirection: 'column',
@@ -344,9 +347,154 @@ export function lanesPane(
       }),
       Box({ flexDirection: 'column', children: ready }),
       ...reviewsSection(loop, text, Box),
-      ...loopSection(loop, text, Box),
     ],
   });
+}
+
+const CARD_STATE = {
+  done: { label: 'merged', color: 'gray' },
+  review: { label: 'in review', color: 'yellow' },
+  'in progress': { label: 'building', color: 'blue' },
+  'sent back': { label: 'sent back', color: 'magenta' },
+  blocked: { label: 'blocked', color: 'red' },
+  ready: { label: 'ready', color: 'green' },
+  todo: { label: 'to do', color: 'gray' },
+};
+
+/**
+ * LANES-3: a lane's stories as cards (id and state, title, requirements, and what it waits on or its
+ * branch), wrapping across the pane, then its agent and the paths it owns. `detail` is { agent, owns,
+ * stories }.
+ */
+export function laneDetail(detail, { Box, Text }, indent = 0) {
+  const text = (value, style = {}) => Text({ ...style, children: [value] });
+  const cards = detail.stories.map((s) => {
+    const st = CARD_STATE[s.state] ?? { label: s.state, color: 'gray' };
+    return Box({
+      key: `card-${s.id}`,
+      flexDirection: 'column',
+      borderStyle: 'round',
+      borderColor: st.color,
+      ...(s.state === 'done' ? { borderDimColor: true } : {}),
+      paddingX: 1,
+      width: 30,
+      children: [
+        Box({
+          flexDirection: 'row',
+          justifyContent: 'space-between',
+          children: [
+            text(s.id, { bold: true, dimColor: s.state === 'done' }),
+            text(st.label, { color: st.color }),
+          ],
+        }),
+        text(s.title, { wrap: 'truncate-end', dimColor: s.state === 'done' }),
+        ...(s.requirements?.length
+          ? [text(s.requirements.join(' '), { dimColor: true, wrap: 'truncate-end' })]
+          : []),
+        ...(s.state === 'blocked' && s.waitingOn?.length
+          ? [text(`waits on ${s.waitingOn.join(', ')}`, { color: 'red', wrap: 'truncate-end' })]
+          : s.branch && s.state !== 'done'
+            ? [text(s.branch, { dimColor: true, wrap: 'truncate-end' })]
+            : []),
+      ],
+    });
+  });
+  return [
+    Box({
+      key: 'lane-cards',
+      flexDirection: 'row',
+      flexWrap: 'wrap',
+      columnGap: 1,
+      marginLeft: Math.min(indent + 2, 8),
+      children: cards.length
+        ? cards
+        : [text('No stories in the plan for this lane.', { dimColor: true })],
+    }),
+    Box({
+      key: 'lane-owns',
+      flexDirection: 'row',
+      flexWrap: 'wrap',
+      columnGap: 2,
+      marginLeft: Math.min(indent + 2, 8),
+      children: [
+        ...(detail.agent ? [text('agent', { dimColor: true }), text(detail.agent)] : []),
+        text('owns', { dimColor: true }),
+        ...(detail.owns.length
+          ? detail.owns.map((p) => text(p, { color: 'cyan' }))
+          : [text('nothing yet', { dimColor: true })]),
+      ],
+    }),
+  ];
+}
+
+/**
+ * LANES-1: the loop as a card at the top of the Lanes tab: its mode, then the steps it took, the one
+ * running and the one it takes next. None while the loop is off and has taken no step.
+ */
+export function loopCard(loop, { Box, Text }) {
+  if (!loop || (loop.state === 'off' && !loop.steps?.length)) return [];
+  const text = (value, style = {}) => Text({ ...style, children: [value] });
+  const mode =
+    loop.state === 'paused'
+      ? { word: 'paused', color: 'yellow' }
+      : loop.state === 'off'
+        ? { word: 'off', color: 'gray' }
+        : loop.state === 'done' || loop.state === 'stopped'
+          ? { word: 'milestone done', color: 'green' }
+          : {
+              word:
+                loop.autonomy === 'propose'
+                  ? 'asks before each step'
+                  : 'acts while the lead is idle',
+              color: 'green',
+            };
+  // The step running now has its own chip; the ones before it are what the loop did.
+  const steps = [...(loop.steps ?? [])].slice(0, loop.current ? -1 : undefined).slice(-4);
+  const chip = (key, value, color, extra = {}) =>
+    Box({
+      key,
+      borderStyle: 'single',
+      borderColor: color,
+      paddingX: 1,
+      children: [text(value, { wrap: 'truncate-end', ...extra })],
+    });
+  return [
+    Box({
+      key: 'loop-card',
+      flexDirection: 'column',
+      borderStyle: 'round',
+      borderColor: 'gray',
+      paddingX: 1,
+      children: [
+        Box({
+          flexDirection: 'row',
+          columnGap: 2,
+          children: [
+            text('loop', { bold: true, color: 'yellow' }),
+            text(mode.word, { color: mode.color }),
+          ],
+        }),
+        Box({
+          flexDirection: 'row',
+          flexWrap: 'wrap',
+          columnGap: 1,
+          children: [
+            ...steps.map((s, i) =>
+              chip(
+                `loop-step-${i}`,
+                `${ago(loop.now - s.at).replace(' ago', '')} ${s.kind} ${s.target}`,
+                'gray',
+                { dimColor: true },
+              ),
+            ),
+            ...(loop.nextText
+              ? [chip('loop-next', `next: ${loop.nextText}`, 'cyan', { color: 'cyan' })]
+              : []),
+          ],
+        }),
+      ],
+    }),
+  ];
 }
 
 /** How long ago, as a person reads it: now, 40s ago, 12m ago, 2h ago. */
@@ -419,32 +567,6 @@ export function reviewsSection(loop, text, Box) {
                 color: r.blockers ? 'red' : r.state === 'running' ? 'blue' : undefined,
                 dimColor: r.state === 'skipped',
               }),
-            ],
-          }),
-        ),
-      ],
-    }),
-  ];
-}
-
-/** The loop's record (spec 05): its state and its latest steps, newest first. */
-export function loopSection(loop, text, Box) {
-  if (!loop || (!loop.steps?.length && loop.state !== 'paused')) return [];
-  const steps = [...(loop.steps ?? [])].reverse().slice(0, 8);
-  return [
-    Box({
-      flexDirection: 'column',
-      children: [
-        text(`Loop · ${loop.state === 'paused' ? 'paused' : loop.autonomy}`, { bold: true }),
-        ...steps.map((s, i) =>
-          Box({
-            key: `step-${i}`,
-            flexDirection: 'row',
-            columnGap: 2,
-            children: [
-              text(ago(loop.now - s.at).padEnd(8), { dimColor: true }),
-              text(s.kind.padEnd(8)),
-              text(s.target, { wrap: 'truncate-end' }),
             ],
           }),
         ),

@@ -444,7 +444,6 @@ test('PANE-2 each lane shows its agent, story, branch and state', async ($, on) 
   await lanes($);
   const ui = await pane($, PANE);
   expect(await ui.find({ key: 'lane-web' })).toBeDefined();
-  expect(await ui.find({ type: 'Text', text: /web-engineer/ })).toBeDefined();
   expect(await ui.find({ type: 'Text', text: 'ST-4 Booking form · web/st-4' })).toBeDefined();
   expect(await ui.find({ type: 'Text', text: /building/ })).toBeDefined();
   expect(await ui.find({ type: 'Text', text: /idle/ })).toBeDefined();
@@ -1368,7 +1367,7 @@ test('LOOP-1 and LOOP-2 with the lead idle, the loop dispatches every ready stor
   ]);
   await lanes($);
   const ui = await pane($, PANE);
-  expect((await ui.find({ key: 'step-0' }))?.text).toMatch(/dispatch\s*ST-9 ST-10 ST-11 ST-12/);
+  expect((await ui.find({ key: 'loop-step-0' }))?.text).toMatch(/dispatch ST-9 ST-10 ST-11 ST-12/);
   await ui.unmount();
 });
 
@@ -2297,12 +2296,13 @@ test('JOIN-2 each lane shows its edits without understanding, red above zero, an
   await lanes($);
   const ui = await pane($, PANE);
   expect((await ui.find({ key: 'lane-web' }))?.text).toMatch(
-    /1 edit without understanding\s*2 cards owed/,
+    /1 edited without understanding\s*2 cards owed/,
   );
-  expect((await ui.find({ type: 'Text', text: '1 edit without understanding' }))?.props.color).toBe(
-    'red',
-  );
-  expect((await ui.find({ key: 'lane-api' }))?.text).toMatch(/0 edits without understanding/);
+  expect(
+    (await ui.find({ type: 'Text', text: '1 edited without understanding' }))?.props.color,
+  ).toBe('red');
+  // LANES-2: a lane whose facts are all zero shows none of them.
+  expect((await ui.find({ key: 'lane-api' }))?.text).not.toMatch(/understanding|owed/);
   await ui.unmount();
 });
 
@@ -2480,9 +2480,13 @@ test('VIEW-6 a selected idle lane shows what it owns and its stories, Enter open
   expect((await ui.find({ key: 'count-idle' }))?.props.label).toMatch(/· \d+ idle/);
   for (let i = 0; i < 3; i++) await press($, 'lane-next', PANE);
   const api = (await ui.find({ key: 'lane-api' }))?.text ?? '';
-  expect(api).toMatch(/owns apps\/api\/\*\*/);
-  expect(api).toMatch(/ST-1 Schema · done/);
-  expect(api).toMatch(/ST-2 Endpoints · blocked on ST-9/);
+  expect(api).toMatch(/owns\s*apps\/api\/\*\*/);
+  expect(api).toMatch(/agent\s*api-engineer/);
+  // LANES-3: the lane's stories as cards.
+  expect((await ui.find({ key: 'card-ST-1' }))?.text).toMatch(/ST-1\s*merged\s*Schema/);
+  expect((await ui.find({ key: 'card-ST-2' }))?.text).toMatch(
+    /ST-2\s*blocked\s*Endpoints.*waits on ST-9/,
+  );
   expect((await ui.find({ key: 'open-story' }))?.props.label).toBe('Open ST-2');
   await press($, 'open-story', PANE);
   expect(await ui.find({ key: 'story-head' })).toBeDefined();
@@ -2501,7 +2505,7 @@ test('VIEW-6 the filter is one row, its key beside the box', async ($, on) => {
   await ui.unmount();
 });
 
-test('the lead reads working while its turn runs, and idle once it ends; an agent at work outside a story too', async ($, on) => {
+test('the lead reads orchestrating while its turn runs, and idle once it ends; an agent at work outside a story too', async ($, on) => {
   const w = project();
   w.agents = [
     { id: 'a9', type: 'api-engineer', description: 'look at the logs', status: 'running' },
@@ -2511,8 +2515,9 @@ test('the lead reads working while its turn runs, and idle once it ends; an agen
   const ui = await pane($, PANE);
   expect((await ui.find({ key: 'lane-api' }))?.text).toMatch(/api\s*working/);
   await $.turn.start({ turnId: 't-1', text: '' } as any);
-  expect((await ui.find({ key: 'lane-lead' }))?.text).toMatch(/lead\s*working/);
-  expect((await ui.find({ key: 'count-working' }))?.props.label).toBe('▶ 2 working');
+  // LANES-2: the lead mid-turn is orchestrating, not a lane at work on nothing.
+  expect((await ui.find({ key: 'lane-lead' }))?.text).toMatch(/lead\s*orchestrating/);
+  expect((await ui.find({ key: 'count-working' }))?.props.label).toBe('▶ 1 working');
   await $.turn.complete({ turnId: 't-1', answer: '', durationMs: 1, isAborted: false } as any);
   await settle(clock);
   expect((await ui.find({ key: 'lane-lead' }))?.text).toMatch(/lead\s*idle/);

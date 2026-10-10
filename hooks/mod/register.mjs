@@ -46,6 +46,7 @@ import {
   toolLine,
 } from './panes.mjs';
 import { leadPrompt, nudgeText, restartPrompt, stallDue, stepKey, stepLabel } from './loop.mjs';
+import { nextText } from './mission.mjs';
 import { harnessSettings } from '../lib/harness.mjs';
 import {
   REVIEW_WAIT_MS,
@@ -1175,6 +1176,9 @@ export function register(on) {
       flagged: [...flagged.values()],
       doneCount: loop.done?.count ?? 0,
       steps: loop.steps,
+      // LANES-1: the step the lead is taking now (the loop's last prompt, while its turn runs), and the next.
+      current: leadTurn && loop.started ? (loop.steps.at(-1) ?? null) : null,
+      nextText: nextText(loop.nextStep),
       laneNotes,
       now,
       reviews: [...reviews.values()].map((r) => ({

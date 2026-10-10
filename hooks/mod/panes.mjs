@@ -6,7 +6,6 @@ import {
   STATE_COLOR,
   ago,
   lanesPane,
-  loopSection,
   queueSection,
   shownState,
   tokens,
@@ -269,13 +268,13 @@ export function lanesFrame(view, els, on) {
                 art: view.art ?? null,
                 detail: selected
                   ? {
+                      agent: selected.agent ?? null,
                       owns: view.paths?.[selected.name] ?? [],
                       stories: laneStories(selected, state),
                     }
                   : null,
                 combined: view.combined ?? null,
               }),
-              ...loopSection(loop, text, Box),
             ];
   const empty =
     ui.tab === 'queue'
