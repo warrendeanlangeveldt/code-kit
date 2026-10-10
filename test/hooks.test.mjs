@@ -2344,6 +2344,36 @@ try {
     );
     writeFileSync(join(c.dir, '.ctx/cards.ctx'), before);
   }
+  {
+    // The card writer works in the lead's checkout, where the lead has uncommitted work of its own.
+    mkdirSync(join(c.dir, 'apps/office'), { recursive: true });
+    writeFileSync(join(c.dir, 'apps/office/lead-wip.ts'), 'export const wip = 1;\n');
+    const writer = { ...as('context-graph:card-writer'), tool_use_id: 'tu-card-1' };
+    const shell = (id, command) =>
+      cHook('guard-bash.mjs', { ...writer, tool_use_id: id, tool_input: { command } });
+    shell('tu-card-1', 'node ctx card apps/office/a.ts --text "A card."');
+    const cards = readFileSync(join(c.dir, '.ctx/cards.ctx'), 'utf8');
+    writeFileSync(
+      join(c.dir, '.ctx/cards.ctx'),
+      `${cards}F apps/office/b.ts 0123456789ab 2026-10-10 w B.\n`,
+    );
+    expect(
+      "a read-only agent's command answers for what it changed, not the lead's uncommitted work",
+      cHook('lane-audit.mjs', writer),
+      0,
+    );
+    shell('tu-card-2', 'node ctx card apps/office/a.ts --text "A card." > apps/office/out.ts');
+    writeFileSync(join(c.dir, 'apps/office/out.ts'), 'x\n');
+    expect(
+      'but a file its command wrote outside its paths is still caught',
+      cHook('lane-audit.mjs', { ...writer, tool_use_id: 'tu-card-2' }),
+      2,
+      'apps/office/out.ts',
+    );
+    rmSync(join(c.dir, 'apps/office/out.ts'));
+    rmSync(join(c.dir, 'apps/office/lead-wip.ts'));
+    writeFileSync(join(c.dir, '.ctx/cards.ctx'), cards);
+  }
 
   // --- layer rules before the write --------------------------------------------------------------
   const cEdit = (tool, rel, toolInput) =>

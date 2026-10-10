@@ -11,6 +11,7 @@ import { join, resolve } from 'node:path';
 import { addedPackages, dependencyApproval, isDependencyFile } from './lib/dependencies.mjs';
 import { CODE_KIT, GIT, codeOf, commandsOf, runs } from './lib/shell.mjs';
 import { block, start } from './lib/hook.mjs';
+import { noteBefore } from './lane-audit.mjs';
 import {
   APPROVAL_LOG,
   actorFor,
@@ -124,6 +125,8 @@ if (runs(cmd, new RegExp(String.raw`^${GIT}push\b.*\b(${branches})\b`))) {
 
 const sessionIn = sessionRoot(input, project);
 const actor = actorFor(input, sessionIn ?? project, config);
+// A read-only agent's command is judged afterwards by what it changed (lane-audit).
+if (actor.kind === 'readonly') noteBefore(input);
 // The lead acts for the person only where the config says the person may approve from chat.
 const forPerson = actor.kind === 'lead' && config.approvals.lead;
 
