@@ -126,9 +126,9 @@ Once they approve (with any changes):
 7. Run `check` and `unowned` again, without `--config`.
 8. Commit on a branch. The kit records the protected files in `.claude/approval-log.jsonl`.
 
-Report what was set up, what's enforced from now on, how many existing violations the baseline holds, and the open questions.
+Report what was set up, what's enforced from now on, how many existing violations the baseline holds, and the open questions. If the base branch had no `.claude/code-kit.json` committed before, say that the first merge into it is the person's, since that merge brings the rules onto it: once the branch has passed review, they press Merge in the code-kit band, or run `! node "${CLAUDE_PLUGIN_ROOT}/bin/code-kit.mjs" queue merge --person`. After that, the rules committed there decide who merges.
 
-If the project has no `.ctx/` folder, end the report with one line about the companion plugin, and don't install it unless the person asks: "Context Graph can give each lane agent the why behind the files it edits (cards, rules and decisions kept in git), with this spec's requirements and layer rules in them: `/plugin marketplace add warrendeanlangeveldt/context-graph`, then `/plugin install context-graph@context-graph`."
+If the project has no `.ctx/` folder, end the report with one line about the companion plugin. If Context Graph is already installed (its `/context-graph:init` command is available to you), offer to run it now: "Context Graph is installed but has no graph here yet. `/context-graph:init` gives each lane agent the why behind the files it edits (cards, rules and decisions kept in git), with this spec's requirements and layer rules in them. Shall I run it?" If it isn't installed, don't install it unless the person asks: "Context Graph can give each lane agent the why behind the files it edits (cards, rules and decisions kept in git), with this spec's requirements and layer rules in them: `/plugin marketplace add warrendeanlangeveldt/context-graph`, then `/plugin install context-graph@context-graph`."
 
 ## 4. Update an existing setup
 
