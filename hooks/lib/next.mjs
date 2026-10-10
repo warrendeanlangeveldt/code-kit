@@ -4,7 +4,7 @@
 import { execFileSync } from 'node:child_process';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join, posix } from 'node:path';
-import { loadConfig } from './config.mjs';
+import { loadConfig, mergeDelegation } from './config.mjs';
 import { buildStatus, readStories, LEAD } from './plan.mjs';
 import { readQueue, waiting } from './queue.mjs';
 
@@ -175,11 +175,16 @@ export function nextStep(root, base) {
     attention.push(
       `${unbuildable.join(', ')} can't be dispatched until the plan's gaps are fixed.`,
     );
-  // The merge queue (spec 09): branches the lead's review passed. Under autonomy, where merges are
-  // delegated, the lead merges the head first, so dependents see it; otherwise the person does.
-  const leadMerges =
-    Boolean(config.approvals.delegate?.merge) && config.harness.autonomy === 'autonomous';
-  if (queued.length && !leadMerges)
+  // The merge queue (spec 09): branches the lead's review passed. Under autonomy, where the base's
+  // committed rules delegate merges, the lead merges the head first, so dependents see it; otherwise
+  // the person does, and always the first merge, which brings code-kit's rules onto the base.
+  const delegation = queued.length ? mergeDelegation(root, config) : { delegated: false };
+  const leadMerges = delegation.delegated && config.harness.autonomy === 'autonomous';
+  if (queued.length && delegation.first)
+    attention.push(
+      `${queued[0]} passed review and is next to merge. ${delegation.into} has no code-kit config committed yet, so this first merge, which brings the rules onto it, is the person's (code-kit queue merge --person, or Merge in the code-kit band); after it, the lead merges.`,
+    );
+  else if (queued.length && !leadMerges)
     attention.push(
       `${queued.join(', ')} passed review and ${queued.length === 1 ? 'waits' : 'wait'} for the person to merge (code-kit queue merge --person, or Merge in the code-kit band).`,
     );

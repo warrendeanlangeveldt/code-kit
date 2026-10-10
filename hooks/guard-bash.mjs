@@ -9,7 +9,7 @@ import { appendFileSync, existsSync, readFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { join, resolve } from 'node:path';
 import { addedPackages, dependencyApproval, isDependencyFile } from './lib/dependencies.mjs';
-import { CODE_KIT, GIT, codeOf, runs } from './lib/shell.mjs';
+import { CODE_KIT, GIT, codeOf, commandsOf, runs } from './lib/shell.mjs';
 import { block, start } from './lib/hook.mjs';
 import {
   APPROVAL_LOG,
@@ -54,10 +54,14 @@ const ALWAYS = [
     'Piping downloads into a shell is not allowed.',
     codeOf(cmd),
   ],
-  [/\.claude\/approvals/, 'Approvals are created only by a person, with a `!` shell command.', cmd],
+  [
+    /\.claude\/approvals/,
+    "Approvals are created only by a person, with a `!` shell command. A shell command may not name them, even to read them; read them with the Read tool (or Glob to list them), which can't write.",
+    cmd,
+  ],
   [
     /approval-log\.jsonl/,
-    'The approval audit log is appended only by the commit hook; nobody edits it.',
+    "The approval audit log is appended only by the commit hook; nobody edits it. A shell command may not name it, even to read it; read it with the Read tool, which can't write.",
     cmd,
   ],
 ];
@@ -232,15 +236,16 @@ if (writesHistory && config.branches.protected.includes(branch)) {
   );
 }
 
-// Kit files edited through the shell follow the same rule as edits through Write/Edit.
-const touchesKit =
-  /\.claude\/(hooks|agents|skills|settings[^/]*\.json|README\.md|code-kit\.json)/.test(cmd);
+// Kit files edited through the shell follow the same rule as edits through Write/Edit: a command that
+// names a kit file and writes, judged one simple command at a time, so a redirect elsewhere in the line
+// (`npm install > /tmp/log; ls .claude/skills`) isn't taken for a write to the kit. A write the shell
+// hides (a script, a variable) is still caught after the call, as a change outside the actor's paths.
+const KIT_PATH = /\.claude\/(hooks|agents|skills|settings[^/]*\.json|README\.md|code-kit\.json)/;
 // a real redirect into a file; `2>&1` and `>/dev/null` are not writes
-const writes =
-  /((?<![0-9&])>>?\s*(?!&|\/dev\/null)\S|\btee\b|\bsed\s+-i|\bperl\s+-i|\bmv\b|\bcp\b|\brm\b|\bpython3?\b|\bnode\s+-e|\btruncate\b|\bchmod\b|\bln\b)/.test(
-    cmd,
-  );
-if (touchesKit && writes && actor.kind !== 'lead' && !approval(root, 'kit', actor)) {
+const WRITES =
+  /((?<![0-9&])>>?\s*(?!&|\/dev\/null)\S|\btee\b|\bsed\s+-i|\bperl\s+-i|\bmv\b|\bcp\b|\brm\b|\bpython3?\b|\bnode\s+-e|\btruncate\b|\bchmod\b|\bln\b)/;
+const kitWrite = commandsOf(cmd).some((c) => KIT_PATH.test(c.text) && WRITES.test(c.text));
+if (kitWrite && actor.kind !== 'lead' && !approval(root, 'kit', actor)) {
   recordRequest(
     root,
     actor,

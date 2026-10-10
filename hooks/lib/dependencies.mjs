@@ -1,6 +1,7 @@
 // New dependencies: which packages a shell command adds, and which files installing them changes.
 // Each package needs a person's approval (`dep-<package>`), which also covers those files.
 import { basename } from 'node:path';
+import { commandsOf } from './shell.mjs';
 
 // What installing a package rewrites: manifests and lockfiles, wherever they sit.
 const DEPENDENCY_FILES = new Set([
@@ -86,21 +87,37 @@ const MANAGERS = {
 };
 MANAGERS.pip3 = MANAGERS.pip;
 
-/** The packages `cmd` adds as dependencies, in order: none for a bare install or a requirements file. */
+/**
+ * The packages `cmd` adds as dependencies, in order: none for a bare install or a requirements file.
+ * Only the commands it runs count: quoted text and heredoc bodies are data (an echo, a commit message),
+ * except a shell's `-c` script, which runs.
+ */
 export function addedPackages(cmd) {
   const found = [];
-  for (const segment of cmd.split(/&&|\|\||[;|\n]/)) {
-    const tokens = segment
-      .trim()
-      .split(/\s+/)
-      .map((t) => t.replace(/^["']|["']$/g, ''));
-    tokens.forEach((token, i) => {
-      const manager = MANAGERS[basename(token)];
-      if (manager) found.push(...packagesAfter(tokens.slice(i + 1), manager));
+  for (const { text, code } of commandsOf(cmd)) {
+    // Words split where the quote-masked code has spaces, so a quoted word stays one word.
+    const words = [...code.matchAll(/\S+/g)].map((m) => ({
+      quoted: /^["']/.test(m[0]),
+      word: text.slice(m.index, m.index + m[0].length).replace(/^["']|["']$/g, ''),
+    }));
+    words.forEach(({ word, quoted }, i) => {
+      if (quoted) return;
+      if (SHELLS.has(basename(word)) && words[i + 1]?.word === '-c' && words[i + 2])
+        found.push(...addedPackages(words[i + 2].word));
+      const manager = MANAGERS[basename(word)];
+      if (manager)
+        found.push(
+          ...packagesAfter(
+            words.slice(i + 1).map((w) => w.word),
+            manager,
+          ),
+        );
     });
   }
   return [...new Set(found)];
 }
+
+const SHELLS = new Set(['sh', 'bash', 'zsh']);
 
 // The words after a package manager's name: its subcommand must be one that adds packages, and the
 // words after that, other than flags and their values, are the packages.

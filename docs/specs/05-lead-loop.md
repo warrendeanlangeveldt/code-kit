@@ -104,6 +104,14 @@ The band shows the loop's state ("loop on", "loop paused") with a Pause or Resum
 
 When every story in the plan is done, the loop stops and the band reads "Milestone done: N stories merged" until dismissed.
 
+### LOOP-8 A step that doesn't take goes to the person
+
+The lead is prompted with one step at most twice in a row. A step still next after that didn't take (the lead couldn't, or wouldn't), and lanes committing elsewhere don't make a third prompt useful: the band offers it instead, "Merge lead/st-1: still next after 2 prompts. Ask the lead again?", with Go. A different step, or none for the lead, starts the count again.
+
+**Acceptance**
+
+- Given `next` reporting the same merge after each of four lead turns while lanes commit, then the lead is prompted twice, the band offers the third, and Go submits it.
+
 ## Quality targets
 
 - A step is submitted within 5 seconds of the lead going idle with work to do.

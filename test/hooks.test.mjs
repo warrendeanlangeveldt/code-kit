@@ -336,11 +336,30 @@ try {
     2,
   );
   expect(
+    'reading the log through the shell is refused too, and the refusal says to use the Read tool',
+    bash('cat .claude/approval-log.jsonl | head'),
+    2,
+    'read it with the Read tool',
+  );
+  expect(
     'the lead edits the kit through the shell',
     bash("sed -i '' s/a/b/ .claude/code-kit.json"),
     0,
   );
   expect('a lane may not', bash("sed -i '' s/a/b/ .claude/code-kit.json", 'web-engineer'), 2);
+  expect(
+    'a lane may read the kit in a line that writes elsewhere',
+    bash(
+      '(npm ci >/tmp/ci.log 2>&1; tail -3 /tmp/ci.log); ls .claude/skills 2>/dev/null',
+      'web-engineer',
+    ),
+    0,
+  );
+  expect(
+    'but not write it through a pipe',
+    bash('echo x | tee .claude/agents/web.md', 'web-engineer'),
+    2,
+  );
   expect("the project's blocked commands", bash('supabase db push'), 2, 'Deploying is done by CI');
   expect('restricted commands: an owning lane', bash('supabase db reset', 'db-engineer'), 0);
   expect('restricted commands: the lead', bash('supabase db reset'), 0);
@@ -508,6 +527,13 @@ try {
     'change request',
   );
   expect('flags before the package no longer slip through', bash('npm install -D lodash'), 2);
+  expect(
+    'text that mentions an install, quoted in an echo, adds no dependency',
+    bash(
+      'echo "- gotchas — stage/commit separately; write package.json before npm install" >> NOTES.md',
+    ),
+    0,
+  );
   approveFor('web', 'dep-lodash');
   expect('with its approval the lane installs it', bash(addLodash, 'web-engineer'), 0);
   expect('another lane may not use it', bash(addLodash, 'backend-engineer'), 2);
@@ -899,6 +925,78 @@ try {
       "needs a person's approval",
     );
     b.git('merge', '--abort');
+  }
+
+  // --- the first merge: the base has no code-kit rules committed yet, so it's the person's -----------
+  {
+    const f = newRepo(false);
+    cleanups.push(f.dir);
+    const fKit = (...args) =>
+      spawnSync('node', [kitCli, ...args], { cwd: f.dir, encoding: 'utf8' });
+    f.git('checkout', '-q', '-b', 'lead/st-1');
+    mkdirSync(join(f.dir, '.claude'), { recursive: true });
+    writeFileSync(
+      join(f.dir, '.claude/code-kit.json'),
+      JSON.stringify({ ...JSON.parse(fixture), approvals: { delegate: { merge: true } } }),
+    );
+    writeFileSync(join(f.dir, '.gitignore'), '.claude/approvals/\n.claude/state/\n');
+    mkdirSync(join(f.dir, 'docs/spec'), { recursive: true });
+    writeFileSync(
+      join(f.dir, 'docs/spec/01-booking.md'),
+      '# 01. Booking\n\n### BOOK-1 Request\n\nx\n',
+    );
+    writeFileSync(
+      join(f.dir, 'docs/spec/plan.md'),
+      '# Plan\n\n## M1\n\n### ST-1 Booking form\n\n**Lane:** web\n**Requirements:** BOOK-1\n**Status:** todo\n',
+    );
+    // Committed through the commit hook, which logs the kit's files as it does in a session.
+    spawnSync('node', [join(hooks, 'guard-bash.mjs')], {
+      input: JSON.stringify({
+        cwd: f.dir,
+        tool_input: { command: 'git add -A && git commit -m "switch on code-kit"' },
+      }),
+      env: { ...process.env, CLAUDE_PROJECT_DIR: f.dir },
+      encoding: 'utf8',
+    });
+    f.git('add', '-A');
+    f.git('commit', '-q', '-m', 'switch on code-kit');
+    // The lead carries on from its first branch, where the rules are.
+    f.git('checkout', '-q', '-b', 'lead/st-2');
+    fKit('queue', 'add', 'lead/st-1');
+    const step = JSON.parse(fKit('next', '--json').stdout);
+    expect(
+      'next offers the first merge to the person, not the lead',
+      truth(
+        step.step !== 'merge' &&
+          step.attention.some((a) =>
+            a.includes("this first merge, which brings the rules onto it, is the person's"),
+          ),
+      ),
+      0,
+    );
+    expect(
+      'and check reports merges as not yet delegated',
+      truth(
+        JSON.parse(fKit('check', '--json').stdout).delegatesMerge === false &&
+          JSON.parse(fKit('check', '--json').stdout).firstMerge === true,
+      ),
+      0,
+    );
+    expect(
+      "the lead's merge is refused, saying the person makes it and how",
+      fKit('queue', 'merge', '--delegated'),
+      1,
+      'queue merge --person',
+    );
+    expect('the person makes the first merge', fKit('queue', 'merge', '--person'), 0);
+    expect(
+      'after it, main delegates merges to the lead by its committed rules',
+      truth(
+        JSON.parse(fKit('check', '--json').stdout).delegatesMerge === true &&
+          JSON.parse(fKit('check', '--json').stdout).firstMerge === false,
+      ),
+      0,
+    );
   }
 
   // --- delegated merges: the lead merges a branch that passes verify --------------------------------
@@ -2499,6 +2597,13 @@ else process.exit(1);
     join(v.dir, '.claude/code-kit.json'),
     JSON.stringify({ ...JSON.parse(vConfig), approvals: { delegate: { merge: true } } }),
   );
+  expect(
+    "MQ-2 delegation is the base's committed rule: an uncommitted one doesn't let the lead merge",
+    truth(nextIn(v.dir).step !== 'merge'),
+    0,
+  );
+  // Delegation is read from the rules committed on the base, so the change is committed there.
+  v.git('commit', '-q', '-am', 'delegate merges');
   nextIs(
     'MQ-2 where merges are delegated, the lead merges the head first',
     v.dir,
@@ -2519,6 +2624,7 @@ else process.exit(1);
     0,
   );
   writeFileSync(join(v.dir, '.claude/code-kit.json'), vConfig);
+  v.git('commit', '-q', '-am', 'stop delegating merges');
   vCli('queue', 'drop', 'web/st-2');
   // story: one story's facts for the drill-down.
   vPut(

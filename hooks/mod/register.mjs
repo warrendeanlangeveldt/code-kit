@@ -79,11 +79,14 @@ const loop = {
   steps: [], // { at, kind, target, prompt? }, kept for the session
   lastKey: null, // the last step submitted or proposed, and the project as it stood then
   lastPrint: null,
-  proposal: null, // under autonomy propose: { step, prompt, label }
+  asked: { key: null, times: 0 }, // the step the lead was last prompted with, and how often in a row
+  proposal: null, // under autonomy propose, or a step asked too often: { prompt, label, kind, target }
   pending: [], // restarts waiting for the lead to be idle: { story, prompt }
   done: null, // { count } once every story is done
   doneDismissed: false,
 };
+/** LOOP-8: the times in a row the lead is prompted with one step before the person is asked. */
+const ASK_LIMIT = 2;
 let leadTurn = null; // the lead's running turn, if any
 const activity = new Map(); // agent id → { at, inFlight, nudged, stopped, lane, story }
 const restarts = new Map(); // story → times the loop restarted it
@@ -618,12 +621,26 @@ export function register(on) {
           if (!due) return;
           ({ prompt, kind, target, key, label } = due);
         }
+        // A different step, or none for the lead, starts the count of times in a row again.
+        if (key !== loop.asked.key || !prompt) {
+          loop.asked = { key, times: 0 };
+          if (loop.proposal?.repeated) loop.proposal = null;
+        }
         if (!prompt) return;
         // Never the same step twice while the project stands still.
         const print = await act.fingerprint();
         if (key === loop.lastKey && print === loop.lastPrint) return;
         loop.lastKey = key;
         loop.lastPrint = print;
+        // LOOP-8: a step the lead was asked for twice and that is still next didn't take: the project
+        // moving elsewhere (lanes committing) doesn't make a third prompt useful. The person decides.
+        if (loop.asked.times >= ASK_LIMIT) {
+          if (loop.proposal?.label !== label) {
+            loop.proposal = { prompt, label, kind, target, repeated: loop.asked.times };
+            $.ui.invalidate('ui.render');
+          }
+          return;
+        }
         // Until the person has chosen how hands-off the loop is, its first step is offered, not taken.
         const chosen = (model.check?.harnessSet ?? []).includes('autonomy');
         if (h.autonomy === 'propose' || !chosen) {
@@ -631,6 +648,7 @@ export function register(on) {
           $.ui.invalidate('ui.render');
           return;
         }
+        loop.asked.times += 1;
         await act.submit(prompt, kind, target);
       },
       // The first offer's answers: the person's choice of autonomy, recorded as theirs, then acted on.
@@ -674,7 +692,9 @@ export function register(on) {
       },
       go: async () => {
         if (!loop.proposal || leadTurn) return;
-        const { prompt, kind, target } = loop.proposal;
+        const { prompt, kind, target, repeated } = loop.proposal;
+        // The person asked again: once more, then it's theirs to offer again if it still doesn't take.
+        loop.asked.times = repeated ? ASK_LIMIT : loop.asked.times + 1;
         await act.submit(prompt, kind, target);
       },
       // LOOP-6: pausing stops new steps at once; a turn in progress finishes.

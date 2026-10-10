@@ -39,6 +39,8 @@ Branches merge in the order their reviews passed; one at a time.
 
 Where `approvals.delegate.merge` is on and autonomy is `autonomous`, the loop prompts the lead to merge the head of the queue (`code-kit merge <branch> --delegated`). Otherwise the head of the queue shows in the band with Merge for the person (ACT-4).
 
+Delegation is read from the config committed on the base, so a branch can't grant itself merges. Until the base has one (a new project's first merge, which brings code-kit's rules onto it), the merge is the person's: `next` says so instead of prompting the lead, the band reads "lead/st-1 is next to merge: the first merge is yours, then the lead merges", and the lead's `--delegated` merge is refused with the person's way to make it.
+
 ### MQ-3 Conflicts go back to the lane
 
 A branch that no longer merges cleanly, or fails verify against the moved base, is sent back (`code-kit sent-back <branch> --reason "conflicts with <base> after <branch>"`); the loop dispatches the lane's fix, which merges the base and resolves; it rejoins the queue after its next review.

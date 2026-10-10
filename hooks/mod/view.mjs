@@ -605,7 +605,10 @@ export function bandLines({
   else if (loop?.proposal)
     lines.push({
       kind: 'proposal',
-      text: `${loop.proposal.label}?`,
+      // LOOP-8: a step the lead was asked for and didn't take waits for the person to ask again.
+      text: loop.proposal.repeated
+        ? `${loop.proposal.label}: still next after ${loop.proposal.repeated} prompts. Ask the lead again?`
+        : `${loop.proposal.label}?`,
       actions: [{ id: 'go', label: 'Go' }],
     });
   // A held call's request is asked on its own line above, not again here.
@@ -663,7 +666,10 @@ export function bandLines({
   if (next && !leadMerges)
     lines.push({
       kind: 'queue',
-      text: `${next.branch} is next to merge`,
+      // The first merge brings code-kit's rules onto the base, so it's the person's even under autonomy.
+      text: check?.firstMerge
+        ? `${next.branch} is next to merge: the first merge is yours, then the lead merges`
+        : `${next.branch} is next to merge`,
       branch: next.branch,
       actions: [{ id: 'mergeQueue', label: 'Merge' }],
     });

@@ -38,7 +38,13 @@ import { tmpdir } from 'node:os';
 import { join, posix, resolve } from 'node:path';
 import { BASELINE_FILE, loadBaseline } from '../hooks/lib/baseline.mjs';
 import { matchesAny } from '../hooks/lib/glob.mjs';
-import { CONFIG_FILE, effectiveConfig, validate } from '../hooks/lib/config.mjs';
+import {
+  CONFIG_FILE,
+  committedConfig,
+  effectiveConfig,
+  mergeDelegation,
+  validate,
+} from '../hooks/lib/config.mjs';
 import { diffConfigs, ownershipMoves } from '../hooks/lib/diff.mjs';
 import { CODE, importsOf, layerOf, layerProblems, targetOf } from '../hooks/lib/layers.mjs';
 import { ADAPTERS, activeAdapters, adapterFacts } from '../hooks/lib/adapters/index.mjs';
@@ -137,7 +143,10 @@ function checkJson() {
   report.harness = config.harness;
   // The harness settings the person chose, as opposed to defaults: the mod asks before acting on autonomy.
   report.harnessSet = Object.keys(SETTINGS).filter((k) => settingOf(raw.harness, k) !== undefined);
-  report.delegatesMerge = Boolean(config.approvals.delegate?.merge);
+  // Delegation is the base's, by the rules committed there: a branch can't grant itself merges.
+  const delegation = mergeDelegation('.', config, file);
+  report.delegatesMerge = delegation.delegated;
+  report.firstMerge = delegation.first;
   out(JSON.stringify(report, null, 2));
 }
 
@@ -317,26 +326,16 @@ const VERIFY_GROUPS = {
 // merges, and only when `verify` passes on that branch, checks included. A person merges with git.
 // With --person, the person merges (the mod passes it for a press in its pane): the same verify first,
 // with no delegation needed. The hooks refuse --person from every agent.
-/**
- * The config as committed on `ref`: what governs merging into it, so a branch's own config can't grant
- * itself a merge its target doesn't allow.
- */
+/** The config committed on `ref`, or null when it has none yet; an invalid one stops here. */
 function configAt(ref) {
-  let raw;
-  try {
-    raw = JSON.parse(
-      execFileSync('git', ['show', `${ref}:${file}`], {
-        encoding: 'utf8',
-        stdio: ['ignore', 'pipe', 'ignore'],
-      }),
-    );
-  } catch {
-    die(`${ref} has no readable ${file}; a merge into it follows the rules committed there.`);
-  }
-  const problems = validate(raw);
-  if (problems.length) die(`${file} on ${ref} is invalid:\n  ${problems.join('\n  ')}`);
-  return effectiveConfig(raw, '.');
+  const { config, error } = committedConfig('.', ref, file);
+  if (error) die(error);
+  return config ?? null;
 }
+
+/** Why the first merge into `into`, which has no config committed yet, is the person's. */
+const firstMerge = (into, branch) =>
+  `${into} has no ${file} committed yet, so it delegates nothing: the first merge, which brings code-kit's rules onto ${into}, is the person's. Ask them to merge ${branch} from the code-kit band (Merge), or to run \`! node "${process.argv[1]}" queue merge --person\`. From then on, ${into}'s committed rules decide who merges.`;
 
 /** Why a merge didn't happen: `refused` (the rules), `verify` (problems) or `conflict`. */
 class MergeStop extends Error {
@@ -379,7 +378,8 @@ function mergeOne(branch, config, byPerson) {
   };
   const into = intoName ?? config.branches.protected[0];
   // Whether the lead may merge, and which branches are protected, are the target's rules.
-  const target = configAt(into);
+  // A person may make the first merge, under the rules it brings; the lead may not.
+  const target = configAt(into) ?? (byPerson ? config : refuse(firstMerge(into, branch)));
   if (!byPerson && !target.approvals.delegate?.merge)
     refuse(
       `${into} doesn't delegate merges to the lead ("approvals.delegate.merge" isn't true in its ${file}). A person merges after review.`,

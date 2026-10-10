@@ -1398,6 +1398,35 @@ test("LOOP-1 review and the lead's own stories are prompted with their skill", a
   expect(w.prompts[1]).toMatch(/^Build ST-6 yourself.*lead\/st-6/);
 });
 
+test('LOOP-8 a step the lead was asked for twice and that is still next goes to the person, while lanes keep committing', async ($, on) => {
+  const w = project();
+  w.next = { step: 'merge', args: 'lead/st-1', then: [] };
+  const clock = await start($, on, w);
+  for (const [i, turn] of ['t-1', 't-2', 't-3', 't-4'].entries()) {
+    // A lane commits between the lead's turns: the project moves, but not this step.
+    w.refs += ` c${i} refs/heads/core/st-${i}\n`;
+    await leadTurn($, turn);
+    await settle(clock);
+  }
+  expect(w.prompts).toHaveLength(2);
+  expect(w.prompts.every((p: string) => p.startsWith('Merge lead/st-1'))).toBe(true);
+  const ui = await bandUi($);
+  expect(
+    await ui.find({
+      type: 'Text',
+      text: 'Merge lead/st-1: still next after 2 prompts. Ask the lead again?',
+    }),
+  ).toBeDefined();
+  await press($, 'band-go');
+  await ui.unmount();
+  expect(w.prompts).toHaveLength(3);
+  // Once the step changes, the loop goes on by itself.
+  w.next = { step: 'dispatch', args: 'ST-9', then: [] };
+  await leadTurn($, 't-5');
+  await settle(clock);
+  expect(w.prompts.at(-1)).toBe('Dispatch ST-9: run /code-kit:dispatch ST-9.');
+});
+
 test('LOOP-5 under propose the band offers the step, and nothing goes until Go', async ($, on) => {
   const w = project();
   (w.check as any).harness = { autonomy: 'propose' };
@@ -1667,6 +1696,21 @@ test('MQ-2 where the person merges, the head of the queue waits in the band for 
   await ui.unmount();
   expect(w.acts).toEqual([['queue', 'merge', '--person']]);
   expect(w.opened).toContain(RESULT);
+});
+
+test('MQ-2 the first merge, before the base has code-kit rules committed, is offered to the person', async ($, on) => {
+  const w = project();
+  (w.check as any).firstMerge = true;
+  w.queue = [{ branch: 'lead/st-1', passed: '2026-10-10T00:00:00Z', state: 'waiting' }];
+  await start($, on, w);
+  const ui = await bandUi($);
+  expect(
+    await ui.find({
+      type: 'Text',
+      text: 'lead/st-1 is next to merge: the first merge is yours, then the lead merges',
+    }),
+  ).toBeDefined();
+  await ui.unmount();
 });
 
 test('MQ-2 where the lead merges under autonomy, the band offers no Merge', async ($, on) => {

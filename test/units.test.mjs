@@ -243,6 +243,10 @@ test('the packages a command adds', () => {
     ['git bundle create repo.bundle', []],
     ['npm install lodash > out.log 2>&1', ['lodash']],
     ['cd apps/api; npm install zod', ['zod']],
+    ['bash -c "npm install zod"', ['zod']],
+    ['echo "write package.json before npm install; then commit" >> notes.md', []],
+    ["git commit -m 'Run npm install lodash first'", []],
+    ["cat > NOTES.md <<'EOF'\nnpm install lodash\nEOF", []],
   ];
   for (const [cmd, want] of cases) assert.deepEqual(addedPackages(cmd), want, cmd);
 });
