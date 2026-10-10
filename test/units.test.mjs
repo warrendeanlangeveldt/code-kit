@@ -1034,3 +1034,101 @@ test("VIEW-6 an idle lane: its stories in plan order, the one Enter opens, and t
   assert.equal(planProgress(state), '2 of 4 stories done');
   assert.equal(planProgress({ stories: [] }), null);
 });
+
+test('MAP-2 what a tool call touches, and which files glow', async () => {
+  const { touchOf, glowOf } = await import('../hooks/mod/codemap.mjs');
+  assert.deepEqual(touchOf({ tool: 'Read', file_path: '/r/src/a.ts' }, '/r'), {
+    path: 'src/a.ts',
+    verb: 'read',
+  });
+  assert.deepEqual(
+    touchOf({ tool: 'Edit', file_path: '/r/.claude/worktrees/agent-1/src/b.ts' }, '/r'),
+    {
+      path: 'src/b.ts',
+      verb: 'edit',
+    },
+  );
+  assert.equal(touchOf({ tool: 'Bash', command: 'ls' }, '/r'), null);
+  assert.equal(touchOf({ tool: 'Read', file_path: '/elsewhere/x.ts' }, '/r'), null);
+  const glow = glowOf(
+    [
+      { path: 'a', verb: 'read', lane: 'web', at: 1000 },
+      { path: 'a', verb: 'edit', lane: 'web', at: 5000 },
+      { path: 'b', verb: 'read', lane: 'api', at: 0 },
+    ],
+    24000,
+  );
+  assert.deepEqual(glow, { a: { lane: 'web', verb: 'edit' } });
+});
+
+test('MAP-1 the code map: every file drawn once, in its layer, with lines between neighbouring layers', async () => {
+  const { layout, mapRows } = await import('../hooks/mod/codemap.mjs');
+  const map = {
+    layers: ['domain', 'services', 'tests'],
+    files: [
+      { path: 'x/domain/a.ts', layer: 'domain', imports: [] },
+      { path: 'x/domain/b.ts', layer: 'domain', imports: ['x/domain/a.ts'] },
+      { path: 'x/services/s.ts', layer: 'services', imports: ['x/domain/b.ts'] },
+      { path: 'x/tests/s.test.ts', layer: 'tests', imports: ['x/services/s.ts'] },
+    ],
+  };
+  const L = layout(map, 90);
+  const boxes = Object.values(L.nodes);
+  for (const a of boxes)
+    for (const b of boxes)
+      if (a !== b)
+        assert.ok(
+          a.x + a.w <= b.x || b.x + b.w <= a.x || a.y + a.h <= b.y || b.y + b.h <= a.y,
+          'no two boxes overlap',
+        );
+  assert.equal(L.nodes['x/services/s.ts'].x > L.nodes['x/domain/a.ts'].x, true);
+  const text = mapRows(map, { width: 90 }).map((r) => r.map((x) => x.text).join(''));
+  for (const name of ['a.ts', 'b.ts', 's.ts', 's.test.ts'])
+    assert.equal(text.join('\n').split(`│ ${name} `).length - 1, 1, `${name} drawn once`);
+  // The import from s.ts (services) to b.ts (domain) is a line between the two columns.
+  const row = text[L.nodes['x/services/s.ts'].y + 1];
+  assert.match(
+    row.slice(
+      L.nodes['x/domain/b.ts'].x + L.nodes['x/domain/b.ts'].w,
+      L.nodes['x/services/s.ts'].x,
+    ),
+    /[─┐┘└┌│]/,
+  );
+});
+
+test('MISSION-1 to MISSION-3 the goal, the next step in words, and other tools only when not zero', async () => {
+  const { goalOf, nextText, missionLines } = await import('../hooks/mod/mission.mjs');
+  assert.deepEqual(
+    goalOf([
+      { id: 'ST-1', state: 'done', milestone: 'Milestone 1: A' },
+      { id: 'ST-2', state: 'done', milestone: 'Milestone 2: B' },
+      { id: 'ST-3', state: 'review', milestone: 'Milestone 2: B' },
+    ]),
+    { name: 'Milestone 2: B', done: 1, total: 2 },
+  );
+  assert.equal(goalOf([{ id: 'ST-1', state: 'todo' }]), null);
+  assert.equal(nextText({ step: 'merge', args: 'web/st-4' }), 'Merge web/st-4');
+  assert.equal(
+    nextText({ step: 'wait', why: 'lanes are building' }),
+    'waiting: lanes are building',
+  );
+  const state = {
+    kind: 'ok',
+    stories: [],
+    lanes: [
+      { name: 'lead', active: true },
+      { name: 'web', active: false },
+    ],
+  };
+  const quiet = missionLines({ state, leadBusy: true, combined: { web: { without: 0, owed: 0 } } });
+  assert.equal(
+    quiet.some((r) => r.kind === 'facts'),
+    false,
+  );
+  const loud = missionLines({ state, leadBusy: true, combined: { web: { without: 2, owed: 0 } } });
+  assert.equal(
+    loud.find((r) => r.kind === 'facts')?.text,
+    'web edited 2 files without understanding them',
+  );
+  assert.deepEqual(missionLines({ state: { ...state, lanes: [] } }), []);
+});

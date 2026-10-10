@@ -1,6 +1,7 @@
 // Panes v2 (docs/specs/11-panes.md): the Lanes pane's frame. A counts header, tabs, what needs the
 // person, the tab's body and the keys, as pure functions of what the mod already holds. The Lanes
 // tab's body is view.mjs's lanesPane; the Queue and Usage tabs reuse its sections.
+import { cardOf, mapRows as codeRows, mapStoryOf, mapSvg, neighboursOf } from './codemap.mjs';
 import {
   NOT_CODE_KIT,
   STATE_COLOR,
@@ -14,9 +15,10 @@ import {
 
 export const TABS = [
   { id: 'lanes', label: 'Lanes', hotkey: '1' },
-  { id: 'queue', label: 'Queue', hotkey: '2' },
-  { id: 'usage', label: 'Usage', hotkey: '3' },
-  { id: 'map', label: 'Map', hotkey: '4' },
+  { id: 'code', label: 'Code map', hotkey: '2' },
+  { id: 'map', label: 'Trail', hotkey: '3' },
+  { id: 'queue', label: 'Queue', hotkey: '4' },
+  { id: 'usage', label: 'Usage', hotkey: '5' },
 ];
 
 /** The pane's own state, kept by the mod between draws. */
@@ -253,29 +255,31 @@ export function lanesFrame(view, els, on) {
 
   const selected = state.lanes.find((l) => l.name === ui.selected) ?? null;
   const body =
-    ui.tab === 'map'
-      ? mapTab(view.status, ui.cell, els, on)
-      : ui.tab === 'queue'
-        ? queueSection(loop, text, Box)
-        : ui.tab === 'usage'
-          ? usageSection(view.usage, plan, text, Box)
-          : [
-              lanesPane(state, els, view.usage, plan, loop, {
-                filter: ui.filter,
-                search: ui.search,
-                selected: ui.selected,
-                live: view.live ?? {},
-                art: view.art ?? null,
-                detail: selected
-                  ? {
-                      agent: selected.agent ?? null,
-                      owns: view.paths?.[selected.name] ?? [],
-                      stories: laneStories(selected, state),
-                    }
-                  : null,
-                combined: view.combined ?? null,
-              }),
-            ];
+    ui.tab === 'code'
+      ? codeTab(view, els, on)
+      : ui.tab === 'map'
+        ? mapTab(view.status, ui.cell, els, on, view.trail)
+        : ui.tab === 'queue'
+          ? queueSection(loop, text, Box)
+          : ui.tab === 'usage'
+            ? usageSection(view.usage, plan, text, Box)
+            : [
+                lanesPane(state, els, view.usage, plan, loop, {
+                  filter: ui.filter,
+                  search: ui.search,
+                  selected: ui.selected,
+                  live: view.live ?? {},
+                  art: view.art ?? null,
+                  detail: selected
+                    ? {
+                        agent: selected.agent ?? null,
+                        owns: view.paths?.[selected.name] ?? [],
+                        stories: laneStories(selected, state),
+                      }
+                    : null,
+                  combined: view.combined ?? null,
+                }),
+              ];
   const empty =
     ui.tab === 'queue'
       ? 'The merge queue is empty.'
@@ -818,7 +822,7 @@ export function moveCell(requirements, id, step, { rows = false } = {}) {
  * The Map tab (TRACE-1 to TRACE-4): a row per spec, a cell per requirement, a legend, and the
  * selected requirement's stories and tests. `status` is `code-kit status --json`'s.
  */
-export function mapTab(status, selectedId, { Box, Text, Button, Select }, on) {
+export function mapTab(status, selectedId, { Box, Text, Button, Select }, on, trail = null) {
   const text = (value, style = {}) => Text({ ...style, children: [value] });
   const requirements = status?.requirements ?? [];
   if (!requirements.length)
@@ -928,6 +932,28 @@ export function mapTab(status, selectedId, { Box, Text, Button, Select }, on) {
             ),
           )
         : [text('No story delivers it yet: a gap in the plan.', { color: 'red' })]),
+      // TRAIL-1: the code its stories changed, once the trail is read.
+      ...(() => {
+        const row = trail?.requirements?.find((r) => r.id === selected.id);
+        if (!row) return [];
+        return row.files.length
+          ? [
+              text(`Code its stories changed (${row.files.length})`, { bold: true }),
+              Box({
+                key: 'map-files',
+                children: [
+                  text(
+                    `  ${row.files
+                      .slice(0, 6)
+                      .map((f) => f.split('/').pop())
+                      .join(', ')}${row.files.length > 6 ? ', …' : ''}`,
+                    { dimColor: true, wrap: 'truncate-end' },
+                  ),
+                ],
+              }),
+            ]
+          : [text('No code changed for it yet.', { dimColor: true })];
+      })(),
       ...(selected.tests?.length
         ? [
             text('Tests that name it', { bold: true }),
@@ -938,5 +964,199 @@ export function mapTab(status, selectedId, { Box, Text, Button, Select }, on) {
         : [text('No test names it.', { dimColor: true })]),
     ],
   });
-  return [legend, grid, keys, detail];
+  // TRAIL-1: the selected requirement's spec as a trail: each requirement to its stories, the code
+  // they changed and the tests that name it, a gap where any link is missing.
+  const spec = selected.file;
+  const trailRows = (trail?.requirements ?? []).filter(
+    (r) =>
+      r.spec === spec?.split('/').pop() && requirements.find((q) => q.id === r.id)?.file === spec,
+  );
+  const trailBox = trailRows.length
+    ? [
+        Box({
+          key: 'trail',
+          flexDirection: 'column',
+          children: [
+            text(`Trail · ${label(spec)}`, { bold: true }),
+            ...trailRows.map((r) =>
+              Box({
+                key: `trail-${r.id}`,
+                flexDirection: 'row',
+                columnGap: 1,
+                children: [
+                  text(r.id.padEnd(8), r.id === selected.id ? { bold: true, color: 'cyan' } : {}),
+                  text('─'),
+                  r.stories.length
+                    ? text(
+                        r.stories
+                          .map((x) => x.id)
+                          .join(' ')
+                          .padEnd(12),
+                        {
+                          color: r.stories.every((x) => x.state === 'done') ? 'green' : 'blue',
+                        },
+                      )
+                    : text('no story'.padEnd(12), { color: 'red' }),
+                  text('─'),
+                  text(
+                    `${r.files.length} file${r.files.length === 1 ? '' : 's'}`.padEnd(9),
+                    r.files.length ? { dimColor: true } : { color: 'red' },
+                  ),
+                  text(r.tests.length ? '─' : '╌', r.tests.length ? {} : { color: 'red' }),
+                  r.tests.length
+                    ? text(`✓ ${r.tests.length} test${r.tests.length === 1 ? '' : 's'}`, {
+                        color: 'green',
+                      })
+                    : text('no test names it', { color: 'red' }),
+                ],
+              }),
+            ),
+          ],
+        }),
+      ]
+    : [];
+  return [legend, grid, keys, ...trailBox, detail];
+}
+
+/** The colour each style of the code map's runs takes, the lane's tint where it glows. */
+const RUN_STYLE = {
+  dim: { dimColor: true },
+  node: {},
+  selected: { color: 'cyan', bold: true },
+  ok: { color: 'green' },
+  warn: { color: 'yellow' },
+};
+
+/**
+ * MAP-1 to MAP-4: the Code map tab: the stories to choose from, the story's files by layer with their
+ * imports (glowing where a lane reads or edits them), and the selected file's card and neighbours.
+ * `view` holds { state, codeMap, ui, glow, art, surface, columns }; `on` holds onMapStory(id),
+ * onMapFile(path), onOpenFile(path).
+ */
+export function codeTab(view, { Box, Text, Button, Svg }, on) {
+  const text = (value, style = {}) => Text({ ...style, children: [value] });
+  const { state, ui = DEFAULT_UI, codeMap: map = null, glow = {}, art = null } = view;
+  const storyId = mapStoryOf(state, ui.selected, ui.mapStory);
+  const choices = (state?.stories ?? []).filter(
+    (s) => s.id === storyId || ['in progress', 'review', 'sent back'].includes(s.state),
+  );
+  const picker = Box({
+    key: 'map-stories',
+    flexDirection: 'row',
+    columnGap: 1,
+    flexWrap: 'wrap',
+    children: choices.map((s) =>
+      Button({
+        key: `map-story-${s.id}`,
+        label: `${s.id} ${s.title}`,
+        ...(s.id === storyId ? { variant: 'primary' } : { plain: true }),
+        onPress: () => on.onMapStory(s.id),
+      }),
+    ),
+  });
+  if (!storyId) return [text('No story to map yet: the plan has none open.', { dimColor: true })];
+  if (!map || map.story?.id !== storyId)
+    return [picker, text(`Reading ${storyId}'s code…`, { dimColor: true })];
+  if (!map.files.length)
+    return [picker, text(`${storyId} hasn't changed any code yet.`, { dimColor: true })];
+  const selected = map.files.some((f) => f.path === ui.mapFile) ? ui.mapFile : map.files[0].path;
+  // The lanes' tints are RGB numbers (the characters' colours); text and SVG take them as hex.
+  const tints = Object.fromEntries(
+    Object.entries(art?.tints ?? {}).map(([lane, rgb]) => [
+      lane,
+      typeof rgb === 'number' ? `#${rgb.toString(16).padStart(6, '0')}` : rgb,
+    ]),
+  );
+  const width = Math.max(40, (view.columns ?? 100) - 4);
+  const drawing =
+    view.surface !== 'terminal' && Svg
+      ? Svg({
+          source: mapSvg(map, { glow, selected, tints, width }),
+          alt: `${storyId}'s code: ${map.files.length} files by layer`,
+          isInteractive: true,
+        })
+      : Box({
+          key: 'code-map',
+          flexDirection: 'column',
+          children: codeRows(map, { glow, selected, width }).map((runs, y) =>
+            Box({
+              key: `code-row-${y}`,
+              flexDirection: 'row',
+              children: runs.map((r) =>
+                text(
+                  r.text,
+                  r.lane && (r.style === 'reading' || r.style === 'editing')
+                    ? { color: tints[r.lane] ?? 'cyan', bold: r.style === 'editing' }
+                    : (RUN_STYLE[r.style] ?? {}),
+                ),
+              ),
+            }),
+          ),
+        });
+  const at = map.files.findIndex((f) => f.path === selected);
+  const file = map.files[at];
+  const card = cardOf(file);
+  const near = neighboursOf(map, selected);
+  const short = (p) => p.split('/').pop();
+  const detail = Box({
+    key: 'code-file',
+    flexDirection: 'column',
+    borderStyle: 'round',
+    borderColor: 'gray',
+    paddingX: 1,
+    children: [
+      text(selected, { bold: true }),
+      text(`${file.layer}${file.lane ? ` · ${file.lane} lane` : ''}`, { dimColor: true }),
+      ...(card
+        ? [
+            text(
+              card.state === 'missing' ? 'No card yet.' : card.text,
+              card.state === 'current' ? {} : { color: 'yellow' },
+            ),
+            ...(card.state === 'stale'
+              ? [text('The file changed since this card.', { dimColor: true })]
+              : []),
+          ]
+        : []),
+      ...(near.imports.length
+        ? [text(`imports ${near.imports.map(short).join(', ')}`, { dimColor: true })]
+        : []),
+      ...(near.importers.length
+        ? [text(`imported by ${near.importers.map(short).join(', ')}`, { dimColor: true })]
+        : []),
+    ],
+  });
+  const keys = Box({
+    key: 'code-keys',
+    flexDirection: 'row',
+    columnGap: 1,
+    children: [
+      Button({
+        key: 'code-next',
+        label: 'Next file',
+        hotkey: 'j',
+        plain: true,
+        onPress: () => on.onMapFile(map.files[(at + 1) % map.files.length].path),
+      }),
+      Button({
+        key: 'code-prev',
+        label: 'Previous',
+        hotkey: 'k',
+        plain: true,
+        onPress: () => on.onMapFile(map.files[(at - 1 + map.files.length) % map.files.length].path),
+      }),
+      ...(map.open
+        ? [
+            Button({
+              key: 'code-open',
+              label: 'Open in Context Graph',
+              hotkey: 'o',
+              plain: true,
+              onPress: () => on.onOpenFile(selected),
+            }),
+          ]
+        : []),
+    ],
+  });
+  return [picker, drawing, detail, keys];
 }

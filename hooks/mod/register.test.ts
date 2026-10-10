@@ -149,6 +149,8 @@ function project() {
     } as any,
     sent: [] as { to: any; text: string }[],
     loopPaused: false, // the pause recorded by `code-kit loop`
+    map: null as any, // `code-kit map <story> --json`
+    trail: null as any, // `code-kit trail --json`
     holdWaits: false, // false: the hold ends at once, as if timed out (tests about cards, not hold)
     waiting: new Map<string, (answer: string) => void>(),
   };
@@ -186,6 +188,8 @@ function stub(on: any, w: World) {
     if (sub === 'adapters') return ran(0, JSON.stringify(w.adapters));
     if (sub === 'timeline')
       return ran(0, JSON.stringify({ base: 'main', now: 0, stories: w.times }));
+    if (sub === 'map') return ran(w.map ? 0 : 1, JSON.stringify(w.map));
+    if (sub === 'trail') return ran(w.trail ? 0 : 1, JSON.stringify(w.trail));
     if (sub === 'loop' && ['pause', 'resume'].includes(argv[3])) {
       w.acts.push([...argv.slice(2)]);
       w.loopPaused = argv[3] === 'pause';
@@ -1704,6 +1708,157 @@ test("REVW-2 the reviewer's model is the setting's, registered again when it cha
 
 // --- the merge queue --------------------------------------------------------------------------------
 
+// --- the code map and the trail -----------------------------------------------------------------
+
+const storyMap = () => ({
+  story: { id: 'ST-4', title: 'Booking form', lane: 'web', state: 'in progress' },
+  layers: ['domain', 'services', 'tests'],
+  files: [
+    {
+      path: 'apps/web/domain/booking.ts',
+      layer: 'domain',
+      lane: 'web',
+      imports: [],
+      adapters: {
+        'context-graph': { card: { state: 'current', text: 'A booking and its rules.' } },
+      },
+    },
+    {
+      path: 'apps/web/services/book.ts',
+      layer: 'services',
+      lane: 'web',
+      imports: ['apps/web/domain/booking.ts'],
+      adapters: { 'context-graph': { card: { state: 'stale', text: 'Books a slot.' } } },
+    },
+    {
+      path: 'apps/web/e2e/book.spec.ts',
+      layer: 'tests',
+      lane: 'web',
+      imports: ['apps/web/services/book.ts'],
+      adapters: { 'context-graph': { card: { state: 'missing', text: '' } } },
+    },
+  ],
+  open: { command: 'graph' },
+});
+
+test("MAP-1 the Code map shows the selected lane's story by layer, its imports, and the selected file's card", async ($, on) => {
+  const w = project();
+  w.map = storyMap();
+  const clock = await start($, on, w);
+  await lanes($);
+  const ui = await pane($, PANE);
+  await press($, 'tab-code', PANE);
+  await clock.advance(1);
+  expect((await ui.find({ key: 'map-story-ST-4' }))?.props.variant).toBe('primary');
+  const drawn = (await ui.find({ key: 'code-map' }))?.text ?? '';
+  for (const name of [
+    'domain',
+    'services',
+    'tests',
+    'booking.ts',
+    'book.ts',
+    'book.spec.ts',
+    '✓ carded',
+    'card stale',
+    'no card',
+  ])
+    expect(drawn).toContain(name);
+  // An import between neighbouring layers is drawn as a line.
+  expect(drawn).toMatch(/[─┐┘└┌]/);
+  expect((await ui.find({ key: 'code-file' }))?.text).toMatch(
+    /apps\/web\/domain\/booking.ts.*A booking and its rules\..*imported by book.ts/s,
+  );
+  await press($, 'code-next', PANE);
+  expect((await ui.find({ key: 'code-file' }))?.text).toMatch(
+    /book.ts.*Books a slot\..*changed since this card.*imports booking.ts.*imported by book.spec.ts/s,
+  );
+  await press($, 'code-open', PANE);
+  expect(w.commands).toContainEqual({ command: 'graph', args: 'apps/web/services/book.ts' });
+  await ui.unmount();
+});
+
+test('MAP-2 a file a lane reads or edits glows in the code map, in the lane, and stops after a while', async ($, on) => {
+  const w = project();
+  w.map = storyMap();
+  w.agents = [{ id: 'a1', type: 'web-engineer', description: 'ST-4', status: 'running' }];
+  const clock = await start($, on, w);
+  await lanes($);
+  const ui = await pane($, PANE);
+  await press($, 'tab-code', PANE);
+  await $.tool.call({ tool: 'Bash', tool_use_id: 'tu-w', command: 'ls', agentId: 'a1' } as any);
+  await clock.advance(2000);
+  await $.tool
+    .call({
+      tool: 'Read',
+      tool_use_id: 'tu-r',
+      file_path: '/repo/.claude/worktrees/agent-a1/apps/web/services/book.ts',
+      agentId: 'a1',
+    } as any)
+    .catch(() => {});
+  await clock.advance(1);
+  expect((await ui.find({ key: 'code-map' }))?.text).toContain('web reading');
+  await clock.advance(30000);
+  expect((await ui.find({ key: 'code-map' }))?.text).not.toContain('web reading');
+  await ui.unmount();
+});
+
+test('TRAIL-1 the Trail tab follows each requirement of the spec to its stories, code and tests, with gaps in red', async ($, on) => {
+  const w = project();
+  w.requirements = [
+    {
+      id: 'BOOK-1',
+      title: 'Request',
+      file: 'docs/specs/01-booking.md',
+      state: 'in progress',
+      stories: ['ST-4'],
+      tests: ['apps/web/e2e/book.spec.ts'],
+    },
+    {
+      id: 'BOOK-2',
+      title: 'Cancel',
+      file: 'docs/specs/01-booking.md',
+      state: 'no story',
+      stories: [],
+      tests: [],
+    },
+  ];
+  w.trail = {
+    base: 'main',
+    requirements: [
+      {
+        id: 'BOOK-1',
+        title: 'Request',
+        spec: '01-booking.md',
+        state: 'in progress',
+        stories: [{ id: 'ST-4', state: 'in progress', lane: 'web' }],
+        files: ['apps/web/services/book.ts'],
+        tests: ['apps/web/e2e/book.spec.ts'],
+      },
+      {
+        id: 'BOOK-2',
+        title: 'Cancel',
+        spec: '01-booking.md',
+        state: 'no story',
+        stories: [],
+        files: [],
+        tests: [],
+      },
+    ],
+  };
+  const clock = await start($, on, w);
+  await lanes($);
+  const ui = await pane($, PANE);
+  await press($, 'tab-map', PANE);
+  await clock.advance(1);
+  expect((await ui.find({ key: 'trail-BOOK-1' }))?.text).toMatch(
+    /BOOK-1\s*─\s*ST-4\s*─\s*1 file\s*─\s*✓ 1 test/,
+  );
+  const gap = await ui.find({ key: 'trail-BOOK-2' });
+  expect(gap?.text).toMatch(/no story.*0 files.*no test names it/);
+  expect((await ui.find({ key: 'map-files' }))?.text).toMatch(/book.ts/);
+  await ui.unmount();
+});
+
 test('MQ-2 where the lead merges, the loop prompts it to merge the head of the queue', async ($, on) => {
   const w = project();
   w.next = { step: 'merge', args: 'web/st-4', then: [] };
@@ -1894,13 +2049,14 @@ test('VIEW-5 what needs the person is pinned at the top with its letter: a held 
   w.waiting.get('tu-h1')?.('timed out');
 });
 
-test('VIEW-6 tabs on 1 to 3, j and k move between lanes, and the selected lane has its keys', async ($, on) => {
+test('VIEW-6 tabs on 1 to 5, j and k move between lanes, and the selected lane has its keys', async ($, on) => {
   const w = project();
   w.agents = [{ id: 'a1', type: 'web-engineer', description: 'ST-4', status: 'running' }];
   await start($, on, w);
   await lanes($);
   const ui = await pane($, PANE);
-  expect((await ui.find({ key: 'tab-queue' }))?.props.hotkey).toBe('2');
+  expect((await ui.find({ key: 'tab-queue' }))?.props.hotkey).toBe('4');
+  expect((await ui.find({ key: 'tab-code' }))?.props.hotkey).toBe('2');
   await press($, 'tab-queue', PANE);
   expect(await ui.find({ type: 'Text', text: 'The merge queue is empty.' })).toBeDefined();
   await press($, 'tab-lanes', PANE);
@@ -2079,7 +2235,8 @@ test('TRACE-1 the map: a cell per requirement, a row per spec, and a legend with
   await start($, on, w);
   await lanes($);
   const ui = await pane($, PANE);
-  expect((await ui.find({ key: 'tab-map' }))?.props.hotkey).toBe('4');
+  expect((await ui.find({ key: 'tab-map' }))?.props.label).toBe('Trail');
+  expect((await ui.find({ key: 'tab-map' }))?.props.hotkey).toBe('3');
   await press($, 'tab-map', PANE);
   const legend = (await ui.find({ key: 'map-legend' }))?.text ?? '';
   expect(legend).toMatch(/■ 20 done and tested/);

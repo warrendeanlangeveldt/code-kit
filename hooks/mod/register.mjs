@@ -47,6 +47,7 @@ import {
 } from './panes.mjs';
 import { leadPrompt, nudgeText, restartPrompt, stallDue, stepKey, stepLabel } from './loop.mjs';
 import { nextText } from './mission.mjs';
+import { glowOf, mapStoryOf, touchOf } from './codemap.mjs';
 import { harnessSettings } from '../lib/harness.mjs';
 import {
   REVIEW_WAIT_MS,
@@ -112,6 +113,10 @@ let frame = 0;
 let animation = null; // the timer repainting working characters, while one works
 let paneSurface = null;
 let paneColumns = 80;
+let codeMap = null; // MAP-1: `code-kit map <story> --json` for the Code map tab's story
+let trailData = null; // TRAIL-1: `code-kit trail --json` while the Trail tab shows
+const touches = []; // MAP-2: { path, verb, lane, at }, the files agents read and edited lately
+const TOUCHES_KEPT = 200;
 // The reviewer (spec 07): each branch's review at its head, and the agent type registered for it.
 const reviews = new Map(); // branch → { branch, head, story, state, startedAt, findings, why?, error? }
 let reviewerAgent = null; // the registered agent's full name
@@ -215,7 +220,17 @@ export function register(on) {
           base: status?.base ?? null,
         };
         if (model.state.kind === 'ok') await act.registerReviewer();
+        await act.readMaps();
         $.ui.invalidate('ui.render');
+      },
+      // MAP-1, TRAIL-1: what the Code map and Trail tabs draw, read while they show.
+      readMaps: async () => {
+        if (model.state?.kind !== 'ok') return;
+        if (paneUi.tab === 'code') {
+          const id = mapStoryOf(stateNow(), paneUi.selected, paneUi.mapStory);
+          codeMap = id ? ((await json('map', id)) ?? codeMap) : null;
+        }
+        if (paneUi.tab === 'map') trailData = (await json('trail')) ?? trailData;
       },
       // REVW-2: the reviewer, read-only by the hooks' rule for agents outside the lanes. Registered
       // again when its model setting changes.
@@ -1004,6 +1019,21 @@ export function register(on) {
       busy.tool = toolLine(e);
       busy.at = calledAt;
     } else if (!e.agentId) leadLast = { tool: toolLine(e), at: calledAt };
+    // MAP-2: the file the call reads or edits glows in the code map, in its lane's colour. An agent
+    // first seen on this call has its lane found by its type.
+    const touch = touchOf(e, where?.cwd);
+    if (touch && busy && !busy.lane) {
+      const agent = ((await $.agent.list().catch(() => [])) ?? []).find((a) => a.id === e.agentId);
+      busy.lane =
+        Object.entries(model.check?.lanes ?? {}).find(([, l]) => l.agent === agent?.type)?.[0] ??
+        busy.lane;
+    }
+    const touchLane = busy ? busy.lane : e.agentId ? null : 'lead';
+    if (touch && touchLane) {
+      touches.push({ ...touch, lane: touchLane, at: calledAt });
+      if (touches.length > TOUCHES_KEPT) touches.shift();
+      if (paneUi.tab === 'code') $.ui.invalidate('ui.render');
+    }
     try {
       const res = await next(e);
       const text = res?.deny ?? (res?.isError ? (res.text ?? String(res.result ?? '')) : null);
@@ -1339,6 +1369,11 @@ export function register(on) {
         },
         art: artNow(now, liveNow(now)),
         combined: combinedNow(),
+        codeMap,
+        trail: trailData,
+        glow: glowOf(touches, now),
+        surface: paneSurface,
+        columns: paneColumns,
         placement: e.props.placement,
         story: storyOpen ? storyNow(storyOpen, now, usage) : null,
       },
@@ -1347,6 +1382,25 @@ export function register(on) {
         onTab: (tab) => {
           paneUi = { ...paneUi, tab };
           $.ui.invalidate('ui.render');
+          act?.readMaps().then(() => $.ui.invalidate('ui.render'));
+        },
+        onMapStory: (id) => {
+          paneUi = { ...paneUi, mapStory: id, mapFile: null };
+          $.ui.invalidate('ui.render');
+          act?.readMaps().then(() => $.ui.invalidate('ui.render'));
+        },
+        onMapFile: (path) => {
+          paneUi = { ...paneUi, mapFile: path };
+          $.ui.invalidate('ui.render');
+        },
+        // MAP-3: the file in Context Graph's own view, through the command its adapter names.
+        onOpenFile: (path) => {
+          const command = codeMap?.open?.command;
+          if (!command) return;
+          $.command.run({ command, args: path }).catch((err) => {
+            notice = `Couldn't open ${path}: ${err?.message ?? err}`;
+            $.ui.invalidate('ui.render');
+          });
         },
         onFilter: (state) => {
           paneUi = { ...paneUi, filter: paneUi.filter === state ? null : state };
