@@ -47,12 +47,18 @@ const field = (lines, name) =>
     .find(Boolean)?.[1]
     .trim() ?? '';
 
-/** Every story in the plan: [{ id, title, lane, requirements, dependsOn, status }]. */
+/**
+ * Every story in the plan: [{ id, title, lane, requirements, dependsOn, status, milestone }]. A story's
+ * milestone is the `## ` heading above it ("Milestone 5: Your own key"), or null.
+ */
 export function readStories(root, planPath) {
   const stories = [];
   for (const file of markdownFiles(root, planPath)) {
     const lines = readFileSync(join(root, file), 'utf8').split('\n');
+    let milestone = null;
     lines.forEach((line, i) => {
+      const heading = line.match(/^##\s+(.+?)\s*$/);
+      if (heading) milestone = heading[1];
       const m = line.match(STORY_HEADING);
       if (!m) return;
       const end = lines.findIndex((l, j) => j > i && /^#{1,3}\s/.test(l));
@@ -67,6 +73,7 @@ export function readStories(root, planPath) {
         noRequirements: /^none\b/i.test(field(body, 'Requirements')),
         dependsOn: [...field(body, 'Depends on').matchAll(/\bST-\d+\b/g)].map((r) => r[0]),
         status: STATES.includes(status) ? status : 'todo',
+        milestone,
       });
     });
   }

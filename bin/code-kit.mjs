@@ -53,6 +53,7 @@ import { traceFile } from '../hooks/lib/trace.mjs';
 import { buildStatus, specCheckRows } from '../hooks/lib/plan.mjs';
 import { recordSentBack } from '../hooks/lib/reviews.mjs';
 import { storyTimes } from '../hooks/lib/timeline.mjs';
+import { storyMap, trail } from '../hooks/lib/storymap.mjs';
 import { dequeue, enqueue, lastMerged, readQueue, settle, waiting } from '../hooks/lib/queue.mjs';
 import { SETTINGS, parseSetting, settingOf, withSetting } from '../hooks/lib/harness.mjs';
 import { readLoop, writeLoop } from '../hooks/lib/loop-state.mjs';
@@ -567,6 +568,51 @@ function queue() {
   if (!left.length) out('The merge queue is empty.');
   else out(`${left.length} waiting to merge, in order:`);
   left.forEach((e, i) => out(`  ${i + 1}. ${e.branch} (passed review ${e.passed})`));
+}
+
+/**
+ * MAP-1: a story's code: the files it changed by layer, with the imports between them, and what the
+ * active adapters know of each (its card, its rules). `map <id> --json` is what the pane draws.
+ */
+function mapCommand(id) {
+  const { config, raw } = load();
+  const { specs, plan } = config.docs ?? {};
+  if (!specs || !plan)
+    die('map needs docs.specs and docs.plan in the config. The spec-design skill writes both.');
+  const from = base(config, false);
+  const { stories } = buildStatus('.', config, from, tracked());
+  const s = stories.find((x) => x.id === id.toUpperCase());
+  if (!s) die(`There is no story ${id} in ${plan}.`);
+  const map = storyMap(resolve('.'), s, config, from);
+  const facts = adapterFacts(raw, resolve('.'), { paths: map.files.map((f) => f.path) });
+  for (const f of map.files)
+    f.adapters = Object.fromEntries(
+      facts.filter((a) => a.files?.[f.path]).map((a) => [a.name, a.files[f.path]]),
+    );
+  map.open = facts.find((a) => a.open)?.open ?? null;
+  if (flag('--json')) return out(JSON.stringify(map, null, 2));
+  out(`${s.id} ${s.title} (${map.files.length} file(s)):`);
+  for (const layer of map.layers) {
+    out(`  ${layer}`);
+    for (const f of map.files.filter((x) => x.layer === layer))
+      out(`    ${f.path}${f.imports.length ? `  → ${f.imports.join(', ')}` : ''}`);
+  }
+}
+
+/** TRAIL-1: each requirement to its stories, the code they changed and the tests that name it. */
+function trailCommand() {
+  const { config } = load();
+  const { specs, plan } = config.docs ?? {};
+  if (!specs || !plan)
+    die('trail needs docs.specs and docs.plan in the config. The spec-design skill writes both.');
+  const from = base(config, false);
+  const status = buildStatus('.', config, from, tracked());
+  const rows = trail(resolve('.'), status, from);
+  if (flag('--json')) return out(JSON.stringify({ base: from, requirements: rows }, null, 2));
+  for (const r of rows)
+    out(
+      `${pad(r.id, 10)} ${pad(r.stories.map((s) => s.id).join(', ') || '-', 14)} ${pad(`${r.files.length} file(s)`, 10)} ${r.tests.length ? r.tests.join(', ') : 'no test names it'}`,
+    );
 }
 
 /** When each story's work happened, for the mod's timelines (VIEW-2). */
@@ -1103,6 +1149,8 @@ const commands = {
   hold: () => (rest.length === 1 ? hold(rest[0]) : usage()),
   queue,
   story: () => (rest.length === 1 ? story(rest[0]) : usage()),
+  map: () => (rest.length === 1 ? mapCommand(rest[0]) : usage()),
+  trail: trailCommand,
   timeline,
   'sent-back': () => (rest.length === 1 ? sentBackCommand(rest[0]) : usage()),
   trace: () => (rest.length ? trace(rest) : usage()),
@@ -1128,6 +1176,7 @@ function usage() {
       '              | hold <id> [--minutes N] | hold <id> --answer approved|refused\n' +
       '              | queue [--json] | queue add|drop <branch> | queue merge --delegated|--person\n' +
       '              | loop [--json] | loop pause|resume\n' +
+      '              | map <story> [--json] | trail [--json]\n' +
       '              | story <id> [--json] | timeline [--json]',
   );
 }

@@ -100,7 +100,7 @@ export default {
       }
       return byType;
     },
-    /** Per file: the rules that apply to it, agreed and proposed. */
+    /** Per file: the rules that apply to it, agreed and proposed, and its card: current, stale or missing, with its text. */
     files: (root, paths) =>
       Object.fromEntries(
         paths.map((path) => {
@@ -108,6 +108,9 @@ export default {
           return [
             path,
             {
+              card: f?.card
+                ? { state: f.card.fresh === false ? 'stale' : 'current', text: f.card.text ?? '' }
+                : { state: 'missing', text: '' },
               rules: (f?.rules ?? []).map((r) => ({
                 id: r.id,
                 text: r.text,

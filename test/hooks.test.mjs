@@ -1018,6 +1018,86 @@ try {
     );
   }
 
+  // --- MAP-1 and TRAIL-1: a story's code by layer, and each requirement's trail -------------------
+  {
+    const t = newRepo();
+    cleanups.push(t.dir);
+    const tPut = (rel, body) => {
+      mkdirSync(dirname(join(t.dir, rel)), { recursive: true });
+      writeFileSync(join(t.dir, rel), body);
+    };
+    const tKit = (...args) =>
+      spawnSync('node', [kitCli, ...args], { cwd: t.dir, encoding: 'utf8' });
+    tPut(
+      'docs/spec/01-booking.md',
+      '# 01. Booking\n\n### BOOK-1 Request\n\nx\n\n### BOOK-2 Cancel\n\nx\n',
+    );
+    tPut(
+      'docs/spec/plan.md',
+      '# Plan\n\n## Milestone 1: Bookings\n\n### ST-1 Booking form\n\n**Lane:** web\n**Requirements:** BOOK-1\n**Status:** todo\n\n### ST-12 Cancel\n\n**Lane:** web\n**Requirements:** BOOK-2\n**Status:** todo\n',
+    );
+    t.git('add', '-A');
+    t.git('commit', '-q', '-m', 'plan');
+    tPut('apps/office/domain/booking.ts', 'export const booking = 1;\n');
+    tPut(
+      'apps/office/services/book.ts',
+      "import { booking } from '../domain/booking.js';\nexport const book = booking;\n",
+    );
+    tPut(
+      'apps/office/e2e/booking.spec.ts',
+      "import { book } from '../services/book';\ntest('BOOK-1 books', () => {});\n",
+    );
+    t.git('add', '-A');
+    t.git('commit', '-q', '-m', 'ST-1: booking form');
+    tPut('apps/office/services/cancel.ts', 'export const cancel = 1;\n');
+    t.git('add', '-A');
+    t.git('commit', '-q', '-m', 'ST-12: cancel');
+    const map = JSON.parse(tKit('map', 'ST-1', '--json').stdout || '{}');
+    const at = (p) => map.files?.find((f) => f.path === p);
+    expect(
+      "MAP-1 map gives a story's files by layer, with the imports between them, and not a later story's",
+      truth(
+        map.files?.length === 3 &&
+          at('apps/office/domain/booking.ts')?.layer === 'domain' &&
+          at('apps/office/services/book.ts')?.layer === 'services' &&
+          at('apps/office/services/book.ts')?.imports.join() === 'apps/office/domain/booking.ts' &&
+          at('apps/office/e2e/booking.spec.ts')?.layer === 'tests' &&
+          at('apps/office/e2e/booking.spec.ts')?.imports.join() ===
+            'apps/office/services/book.ts' &&
+          at('apps/office/services/book.ts')?.lane === 'web' &&
+          map.layers.join() === 'domain,services,tests',
+        JSON.stringify(map),
+      ),
+      0,
+    );
+    const rows = JSON.parse(tKit('trail', '--json').stdout || '{}').requirements ?? [];
+    const row = (id) => rows.find((r) => r.id === id);
+    expect(
+      'TRAIL-1 trail follows each requirement to its stories, their code and the tests that name it',
+      truth(
+        row('BOOK-1')
+          ?.stories.map((x) => x.id)
+          .join() === 'ST-1' &&
+          row('BOOK-1').files.join() ===
+            'apps/office/domain/booking.ts,apps/office/services/book.ts' &&
+          row('BOOK-1').tests.join() === 'apps/office/e2e/booking.spec.ts' &&
+          row('BOOK-2')?.files.join() === 'apps/office/services/cancel.ts' &&
+          row('BOOK-2').tests.length === 0,
+        JSON.stringify(rows),
+      ),
+      0,
+    );
+    const st = JSON.parse(tKit('status', '--json').stdout || '{}');
+    expect(
+      "a story carries its milestone, the plan's heading above it",
+      truth(
+        st.stories?.[0]?.milestone === 'Milestone 1: Bookings',
+        JSON.stringify(st.stories?.[0]),
+      ),
+      0,
+    );
+  }
+
   // --- delegated merges: the lead merges a branch that passes verify --------------------------------
   {
     const mergeFixture = (merge) =>
