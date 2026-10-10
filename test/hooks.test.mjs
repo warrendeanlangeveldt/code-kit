@@ -2200,6 +2200,39 @@ try {
     0,
   );
   expect('with .ctx/, any lane writes file cards too', cWrite('.ctx/cards.ctx', 'web-engineer'), 0);
+  // Context Graph's card writer and curator are read-only agents to code-kit, yet record cards and
+  // decisions like any agent: the paths any actor may write are theirs too, and nothing else is.
+  expect(
+    'the card writer, a read-only agent, writes file cards',
+    cWrite('.ctx/cards.ctx', 'context-graph:card-writer'),
+    0,
+  );
+  expect(
+    'and the curator records decisions',
+    cWrite('.ctx/decisions.ctx', 'context-graph:curator'),
+    0,
+  );
+  expect(
+    'but neither writes anything else',
+    cWrite('apps/office/x.ts', 'context-graph:card-writer'),
+    2,
+    'read-only',
+  );
+  {
+    const before = existsSync(join(c.dir, '.ctx/cards.ctx'))
+      ? readFileSync(join(c.dir, '.ctx/cards.ctx'), 'utf8')
+      : '';
+    writeFileSync(
+      join(c.dir, '.ctx/cards.ctx'),
+      `${before}F apps/office/a.ts 0123456789ab 2026-10-10 w A card.\n`,
+    );
+    expect(
+      "nor does the audit flag a card the card writer's shell command wrote",
+      cHook('lane-audit.mjs', as('context-graph:card-writer')),
+      0,
+    );
+    writeFileSync(join(c.dir, '.ctx/cards.ctx'), before);
+  }
 
   // --- layer rules before the write --------------------------------------------------------------
   const cEdit = (tool, rel, toolInput) =>
