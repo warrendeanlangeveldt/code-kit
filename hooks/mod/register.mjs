@@ -1091,6 +1091,7 @@ export function register(on) {
 
   on('turn.start', async ($, e, next) => {
     leadTurn = e.turnId;
+    $.ui.invalidate('ui.render'); // the lead's lane reads working while its turn runs
     if (reviewTurn === 'next') reviewTurn = e.turnId;
     return next(e);
   });
@@ -1108,6 +1109,7 @@ export function register(on) {
     // as the spike found it must be). The prompt it submits isn't awaited: that turn isn't this hook's.
     if (!e.agentId && (!leadTurn || leadTurn === e.turnId)) {
       leadTurn = null;
+      $.ui.invalidate('ui.render');
       // What the person asked for goes first, whatever the loop's state.
       if (personAsks.length) {
         const text = personAsks.shift();
@@ -1154,6 +1156,16 @@ export function register(on) {
     };
   };
 
+  // The project as the panes draw it: the lead active while its turn runs, which the last read can't know.
+  const stateNow = () =>
+    model.state?.kind === 'ok'
+      ? {
+          ...model.state,
+          lanes: model.state.lanes.map((l) =>
+            l.name === 'lead' ? { ...l, active: Boolean(leadTurn) } : l,
+          ),
+        }
+      : model.state;
   // VIEW-4: each lane's current or last tool call, and how long ago.
   // JOIN-2: each lane's facts from the adapters: edits without understanding and cards owed.
   const factsOf = (lane) => {
@@ -1169,7 +1181,7 @@ export function register(on) {
   };
   const combinedNow = () => {
     if (!(model.adapters ?? []).some((a) => a.lanes)) return null;
-    const lanesNow = model.state?.kind === 'ok' ? model.state.lanes : [];
+    const lanesNow = stateNow()?.kind === 'ok' ? stateNow().lanes : [];
     return Object.fromEntries(
       lanesNow.map((l) => {
         const f = factsOf(l);
@@ -1179,7 +1191,7 @@ export function register(on) {
   };
   // VIEW-2, VIEW-3: each lane's pose and tint, and its story's bar on the shared axis.
   const artNow = (now, live) => {
-    const lanesNow = model.state?.kind === 'ok' ? model.state.lanes : [];
+    const lanesNow = stateNow()?.kind === 'ok' ? stateNow().lanes : [];
     const names = lanesNow.map((l) => l.name);
     const queue = model.queue ?? [];
     const asking = new Set([
@@ -1268,10 +1280,10 @@ export function register(on) {
     paneSurface = e.surface;
     paneColumns = e.props.bodyColumns ?? paneColumns;
     const { usage, plan } = usageNow();
-    const lanesNow = model.state?.kind === 'ok' ? model.state.lanes : [];
+    const lanesNow = stateNow()?.kind === 'ok' ? stateNow().lanes : [];
     return lanesFrame(
       {
-        state: model.state,
+        state: stateNow(),
         usage,
         plan,
         loop: { ...loopNow(now), queue: model.queue ?? [] },

@@ -2386,3 +2386,21 @@ test('VIEW-6 the filter is one row, its key beside the box', async ($, on) => {
   expect(await ui.findAll({ key: 'filter' })).toHaveLength(1);
   await ui.unmount();
 });
+
+test('the lead reads working while its turn runs, and idle once it ends; an agent at work outside a story too', async ($, on) => {
+  const w = project();
+  w.agents = [
+    { id: 'a9', type: 'api-engineer', description: 'look at the logs', status: 'running' },
+  ];
+  const clock = await start($, on, w);
+  await lanes($);
+  const ui = await pane($, PANE);
+  expect((await ui.find({ key: 'lane-api' }))?.text).toMatch(/api\s*working/);
+  await $.turn.start({ turnId: 't-1', text: '' } as any);
+  expect((await ui.find({ key: 'lane-lead' }))?.text).toMatch(/lead\s*working/);
+  expect((await ui.find({ key: 'count-working' }))?.props.label).toBe('▶ 2 working');
+  await $.turn.complete({ turnId: 't-1', answer: '', durationMs: 1, isAborted: false } as any);
+  await settle(clock);
+  expect((await ui.find({ key: 'lane-lead' }))?.text).toMatch(/lead\s*idle/);
+  await ui.unmount();
+});

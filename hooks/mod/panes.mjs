@@ -26,6 +26,7 @@ export const DEFAULT_UI = { tab: 'lanes', selected: null, filter: null, search: 
 /** The glyph each state carries besides its colour (spec 11's quality target). */
 const GLYPH = {
   building: '●',
+  working: '▶',
   'in review': '◐',
   queued: '◆',
   'sent back': '↩',
@@ -46,6 +47,7 @@ export function countsOf(state, queue = []) {
   const n = (s) => lanes.filter((x) => x === s).length;
   const counts = [
     ['building', n('building')],
+    ['working', n('working')],
     ['in review', n('in review')],
     ['queued', n('queued')],
     ['sent back', n('sent back')],

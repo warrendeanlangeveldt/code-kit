@@ -100,14 +100,19 @@ export function projectState(check, status, next = null, atWork = new Set()) {
 
 export const STATE_COLOR = {
   building: 'blue',
+  working: 'green',
   'in review': 'yellow',
   'sent back': 'magenta',
   blocked: 'red',
   idle: undefined,
 };
 
-/** A lane's state as the pane shows it: `queued` while its branch waits in the merge queue (MQ-4). */
+/**
+ * A lane's state as the pane shows it: `queued` while its branch waits in the merge queue (MQ-4), and
+ * `working` while its agent (or the lead, mid-turn) is at work on nothing the plan names.
+ */
 export function shownState(lane, queue = []) {
+  if (lane.state === 'idle' && lane.active) return 'working';
   const waiting = queue.some(
     (e) => e.branch === lane.branch && ['waiting', 'merging'].includes(e.state),
   );
@@ -221,11 +226,11 @@ export function lanesPane(
             ...(l.name === selected ? { color: 'cyan' } : {}),
           }),
           text(
-            (queued(l) ? 'queued' : l.state).padEnd(9),
-            queued(l)
+            shownState(l, loop?.queue).padEnd(9),
+            shownState(l, loop?.queue) === 'queued'
               ? { color: 'cyan' }
-              : STATE_COLOR[l.state]
-                ? { color: STATE_COLOR[l.state] }
+              : STATE_COLOR[shownState(l, loop?.queue)]
+                ? { color: STATE_COLOR[shownState(l, loop?.queue)] }
                 : {},
           ),
           text(l.agent ?? 'the main session', { dimColor: true }),
