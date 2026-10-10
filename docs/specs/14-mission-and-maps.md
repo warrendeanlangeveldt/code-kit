@@ -54,11 +54,11 @@ The Code map tab (2) draws a story's code: its files (from the commits that name
 
 ### MAP-2 Activity glows
 
-A file a lane reads or edits glows in the lane's colour, "web reading" or "web editing" under its name, for 20 seconds after the call. Paths in an agent's worktree count as the repository path.
+A file a lane reads or edits glows in the lane's colour for 20 seconds after the call: its box fills with the colour, "web reading" or "web editing" under its name (bolder for an edit). A legend says what the colours and words mean. Paths in an agent's worktree count as the repository path.
 
 ### MAP-3 The selected file
 
-The selected file (j and k move) shows its path, layer and lane, its card (or that it has none, or that it changed since its card), what it imports and what imports it in the story. Open in Context Graph (o) opens it in the adapter's own view.
+The selected file (j and k move) shows its path, layer and lane, and its why: its Context Graph card, or that none is written yet, or that the file changed since. The map says "✓ why written", "why out of date" and "no why yet", not "carded", so a person who doesn't know Context Graph's terms can read it. It shows what it imports and what imports it in the story. Open in Context Graph (o) opens it in the adapter's own view.
 
 ### MAP-4 By surface
 
@@ -66,11 +66,11 @@ In the terminal the map is box-drawing text; on Desktop, VS Code and mobile it's
 
 ### TRAIL-1 The trail
 
-The Trail tab (3) keeps the requirement map and adds the selected requirement's spec as a trail: each requirement to its stories, the number of files they changed, and the tests that name it, with a missing story, file or test in red. The selected requirement also lists the code its stories changed. `code-kit trail --json` gives it.
+The Trail tab (3) keeps the requirement map, and draws the selected requirement's spec as a flow: each requirement to its stories, the number of files they changed, and the test that names it. Requirements one story delivers meet at a single story node; a missing story, code or test is a dashed red link. It's box-drawing text in the terminal and an SVG elsewhere. The selected requirement also lists the code its stories changed. `code-kit trail --json` gives it.
 
 **Acceptance**
 
-- Given BOOK-1 delivered by ST-4 with one file and one test, and BOOK-2 with no story, then BOOK-1's trail reads "ST-4 ─ 1 file ─ ✓ 1 test" and BOOK-2's "no story … no test names it" in red.
+- Given BOOK-1 delivered by ST-4 with one file and one test, and BOOK-2 with no story, then BOOK-1 flows to ● ST-4, 1 file and ✓ its test, and BOOK-2's links are dashed red: no story, no code, no test names it.
 
 ## Quality targets
 

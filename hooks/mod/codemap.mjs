@@ -92,16 +92,18 @@ function statusOf(path, file, glow) {
     };
   const card = cardOf(file);
   if (!card) return { text: '', style: 'dim' };
-  if (card.state === 'current') return { text: '✓ carded', style: 'ok' };
-  if (card.state === 'stale') return { text: 'card stale', style: 'warn' };
-  return { text: 'no card', style: 'warn' };
+  // A card is the file's why: what it's for, what it relies on, what it must keep true.
+  if (card.state === 'current') return { text: '✓ why written', style: 'ok', card: 'current' };
+  if (card.state === 'stale') return { text: 'why out of date', style: 'warn', card: 'stale' };
+  return { text: 'no why yet', style: 'warn', card: 'missing' };
 }
 
 const fit = (s, n) => (s.length > n ? `${s.slice(0, Math.max(0, n - 1))}…` : s);
 
 /**
  * MAP-1 to MAP-3 in the terminal: the map as rows of styled runs, [[{ text, style, lane? }]]. Styles:
- * dim (layer names, edges), node, selected, reading and editing (with the lane), ok, warn. Edges are
+ * dim (layer names, edges), node, selected, reading and editing (a glowing box's border, with the
+ * lane), fill-read and fill-edit (its inside, filled with the lane's colour), ok, warn. Edges are
  * drawn between neighbouring columns; the others are named in the selected file's detail.
  */
 export function mapRows(map, { glow = {}, selected = null, width = 100 } = {}) {
@@ -196,16 +198,18 @@ export function mapRows(map, { glow = {}, selected = null, width = 100 } = {}) {
       put(x + i, y, edge[4], box, lane);
       put(x + i, y + 3, edge[4], box, lane);
     }
+    // MAP-2: a glowing file fills with its lane's colour, its name and status written over it.
+    const fill = lane ? `fill-${glow[path].verb}` : null;
     for (const row of [1, 2]) {
       put(x, y + row, edge[5], box, lane);
       put(x + w - 1, y + row, edge[5], box, lane);
-      for (let i = 1; i < w - 1; i++) put(x + i, y + row, ' ', 'node');
+      for (let i = 1; i < w - 1; i++) put(x + i, y + row, ' ', fill ?? 'node', lane);
     }
     [...fit(node.name, w - 4)].forEach((ch, i) =>
-      put(x + 2 + i, y + 1, ch, path === selected ? 'selected' : 'node'),
+      put(x + 2 + i, y + 1, ch, fill ?? (path === selected ? 'selected' : 'node'), lane),
     );
     [...fit(status.text, w - 4)].forEach((ch, i) =>
-      put(x + 2 + i, y + 2, ch, status.style, status.lane),
+      put(x + 2 + i, y + 2, ch, fill ?? status.style, status.lane ?? lane),
     );
   }
   // Runs: neighbouring cells of one style (and lane) as one piece of text.
@@ -282,7 +286,7 @@ export function mapSvg(map, { glow = {}, selected = null, tints = {}, width = 10
             ? '#e3b450'
             : '#3b4c50';
     parts.push(
-      `<rect x="${b.x}" y="${b.y}" width="${b.w}" height="${b.h}" rx="4" fill="${path === selected ? '#1d3a52' : '#0f1618'}" stroke="${stroke}"${status.text === 'no card' ? ' stroke-dasharray="4 3"' : ''}/>`,
+      `<rect x="${b.x}" y="${b.y}" width="${b.w}" height="${b.h}" rx="4" fill="${path === selected ? '#1d3a52' : '#0f1618'}" stroke="${stroke}"${status.card === 'missing' ? ' stroke-dasharray="4 3"' : ''}/>`,
     );
     parts.push(
       `<text x="${b.x + 8}" y="${b.y + 18}" fill="#cfd9da" font-size="12">${esc(fit(node.name, node.w - 2))}</text>`,
@@ -313,3 +317,12 @@ export function mapStoryOf(state, selectedLane, asked = null) {
   const busy = state?.lanes?.find((l) => l.story && ['building', 'in review'].includes(l.state));
   return busy?.story.id ?? state?.stories?.find((s) => s.state !== 'done')?.id ?? null;
 }
+
+/** MAP-2, MAP-3: the map's legend: what the colours and words mean, a card being the file's why. */
+export const MAP_LEGEND = [
+  { text: '■ a lane at work', style: 'glow' },
+  { text: '✓ why written', style: 'ok' },
+  { text: 'why out of date', style: 'warn' },
+  { text: 'no why yet', style: 'warn' },
+  { text: "a file's why is its card, kept in git by Context Graph", style: 'dim' },
+];

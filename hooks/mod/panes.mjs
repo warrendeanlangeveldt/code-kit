@@ -1,7 +1,15 @@
 // Panes v2 (docs/specs/11-panes.md): the Lanes pane's frame. A counts header, tabs, what needs the
 // person, the tab's body and the keys, as pure functions of what the mod already holds. The Lanes
 // tab's body is view.mjs's lanesPane; the Queue and Usage tabs reuse its sections.
-import { cardOf, mapRows as codeRows, mapStoryOf, mapSvg, neighboursOf } from './codemap.mjs';
+import { trailRows as trailRowsDrawn, trailSvg } from './trail.mjs';
+import {
+  MAP_LEGEND,
+  cardOf,
+  mapRows as codeRows,
+  mapStoryOf,
+  mapSvg,
+  neighboursOf,
+} from './codemap.mjs';
 import {
   NOT_CODE_KIT,
   STATE_COLOR,
@@ -258,7 +266,10 @@ export function lanesFrame(view, els, on) {
     ui.tab === 'code'
       ? codeTab(view, els, on)
       : ui.tab === 'map'
-        ? mapTab(view.status, ui.cell, els, on, view.trail)
+        ? mapTab(view.status, ui.cell, els, on, view.trail, {
+            surface: view.surface,
+            columns: view.columns,
+          })
         : ui.tab === 'queue'
           ? queueSection(loop, text, Box)
           : ui.tab === 'usage'
@@ -822,7 +833,14 @@ export function moveCell(requirements, id, step, { rows = false } = {}) {
  * The Map tab (TRACE-1 to TRACE-4): a row per spec, a cell per requirement, a legend, and the
  * selected requirement's stories and tests. `status` is `code-kit status --json`'s.
  */
-export function mapTab(status, selectedId, { Box, Text, Button, Select }, on, trail = null) {
+export function mapTab(
+  status,
+  selectedId,
+  { Box, Text, Button, Select, Svg },
+  on,
+  trail = null,
+  { surface = 'terminal', columns = 100 } = {},
+) {
   const text = (value, style = {}) => Text({ ...style, children: [value] });
   const requirements = status?.requirements ?? [];
   if (!requirements.length)
@@ -971,51 +989,66 @@ export function mapTab(status, selectedId, { Box, Text, Button, Select }, on, tr
     (r) =>
       r.spec === spec?.split('/').pop() && requirements.find((q) => q.id === r.id)?.file === spec,
   );
+  const TONE = {
+    req: {},
+    selected: { bold: true, color: 'cyan' },
+    dim: { dimColor: true },
+    done: { color: 'green' },
+    moving: { color: 'blue' },
+    waiting: { color: 'red' },
+    gap: { color: 'red' },
+    test: { color: 'green' },
+  };
+  const flow =
+    surface && surface !== 'terminal' && Svg
+      ? Svg({
+          source: trailSvg(trailRows, { selected: selected.id }),
+          alt: `${label(spec)}'s trail: each requirement to its stories, code and tests`,
+        })
+      : Box({
+          key: 'trail-flow',
+          flexDirection: 'column',
+          children: trailRowsDrawn(trailRows, { selected: selected.id, width: columns }).map(
+            (runs, i) =>
+              Box({
+                key: `trail-${trailRows[i].id}`,
+                flexDirection: 'row',
+                children: runs.map((r) => text(r.text, TONE[r.style] ?? {})),
+              }),
+          ),
+        });
   const trailBox = trailRows.length
     ? [
         Box({
           key: 'trail',
           flexDirection: 'column',
-          children: [
-            text(`Trail · ${label(spec)}`, { bold: true }),
-            ...trailRows.map((r) =>
-              Box({
-                key: `trail-${r.id}`,
-                flexDirection: 'row',
-                columnGap: 1,
-                children: [
-                  text(r.id.padEnd(8), r.id === selected.id ? { bold: true, color: 'cyan' } : {}),
-                  text('─'),
-                  r.stories.length
-                    ? text(
-                        r.stories
-                          .map((x) => x.id)
-                          .join(' ')
-                          .padEnd(12),
-                        {
-                          color: r.stories.every((x) => x.state === 'done') ? 'green' : 'blue',
-                        },
-                      )
-                    : text('no story'.padEnd(12), { color: 'red' }),
-                  text('─'),
-                  text(
-                    `${r.files.length} file${r.files.length === 1 ? '' : 's'}`.padEnd(9),
-                    r.files.length ? { dimColor: true } : { color: 'red' },
-                  ),
-                  text(r.tests.length ? '─' : '╌', r.tests.length ? {} : { color: 'red' }),
-                  r.tests.length
-                    ? text(`✓ ${r.tests.length} test${r.tests.length === 1 ? '' : 's'}`, {
-                        color: 'green',
-                      })
-                    : text('no test names it', { color: 'red' }),
-                ],
-              }),
-            ),
-          ],
+          children: [text(`Trail · ${label(spec)}`, { bold: true }), flow],
         }),
       ]
     : [];
   return [legend, grid, keys, ...trailBox, detail];
+}
+
+/** A tint darkened toward the terminal's ground, for a glowing box's fill: `share` of the tint kept. */
+const shade = (hex, share) => {
+  const n = Number.parseInt(String(hex).replace('#', ''), 16);
+  if (!Number.isFinite(n)) return undefined;
+  const c = (v) => Math.round(((n >> v) & 0xff) * share + 14 * (1 - share));
+  return `#${[16, 8, 0].map((v) => c(v).toString(16).padStart(2, '0')).join('')}`;
+};
+
+/** A code map run's text style: its lane's tint where it glows, a fill inside a glowing box. */
+function runStyle(r, tints) {
+  const tint = r.lane ? (tints[r.lane] ?? '#5fb3b3') : null;
+  if (tint && (r.style === 'fill-read' || r.style === 'fill-edit'))
+    return {
+      backgroundColor: shade(tint, r.style === 'fill-edit' ? 0.45 : 0.28),
+      color: 'white',
+      ...(r.style === 'fill-edit' ? { bold: true } : {}),
+    };
+  if (tint && (r.style === 'reading' || r.style === 'editing'))
+    return { color: tint, bold: r.style === 'editing' };
+  return RUN_STYLE[r.style] ?? {};
 }
 
 /** The colour each style of the code map's runs takes, the lane's tint where it glows. */
@@ -1082,14 +1115,7 @@ export function codeTab(view, { Box, Text, Button, Svg }, on) {
             Box({
               key: `code-row-${y}`,
               flexDirection: 'row',
-              children: runs.map((r) =>
-                text(
-                  r.text,
-                  r.lane && (r.style === 'reading' || r.style === 'editing')
-                    ? { color: tints[r.lane] ?? 'cyan', bold: r.style === 'editing' }
-                    : (RUN_STYLE[r.style] ?? {}),
-                ),
-              ),
+              children: runs.map((r) => text(r.text, runStyle(r, tints))),
             }),
           ),
         });
@@ -1110,11 +1136,13 @@ export function codeTab(view, { Box, Text, Button, Svg }, on) {
       ...(card
         ? [
             text(
-              card.state === 'missing' ? 'No card yet.' : card.text,
+              card.state === 'missing'
+                ? 'No why written yet: Context Graph keeps one as a card once it is.'
+                : card.text,
               card.state === 'current' ? {} : { color: 'yellow' },
             ),
             ...(card.state === 'stale'
-              ? [text('The file changed since this card.', { dimColor: true })]
+              ? [text('The file changed since its why was written.', { dimColor: true })]
               : []),
           ]
         : []),
@@ -1158,5 +1186,17 @@ export function codeTab(view, { Box, Text, Button, Svg }, on) {
         : []),
     ],
   });
-  return [picker, drawing, detail, keys];
+  const legend = Box({
+    key: 'code-legend',
+    flexDirection: 'row',
+    columnGap: 2,
+    flexWrap: 'wrap',
+    children: MAP_LEGEND.map((l) =>
+      text(
+        l.text,
+        l.style === 'glow' ? { color: tints[file.lane] ?? 'cyan' } : (RUN_STYLE[l.style] ?? {}),
+      ),
+    ),
+  });
+  return [picker, drawing, legend, detail, keys];
 }

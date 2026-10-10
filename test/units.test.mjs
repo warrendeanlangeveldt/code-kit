@@ -1132,3 +1132,33 @@ test('MISSION-1 to MISSION-3 the goal, the next step in words, and other tools o
   );
   assert.deepEqual(missionLines({ state: { ...state, lanes: [] } }), []);
 });
+
+test('TRAIL-1 the trail drawn: requirements a story shares meet at one node, and gaps are dashed', async () => {
+  const { trailRows, trailSvg } = await import('../hooks/mod/trail.mjs');
+  const st = [{ id: 'ST-20', state: 'in progress', lane: 'ingest' }];
+  const rows = [
+    {
+      id: 'ORIG-1',
+      title: 'Every paragraph knows its source',
+      stories: st,
+      files: ['a.ts', 'b.ts'],
+      tests: ['x.test.ts'],
+    },
+    {
+      id: 'ORIG-2',
+      title: 'Each format records where',
+      stories: st,
+      files: ['c.ts'],
+      tests: ['x.test.ts'],
+    },
+    { id: 'ORIG-3', title: 'Splits keep the location', stories: [], files: [], tests: [] },
+  ];
+  const text = trailRows(rows, { width: 100 }).map((r) => r.map((x) => x.text).join(''));
+  assert.match(text[0], /ORIG-1.*───┬ ● ST-20.*2 files.*✓ x\.test\.ts/);
+  assert.match(text[1], /ORIG-2.*───┘\s+─── 1 file/);
+  assert.doesNotMatch(text[1], /ST-20/);
+  assert.match(text[2], /╌╌╌ no story.*╌╌╌ no code.*╌╌╌ no test names it/);
+  const svg = trailSvg(rows, { selected: 'ORIG-2' });
+  assert.equal(svg.match(/ST-20<\/text>/g).length, 1, 'the shared story is drawn once');
+  assert.match(svg, /stroke-dasharray="3 3"/);
+});

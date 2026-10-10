@@ -1758,9 +1758,9 @@ test("MAP-1 the Code map shows the selected lane's story by layer, its imports, 
     'booking.ts',
     'book.ts',
     'book.spec.ts',
-    '✓ carded',
-    'card stale',
-    'no card',
+    '✓ why written',
+    'why out of date',
+    'no why yet',
   ])
     expect(drawn).toContain(name);
   // An import between neighbouring layers is drawn as a line.
@@ -1770,7 +1770,7 @@ test("MAP-1 the Code map shows the selected lane's story by layer, its imports, 
   );
   await press($, 'code-next', PANE);
   expect((await ui.find({ key: 'code-file' }))?.text).toMatch(
-    /book.ts.*Books a slot\..*changed since this card.*imports booking.ts.*imported by book.spec.ts/s,
+    /book.ts.*Books a slot\..*changed since its why was written.*imports booking.ts.*imported by book.spec.ts/s,
   );
   await press($, 'code-open', PANE);
   expect(w.commands).toContainEqual({ command: 'graph', args: 'apps/web/services/book.ts' });
@@ -1797,6 +1797,10 @@ test('MAP-2 a file a lane reads or edits glows in the code map, in the lane, and
     .catch(() => {});
   await clock.advance(1);
   expect((await ui.find({ key: 'code-map' }))?.text).toContain('web reading');
+  // The box fills with the lane's colour, the status written over it.
+  const filled = (await ui.findAll({ type: 'Text' })).find((t: any) => /web reading/.test(t.text));
+  expect(filled?.props.backgroundColor).toMatch(/^#[0-9a-f]{6}$/);
+  expect(await ui.find({ key: 'code-legend' })).toBeDefined();
   await clock.advance(30000);
   expect((await ui.find({ key: 'code-map' }))?.text).not.toContain('web reading');
   await ui.unmount();
@@ -1851,10 +1855,10 @@ test('TRAIL-1 the Trail tab follows each requirement of the spec to its stories,
   await press($, 'tab-map', PANE);
   await clock.advance(1);
   expect((await ui.find({ key: 'trail-BOOK-1' }))?.text).toMatch(
-    /BOOK-1\s*─\s*ST-4\s*─\s*1 file\s*─\s*✓ 1 test/,
+    /BOOK-1\s*Request\s*─+\s*● ST-4\s*─+\s*1 file\s*─+\s*✓ book\.spec\.ts/,
   );
   const gap = await ui.find({ key: 'trail-BOOK-2' });
-  expect(gap?.text).toMatch(/no story.*0 files.*no test names it/);
+  expect(gap?.text).toMatch(/BOOK-2.*╌+\s*no story.*╌+\s*no code.*╌+\s*no test names it/);
   expect((await ui.find({ key: 'map-files' }))?.text).toMatch(/book.ts/);
   await ui.unmount();
 });
