@@ -1814,6 +1814,46 @@ test('VIEW-1 the header counts the stories by state, and a count filters the lan
   await ui.unmount();
 });
 
+test('MISSION-1 the band shows the goal, what the lead is doing, the next step and each agent at work', async ($, on) => {
+  const w = project();
+  w.stories = w.stories.map((x: any) => ({ ...x, milestone: 'Milestone 2: Bookings' }));
+  w.stories[0] = { ...w.stories[0], state: 'done' };
+  w.next = { step: 'review', args: 'ST-9', then: [{ step: 'dispatch', args: 'ST-10' }] };
+  w.agents = [{ id: 'a1', type: 'web-engineer', description: 'ST-4', status: 'running' }];
+  const clock = await start($, on, w);
+  await leadTurn($);
+  await settle(clock);
+  await $.tool.call({
+    tool: 'Bash',
+    tool_use_id: 'tu-m',
+    command: 'npm run test:e2e',
+    agentId: 'a1',
+  } as any);
+  await $.turn.start({ turnId: 't-busy', text: '' } as any);
+  await clock.advance(3000);
+  const ui = await bandUi($);
+  const rows = (await ui.findAll({ type: 'Text' })).map((t: any) => t.text);
+  expect(rows).toContain('Milestone 2: Bookings · 1 of 4 stories done');
+  expect(rows.some((t: string) => /^lead at work · loop on · last: review ST-9$/.test(t))).toBe(
+    true,
+  );
+  expect(rows).toContain('Review ST-9, then Dispatch ST-10');
+  expect(rows).toContain('web     ');
+  expect(rows).toContain('Bash npm run test:e2e');
+  expect(await ui.find({ key: 'band-pause' })).toBeDefined();
+  await ui.unmount();
+});
+
+test('MISSION-1 with nothing happening the band has no mission rows', async ($, on) => {
+  const w = project();
+  w.next = { step: 'wait', args: '', then: [] };
+  await start($, on, w);
+  const ui = await bandUi($);
+  const rows = (await ui.findAll({ type: 'Text' })).map((t: any) => t.text);
+  expect(rows.some((t: string) => /^(goal|now|next) +$/.test(t))).toBe(false);
+  await ui.unmount();
+});
+
 test("VIEW-4 each lane shows its agent's last tool call and the time since, amber once quiet", async ($, on) => {
   const w = project();
   w.next = { step: 'wait', args: '', then: [] };

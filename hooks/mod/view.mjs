@@ -8,6 +8,7 @@ const LEAD = 'lead';
 
 /** A CLI run's stdout as JSON, or null when it printed none. */
 import { BAR, POSE_GLYPH, rasterCells, runs, sprite, spriteSvg, timelineSvg } from './art.mjs';
+import { missionLines } from './mission.mjs';
 
 export function parseJson(stdout) {
   try {
@@ -94,6 +95,7 @@ export function projectState(check, status, next = null, atWork = new Set()) {
       worktree: s.worktree ?? null,
       requirements: s.requirements ?? [],
       waitingOn: s.waitingOn ?? [],
+      milestone: s.milestone ?? null,
     })),
   };
 }
@@ -560,8 +562,15 @@ export function bandLines({
   loop = null,
   queue = [],
   check = null,
+  leadBusy = false,
+  live = {},
+  nextStep = null,
+  combined = null,
 }) {
   const lines = [];
+  // MISSION-1: the goal, now, next and the agents at work, above what needs the person.
+  const mission = missionLines({ state, loop, leadBusy, live, nextStep, combined });
+  lines.push(...mission);
   if (notice)
     lines.push({ kind: 'notice', text: notice, actions: [{ id: 'dismiss', label: 'Dismiss' }] });
   if (!state || state.kind !== 'ok') return lines;
@@ -680,7 +689,10 @@ export function bandLines({
       text: `Milestone done: ${plural(loop.doneCount, 'story', 'stories')} merged`,
       actions: [{ id: 'dismissDone', label: 'Dismiss' }],
     });
-  else if (loop?.state === 'paused')
+  // With the mission rows drawn, the loop's state and its Pause or Resume are on the `now` row.
+  else if (mission.length) {
+    // nothing more
+  } else if (loop?.state === 'paused')
     lines.push({ kind: 'loop', text: 'loop paused', actions: [{ id: 'resume', label: 'Resume' }] });
   else if (loop?.state === 'running' && loop.started)
     lines.push({
@@ -710,29 +722,70 @@ export function band(lines, { Box, Text, Button }, onAction) {
     finish: 'red',
     usage: 'yellow',
     paused: 'yellow',
+    facts: 'yellow',
   };
-  return Box({
-    flexDirection: 'column',
-    children: lines.map((line) =>
-      Box({
-        key: `band-${line.kind}`,
-        flexDirection: 'row',
-        columnGap: 2,
+  const LIVE = { quiet: 'yellow', stalled: 'red' };
+  const LABEL = 8;
+  const buttons = (line) =>
+    line.actions.map((a) =>
+      Button({
+        key: `band-${a.id}`,
+        label: a.hotkey ? `${a.hotkey} ${a.label}` : a.label,
+        hotkey: a.hotkey,
+        onPress: () => onAction(a.id, line),
+      }),
+    );
+  // MISSION-2: what waits on the person is labelled "you", once, above its first line.
+  let saidYou = false;
+  const rows = lines.map((line) => {
+    if (line.kind === 'agents')
+      return Box({
+        key: 'band-agents',
+        flexDirection: 'column',
         children: [
-          Text({ color: COLOR[line.kind], children: ['code-kit'] }),
-          Text({ children: [line.text] }),
-          ...line.actions.map((a) =>
-            Button({
-              key: `band-${a.id}`,
-              label: a.hotkey ? `${a.hotkey} ${a.label}` : a.label,
-              hotkey: a.hotkey,
-              onPress: () => onAction(a.id, line),
+          ...line.agents.map((a) =>
+            Box({
+              key: `band-agent-${a.lane}`,
+              flexDirection: 'row',
+              columnGap: 1,
+              children: [
+                Text({
+                  dimColor: true,
+                  children: [(a === line.agents[0] ? line.label : '').padEnd(LABEL)],
+                }),
+                Text({ color: a.level ? LIVE[a.level] : 'green', children: ['●'] }),
+                Text({ bold: true, children: [a.lane.padEnd(8)] }),
+                Text({ wrap: 'truncate-end', children: [a.tool] }),
+                Text({ dimColor: true, children: [a.ago] }),
+              ],
             }),
           ),
+          ...(line.more
+            ? [Text({ dimColor: true, children: [`${''.padEnd(LABEL)}  and ${line.more} more`] })]
+            : []),
         ],
-      }),
-    ),
+      });
+    const label = line.mission ? line.label : saidYou ? '' : 'you';
+    if (!line.mission) saidYou = true;
+    return Box({
+      key: `band-${line.kind}`,
+      flexDirection: 'row',
+      columnGap: 1,
+      children: [
+        Text({
+          ...(line.mission ? { dimColor: true } : { color: COLOR[line.kind] ?? 'yellow' }),
+          children: [label.padEnd(LABEL)],
+        }),
+        Text({
+          wrap: 'truncate-end',
+          ...(line.kind === 'facts' ? { color: COLOR.facts } : {}),
+          children: [line.text],
+        }),
+        ...buttons(line),
+      ],
+    });
   });
+  return Box({ flexDirection: 'column', children: rows });
 }
 
 /** The Approve… confirmation (ACT-1): what it grants, to whom, for how long, and the reason. */

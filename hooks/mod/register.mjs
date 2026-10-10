@@ -82,6 +82,7 @@ const loop = {
   asked: { key: null, times: 0 }, // the step the lead was last prompted with, and how often in a row
   proposal: null, // under autonomy propose, or a step asked too often: { prompt, label, kind, target }
   pending: [], // restarts waiting for the lead to be idle: { story, prompt }
+  nextStep: null, // what `code-kit next` last said, for the band's next row
   done: null, // { count } once every story is done
   doneDismissed: false,
 };
@@ -601,6 +602,8 @@ export function register(on) {
         }
         const ran = await $.process.run(['node', cli, 'next', '--json'], { cwd });
         const step = ran.exitCode === 0 ? parseJson(ran.stdout) : null;
+        // MISSION-1: the band shows what the loop takes next.
+        loop.nextStep = step;
         if (!step) {
           notice = `The loop is waiting: code-kit next failed (${(ran.stderr || ran.stdout).trim().split('\n')[0]})`;
           $.ui.invalidate('ui.render');
@@ -1299,6 +1302,10 @@ export function register(on) {
       held: [...held.values()],
       now,
       loop: loopNow(now),
+      leadBusy: Boolean(leadTurn),
+      live: liveNow(now),
+      nextStep: loop.nextStep,
+      combined: combinedNow(),
     });
 
   on('ui.render', { component: 'Pane', requestId: PANE_ID }, async ($, e) => {
@@ -1313,7 +1320,7 @@ export function register(on) {
         usage,
         plan,
         loop: { ...loopNow(now), queue: model.queue ?? [] },
-        needs: linesNow(now),
+        needs: linesNow(now).filter((l) => !l.mission),
         live: liveNow(now),
         held: [...held.values()],
         requests: model.requests?.open ?? [],
