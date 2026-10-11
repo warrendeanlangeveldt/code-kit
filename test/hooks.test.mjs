@@ -2058,16 +2058,65 @@ else process.exit(2);
     // ONB-5: a setup older than init's tells the person what re-running it adds.
     const older = (n) =>
       nextOf().attention?.some((x) => x.startsWith("This project's code-kit setup predates"));
+    const { setup: _, ...unversioned } = JSON.parse(wanting);
+    writeFileSync(join(o.dir, '.claude/code-kit.json'), JSON.stringify(unversioned));
     expect(
       'ONB-5 a project set up before setup 2 is told to re-run init, and why',
       truth(older()),
       0,
     );
+    // ONB-6: what an older setup is missing, named, and nothing new starts until init adds it.
+    const { designGate: __, ...ungated } = unversioned;
+    const { qa: ___, ...noQa } = unversioned.lanes;
+    writeFileSync(
+      join(o.dir, '.claude/code-kit.json'),
+      JSON.stringify({
+        ...ungated,
+        lanes: noQa,
+        shell: {
+          ...ungated.shell,
+          restricted: ungated.shell.restricted.map((r) => ({ ...r, lanes: ['data'] })),
+        },
+      }),
+    );
+    writeFileSync(
+      join(o.dir, 'docs/spec/plan.md'),
+      readFileSync(join(o.dir, 'docs/spec/plan.md'), 'utf8').replace('**Depends on:** ST-1\n', ''),
+    );
+    const update = nextOf();
+    expect(
+      'ONB-6 an older setup missing the design gate, design stories and a QA lane gets the update step, naming each',
+      truth(
+        update.step === 'update' &&
+          update.why.includes('a design gate for mobile and web') &&
+          update.why.includes('ST-2 is planned with no design') &&
+          update.why.includes('a QA lane') &&
+          update.attention.some((a) => a.includes('ST-1, ST-2, ST-3 wait until /code-kit:init')),
+        JSON.stringify(update),
+      ),
+      0,
+    );
+    o.git('checkout', '-q', '-b', 'backend/st-3');
+    writeFileSync(join(o.dir, 'store.txt'), 'x\n');
+    o.git('add', 'store.txt');
+    o.git('commit', '-q', '-m', 'ST-3 start');
+    o.git('checkout', '-q', '-');
+    const inFlight = nextOf();
+    expect(
+      'and work already started goes on to its review, with nothing new dispatched after it',
+      truth(
+        inFlight.step === 'review' && inFlight.args === 'ST-3' && !inFlight.then.length,
+        JSON.stringify(inFlight),
+      ),
+      0,
+    );
+    o.git('branch', '-q', '-D', 'backend/st-3');
     writeFileSync(
       join(o.dir, '.claude/code-kit.json'),
       JSON.stringify({ ...JSON.parse(wanting), setup: 2 }),
     );
     expect('one set up by the current init is not', truth(!older()), 0);
+    expect('and its build goes on', truth(nextOf().step !== 'update'), 0);
     writeFileSync(
       join(o.dir, '.claude/code-kit.json'),
       JSON.stringify({ ...JSON.parse(wanting), setup: 9 }),

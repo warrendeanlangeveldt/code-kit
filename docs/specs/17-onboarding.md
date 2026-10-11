@@ -49,6 +49,16 @@ The config records the version of init's setup (`"setup": 2`). A project set up 
 - Given a config without `setup`, then `next` says the setup predates what init now sets up, and to re-run `/code-kit:init`; given `"setup": 2`, it doesn't.
 - Given `"setup": 9`, then the config is invalid, saying it must be from 1 to 2.
 
+### ONB-6 The gaps stop new work until init fills them
+
+For a setup older than init's, `code-kit next` works out what it's missing from the config, the plan and the code, and names it. A lane owns screens when its name or agent says so (web, mobile, desktop, admin) or it holds screen files (`.tsx`, `.jsx`, `.vue`, `.svelte`, `.swift`, `.dart`, outside tests). When a lane owns screens, the setup may be missing three things: the design gate; design stories before the screen stories not yet started; and a QA lane. Work already started goes on, through review and the merge queue. No new story is dispatched, designed or built by the lead until init has added what's missing. Once nothing is in flight, `next` gives `update`, and the loop prompts the lead to re-run `/code-kit:init`, which shows the person the difference first.
+
+**Acceptance**
+
+- Given a config without `setup`, no design gate, no QA lane, and a ready web story with no design story before it, then `next` gives `update`, naming the design gate for mobile and web, the story planned with no design, and the QA lane, and says the ready stories wait until init has added them.
+- Given the same and a story on its branch, then that story is reviewed, and nothing new is dispatched after it.
+- Given `"setup": 2`, then `next` doesn't give `update`.
+
 ## Open questions
 
 | Question | Owner | Blocks |

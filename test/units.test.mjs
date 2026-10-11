@@ -783,6 +783,12 @@ test('LOOP-1 to LOOP-3 the loop: prompts for steps, and what a quiet agent is du
     'Review ST-4, ST-5: run /code-kit:review.',
   );
   assert.match(leadPrompt({ step: 'lead', args: 'ST-6' }), /^Build ST-6 yourself.*lead\/st-6/);
+  // ONB-6: an older setup is brought up to date by init before the next story.
+  assert.match(
+    leadPrompt({ step: 'update', args: '', why: 'Missing a QA lane.' }),
+    /^Before the next story, bring code-kit's setup up to date: run \/code-kit:init\. Missing a QA lane\.$/,
+  );
+  assert.equal(stepLabel({ step: 'update', args: '' }), 'Update the setup');
   for (const step of ['spec-design', 'init', 'wait', 'done'])
     assert.equal(leadPrompt({ step }), null);
   assert.equal(

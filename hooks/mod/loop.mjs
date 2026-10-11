@@ -3,7 +3,16 @@
 // existing skills, and the hooks judge every call as before.
 
 /** The steps the loop hands the lead; the rest (spec-design, init, check) wait for the person. */
-const LEAD_STEPS = new Set(['dispatch', 'review', 'lead', 'merge', 'rules', 'design', 'setup']);
+const LEAD_STEPS = new Set([
+  'dispatch',
+  'review',
+  'lead',
+  'merge',
+  'rules',
+  'design',
+  'setup',
+  'update',
+]);
 
 /**
  * The prompt for a step from `code-kit next --json` (LOOP-1), or null when it isn't the lead's to
@@ -27,6 +36,9 @@ export function leadPrompt(step, { cli = 'code-kit' } = {}) {
     return ids.length
       ? `Before any code is written, set up ${ids[0].split(':')[0]}: run /${ids[0]}. ${step.why ?? ''}`.trim()
       : null;
+  // ONB-6: an older setup brought up to date before the next story; init shows the person the diff.
+  if (step.step === 'update')
+    return `Before the next story, bring code-kit's setup up to date: run /code-kit:init. ${step.why ?? ''}`.trim();
   // ONB-2: the screens designed, and approved by the person, before they're built.
   if (step.step === 'design')
     return ids.length
@@ -61,6 +73,7 @@ export function stepLabel(step) {
       rules: 'Rules onto',
       design: 'Design',
       setup: 'Set up',
+      update: 'Update the setup',
     }[step.step] ?? step.step;
   return ids ? `${verb} ${ids}` : verb;
 }

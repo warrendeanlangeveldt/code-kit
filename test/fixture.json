@@ -1,5 +1,6 @@
 {
   "version": 1,
+  "setup": 2,
   "docs": {
     "specs": "docs/spec",
     "principles": "docs/spec/principles.md",

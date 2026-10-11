@@ -15,23 +15,24 @@ node "${CLAUDE_PLUGIN_ROOT}/bin/code-kit.mjs" next --json
 
 It returns `step`, `why`, `args`, `then` (steps that can follow straight after) and `attention` (things the person should know). The order it applies:
 
-| State                                                      | Step                                                      |
-| ---------------------------------------------------------- | --------------------------------------------------------- |
-| Invalid config                                             | `check`, then fix the config                              |
-| No config, a draft waiting                                 | `init`, to show it for approval                           |
-| No config, a spec still being shaped (brief not `ready`)   | `spec-design`, resuming                                   |
-| No config, a ready spec                                    | `init <docs folder>`                                      |
-| No config, existing code or docs                           | `init`                                                    |
-| Nothing at all                                             | `spec-design`                                             |
-| Config, but no specs, plan or stories                      | `spec-design`                                             |
-| A companion the config wants, not set up yet               | `setup`: run that tool's init skill (`args`), before code |
-| Stories finished on their branches                         | `review`, then `dispatch` what's ready                    |
-| Design stories ready (`**Lane:** design`)                  | `design`, then `dispatch` what needs no design            |
-| Stories ready                                              | `dispatch`                                                |
-| The lead's own stories ready (`**Lane:** lead`)            | `lead`: the lead builds them itself                       |
-| Stories being built, nothing else can start                | wait                                                      |
-| Ready stories with gaps in the plan, or a dependency cycle | `spec-design`, to fix the plan                            |
-| Every story done                                           | done: `status`, then `spec-design` for the next milestone |
+| State                                                        | Step                                                      |
+| ------------------------------------------------------------ | --------------------------------------------------------- |
+| Invalid config                                               | `check`, then fix the config                              |
+| No config, a draft waiting                                   | `init`, to show it for approval                           |
+| No config, a spec still being shaped (brief not `ready`)     | `spec-design`, resuming                                   |
+| No config, a ready spec                                      | `init <docs folder>`                                      |
+| No config, existing code or docs                             | `init`                                                    |
+| Nothing at all                                               | `spec-design`                                             |
+| Config, but no specs, plan or stories                        | `spec-design`                                             |
+| A companion the config wants, not set up yet                 | `setup`: run that tool's init skill (`args`), before code |
+| An older setup missing what init now adds, nothing in flight | `update`: re-run init, before any new story               |
+| Stories finished on their branches                           | `review`, then `dispatch` what's ready                    |
+| Design stories ready (`**Lane:** design`)                    | `design`, then `dispatch` what needs no design            |
+| Stories ready                                                | `dispatch`                                                |
+| The lead's own stories ready (`**Lane:** lead`)              | `lead`: the lead builds them itself                       |
+| Stories being built, nothing else can start                  | wait                                                      |
+| Ready stories with gaps in the plan, or a dependency cycle   | `spec-design`, to fix the plan                            |
+| Every story done                                             | done: `status`, then `spec-design` for the next milestone |
 
 Tell the person in one or two lines what you found and what you're about to run, with anything under `attention`. If `attention` says the folder isn't a git repository, run `git init` before init (spec-design doesn't need one).
 
@@ -40,6 +41,7 @@ Tell the person in one or two lines what you found and what you're about to run,
 Run the named skill with the Skill tool: `code-kit:<step>`, with `args` (and the person's argument, if they gave one). Follow that skill in full. This skill only chooses; it never does a step's work itself.
 
 - **`setup`:** run the skill named in `args` (for example `context-graph:init`); it's another plugin's, so call it by that full name.
+- **`update`:** run `code-kit:init`. `why` names what the setup is missing (the design gate, design stories, a QA lane); init adds those, shows the person the difference, and sets `"setup": 2`. Until then no new story starts; work already started goes on to review and merge.
 - **`lead`:** there's no skill to run. Build each story yourself, on the branch `lead/st-<n>`: spec-check it first if it cites requirements, do the work, commit, then run `code-kit:review` on the branch like any other. A spike's result goes in the docs it names.
 - **`wait`:** say which stories are being built and on which branches, then stop. When a lane agent finishes, its notification arrives in this session; run this skill again then. If a story has been in progress with no agent running (the session ended, or the agent stopped without committing), dispatch it again.
 - **`done`:** give the `status` summary in a few lines, then offer to run spec-design for the next milestone or feature.
