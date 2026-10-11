@@ -14,6 +14,9 @@ import {
   touchesOf,
   withStaleness,
   workingDaysBetween,
+  BOARD_FIELDS,
+  boardChanges,
+  boardValues,
 } from './teamfacts.mjs';
 
 export {
@@ -39,6 +42,19 @@ export function teamProblems(c) {
     if (!isHandle(t.techLead)) p.push('"team.techLead" must be the tech lead\'s GitHub handle');
     if (t.staleDays !== undefined && !(Number.isInteger(t.staleDays) && t.staleDays >= 1))
       p.push('"team.staleDays" must be a whole number of working days, 1 or more');
+    if (
+      t.board !== undefined &&
+      !(
+        isObj(t.board) &&
+        typeof t.board.owner === 'string' &&
+        t.board.owner.trim() &&
+        Number.isInteger(t.board.number) &&
+        t.board.number > 0
+      )
+    )
+      p.push(
+        '"team.board" must be { "owner": "<user or organisation>", "number": <the Project\'s number> }',
+      );
     if (t.intents !== undefined && !(typeof t.intents === 'string' && t.intents.trim()))
       p.push('"team.intents" must name the discussion category intents go in');
     if (
@@ -67,6 +83,7 @@ export function teamOf(raw) {
     techLead: raw.team.techLead,
     staleDays: raw.team.staleDays ?? 3,
     intents: raw.team.intents ?? 'Intents',
+    board: raw.team.board ?? null,
     provider: raw.team.provider ?? 'github',
     owners: Object.fromEntries(
       Object.entries(raw.lanes ?? {})
@@ -725,4 +742,110 @@ export function claimChanges(before = [], now = []) {
         text: `${c.story} is no longer claimed by them`,
       })),
   ];
+}
+
+// --- the board (TEAM-12) -------------------------------------------------------------------------------
+
+const BOARD_STATE = '.claude/state/board.json';
+
+/**
+ * TEAM-12: mirror the plan's stories onto the team's GitHub Project as draft items with text fields
+ * (Lane, Claimed by, Stale, State), creating the fields and items it needs and editing only what
+ * changed since the last sync. `stories` are the plan's, `claims` the team's. The board is a view:
+ * claims stay refs. Returns { ok, created, edited } or { ok: false, why }.
+ */
+export function syncBoard(root, team, stories, claims) {
+  const { owner, number } = team.board;
+  const run = (args) =>
+    spawnSync('gh', ['project', ...args], {
+      cwd: root,
+      encoding: 'utf8',
+      timeout: 30_000,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+  const json = (args) => {
+    const r = run([...args, '--format', 'json']);
+    if (r.status !== 0) throw new Error((r.stderr || r.stdout || '').trim());
+    return JSON.parse(r.stdout || 'null');
+  };
+  const at = ['--owner', owner];
+  let cache = {};
+  try {
+    cache = JSON.parse(readFileSync(join(root, BOARD_STATE), 'utf8'));
+  } catch {
+    // first sync on this machine
+  }
+  const key = `${owner}/${number}`;
+  if (cache.board !== key) cache = { board: key, items: {} };
+  const save = () => {
+    mkdirSync(join(root, '.claude/state'), { recursive: true });
+    writeFileSync(join(root, BOARD_STATE), JSON.stringify(cache, null, 2) + '\n');
+  };
+  let created = 0;
+  let edited = 0;
+  try {
+    const project = json(['view', String(number), ...at]);
+    const fields = new Map(
+      (json(['field-list', String(number), ...at]).fields ?? []).map((f) => [f.name, f.id]),
+    );
+    for (const name of BOARD_FIELDS)
+      if (!fields.has(name))
+        fields.set(
+          name,
+          json(['field-create', String(number), ...at, '--name', name, '--data-type', 'TEXT']).id,
+        );
+    // Items made before this machine's cache: found by their story id, so nothing is doubled.
+    if (stories.some((s) => !cache.items[s.id])) {
+      for (const item of json(['item-list', String(number), ...at, '--limit', '1000']).items ??
+        []) {
+        const id = String(item.title ?? item.content?.title ?? '').split(' ')[0];
+        if (isStoryId(id) && !cache.items[id]) cache.items[id] = { id: item.id, values: {} };
+      }
+    }
+    const byStory = new Map(claims.map((c) => [c.story, c]));
+    for (const s of stories) {
+      const now = boardValues(s, byStory.get(s.id));
+      if (!cache.items[s.id]) {
+        const item = json([
+          'item-create',
+          String(number),
+          ...at,
+          '--title',
+          `${s.id} ${s.title ?? ''}`.trim(),
+          '--body',
+          s.requirements?.length ? `Requirements: ${s.requirements.join(', ')}` : '',
+        ]);
+        cache.items[s.id] = { id: item.id, values: {} };
+        created += 1;
+      }
+      const entry = cache.items[s.id];
+      for (const [field, value] of boardChanges(entry.values, now)) {
+        const r = run([
+          'item-edit',
+          '--id',
+          entry.id,
+          '--project-id',
+          project.id,
+          '--field-id',
+          fields.get(field),
+          ...(value ? ['--text', value] : ['--clear']),
+        ]);
+        if (r.status !== 0) throw new Error((r.stderr || r.stdout || '').trim());
+        entry.values[field] = value;
+        edited += 1;
+      }
+      save();
+    }
+  } catch (e) {
+    save();
+    const why = String(e.message || e);
+    return {
+      ok: false,
+      why:
+        /scope|project/i.test(why) && /token|scope|permission|auth/i.test(why)
+          ? 'Your gh sign-in needs the project permission to write to the board: run gh auth refresh -s project, then sync again.'
+          : `The board couldn't be synced: ${why.split('\n')[0]}`,
+    };
+  }
+  return { ok: true, created, edited };
 }

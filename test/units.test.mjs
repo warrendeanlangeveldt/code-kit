@@ -1283,6 +1283,7 @@ test('TEAM-1 the team in the config: a tech lead, owners on lanes, and the defau
       techLead: 'alex',
       staleDays: 3,
       intents: 'Intents',
+      board: null,
       provider: 'github',
       owners: { web: ['sam'] },
     },
@@ -1467,4 +1468,15 @@ test('TEAM-11 CODEOWNERS from the config, braces expanded and the kit left out',
   assert.match(text, /^\/docs\/\*\* @alex$/m);
   assert.match(text, /^\/apps\/web\/\*\* @sam @kim$/m);
   assert.doesNotMatch(text, /^\/\.claude|apps\/api/m);
+});
+
+test('TEAM-12 a story on the board, and only the fields that changed', async () => {
+  const { boardValues, boardChanges } = await import('../hooks/lib/teamfacts.mjs');
+  const now = boardValues({ lane: 'web', state: 'in progress' }, { by: 'sam', stale: true });
+  assert.deepEqual(now, { Lane: 'web', 'Claimed by': 'sam', Stale: 'yes', State: 'in progress' });
+  assert.deepEqual(boardChanges(now, now), []);
+  assert.deepEqual(
+    boardChanges({ ...now, Stale: '' }, boardValues({ lane: 'web', state: 'in progress' }, null)),
+    [['Claimed by', '']],
+  );
 });

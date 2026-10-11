@@ -200,7 +200,7 @@ function stub(on: any, w: World) {
       w.acts.push([...argv.slice(2)]);
       return ran(0, JSON.stringify(w.teamSince));
     }
-    if (sub === 'team' && ['keep', 'release'].includes(argv[3])) {
+    if (sub === 'team' && ['keep', 'release', 'board'].includes(argv[3])) {
       w.acts.push([...argv.slice(2)]);
       return ran(0, '');
     }
@@ -3049,4 +3049,17 @@ test('TEAM-7 without a team there is no Team tab', async ($, on) => {
   const ui = await pane($, PANE);
   expect(await ui.find({ key: 'tab-team' })).toBeUndefined();
   await ui.unmount();
+});
+
+test('TEAM-12 with a board, the mod syncs it in the background, at most every 10 minutes', async ($, on) => {
+  const w = project();
+  w.team = teamOf('sam');
+  (w.check as any).team = { techLead: 'alex', board: { owner: 'o', number: 3 } };
+  const clock = await start($, on, w);
+  const syncs = () => w.acts.filter((a) => a[0] === 'team' && a[1] === 'board').length;
+  expect(syncs()).toBe(1);
+  await clock.advance(60000);
+  expect(syncs()).toBe(1);
+  await clock.advance(10 * 60000);
+  expect(syncs()).toBe(2);
 });

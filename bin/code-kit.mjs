@@ -58,7 +58,14 @@ import { journal } from '../hooks/lib/journal.mjs';
 import { dequeue, enqueue, lastMerged, readQueue, settle, waiting } from '../hooks/lib/queue.mjs';
 import { SETTINGS, parseSetting, settingOf, withSetting } from '../hooks/lib/harness.mjs';
 import { readLoop, writeLoop } from '../hooks/lib/loop-state.mjs';
-import { claimChanges, storyOfBranch, teamOf, teamProvider, whoami } from '../hooks/lib/team.mjs';
+import {
+  claimChanges,
+  storyOfBranch,
+  syncBoard,
+  teamOf,
+  teamProvider,
+  whoami,
+} from '../hooks/lib/team.mjs';
 import { codeowners, decisionRecord, slugOf } from '../hooks/lib/teamfacts.mjs';
 import {
   APPROVAL_MINUTES,
@@ -1272,6 +1279,23 @@ function teamCommand() {
       `Claimed ${story} as ${r.claim.by}${lease.length ? `, leasing ${lease.join(', ')}` : ''}.`,
     );
   }
+  // TEAM-12: the plan mirrored onto the team's GitHub Project.
+  if (sub === 'board') {
+    if (!team.board)
+      die(
+        'This team has no board. Add "board": { "owner": "<user or organisation>", "number": <the Project\'s number> } to "team" in the config.',
+      );
+    const { config, raw: rawConfig } = load();
+    if (!rawConfig.docs?.plan)
+      die('The board mirrors the plan, and this project has no docs.plan.');
+    const status = buildStatus('.', config, base(config, false), tracked());
+    const state = provider.state();
+    const r = syncBoard(resolve('.'), team, status.stories, state.claims ?? []);
+    if (!r.ok) die(r.why);
+    return out(
+      `Board ${team.board.owner}/${team.board.number} synced: ${r.created} item${r.created === 1 ? '' : 's'} added, ${r.edited} field${r.edited === 1 ? '' : 's'} changed.`,
+    );
+  }
   // TEAM-11: GitHub's CODEOWNERS from the config, so GitHub asks the right people to review.
   if (sub === 'codeowners') {
     const text = codeowners({
@@ -1507,7 +1531,7 @@ function usage() {
       '              | story <id> [--json] | timeline [--json]\n' +
       '              | team [--json] [--fresh] | team since [--json] [--peek]\n' +
       '              | team claim <story> [--lease globs] | team keep|release <story>\n' +
-      '              | team reassign <story> <handle> | team codeowners [--write]\n' +
+      '              | team reassign <story> <handle> | team codeowners [--write] | team board\n' +
       '              | intend "<what and why>" [--touches globs] | intend agree|drop|duplicate <id> [--reason "…"] | intend record <id>',
   );
 }

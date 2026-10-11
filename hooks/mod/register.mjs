@@ -68,6 +68,8 @@ let approving = null; // the open Approve… confirmation: { request, reason, er
 let result = null; // what the last merge reported
 let notice = null; // why the person's last act failed
 let teamSince = null; // TEAM-6: since you last looked, as read when the Team tab opened
+let boardSynced = -Infinity; // TEAM-12: when the board was last synced
+const BOARD_EVERY_MS = 10 * 60000;
 let act = null; // the session's actions, made at session start
 let settingRows = []; // the harness settings, from `code-kit settings --json`
 let pendingSetting = null; // a change waiting for the person's reason: { key, value, reason, error }
@@ -224,6 +226,13 @@ export function register(on) {
             : [];
         // TEAM-7: the team's claims, intents and pull requests, where the project is a team's.
         const team = valid && check.team ? await json('team') : null;
+        // TEAM-12: the plan mirrored onto the team's Project board, at most every 10 minutes, in the
+        // background: a slow GitHub never holds up the band.
+        const at = await $.clock.now();
+        if (team && check.team?.board && at - boardSynced >= BOARD_EVERY_MS) {
+          boardSynced = at;
+          $.process.run(['node', cli, 'team', 'board'], { cwd, timeoutMs: 120000 }).catch(() => {});
+        }
         // The agents at work; none where the session has none bound (claude -p before it mounts).
         const atWork = agentsAtWork(await $.agent.list().catch(() => []));
         model = {

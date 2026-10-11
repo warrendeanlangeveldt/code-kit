@@ -1273,6 +1273,17 @@ else if (a[0] === 'api' && a[1] === 'graphql') {
   else if (q.includes('discussions(')) out({ repository: { id: 'R1', hasDiscussionsEnabled: db.discussionsEnabled !== false, discussionCategories: { nodes: db.categories }, discussions: { nodes: db.discussions } } });
   else process.exit(3);
 }
+else if (a[0] === 'project') {
+  const p = (db.project ??= { id: 'PVT_1', fields: [{ id: 'F0', name: 'Title' }], items: [], edits: 0 });
+  const save = () => writeFileSync(file, JSON.stringify(db));
+  if (a[1] === 'view') console.log(JSON.stringify({ id: p.id, number: Number(a[2]) }));
+  else if (a[1] === 'field-list') console.log(JSON.stringify({ fields: p.fields }));
+  else if (a[1] === 'field-create') { const f = { id: 'F' + p.fields.length, name: opt('--name') }; p.fields.push(f); save(); console.log(JSON.stringify(f)); }
+  else if (a[1] === 'item-create') { const i = { id: 'I' + p.items.length, title: opt('--title'), body: opt('--body'), values: {} }; p.items.push(i); save(); console.log(JSON.stringify({ id: i.id, title: i.title })); }
+  else if (a[1] === 'item-list') console.log(JSON.stringify({ items: p.items.map((i) => ({ id: i.id, title: i.title })) }));
+  else if (a[1] === 'item-edit') { const i = p.items.find((x) => x.id === opt('--id')); const name = p.fields.find((f) => f.id === opt('--field-id')).name; if (a.includes('--clear')) delete i.values[name]; else i.values[name] = opt('--text'); p.edits += 1; save(); }
+  else process.exit(2);
+}
 else if (a[0] === 'pr' && a[1] === 'list') console.log(JSON.stringify(db.pulls));
 else process.exit(2);
 `,
@@ -1816,6 +1827,78 @@ else process.exit(2);
       ),
       0,
     );
+
+    // TEAM-12: the plan on a Project board.
+    execFileSync('git', [
+      '-C',
+      a,
+      '-c',
+      'user.name=sam',
+      '-c',
+      'user.email=s@x',
+      'commit',
+      '-q',
+      '--allow-empty',
+      '-m',
+      'start',
+    ]);
+    execFileSync('git', ['-C', a, 'branch', '-f', 'main']);
+    mkdirSync(join(a, 'docs/spec'), { recursive: true });
+    writeFileSync(
+      join(a, 'docs/spec/01-pricing.md'),
+      '# 01. Pricing\n\n### PRICE-1 Price\n\nx\n\n### PRICE-2 Old\n\nx\n',
+    );
+    writeFileSync(
+      join(a, 'docs/spec/plan.md'),
+      '# Plan\n\n## M1\n\n### ST-9 Pricing\n\n**Lane:** data\n**Requirements:** PRICE-1\n**Status:** todo\n\n### ST-30 Old reports\n\n**Lane:** data\n**Requirements:** PRICE-2\n**Status:** todo\n',
+    );
+    writeFileSync(
+      join(a, '.claude/code-kit.json'),
+      JSON.stringify({
+        ...JSON.parse(fixture),
+        team: { techLead: 'alex', board: { owner: 'o', number: 3 } },
+      }),
+    );
+    rmSync(join(a, '.claude/state/team.json'), { force: true });
+    const synced = sam('team', 'board');
+    const board = JSON.parse(readFileSync(store, 'utf8')).project;
+    const item = (title) => board?.items.find((i) => i.title === title);
+    expect(
+      'TEAM-12 each story is on the board with its lane, who has claimed it and its state',
+      truth(
+        synced.stdout.includes('Board o/3 synced: 2 items added') &&
+          item('ST-9 Pricing')?.values.Lane === 'data' &&
+          item('ST-9 Pricing').values['Claimed by'] === 'alex' &&
+          item('ST-30 Old reports')?.values['Claimed by'] === 'dev2' &&
+          item('ST-30 Old reports').body === 'Requirements: PRICE-2' &&
+          ['Lane', 'Claimed by', 'Stale', 'State'].every((n) =>
+            board.fields.some((f) => f.name === n),
+          ),
+        synced.stdout + synced.stderr + JSON.stringify(board),
+      ),
+      0,
+    );
+    const edits = board.edits;
+    const again = sam('team', 'board');
+    expect(
+      'synced again with nothing changed, it adds and edits nothing',
+      truth(
+        again.stdout.includes('0 items added, 0 fields changed') &&
+          JSON.parse(readFileSync(store, 'utf8')).project.edits === edits,
+        again.stdout + again.stderr,
+      ),
+      0,
+    );
+    rmSync(join(a, '.claude/state/board.json'), { force: true });
+    expect(
+      "on a machine that hasn't synced before, the items already there are found, not doubled",
+      truth(
+        sam('team', 'board').stdout.includes('0 items added') &&
+          JSON.parse(readFileSync(store, 'utf8')).project.items.length === 2,
+      ),
+      0,
+    );
+    writeFileSync(join(a, '.claude/code-kit.json'), config);
 
     // TEAM-8: the shared repository can't be reached.
     execFileSync('git', ['-C', a, 'remote', 'set-url', 'origin', join(root, 'gone.git')]);

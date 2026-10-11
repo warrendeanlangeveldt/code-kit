@@ -334,6 +334,6 @@ Intents move from issues to discussions in the Intents category, through GitHub'
 **Lane:** lead
 **Requirements:** TEAM-12
 **Depends on:** ST-29
-**Status:** todo
+**Status:** done
 
 `team.board` in the config; `code-kit team board` mirrors stories as draft items with Lane, Claimed by, Stale and State fields through `gh project`, editing only what changed since the last sync; the mod syncs it at most every 10 minutes.

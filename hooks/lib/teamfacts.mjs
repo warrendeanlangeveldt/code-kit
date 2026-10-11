@@ -172,3 +172,16 @@ export function codeowners({ techLead, leadPaths, lanes }) {
   }
   return `${out.join('\n')}\n`;
 }
+
+/** TEAM-12: the board's fields for a story, all text: Lane, Claimed by, Stale and State. */
+export const BOARD_FIELDS = ['Lane', 'Claimed by', 'Stale', 'State'];
+export const boardValues = (story, claim) => ({
+  Lane: story.lane ?? '',
+  'Claimed by': claim?.by ?? '',
+  Stale: claim?.stale ? 'yes' : '',
+  State: story.state ?? '',
+});
+
+/** The fields whose value changed since the last sync: [[field, value]]. */
+export const boardChanges = (before = {}, now) =>
+  BOARD_FIELDS.filter((f) => (before[f] ?? '') !== now[f]).map((f) => [f, now[f]]);
