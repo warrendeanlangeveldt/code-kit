@@ -459,10 +459,21 @@ test('the mod: BAND-2 and BAND-4, the band lines and their hotkeys, and ACT-1 th
     state: projectState(check, status, null, new Set()),
     requests: { open: [request, request] },
     stops: [{ title: 'Check tests failed' }],
+    // The person runs the build: a finished story waits in the band for them (DECIDE-1).
+    check: { harness: { autonomy: 'off' } },
   });
   assert.deepEqual(
     lines.map((l) => l.text),
     ['2 approvals waiting', 'ST-4 ready for review', 'Finish check failing: Check tests failed'],
+  );
+  // While the loop runs the build, the review is the lead's and isn't in the band.
+  assert.deepEqual(
+    bandLines({
+      state: projectState(check, status, null, new Set()),
+      requests: { open: [] },
+      stops: [],
+    }).map((l) => l.text),
+    [],
   );
   assert.deepEqual(
     lines.flatMap((l) => l.actions.map((a) => `${a.hotkey} ${a.id}`)),
@@ -1161,4 +1172,35 @@ test('TRAIL-1 the trail drawn: requirements a story shares meet at one node, and
   const svg = trailSvg(rows, { selected: 'ORIG-2' });
   assert.equal(svg.match(/ST-20<\/text>/g).length, 1, 'the shared story is drawn once');
   assert.match(svg, /stroke-dasharray="3 3"/);
+});
+
+test('JOURNAL-1 the brief read for the journal: the request, the decisions, and who approved what', async () => {
+  const { briefRequest, briefDecisions, approverOf, approvalWords } =
+    await import('../hooks/lib/journal.mjs');
+  const brief =
+    '# Book editor\n\n## Problem\n\nAn author wants a careful line edit.\nWithout losing their voice.\n\nMore detail.\n\n## Decision log\n\n| Date | Decision | Why | Rejected |\n| --- | --- | --- | --- |\n| 2026-10-10 | One author, no accounts | It is a personal tool | Teams |\n\n## Open questions\n';
+  assert.deepEqual(briefRequest(brief), {
+    title: 'Book editor',
+    problem: 'An author wants a careful line edit. Without losing their voice.',
+  });
+  assert.deepEqual(briefDecisions(brief), [
+    { date: '2026-10-10', decision: 'One author, no accounts', why: 'It is a personal tool' },
+  ]);
+  assert.equal(
+    approverOf({
+      approval: 'dependency',
+      reason:
+        'pdf panel (approved by the lead within the delegated rules: dependencies (pdfjs-dist))',
+    }),
+    'lead',
+  );
+  assert.equal(
+    approverOf({
+      approval: 'editing-rules',
+      reason: 'Yes, as they are. (given in chat, recorded by the lead)',
+    }),
+    'person',
+  );
+  assert.equal(approvalWords('dep-zod'), 'adding the package zod');
+  assert.equal(approvalWords('dependency'), 'adding a new package');
 });

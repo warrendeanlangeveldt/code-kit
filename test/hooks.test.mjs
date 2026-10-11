@@ -1126,6 +1126,26 @@ try {
       ),
       0,
     );
+    tPut(
+      'docs/brief.md',
+      '# Bookings\n\n## Problem\n\nGroomers lose bookings on paper.\n\n## Decision log\n\n| Date | Decision | Why |\n| --- | --- | --- |\n| 2026-10-01 | Web only | Groomers use laptops |\n',
+    );
+    t.git('add', '-A');
+    t.git('commit', '-q', '-m', 'brief');
+    const events = JSON.parse(tKit('journal', '--json').stdout || '{}').events ?? [];
+    const kinds = events.map((e) => e.kind);
+    expect(
+      'JOURNAL-1 journal tells the lineage: the request and its decisions first, then the specification and the work',
+      truth(
+        kinds[0] === 'request' &&
+          events[0].text.includes('Groomers lose bookings on paper') &&
+          kinds[1] === 'decision' &&
+          events[1].text === 'Decided: Web only, because groomers use laptops.' &&
+          kinds.includes('spec'),
+        JSON.stringify(events),
+      ),
+      0,
+    );
     const st = JSON.parse(tKit('status', '--json').stdout || '{}');
     expect(
       "a story carries its milestone, the plan's heading above it",

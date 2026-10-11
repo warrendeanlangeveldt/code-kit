@@ -54,6 +54,7 @@ import { buildStatus, specCheckRows } from '../hooks/lib/plan.mjs';
 import { recordSentBack } from '../hooks/lib/reviews.mjs';
 import { storyTimes } from '../hooks/lib/timeline.mjs';
 import { storyMap, trail } from '../hooks/lib/storymap.mjs';
+import { journal } from '../hooks/lib/journal.mjs';
 import { dequeue, enqueue, lastMerged, readQueue, settle, waiting } from '../hooks/lib/queue.mjs';
 import { SETTINGS, parseSetting, settingOf, withSetting } from '../hooks/lib/harness.mjs';
 import { readLoop, writeLoop } from '../hooks/lib/loop-state.mjs';
@@ -597,6 +598,24 @@ function mapCommand(id) {
     for (const f of map.files.filter((x) => x.layer === layer))
       out(`    ${f.path}${f.imports.length ? `  → ${f.imports.join(', ')}` : ''}`);
   }
+}
+
+/** JOURNAL-1: the build's lineage, from the request to each merge, in plain sentences. */
+function journalCommand() {
+  const { config } = load();
+  const { specs, plan } = config.docs ?? {};
+  if (!specs || !plan)
+    die('journal needs docs.specs and docs.plan in the config. The spec-design skill writes both.');
+  const from = base(config, false);
+  const events = journal(
+    resolve('.'),
+    buildStatus('.', config, from, tracked()),
+    from,
+    config.docs,
+  );
+  if (flag('--json')) return out(JSON.stringify({ base: from, events }, null, 2));
+  for (const e of events)
+    out(`${new Date(e.at).toISOString().slice(0, 16).replace('T', ' ')}  ${e.text}`);
 }
 
 /** TRAIL-1: each requirement to its stories, the code they changed and the tests that name it. */
@@ -1151,6 +1170,7 @@ const commands = {
   story: () => (rest.length === 1 ? story(rest[0]) : usage()),
   map: () => (rest.length === 1 ? mapCommand(rest[0]) : usage()),
   trail: trailCommand,
+  journal: journalCommand,
   timeline,
   'sent-back': () => (rest.length === 1 ? sentBackCommand(rest[0]) : usage()),
   trace: () => (rest.length ? trace(rest) : usage()),
@@ -1176,7 +1196,7 @@ function usage() {
       '              | hold <id> [--minutes N] | hold <id> --answer approved|refused\n' +
       '              | queue [--json] | queue add|drop <branch> | queue merge --delegated|--person\n' +
       '              | loop [--json] | loop pause|resume\n' +
-      '              | map <story> [--json] | trail [--json]\n' +
+      '              | map <story> [--json] | trail [--json] | journal [--json]\n' +
       '              | story <id> [--json] | timeline [--json]',
   );
 }
