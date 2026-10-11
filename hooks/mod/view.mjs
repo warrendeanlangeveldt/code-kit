@@ -751,7 +751,13 @@ export function bandLines({
       request: open[0],
       actions: [{ id: 'approve', label: 'Approve…' }],
     });
-  const inReview = state.lanes.filter((l) => l.state === 'in review').map((l) => l.story);
+  // DECIDE-1: reviewing a lane's work is the lead's. Only with the loop off, where the person runs the
+  // build themselves, does a finished story wait in the band for their Review or Merge; otherwise the
+  // loop prompts the lead (or, under propose, offers the step with Go).
+  const loopOff = (check?.harness?.autonomy ?? 'autonomous') === 'off';
+  const inReview = loopOff
+    ? state.lanes.filter((l) => l.state === 'in review').map((l) => l.story)
+    : [];
   if (inReview.length) {
     const [story] = inReview;
     const ids = inReview.map((s) => s.id).join(', ');

@@ -623,8 +623,20 @@ test('ACT-1 a grant that fails approves nothing, and the band says why', async (
   await after.unmount();
 });
 
+test("DECIDE-1 while the loop runs the build, a lane's finished work never waits in the band for the person", async ($, on) => {
+  const w = project();
+  w.stories[0] = { ...w.stories[0], state: 'review' };
+  await start($, on, w);
+  const band = await bandUi($);
+  expect(await band.find({ key: 'band-review' })).toBeUndefined();
+  expect(await band.find({ key: 'band-merge' })).toBeUndefined();
+  await band.unmount();
+});
+
 test('ACT-3 Review asks the lead to run the review skill on the branch', async ($, on) => {
   const w = project();
+  // The person runs the build themselves: reviews and merges wait in the band for them.
+  (w.check as any).harness = { autonomy: 'off' };
   w.stories[0] = { ...w.stories[0], state: 'review' };
   await start($, on, w);
   const ui = await bandUi($);
@@ -639,6 +651,8 @@ test('ACT-3 Review asks the lead to run the review skill on the branch', async (
 
 test('ACT-4 Merge confirms, then merges as the person', async ($, on) => {
   const w = project();
+  // The person runs the build themselves: reviews and merges wait in the band for them.
+  (w.check as any).harness = { autonomy: 'off' };
   w.stories[0] = { ...w.stories[0], state: 'review' };
   await start($, on, w);
   const ui = await bandUi($);
@@ -653,6 +667,8 @@ test('ACT-4 Merge confirms, then merges as the person', async ($, on) => {
 
 test('ACT-4 a branch that fails verify is not merged, and the problems are shown', async ($, on) => {
   const w = project();
+  // The person runs the build themselves: reviews and merges wait in the band for them.
+  (w.check as any).harness = { autonomy: 'off' };
   w.stories[0] = { ...w.stories[0], state: 'review' };
   w.mergeExit = 1;
   await start($, on, w);
@@ -667,6 +683,8 @@ test('ACT-4 a branch that fails verify is not merged, and the problems are shown
 
 test('ACT-4 cancelling the confirmation merges nothing', async ($, on) => {
   const w = project();
+  // The person runs the build themselves: reviews and merges wait in the band for them.
+  (w.check as any).harness = { autonomy: 'off' };
   w.stories[0] = { ...w.stories[0], state: 'review' };
   w.answer = 'Cancel';
   await start($, on, w);
@@ -700,6 +718,8 @@ test('BAND-2 a failing finish check shows, with Lanes opening the pane', async (
 
 test('ACT-3 the story shows as being reviewed until the lead has reported', async ($, on) => {
   const w = project();
+  // The person runs the build themselves: reviews and merges wait in the band for them.
+  (w.check as any).harness = { autonomy: 'off' };
   w.stories[0] = { ...w.stories[0], state: 'review' };
   await start($, on, w);
   const ui = await bandUi($);
