@@ -44,12 +44,17 @@ With the GitHub provider: a claim is the ref `refs/code-kit/claims/<story>`, poi
 
 ## Requirements
 
-### TEAM-1 Owners and claims in the config
+### TEAM-1 The tech lead, owners and claims in the config
+
+The team has one tech lead (`team.techLead`, a GitHub handle). The tech lead owns what the lead owns today: the plan, the specs, the contracts and the principles. Other developers' sessions treat those paths as read-only and raise an intent to change them (TEAM-5); the tech lead agrees or drops it. Each developer still has a lead agent in their own session, which dispatches and reviews within their lanes and claims.
 
 A lane may name its owners (`lanes.web.owners: ["sam"]`). With owners, only their sessions dispatch that lane's stories; others see the lane read-only. A story in an unowned lane is claimed by whoever dispatches it first. The developer's handle is read from `gh api user`.
 
+A lane's owners may work in it themselves and through their agents at once: a lane can be shared by a person and agents.
+
 **Acceptance**
 
+- Given the tech lead is alex, when sam's agent edits the plan, then it's refused, naming alex and saying to raise an intent.
 - Given web owned by sam, when another developer's lead dispatches ST-4 (a web story), then it's refused, naming sam as the owner.
 - Given ST-9 in an unowned lane, when two developers' leads dispatch it, then the first claims it and the second is refused, naming who claimed it and when.
 
@@ -85,14 +90,21 @@ When a story is claimed, its lease is the paths its code map and the plan say it
 
 The Team tab lists each person with their claims, branches, pull requests and intents, and what of theirs touches yours. The band names only what needs you: a collision with your work, an intent touching what you own, or a review you own.
 
+### TEAM-9 Stale claims
+
+A claim is stale when its story's branch has had no push for `team.staleDays` (3 working days unless set) and, with the hub, its holder's sessions haven't worked on it in that time. A stale claim isn't released on its own: its holder sees "Still on ST-7? No push since Tuesday" in the band, with Keep and Release, and the tech lead sees it in the Team tab, where they can release or reassign it. Another developer whose work waits on a stale claim is told who holds it and that it's stale. A claim ends when its story merges, when its holder releases it, or when the tech lead releases or reassigns it.
+
+**Acceptance**
+
+- Given ST-7 claimed by sam with no push for 4 working days, then sam's band asks Keep or Release, and the tech lead's Team tab shows it stale; when sam keeps it, the clock starts again.
+- Given the tech lead reassigns ST-7 to dev B, then sam's claim ends, dev B holds it with its lease, and both are told.
+
 ### TEAM-8 When the provider is unreachable
 
 Coordination fails open: if GitHub (or the hub) can't be reached, claims and leases aren't checked, the band says so once, and every local rule still holds.
 
 ## Open questions
 
-| Question                                                                            | Owner  | Blocks |
-| ----------------------------------------------------------------------------------- | ------ | ------ |
-| One tech lead owns the plan and contracts, or each developer leads their own lanes? | Warren | TEAM-1 |
-| May a person and agents share a lane, or is a lane either a person's or agents'?    | Warren | TEAM-1 |
-| Are claims released on merge only, or also after a stretch with no pushes?          | Warren | TEAM-1 |
+| Question                                                     | Owner  | Blocks |
+| ------------------------------------------------------------ | ------ | ------ |
+| Is 3 working days the right default before a claim is stale? | Warren | TEAM-9 |
