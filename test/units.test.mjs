@@ -1301,3 +1301,63 @@ test('TEAM-2 story ids a claim ref can carry, and the paths an intent touches', 
   ]);
   assert.deepEqual(touchesOf('No paths named.'), []);
 });
+
+test('TEAM-6 GitHub activity in plain sentences, and the claims taken and released between reads', async () => {
+  const { activityOf, claimChanges } = await import('../hooks/lib/team.mjs');
+  const at = (m) => new Date(Date.UTC(2026, 9, 11, 0, m)).toISOString();
+  const said = activityOf(
+    [
+      {
+        type: 'PullRequestEvent',
+        created_at: at(5),
+        actor: { login: 'sam' },
+        payload: { action: 'closed', pull_request: { number: 3, title: 'A', merged: true } },
+      },
+      {
+        type: 'IssuesEvent',
+        created_at: at(4),
+        actor: { login: 'alex' },
+        payload: {
+          action: 'closed',
+          issue: {
+            number: 9,
+            title: 'B',
+            state_reason: 'not_planned',
+            labels: [{ name: 'code-kit:intent' }],
+          },
+        },
+      },
+      {
+        type: 'IssuesEvent',
+        created_at: at(3),
+        actor: { login: 'kim' },
+        payload: { action: 'opened', issue: { number: 8, title: 'a bug', labels: [] } },
+      },
+      {
+        type: 'CreateEvent',
+        created_at: at(2),
+        actor: { login: 'sam' },
+        payload: { ref_type: 'branch', ref: 'web/st-4' },
+      },
+      {
+        type: 'PushEvent',
+        created_at: at(0),
+        actor: { login: 'sam' },
+        payload: { ref: 'refs/heads/main', size: 1 },
+      },
+    ],
+    Date.parse(at(1)),
+  );
+  assert.deepEqual(
+    said.map((e) => `${e.by} ${e.text}`),
+    ['sam started web/st-4', 'alex dropped intent #9 B', 'sam merged #3 A'],
+  );
+  const changes = claimChanges(
+    [{ story: 'ST-1', by: 'sam', at: at(0), lease: [] }],
+    [{ story: 'ST-2', by: 'kim', at: at(6), lease: [] }],
+  );
+  assert.deepEqual(
+    changes.map((c) => `${c.by} ${c.kind} ${c.text}`),
+    ['kim claimed claimed ST-2', 'sam released ST-1 is no longer claimed by them'],
+  );
+});

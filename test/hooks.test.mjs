@@ -1238,6 +1238,7 @@ const db = JSON.parse(readFileSync(file, 'utf8'));
 const opt = (n) => a[a.indexOf(n) + 1];
 if (process.env.GH_DOWN) process.exit(1);
 if (a[0] === 'api' && a[1] === 'user') { if (!login) process.exit(1); console.log(login); }
+else if (a[0] === 'api' && a[1].startsWith('repos/{owner}/{repo}/events')) console.log(JSON.stringify(db.events ?? []));
 else if (a[0] === 'label') {}
 else if (a[0] === 'issue' && a[1] === 'list') console.log(JSON.stringify(db.issues.filter((i) => i.state === 'open' && i.labels.includes(opt('--label')))));
 else if (a[0] === 'issue' && a[1] === 'create') { const number = 100 + db.issues.length; db.issues.push({ number, title: opt('--title'), body: opt('--body'), author: { login }, labels: [opt('--label')], state: 'open', createdAt: new Date().toISOString(), url: 'https://github.com/o/r/issues/' + number }); writeFileSync(file, JSON.stringify(db)); console.log('https://github.com/o/r/issues/' + number); }
@@ -1522,6 +1523,81 @@ else process.exit(2);
           ),
         agreed.stderr + JSON.stringify(closed),
       ),
+      0,
+    );
+
+    // TEAM-6: since you last looked.
+    const hourAgo = (m) => new Date(Date.now() - m * 60000).toISOString();
+    const db = JSON.parse(readFileSync(store, 'utf8'));
+    db.events = [
+      {
+        type: 'PushEvent',
+        created_at: hourAgo(50),
+        actor: { login: 'sam' },
+        payload: { ref: 'refs/heads/web/st-4', size: 2 },
+      },
+      {
+        type: 'PullRequestEvent',
+        created_at: hourAgo(40),
+        actor: { login: 'sam' },
+        payload: {
+          action: 'opened',
+          pull_request: { number: 14, title: 'Booking list', draft: true },
+        },
+      },
+      {
+        type: 'PullRequestReviewEvent',
+        created_at: hourAgo(30),
+        actor: { login: 'alex' },
+        payload: {
+          review: { state: 'changes_requested' },
+          pull_request: { number: 14, title: 'Booking list' },
+        },
+      },
+      { type: 'WatchEvent', created_at: hourAgo(20), actor: { login: 'stranger' }, payload: {} },
+      {
+        type: 'PushEvent',
+        created_at: hourAgo(60 * 30),
+        actor: { login: 'old' },
+        payload: { ref: 'refs/heads/x', size: 1 },
+      },
+    ];
+    writeFileSync(store, JSON.stringify(db));
+    const dev2c = as(c, 'dev2');
+    rmSync(join(c, '.claude/state/team-seen.json'), { force: true });
+    const first = dev2c('team', 'since');
+    expect(
+      'TEAM-6 since you last looked: by person, in plain sentences, from the last day the first time',
+      truth(
+        first.stdout.includes('Since yesterday:') &&
+          first.stdout.includes(
+            'sam: pushed 2 commits to web/st-4; opened draft pull request #14 Booking list.',
+          ) &&
+          first.stdout.includes('alex: asked for changes on #14 Booking list.') &&
+          !first.stdout.includes('stranger') &&
+          !first.stdout.includes('old:'),
+        first.stdout,
+      ),
+      0,
+    );
+    expect(
+      'reading it marks it read',
+      truth(dev2c('team', 'since').stdout.includes('Nothing new.')),
+      0,
+    );
+    sam('team', 'claim', 'ST-21');
+    const later = JSON.parse(dev2c('team', 'since', '--json', '--peek').stdout || '{}');
+    expect(
+      'a claim taken since shows under its holder',
+      truth(
+        later.people?.sam?.some((e) => e.kind === 'claimed' && e.text === 'claimed ST-21'),
+        JSON.stringify(later),
+      ),
+      0,
+    );
+    expect(
+      '--peek leaves it unread',
+      truth(dev2c('team', 'since').stdout.includes('claimed ST-21')),
       0,
     );
 

@@ -58,7 +58,7 @@ import { journal } from '../hooks/lib/journal.mjs';
 import { dequeue, enqueue, lastMerged, readQueue, settle, waiting } from '../hooks/lib/queue.mjs';
 import { SETTINGS, parseSetting, settingOf, withSetting } from '../hooks/lib/harness.mjs';
 import { readLoop, writeLoop } from '../hooks/lib/loop-state.mjs';
-import { storyOfBranch, teamOf, teamProvider, whoami } from '../hooks/lib/team.mjs';
+import { claimChanges, storyOfBranch, teamOf, teamProvider, whoami } from '../hooks/lib/team.mjs';
 import {
   APPROVAL_MINUTES,
   approvalLifetime,
@@ -104,7 +104,7 @@ const minutesGiven = option('--minutes');
 const answerGiven = option('--answer');
 const leaseGiven = option('--lease');
 const touchesGiven = option('--touches');
-const FLAGS = ['--write', '--no-checks', '--json', '--delegated', '--person', '--fresh'];
+const FLAGS = ['--write', '--no-checks', '--json', '--delegated', '--person', '--fresh', '--peek'];
 const flag = (name) => args.includes(name);
 const writeBaseline = flag('--write');
 const [command, ...rest] = args.filter((a) => !FLAGS.includes(a));
@@ -1279,9 +1279,50 @@ function teamCommand() {
       r.released ? `Released ${story} (${r.claim.by}'s claim).` : `${story} isn't claimed.`,
     );
   }
+  // TEAM-6: what everyone did since you last looked; reading it marks it read, unless --peek.
+  if (sub === 'since') {
+    const root = resolve('.');
+    const seenFile = join(root, '.claude/state/team-seen.json');
+    let seen = null;
+    try {
+      seen = JSON.parse(readFileSync(seenFile, 'utf8'));
+    } catch {
+      // never looked: the last day
+    }
+    const from = seen ? Date.parse(seen.at) : Date.now() - 24 * 3600_000;
+    const state = provider.state({ fresh: true });
+    const activity = provider.since(from);
+    const changes =
+      seen && state.reachable !== false ? claimChanges(seen.claims, state.claims) : [];
+    const all = [...(activity ?? []), ...changes].sort((a, b) => a.at - b.at);
+    const people = {};
+    for (const e of all) (people[e.by] ??= []).push(e);
+    if (!flag('--peek')) {
+      mkdirSync(join(root, '.claude/state'), { recursive: true });
+      writeFileSync(
+        seenFile,
+        JSON.stringify({ at: new Date().toISOString(), claims: state.claims ?? [] }) + '\n',
+      );
+    }
+    if (flag('--json'))
+      return out(
+        JSON.stringify(
+          { since: new Date(from).toISOString(), github: activity !== null, people },
+          null,
+          2,
+        ),
+      );
+    out(
+      `Since ${seen ? ago(seen.at) : 'yesterday'}${activity === null ? " (GitHub's activity couldn't be read; claims only)" : ''}:`,
+    );
+    if (!all.length) return out('  Nothing new.');
+    for (const [who, list] of Object.entries(people))
+      out(`  ${who}${who === state.me ? ' (you)' : ''}: ${list.map((e) => e.text).join('; ')}.`);
+    return;
+  }
   if (sub !== undefined)
     die(
-      'code-kit team [--json] [--fresh] | team claim <story> [--lease globs] | team release <story>',
+      'code-kit team [--json] [--fresh] | team since [--json] [--peek] | team claim <story> [--lease globs] | team release <story>',
     );
   const state = provider.state({ fresh: flag('--fresh') });
   if (flag('--json')) return out(JSON.stringify(state, null, 2));
@@ -1409,7 +1450,8 @@ function usage() {
       '              | loop [--json] | loop pause|resume\n' +
       '              | map <story> [--json] | trail [--json] | journal [--json]\n' +
       '              | story <id> [--json] | timeline [--json]\n' +
-      '              | team [--json] [--fresh] | team claim <story> [--lease globs] | team release <story>\n' +
+      '              | team [--json] [--fresh] | team since [--json] [--peek]\n' +
+      '              | team claim <story> [--lease globs] | team release <story>\n' +
       '              | intend "<what and why>" [--touches globs] | intend agree|drop <id> [--reason "…"]',
   );
 }

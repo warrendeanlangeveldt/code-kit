@@ -84,7 +84,11 @@ When a story is claimed, its lease is the paths the lead says it will change (`t
 
 ### TEAM-6 Since you last looked
 
-`code-kit team since` (and the Team tab's top) says, by person and in plain sentences, what was pushed, opened, merged, claimed, released and intended since you last read it.
+`code-kit team since` (and the Team tab's top) says, by person and in plain sentences, what was pushed, opened, merged, reviewed, claimed, released and intended since you last read it, from GitHub's repository events and the claims as you last saw them. The first time it covers the last day; reading it marks it read (`--peek` doesn't).
+
+**Acceptance**
+
+- Given sam pushed two commits to web/st-4 and opened a draft pull request, and alex asked for changes on it, then dev2's `team since` says so under each of them, and leaves out activity it doesn't speak about (stars) and anything before yesterday; read again, it says nothing new; after sam claims ST-21, it says sam claimed ST-21.
 
 ### TEAM-7 Shown
 

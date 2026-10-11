@@ -280,9 +280,9 @@ The hooks refuse another developer's agent editing the tech lead's paths (raise 
 **Lane:** lead
 **Requirements:** TEAM-6
 **Depends on:** ST-25
-**Status:** todo
+**Status:** done
 
-`code-kit team since`: by person, in plain sentences, what was pushed, opened, merged, claimed, released and intended since you last read it, from the fetched remote and the GitHub API.
+`code-kit team since [--json] [--peek]`: by person, in plain sentences, what was pushed, branched, opened, merged, reviewed, intended, agreed or dropped (GitHub's repository events), and claimed or released (the claims against those you last saw), since you last read it; the first time, the last day.
 
 ### ST-29 Stale claims
 

@@ -318,6 +318,22 @@ function githubProvider(root, team) {
       const id = Number(url.trim().match(/\/(\d+)\s*$/)?.[1]);
       return { ok: true, intent: { id, by, about, touches, url: url.trim(), state: 'open' } };
     },
+    /**
+     * TEAM-6: what happened since `at` (ms), from the repository's activity on GitHub: [{ at, by, kind,
+     * text }], oldest first. Kinds: pushed, branched, opened, merged, closed, reviewed, intended,
+     * agreed, dropped. Null when GitHub can't be read.
+     */
+    since(at) {
+      const raw = gh(['api', 'repos/{owner}/{repo}/events?per_page=100']);
+      if (raw === null) return null;
+      let events;
+      try {
+        events = JSON.parse(raw);
+      } catch {
+        return null;
+      }
+      return activityOf(events, at);
+    },
     /** TEAM-5: the tech lead agrees an intent (it's how the team goes) or drops it. */
     settle(id, outcome, why = '') {
       const by = me();
@@ -382,6 +398,10 @@ function commandProvider(root, team, command) {
     },
     intend: (about, touches = []) => call('intend', { about, touches }),
     settle: (id, outcome, why = '') => call('settle', { id, outcome, why }),
+    since: (at) => {
+      const r = call('since', { at });
+      return Array.isArray(r) ? r : null;
+    },
     forget: () => writeCache(root, null),
   };
 }
@@ -453,4 +473,80 @@ export function teamRefusal({ actor, rel, branch, config, me, state }) {
   if (leased)
     return `${rel} is leased by ${leased.by} for ${leased.story}, which is changing it now. Ask ${leased.by}, wait for ${leased.story} to merge, or raise what you need as an intent: ${intend}`;
   return null;
+}
+
+/**
+ * TEAM-6: GitHub's repository events since `at` (ms) as plain sentences: [{ at, by, kind, text }],
+ * oldest first. Events code-kit doesn't speak about (stars, forks, wiki edits) are left out.
+ */
+export function activityOf(events, at) {
+  const out = [];
+  for (const e of Array.isArray(events) ? events : []) {
+    const when = Date.parse(e.created_at);
+    if (!(when > at)) continue;
+    const by = e.actor?.login ?? 'someone';
+    const p = e.payload ?? {};
+    const add = (kind, text) => out.push({ at: when, by, kind, text });
+    if (e.type === 'PushEvent' && String(p.ref).startsWith('refs/heads/')) {
+      const n = p.size ?? p.commits?.length ?? 0;
+      add('pushed', `pushed ${n} commit${n === 1 ? '' : 's'} to ${p.ref.slice(11)}`);
+    } else if (e.type === 'CreateEvent' && p.ref_type === 'branch')
+      add('branched', `started ${p.ref}`);
+    else if (e.type === 'PullRequestEvent') {
+      const pr = p.pull_request ?? {};
+      const name = `#${pr.number} ${pr.title}`;
+      if (p.action === 'opened' || p.action === 'reopened')
+        add('opened', `opened ${pr.draft ? 'draft ' : ''}pull request ${name}`);
+      else if (p.action === 'closed' && pr.merged) add('merged', `merged ${name}`);
+      else if (p.action === 'closed') add('closed', `closed ${name} without merging`);
+      else if (p.action === 'ready_for_review') add('opened', `marked ${name} ready for review`);
+    } else if (e.type === 'PullRequestReviewEvent') {
+      const pr = p.pull_request ?? {};
+      const state = String(p.review?.state ?? '').toLowerCase();
+      const how =
+        state === 'approved'
+          ? 'approved'
+          : state === 'changes_requested'
+            ? 'asked for changes on'
+            : 'reviewed';
+      add('reviewed', `${how} #${pr.number} ${pr.title}`);
+    } else if (e.type === 'IssuesEvent') {
+      const issue = p.issue ?? {};
+      const intent = (issue.labels ?? []).some((l) => (l.name ?? l) === INTENT_LABEL);
+      if (!intent) continue;
+      const name = `#${issue.number} ${issue.title}`;
+      if (p.action === 'opened') add('intended', `raised intent ${name}`);
+      else if (p.action === 'closed')
+        add(
+          issue.state_reason === 'not_planned' ? 'dropped' : 'agreed',
+          `${issue.state_reason === 'not_planned' ? 'dropped' : 'agreed'} intent ${name}`,
+        );
+    }
+  }
+  return out.sort((a, b) => a.at - b.at);
+}
+
+/** Claims taken and released between two reads: [{ by, kind: 'claimed'|'released', text }]. */
+export function claimChanges(before = [], now = []) {
+  const key = (c) => `${c.story}|${c.by}`;
+  const was = new Map(before.map((c) => [key(c), c]));
+  const is = new Map(now.map((c) => [key(c), c]));
+  return [
+    ...now
+      .filter((c) => !was.has(key(c)))
+      .map((c) => ({
+        at: Date.parse(c.at),
+        by: c.by,
+        kind: 'claimed',
+        text: `claimed ${c.story}`,
+      })),
+    ...before
+      .filter((c) => !is.has(key(c)))
+      .map((c) => ({
+        at: Date.now(),
+        by: c.by,
+        kind: 'released',
+        text: `${c.story} is no longer claimed by them`,
+      })),
+  ];
 }
