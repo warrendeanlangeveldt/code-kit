@@ -101,3 +101,45 @@ export function discussionActivity(nodes, at, techLead = null) {
   }
   return out;
 }
+
+/** A title as a file name: "Split the report format" → "split-the-report-format". */
+export const slugOf = (title) =>
+  String(title)
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-|-$/g, '')
+    .slice(0, 60) || 'decision';
+
+/**
+ * TEAM-10: an agreed intent as a decision record, from its discussion's facts only: { title, body, url,
+ * author, createdAt, closedAt, comments: [{ author, body }] }. The tech lead's words are their comment
+ * agreeing it.
+ */
+export function decisionRecord(d, techLead) {
+  const date = String(d.closedAt ?? d.createdAt).slice(0, 10);
+  const touches = touchesOf(d.body);
+  const why = String(d.body ?? '')
+    .replace(/^Touches:.*$/m, '')
+    .replace(/Raised with code-kit by @\S+ before any code[^\n]*/, '')
+    .trim();
+  const agreed = (d.comments ?? [])
+    .filter((c) => c.author?.login === techLead && /^Agreed by @/.test(c.body))
+    .at(-1)
+    ?.body.replace(/^Agreed by @\S+, the tech lead(: |\.)?/, '')
+    .trim();
+  return [
+    `# ${d.title}`,
+    '',
+    '**Status:** agreed',
+    `**Date:** ${date}`,
+    `**Raised by:** @${d.author?.login ?? 'someone'} · **Agreed by:** @${techLead}`,
+    `**Discussion:** ${d.url}`,
+    '',
+    '## What changes, and why',
+    '',
+    why || '(The intent said no more than its title.)',
+    ...(touches.length ? ['', '## What it touches', '', ...touches.map((t) => `- \`${t}\``)] : []),
+    ...(agreed ? ['', '## Agreed', '', agreed] : []),
+    '',
+  ].join('\n');
+}

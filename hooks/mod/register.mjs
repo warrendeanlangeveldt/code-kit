@@ -563,11 +563,20 @@ export function register(on) {
       keepClaim: (line) => act.teamAct(['team', 'keep', line.claim.story], 'Keeping the claim'),
       releaseClaim: (line) =>
         act.teamAct(['team', 'release', line.claim.story], 'Releasing the claim'),
-      agreeIntent: (line) =>
-        act.teamAct(
-          ['intend', 'agree', String(line.intent.id), '--reason', 'agreed in the code-kit pane'],
+      // TEAM-10: agreed, the lead records it where agents read it, through a pull request.
+      agreeIntent: async (line) => {
+        const { id, about } = line.intent;
+        await act.teamAct(
+          ['intend', 'agree', String(id), '--reason', 'agreed in the code-kit pane'],
           'Agreeing the intent',
-        ),
+        );
+        if (notice) return;
+        await $.prompt
+          .submit({
+            text: `Intent #${id} (${about}) was agreed. Record it so every agent builds on it: run node "${cli}" intend record ${id}, then commit the decision record on a branch lead/decision-${id}, push it and open a pull request.`,
+          })
+          .catch(() => {});
+      },
       dropIntent: (line) =>
         act.teamAct(
           ['intend', 'drop', String(line.intent.id), '--reason', 'dropped in the code-kit pane'],

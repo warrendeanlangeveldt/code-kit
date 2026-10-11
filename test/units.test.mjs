@@ -1427,3 +1427,27 @@ test('TEAM-5 and TEAM-6 an intent from its discussion, and intents raised and se
     ['sam raised intent #5 I5', 'alex agreed intent #6 I6'],
   );
 });
+
+test('TEAM-10 a decision record holds only what the discussion says', async () => {
+  const { decisionRecord, slugOf } = await import('../hooks/lib/teamfacts.mjs');
+  assert.equal(slugOf('Split the report format!'), 'split-the-report-format');
+  const text = decisionRecord(
+    {
+      title: 'Split the report format',
+      body: 'Touches: docs/reports/**\n\nReports differ per site.\n\nRaised with code-kit by @sam before any code, so the team sees it first.',
+      url: 'u',
+      author: { login: 'sam' },
+      createdAt: '2026-10-10T01:00:00Z',
+      closedAt: '2026-10-11T02:00:00Z',
+      comments: [
+        { author: { login: 'kim' }, body: 'Agreed by @kim, the tech lead: not really' },
+        { author: { login: 'alex' }, body: 'Agreed by @alex, the tech lead: per site now' },
+      ],
+    },
+    'alex',
+  );
+  assert.equal(
+    text,
+    '# Split the report format\n\n**Status:** agreed\n**Date:** 2026-10-11\n**Raised by:** @sam · **Agreed by:** @alex\n**Discussion:** u\n\n## What changes, and why\n\nReports differ per site.\n\n## What it touches\n\n- `docs/reports/**`\n\n## Agreed\n\nper site now\n',
+  );
+});

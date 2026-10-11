@@ -59,6 +59,7 @@ import { dequeue, enqueue, lastMerged, readQueue, settle, waiting } from '../hoo
 import { SETTINGS, parseSetting, settingOf, withSetting } from '../hooks/lib/harness.mjs';
 import { readLoop, writeLoop } from '../hooks/lib/loop-state.mjs';
 import { claimChanges, storyOfBranch, teamOf, teamProvider, whoami } from '../hooks/lib/team.mjs';
+import { decisionRecord, slugOf } from '../hooks/lib/teamfacts.mjs';
 import {
   APPROVAL_MINUTES,
   approvalLifetime,
@@ -1379,6 +1380,26 @@ function intendCommand() {
   if (!team) die('This project has no "team" in its config, so intents have nowhere to go.');
   const provider = teamProvider(resolve('.'), team);
   const [first, id] = rest;
+  // TEAM-10: an agreed intent, written where agents read it.
+  if (first === 'record') {
+    if (!/^\d+$/.test(id ?? '')) die('code-kit intend record <discussion number>');
+    const d = provider.intent(Number(id));
+    if (!d) die("GitHub can't be reached, so the intent can't be read.");
+    if (d.missing) die(`There's no intent #${id} in ${team.intents}.`);
+    if (!(d.closed && d.stateReason === 'RESOLVED'))
+      die(`Intent #${id} isn't agreed yet: only an agreed intent becomes a decision record.`);
+    const dir = raw.docs?.decisions ?? 'docs/decisions';
+    mkdirSync(resolve(dir), { recursive: true });
+    const existing = readdirSync(resolve(dir)).filter((f) => f.endsWith('.md'));
+    const already = existing.find((f) => read(join(dir, f)).includes(`**Discussion:** ${d.url}`));
+    if (already) return out(`Intent #${id} is already recorded: ${join(dir, already)}`);
+    const last = Math.max(0, ...existing.map((f) => Number(f.match(/^(\d+)-/)?.[1] ?? 0)));
+    const path = join(dir, `${String(last + 1).padStart(4, '0')}-${slugOf(d.title)}.md`);
+    writeFileSync(resolve(path), decisionRecord(d, team.techLead));
+    return out(
+      `Wrote ${path}. Commit it on a branch (lead/decision-${id}), push it and open a pull request, so it's reviewed and merged like any change; once merged, every agent reads it.`,
+    );
+  }
   if (first === 'agree' || first === 'drop' || first === 'duplicate') {
     if (!/^\d+$/.test(id ?? '')) die(`code-kit intend ${first} <issue number> [--reason "…"]`);
     const outcome = { agree: 'agreed', drop: 'dropped', duplicate: 'duplicate' }[first];
@@ -1473,7 +1494,7 @@ function usage() {
       '              | team [--json] [--fresh] | team since [--json] [--peek]\n' +
       '              | team claim <story> [--lease globs] | team keep|release <story>\n' +
       '              | team reassign <story> <handle>\n' +
-      '              | intend "<what and why>" [--touches globs] | intend agree|drop|duplicate <id> [--reason "…"]',
+      '              | intend "<what and why>" [--touches globs] | intend agree|drop|duplicate <id> [--reason "…"] | intend record <id>',
   );
 }
 await (commands[command] ?? usage)();

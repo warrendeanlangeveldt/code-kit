@@ -1593,6 +1593,43 @@ else process.exit(2);
       0,
     );
 
+    // TEAM-10: an agreed intent becomes a decision record.
+    expect(
+      "an intent that isn't agreed isn't recorded",
+      sam('intend', 'record', '12'),
+      1,
+      "Intent #12 isn't agreed yet",
+    );
+    mkdirSync(join(b, 'docs/decisions'), { recursive: true });
+    writeFileSync(join(b, 'docs/decisions/0002-use-postgres.md'), '# Use Postgres\n');
+    const recorded = alex('intend', 'record', raisedId);
+    const recordPath = join(b, 'docs/decisions/0003-split-the-report-format.md');
+    const record = existsSync(recordPath) ? readFileSync(recordPath, 'utf8') : '';
+    expect(
+      'TEAM-10 the agreed intent is written as the next decision record, from the discussion',
+      truth(
+        recorded.stdout.includes('Wrote docs/decisions/0003-split-the-report-format.md') &&
+          record.startsWith('# Split the report format\n') &&
+          record.includes('**Raised by:** @sam · **Agreed by:** @alex') &&
+          record.includes(`**Discussion:** https://github.com/o/r/discussions/${raisedId}`) &&
+          record.includes('- `docs/reports/**`') &&
+          record.includes('## Agreed\n\nreports are per site now') &&
+          !record.includes('Touches:') &&
+          !record.includes('Raised with code-kit'),
+        recorded.stdout + recorded.stderr + record,
+      ),
+      0,
+    );
+    expect(
+      'recorded again, it says where it already is',
+      truth(
+        alex('intend', 'record', raisedId).stdout.includes(
+          'is already recorded: docs/decisions/0003-split-the-report-format.md',
+        ),
+      ),
+      0,
+    );
+
     // TEAM-6: since you last looked.
     const hourAgo = (m) => new Date(Date.now() - m * 60000).toISOString();
     const db = JSON.parse(readFileSync(store, 'utf8'));

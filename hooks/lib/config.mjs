@@ -159,7 +159,7 @@ export function validate(c) {
   need(c.version === 1, '"version" must be 1');
   // A brownfield project may have no specs yet: then there is no spec-check gate.
   need(c.docs === undefined || isObj(c.docs), '"docs" must be an object');
-  for (const k of ['specs', 'principles', 'plan'])
+  for (const k of ['specs', 'principles', 'plan', 'decisions'])
     need(c.docs?.[k] === undefined || isStr(c.docs[k]), `"docs.${k}" must be a path`);
   need(isObj(c.lead) && isList(c.lead?.paths), '"lead.paths" must be a list of globs');
   need(

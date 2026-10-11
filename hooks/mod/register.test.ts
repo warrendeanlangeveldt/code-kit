@@ -2989,6 +2989,10 @@ test('TEAM-5 the tech lead sees every open intent with Agree and Drop, which act
     '--reason',
     'agreed in the code-kit pane',
   ]);
+  // TEAM-10: then the lead records it where agents read it, through a pull request.
+  expect(
+    w.prompts.some((p) => p.includes('intend record 12') && p.includes('lead/decision-12')),
+  ).toBe(true);
   await band.unmount();
 });
 

@@ -438,6 +438,48 @@ function githubProvider(root, team) {
         ...discussionActivity(found?.intents ?? [], at, team.techLead),
       ].sort((a, b) => a.at - b.at);
     },
+    /** TEAM-10: one intent with its comments, for its decision record; null when unreadable. */
+    intent(id) {
+      const d = graphql(
+        `
+          query ($owner: String!, $name: String!, $number: Int!) {
+            repository(owner: $owner, name: $name) {
+              discussion(number: $number) {
+                number
+                title
+                body
+                url
+                createdAt
+                closed
+                closedAt
+                stateReason
+                author {
+                  login
+                }
+                category {
+                  name
+                }
+                comments(last: 20) {
+                  nodes {
+                    author {
+                      login
+                    }
+                    body
+                  }
+                }
+              }
+            }
+          }
+        `,
+        { number: Number(id) },
+        true,
+      );
+      if (!d) return null;
+      const found = d.repository?.discussion;
+      if (!found || found.category?.name?.toLowerCase() !== team.intents.toLowerCase())
+        return { missing: true };
+      return { ...found, comments: found.comments?.nodes ?? found.comments ?? [] };
+    },
     /** TEAM-5: the tech lead agrees an intent (resolved), drops it (outdated) or marks it a duplicate. */
     settle(id, outcome, why = '') {
       const by = me();
@@ -544,6 +586,10 @@ function commandProvider(root, team, command) {
     intend: (about, touches = []) => call('intend', { about, touches }),
     settle: (id, outcome, why = '') => call('settle', { id, outcome, why }),
     reassign: (story, to) => call('reassign', { story, to }),
+    intent: (id) => {
+      const r = call('intent', { id });
+      return r.unreachable ? null : r;
+    },
     since: (at) => {
       const r = call('since', { at });
       return Array.isArray(r) ? r : null;

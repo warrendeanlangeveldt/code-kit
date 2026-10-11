@@ -316,7 +316,7 @@ Intents move from issues to discussions in the Intents category, through GitHub'
 **Lane:** lead
 **Requirements:** TEAM-10
 **Depends on:** ST-31
-**Status:** todo
+**Status:** done
 
 `code-kit intend record <id>` writes the agreed intent to `docs.decisions` as a numbered decision record from the discussion's facts. Agreeing in the pane prompts the tech lead's lead to record it, commit it on a branch and open a pull request.
 
