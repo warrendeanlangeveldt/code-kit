@@ -298,6 +298,6 @@ A claim with nothing on it (claimed, or its branch pushed) for `team.staleDays` 
 **Lane:** lead
 **Requirements:** TEAM-7
 **Depends on:** ST-27, ST-28, ST-29
-**Status:** todo
+**Status:** done
 
 A Team tab: each person with their claims, branches, pull requests and intents, what touches yours, and "since you last looked" at the top. The band names only what needs you: a collision, an intent touching what you own, a stale claim of yours, or a review you own.

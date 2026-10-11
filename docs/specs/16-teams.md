@@ -92,7 +92,13 @@ When a story is claimed, its lease is the paths the lead says it will change (`t
 
 ### TEAM-7 Shown
 
-The Team tab lists each person with their claims, branches, pull requests and intents, and what of theirs touches yours. The band names only what needs you: a collision with your work, an intent touching what you own, or a review you own.
+The Team tab (8, only in a team's project) opens on "since you last looked" (reading it there marks it read), then lists each person, the tech lead first, with the lanes they own, their claims (stale ones marked, with Keep and Release for yours), their pull requests and their intents (with Agree and Drop for the tech lead). The band names only what needs you: your stale claim (Keep, Release), a claim of yours changing the same files as someone else's, an intent touching what you own or lease (for the tech lead, every open intent, with Agree and Drop), and a ready pull request in a lane you own. Each is a decision with its card (DECIDE-2); "the shared repository can't be reached" is a note.
+
+**Acceptance**
+
+- Given sam owns web, holds ST-4 stale since Tuesday leasing `apps/web/booking/**`, kim holds ST-9 leasing `apps/web/booking/form.tsx`, kim intends a change touching `apps/web/**`, and kim's #14 on web/st-9 is ready, then sam's band shows each, and Keep runs `team keep ST-4`.
+- Given the same seen by alex, the tech lead, then the band shows kim's intent with Agree, which runs `intend agree 12` as alex.
+- Given the Team tab opened, then it reads since-you-last-looked once, and shows alex as tech lead, sam with web and the stale ST-4 (Release releases it), and kim's pull request and intent.
 
 ### TEAM-9 Stale claims
 

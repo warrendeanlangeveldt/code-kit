@@ -9,6 +9,7 @@ const LEAD = 'lead';
 /** A CLI run's stdout as JSON, or null when it printed none. */
 import { BAR, POSE_GLYPH, rasterCells, runs, sprite, spriteSvg, timelineSvg } from './art.mjs';
 import { missionLines, nextText } from './mission.mjs';
+import { teamLines } from './teamview.mjs';
 
 export function parseJson(stdout) {
   try {
@@ -688,6 +689,7 @@ export function bandLines({
   live = {},
   nextStep = null,
   combined = null,
+  team = null,
 }) {
   const lines = [];
   // MISSION-1: the goal, now, next and the agents at work, above what needs the person.
@@ -808,6 +810,8 @@ export function bandLines({
       branch: next.branch,
       actions: [{ id: 'mergeQueue', label: 'Merge' }],
     });
+  // TEAM-7, TEAM-9: what of the team needs this person.
+  lines.push(...teamLines(team, check?.lanes ?? {}));
   // LOOP-7: the milestone is done; LOOP-6: the loop's own state, with Pause or Resume.
   if (loop?.state === 'done')
     lines.push({
@@ -941,7 +945,7 @@ export function band(lines, { Box, Text, Button }, onAction) {
 }
 
 /** Band lines that inform rather than ask: they never need the person's answer. */
-const NOTE_KINDS = new Set(['usage', 'paused', 'finish', 'done']);
+const NOTE_KINDS = new Set(['usage', 'paused', 'finish', 'done', 'teamDown']);
 
 /** The Approve… confirmation (ACT-1): what it grants, to whom, for how long, and the reason. */
 export function approvePane(

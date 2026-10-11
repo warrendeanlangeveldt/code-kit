@@ -12,6 +12,10 @@ export const DECISION_KINDS = new Set([
   'queue',
   'review',
   'notice',
+  'teamStale',
+  'teamCollision',
+  'teamIntent',
+  'teamReview',
 ]);
 
 /** What each answer does, in the person's words. */
@@ -29,6 +33,12 @@ const EFFECT = {
   review: 'The lead reviews it against its requirements now.',
   merge: "It's verified and merged now, by you.",
   dismiss: 'Clears this message.',
+  keepClaim: 'Your claim stays, and its clock starts again.',
+  releaseClaim: 'Anyone may claim the story now, and your lease on its files ends.',
+  agreeIntent:
+    'The issue closes as agreed, with your words; then put it in the specs or decisions so every agent builds on it.',
+  dropIntent: 'The issue closes as dropped, and the team carries on as agreed before.',
+  team: 'Opens the Team tab: who is building what, and what changed since you last looked.',
 };
 
 /** Why a line needs the person, when the line itself doesn't say. */
@@ -53,6 +63,15 @@ function whyOf(line, check) {
       ? 'The loop is off, so merging is yours. main has no rules committed yet: code-kit queue rules puts them there.'
       : "Your rules don't let the lead merge into main, so merges are yours.";
   if (line.kind === 'review') return 'The loop is off, so reviewing finished work is yours.';
+  if (line.kind === 'teamStale')
+    return "It's your claim: nobody else can build it while you hold it, and the tech lead may hand it on.";
+  if (line.kind === 'teamCollision')
+    return `Your agents and ${line.other.by}'s are changing the same files; whoever merges second resolves the conflict. Agree who goes first.`;
+  if (line.kind === 'teamIntent' && line.intent && /touches yours/.test(line.text))
+    return 'It changes what you own or are building: read it before your agents build further on the old way.';
+  if (line.kind === 'teamIntent')
+    return "You're the tech lead: a change of direction is agreed or dropped by you, and until then everyone builds on what was agreed.";
+  if (line.kind === 'teamReview') return "It's in a lane you own, so its review is yours.";
   return null;
 }
 
@@ -130,7 +149,11 @@ export function decisionCards(lines, context = {}) {
         doing:
           line.held?.command ??
           line.request?.what ??
-          (line.proposal?.label ? `Next step: ${line.proposal.label}` : null),
+          (line.proposal?.label ? `Next step: ${line.proposal.label}` : null) ??
+          (line.intent
+            ? `Intent #${line.intent.id}: ${line.intent.about}${line.intent.touches.length ? ` (touches ${line.intent.touches.join(', ')})` : ''}`
+            : null) ??
+          (line.pull ? `Pull request #${line.pull.number} on ${line.pull.branch}` : null),
         settled,
         why: whyOf(line, check),
         options: line.actions.map((a) => ({ ...a, effect: EFFECT[a.id] ?? null })),

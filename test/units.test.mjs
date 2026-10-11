@@ -1374,3 +1374,10 @@ test('TEAM-9 working days, and when a claim goes stale', async () => {
   assert.equal(withStaleness(claim, day(12), 3, day(13)).stale, false);
   assert.equal(withStaleness(claim, day(12), 3, day(13)).active, new Date(day(12)).toISOString());
 });
+
+test('TEAM-7 two globs overlap when one can name a file the other names', async () => {
+  const { globsOverlap } = await import('../hooks/lib/teamfacts.mjs');
+  assert.ok(globsOverlap('apps/web/**', 'apps/web/booking/form.tsx'));
+  assert.ok(globsOverlap('packages/schemas/report.ts', 'packages/**'));
+  assert.ok(!globsOverlap('apps/web/**', 'apps/api/**'));
+});

@@ -67,6 +67,7 @@ let reviewTurn = null; // 'next' until the lead's review turn starts, then its i
 let approving = null; // the open Approve… confirmation: { request, reason, error }
 let result = null; // what the last merge reported
 let notice = null; // why the person's last act failed
+let teamSince = null; // TEAM-6: since you last looked, as read when the Team tab opened
 let act = null; // the session's actions, made at session start
 let settingRows = []; // the harness settings, from `code-kit settings --json`
 let pendingSetting = null; // a change waiting for the person's reason: { key, value, reason, error }
@@ -221,6 +222,8 @@ export function register(on) {
           valid && check.adapters?.length
             ? ((await json('adapters', '--session', session)) ?? [])
             : [];
+        // TEAM-7: the team's claims, intents and pull requests, where the project is a team's.
+        const team = valid && check.team ? await json('team') : null;
         // The agents at work; none where the session has none bound (claude -p before it mounts).
         const atWork = agentsAtWork(await $.agent.list().catch(() => []));
         model = {
@@ -232,6 +235,7 @@ export function register(on) {
           timeline,
           adapters,
           check,
+          team,
           base: status?.base ?? null,
         };
         if (model.state.kind === 'ok') await act.registerReviewer();
@@ -246,6 +250,9 @@ export function register(on) {
           codeMap = id ? ((await json('map', id)) ?? codeMap) : null;
         }
         if (paneUi.tab === 'map') trailData = (await json('trail')) ?? trailData;
+        // TEAM-6: since you last looked, read once each time the Team tab opens, which marks it read.
+        if (paneUi.tab === 'team' && model.check?.team && !teamSince)
+          teamSince = (await json('team', 'since')) ?? { people: {} };
         // JOURNAL-1, DECIDE-2: the lineage, for the Journal tab and the decisions' cards.
         const deciding = held.size > 0 || (model.requests?.open ?? []).length > 0;
         if (model.check?.docs?.plan && (['journal', 'decisions'].includes(paneUi.tab) || deciding))
@@ -542,6 +549,38 @@ export function register(on) {
         };
         await $.ui.open({ id: RESULT_ID, title: 'Merge', focus: true, closeOnEscape: true });
         await act.reload();
+      },
+      // TEAM-9: the person keeps or releases their stale claim; TEAM-5: the tech lead agrees or drops an
+      // intent. Each is the person's own press, run as them.
+      teamAct: async (args, done) => {
+        const ran = await $.process.run(['node', cli, ...args], { cwd, timeoutMs: 60000 });
+        notice =
+          ran.exitCode === 0
+            ? null
+            : `${done} failed: ${(ran.stderr || ran.stdout).trim().split('\n')[0]}`;
+        await act.reload();
+      },
+      keepClaim: (line) => act.teamAct(['team', 'keep', line.claim.story], 'Keeping the claim'),
+      releaseClaim: (line) =>
+        act.teamAct(['team', 'release', line.claim.story], 'Releasing the claim'),
+      agreeIntent: (line) =>
+        act.teamAct(
+          ['intend', 'agree', String(line.intent.id), '--reason', 'agreed in the code-kit pane'],
+          'Agreeing the intent',
+        ),
+      dropIntent: (line) =>
+        act.teamAct(
+          ['intend', 'drop', String(line.intent.id), '--reason', 'dropped in the code-kit pane'],
+          'Dropping the intent',
+        ),
+      // TEAM-7: the Team tab, opened from the band.
+      team: async () => {
+        paneUi = { ...paneUi, tab: 'team', story: null };
+        if (!(await $.ui.panes()).some((p) => p.id === PANE_ID))
+          await $.ui.open({ id: PANE_ID, title: 'Lanes', focus: true, closeOnEscape: true });
+        await act.readMaps();
+        $.ui.invalidate('ui.render');
+        return {};
       },
       approvals: async () => {
         await act.reload();
@@ -1456,6 +1495,7 @@ export function register(on) {
       live: liveNow(now),
       nextStep: loop.nextStep,
       combined: combinedNow(),
+      team: model.team ?? null,
     });
 
   on('ui.render', { component: 'Pane', requestId: PANE_ID }, async ($, e) => {
@@ -1473,6 +1513,8 @@ export function register(on) {
         needs: linesNow(now).filter((l) => !l.mission),
         cards: cardsNow(now),
         journal: journalNow(),
+        team: model.team ?? null,
+        teamSince,
         now,
         live: liveNow(now),
         held: [...held.values()],
@@ -1499,6 +1541,7 @@ export function register(on) {
       $.ui.resolve(e),
       {
         onTab: (tab) => {
+          if (tab !== 'team') teamSince = null;
           paneUi = { ...paneUi, tab };
           $.ui.invalidate('ui.render');
           act?.readMaps().then(() => $.ui.invalidate('ui.render'));
