@@ -46,6 +46,9 @@ import {
   toolLine,
 } from './panes.mjs';
 import { leadPrompt, nudgeText, restartPrompt, stallDue, stepKey, stepLabel } from './loop.mjs';
+import { goalOf, nextText } from './mission.mjs';
+import { contextOf, decisionCards } from './decisions.mjs';
+import { glowOf, mapStoryOf, touchOf } from './codemap.mjs';
 import { harnessSettings } from '../lib/harness.mjs';
 import {
   REVIEW_WAIT_MS,
@@ -82,6 +85,7 @@ const loop = {
   asked: { key: null, times: 0 }, // the step the lead was last prompted with, and how often in a row
   proposal: null, // under autonomy propose, or a step asked too often: { prompt, label, kind, target }
   pending: [], // restarts waiting for the lead to be idle: { story, prompt }
+  nextStep: null, // what `code-kit next` last said, for the band's next row
   done: null, // { count } once every story is done
   doneDismissed: false,
 };
@@ -91,6 +95,19 @@ let leadTurn = null; // the lead's running turn, if any
 const activity = new Map(); // agent id → { at, inFlight, nudged, stopped, lane, story }
 const restarts = new Map(); // story → times the loop restarted it
 const flagged = new Map(); // story → { lane, story, count }: stalled past its restarts
+/**
+ * LOOP-3: whether an agent's work is done, so it isn't stalled however quiet: it handed back, or its
+ * story is in review, waiting in the merge queue or merged.
+ */
+const finishedWork = (a) => {
+  if (a.handedBack) return true;
+  const story = (model.state?.stories ?? []).find((s) => s.id === a.story);
+  if (!story) return false;
+  if (['review', 'done'].includes(story.state)) return true;
+  return (model.queue ?? []).some(
+    (q) => q.branch === story.branch && ['waiting', 'merging'].includes(q.state),
+  );
+};
 /** An agent's activity record, made on first sight. */
 const activityOf = (agentId, now) => {
   let a = activity.get(agentId);
@@ -110,6 +127,11 @@ let frame = 0;
 let animation = null; // the timer repainting working characters, while one works
 let paneSurface = null;
 let paneColumns = 80;
+let codeMap = null; // MAP-1: `code-kit map <story> --json` for the Code map tab's story
+let trailData = null; // TRAIL-1: `code-kit trail --json` while the Trail tab shows
+let journalData = null; // JOURNAL-1: `code-kit journal --json`, for the Journal tab and the decisions
+const touches = []; // MAP-2: { path, verb, lane, at }, the files agents read and edited lately
+const TOUCHES_KEPT = 200;
 // The reviewer (spec 07): each branch's review at its head, and the agent type registered for it.
 const reviews = new Map(); // branch → { branch, head, story, state, startedAt, findings, why?, error? }
 let reviewerAgent = null; // the registered agent's full name
@@ -162,6 +184,9 @@ export function register(on) {
       const ran = await $.process.run(['node', cli, ...args, '--json'], { cwd });
       return ran.exitCode === 0 ? parseJson(ran.stdout) : null;
     };
+    // A session starts with the loop running: a pause recorded by an earlier one no longer holds.
+    if ((await json('loop').catch(() => null))?.paused)
+      await $.process.run(['node', cli, 'loop', 'resume'], { cwd }).catch(() => {});
     const stamp = async (path) => {
       const s = await $.fs.stat(`${cwd}/${path}`).catch(() => null);
       return s ? `${path}@${s.mtimeMs}` : `${path}-`;
@@ -210,7 +235,21 @@ export function register(on) {
           base: status?.base ?? null,
         };
         if (model.state.kind === 'ok') await act.registerReviewer();
+        await act.readMaps();
         $.ui.invalidate('ui.render');
+      },
+      // MAP-1, TRAIL-1: what the Code map and Trail tabs draw, read while they show.
+      readMaps: async () => {
+        if (model.state?.kind !== 'ok') return;
+        if (paneUi.tab === 'code') {
+          const id = mapStoryOf(stateNow(), paneUi.selected, paneUi.mapStory);
+          codeMap = id ? ((await json('map', id)) ?? codeMap) : null;
+        }
+        if (paneUi.tab === 'map') trailData = (await json('trail')) ?? trailData;
+        // JOURNAL-1, DECIDE-2: the lineage, for the Journal tab and the decisions' cards.
+        const deciding = held.size > 0 || (model.requests?.open ?? []).length > 0;
+        if (model.check?.docs?.plan && (['journal', 'decisions'].includes(paneUi.tab) || deciding))
+          journalData = (await json('journal')) ?? journalData;
       },
       // REVW-2: the reviewer, read-only by the hooks' rule for agents outside the lanes. Registered
       // again when its model setting changes.
@@ -372,6 +411,21 @@ export function register(on) {
         });
         // Opened but not drawn yet: it waits for room, and the reason says what seats it.
         if (!placed.isPlaced) return { text: `The Lanes pane is waiting: ${placed.reason}` };
+        return {};
+      },
+      // DECIDE-3: the Decisions tab, on the decision the person asked about.
+      decide: async (line) => {
+        const cards = cardsNow(await $.clock.now());
+        const at = Math.max(
+          0,
+          cards.findIndex((c) => c.line.kind === line?.kind),
+        );
+        paneUi = { ...paneUi, tab: 'decisions', decision: at, story: null };
+        if (!(await $.ui.panes()).some((p) => p.id === PANE_ID))
+          await $.ui.open({ id: PANE_ID, title: 'Lanes', focus: true, closeOnEscape: true });
+        $.ui.invalidate('ui.render');
+        await act.readMaps();
+        $.ui.invalidate('ui.render');
         return {};
       },
       // ACT-1: the confirmation, prefilled from the request.
@@ -594,10 +648,26 @@ export function register(on) {
         if (box?.text?.trim()) return;
         if (loop.pending.length) {
           const { story, prompt } = loop.pending.shift();
+          // Until the person has chosen how hands-off the loop is, or under propose, a restart is offered
+          // like any other step, not taken.
+          const chosenYet = (model.check?.harnessSet ?? []).includes('autonomy');
+          if (!chosenYet || h.autonomy === 'propose') {
+            loop.proposal = {
+              prompt,
+              label: `Restart ${story}`,
+              kind: 'restart',
+              target: story,
+              first: !chosenYet,
+            };
+            $.ui.invalidate('ui.render');
+            return;
+          }
           return act.submit(prompt, 'restart', story);
         }
         const ran = await $.process.run(['node', cli, 'next', '--json'], { cwd });
         const step = ran.exitCode === 0 ? parseJson(ran.stdout) : null;
+        // MISSION-1: the band shows what the loop takes next.
+        loop.nextStep = step;
         if (!step) {
           notice = `The loop is waiting: code-kit next failed (${(ran.stderr || ran.stdout).trim().split('\n')[0]})`;
           $.ui.invalidate('ui.render');
@@ -701,11 +771,14 @@ export function register(on) {
       pause: async () => {
         loop.paused = true;
         loop.proposal = null;
+        // Recorded, so other tools' background work in this project pauses with the loop.
+        await $.process.run(['node', cli, 'loop', 'pause'], { cwd }).catch(() => {});
         await act.record('pause', 'the loop');
         $.ui.invalidate('ui.render');
       },
       resume: async () => {
         loop.paused = false;
+        await $.process.run(['node', cli, 'loop', 'resume'], { cwd }).catch(() => {});
         loop.lastKey = null;
         await act.record('resume', 'the loop');
         $.ui.invalidate('ui.render');
@@ -741,6 +814,12 @@ export function register(on) {
           a.story = attribution(agent.id, agent, model.check, model.state).story ?? lane;
           // A held call, or a long command still running, isn't quiet.
           if (a.inFlight > 0 || waitingOnPerson.has(agent.id)) {
+            a.at = now;
+            continue;
+          }
+          // LOOP-3: an agent whose work is done isn't stalled: it handed back, or its story is in review,
+          // in the merge queue or merged. Nothing to nudge or restart.
+          if (finishedWork(a)) {
             a.at = now;
             continue;
           }
@@ -990,10 +1069,26 @@ export function register(on) {
       busy.inFlight += 1;
       busy.nudged = false;
       busy.stopped = false;
+      busy.handedBack = false;
       // VIEW-4: the agent's current or last tool call.
       busy.tool = toolLine(e);
       busy.at = calledAt;
     } else if (!e.agentId) leadLast = { tool: toolLine(e), at: calledAt };
+    // MAP-2: the file the call reads or edits glows in the code map, in its lane's colour. An agent
+    // first seen on this call has its lane found by its type.
+    const touch = touchOf(e, where?.cwd);
+    if (touch && busy && !busy.lane) {
+      const agent = ((await $.agent.list().catch(() => [])) ?? []).find((a) => a.id === e.agentId);
+      busy.lane =
+        Object.entries(model.check?.lanes ?? {}).find(([, l]) => l.agent === agent?.type)?.[0] ??
+        busy.lane;
+    }
+    const touchLane = busy ? busy.lane : e.agentId ? null : 'lead';
+    if (touch && touchLane) {
+      touches.push({ ...touch, lane: touchLane, at: calledAt });
+      if (touches.length > TOUCHES_KEPT) touches.shift();
+      if (paneUi.tab === 'code') $.ui.invalidate('ui.render');
+    }
     try {
       const res = await next(e);
       const text = res?.deny ?? (res?.isError ? (res.text ?? String(res.result ?? '')) : null);
@@ -1007,6 +1102,7 @@ export function register(on) {
       // HOLD-6: nobody to ask (claude -p, the SDK), or hold switched off: refused as today.
       if (!ask || !where?.interactive || minutes <= 0 || model.state?.kind !== 'ok') return res;
       const id = e.tool_use_id;
+      let outsideLimits = null;
       // HOLD-5: under autonomy, the project's delegated rules decide first, without asking.
       if ((settings?.autonomy ?? 'autonomous') === 'autonomous') {
         const delegated = await $.process.run(
@@ -1023,6 +1119,8 @@ export function register(on) {
           { cwd: where.cwd, timeoutMs: 60000 },
         );
         if (delegated.exitCode === 0) return next(e);
+        // DECIDE-2: why it's outside the limits the person set, for the decision's card.
+        outsideLimits = (delegated.stderr || delegated.stdout || '').trim();
       }
       const agent = e.agentId ? agentsSeen.get(e.agentId) : null;
       held.set(id, {
@@ -1035,6 +1133,10 @@ export function register(on) {
         what: ask.what,
         since: await $.clock.now(),
         minutes,
+        // DECIDE-2: the call itself, the rule that refused it, and why the lead couldn't approve it.
+        command: e.command ?? e.file_path ?? null,
+        refusal: text.split('\n')[0],
+        outside: outsideLimits,
       });
       $.ui.invalidate('ui.render');
       // The wait is a process the band's answer ends (`code-kit hold`), so it isn't the hook's own time.
@@ -1123,6 +1225,9 @@ export function register(on) {
       $.ui.invalidate('ui.render');
     }
     const res = await next(e);
+    // LOOP-3: a lane agent that has handed back its work isn't stalled while it waits; a message that
+    // starts it again shows as its next tool call.
+    if (e.agentId) activityOf(e.agentId, await $.clock.now()).handedBack = true;
     // REVW-3: a subagent's last turn may be the reviewer's report.
     if (e.agentId && act) await act.reviewed(e.agentId, e.answer).catch(() => {});
     // LOOP-1: the lead is idle; the loop's next step, if one is due (submitted from turn.complete,
@@ -1166,6 +1271,9 @@ export function register(on) {
       flagged: [...flagged.values()],
       doneCount: loop.done?.count ?? 0,
       steps: loop.steps,
+      // LANES-1: the step the lead is taking now (the loop's last prompt, while its turn runs), and the next.
+      current: leadTurn && loop.started ? (loop.steps.at(-1) ?? null) : null,
+      nextText: nextText(loop.nextStep),
       laneNotes,
       now,
       reviews: [...reviews.values()].map((r) => ({
@@ -1284,7 +1392,58 @@ export function register(on) {
     };
   };
   // The band's lines, which the pane pins as what needs the person (VIEW-5).
-  const linesNow = (now) =>
+  // JOURNAL-1: the lineage from the project's records, with this session's loop steps and your own acts
+  // in it, in time order.
+  const STEP_WORDS = {
+    dispatch: (t) => `The loop asked the lead to hand out ${t}.`,
+    review: (t) => `The loop asked the lead to review ${t}.`,
+    lead: (t) => `The loop asked the lead to build ${t} itself.`,
+    merge: (t) => `The loop asked the lead to merge ${t}.`,
+    restart: (t) => `The loop asked the lead to restart ${t}, which had gone quiet.`,
+    nudge: (t) => `The loop nudged ${t}, which had gone quiet.`,
+    flag: (t) => `${t} stalled again after its restarts, so it came to you.`,
+    pause: () => 'You paused the loop.',
+    resume: () => 'You resumed the loop.',
+    done: (t) => `Every story was done (${t}).`,
+  };
+  const journalNow = () => {
+    const recorded = journalData?.events ?? [];
+    const steps = loop.steps
+      .filter((x) => STEP_WORDS[x.kind])
+      .map((x) => ({
+        at: x.at,
+        kind: 'loop',
+        who: ['pause', 'resume'].includes(x.kind) ? 'person' : 'lead',
+        text: STEP_WORDS[x.kind](x.target),
+      }));
+    return [...recorded, ...steps].sort((a, b) => a.at - b.at);
+  };
+  // DECIDE-2: the decisions that need the person, each with its lineage.
+  const cardsNow = (now, lines = linesNowRaw(now)) => {
+    const events = journalData?.events ?? [];
+    const goal = goalOf(model.state?.stories ?? []);
+    const asked =
+      events.find((e) => e.kind === 'request')?.text.replace(/^You asked for /, '') ?? null;
+    return decisionCards(lines, {
+      state: model.state,
+      status: model.status,
+      check: model.check,
+      goal: goal ? goal.name : null,
+      request: asked,
+      journal: events,
+      inForce: model.requests?.inForce ?? [],
+    });
+  };
+  // The band's lines, each that needs the person carrying which story it's for.
+  const linesNow = (now) => {
+    const lines = linesNowRaw(now);
+    const cards = cardsNow(now, lines);
+    return lines.map((l) => {
+      const card = cards.find((c) => c.line === l);
+      return card ? { ...l, context: contextOf(card) } : l;
+    });
+  };
+  const linesNowRaw = (now) =>
     bandLines({
       ...model,
       reviewing,
@@ -1293,6 +1452,10 @@ export function register(on) {
       held: [...held.values()],
       now,
       loop: loopNow(now),
+      leadBusy: Boolean(leadTurn),
+      live: liveNow(now),
+      nextStep: loop.nextStep,
+      combined: combinedNow(),
     });
 
   on('ui.render', { component: 'Pane', requestId: PANE_ID }, async ($, e) => {
@@ -1307,7 +1470,10 @@ export function register(on) {
         usage,
         plan,
         loop: { ...loopNow(now), queue: model.queue ?? [] },
-        needs: linesNow(now),
+        needs: linesNow(now).filter((l) => !l.mission),
+        cards: cardsNow(now),
+        journal: journalNow(),
+        now,
         live: liveNow(now),
         held: [...held.values()],
         requests: model.requests?.open ?? [],
@@ -1322,6 +1488,11 @@ export function register(on) {
         },
         art: artNow(now, liveNow(now)),
         combined: combinedNow(),
+        codeMap,
+        trail: trailData,
+        glow: glowOf(touches, now),
+        surface: paneSurface,
+        columns: paneColumns,
         placement: e.props.placement,
         story: storyOpen ? storyNow(storyOpen, now, usage) : null,
       },
@@ -1330,6 +1501,29 @@ export function register(on) {
         onTab: (tab) => {
           paneUi = { ...paneUi, tab };
           $.ui.invalidate('ui.render');
+          act?.readMaps().then(() => $.ui.invalidate('ui.render'));
+        },
+        onDecision: (i) => {
+          paneUi = { ...paneUi, decision: i };
+          $.ui.invalidate('ui.render');
+        },
+        onMapStory: (id) => {
+          paneUi = { ...paneUi, mapStory: id, mapFile: null };
+          $.ui.invalidate('ui.render');
+          act?.readMaps().then(() => $.ui.invalidate('ui.render'));
+        },
+        onMapFile: (path) => {
+          paneUi = { ...paneUi, mapFile: path };
+          $.ui.invalidate('ui.render');
+        },
+        // MAP-3: the file in Context Graph's own view, through the command its adapter names.
+        onOpenFile: (path) => {
+          const command = codeMap?.open?.command;
+          if (!command) return;
+          $.command.run({ command, args: path }).catch((err) => {
+            notice = `Couldn't open ${path}: ${err?.message ?? err}`;
+            $.ui.invalidate('ui.render');
+          });
         },
         onFilter: (state) => {
           paneUi = { ...paneUi, filter: paneUi.filter === state ? null : state };

@@ -927,6 +927,45 @@ try {
     b.git('merge', '--abort');
   }
 
+  // --- SETUP-1: the approved setup is committed straight onto main, while main has no rules yet ------
+  {
+    const u = newRepo(false);
+    cleanups.push(u.dir);
+    mkdirSync(join(u.dir, '.claude'), { recursive: true });
+    writeFileSync(join(u.dir, '.claude/code-kit.json'), fixture);
+    writeFileSync(join(u.dir, '.gitignore'), '.claude/approvals/\n.claude/state/\n');
+    const uHook = (command, agent) =>
+      spawnSync('node', [join(hooks, 'guard-bash.mjs')], {
+        input: JSON.stringify({
+          cwd: u.dir,
+          tool_input: { command },
+          ...(agent ? { agent_type: agent } : {}),
+        }),
+        env: { ...process.env, CLAUDE_PROJECT_DIR: u.dir },
+        encoding: 'utf8',
+      });
+    expect(
+      'SETUP-1 the lead commits the approved setup on main while main has no rules',
+      uHook('git add -A && git commit -m "Switch on code-kit"'),
+      0,
+    );
+    expect('but a lane may not', uHook('git commit -m x', 'web-engineer'), 2);
+    expect(
+      'nor may anyone merge onto main that way',
+      uHook('git merge web/st-1'),
+      2,
+      'never commit or merge on main',
+    );
+    u.git('add', '-A');
+    u.git('commit', '-q', '-m', 'Switch on code-kit');
+    expect(
+      'once main has the rules, a commit on it is refused as before',
+      uHook('git commit -m "more"'),
+      2,
+      'the lead merges it after review',
+    );
+  }
+
   // --- the first merge: the base has no code-kit rules committed yet, so it's the person's -----------
   {
     const f = newRepo(false);
@@ -989,11 +1028,130 @@ try {
       'queue merge --person',
     );
     expect('the person makes the first merge', fKit('queue', 'merge', '--person'), 0);
+    // LOOP-6: the loop's pause, recorded for other tools.
+    const loopNow = () => JSON.parse(fKit('loop', '--json').stdout);
+    expect('the loop starts unpaused', truth(loopNow().paused === false), 0);
+    fKit('loop', 'pause');
+    expect('code-kit loop pause records the pause', truth(loopNow().paused === true), 0);
+    fKit('loop', 'resume');
+    expect('and resume clears it', truth(loopNow().paused === false), 0);
+    const fHook = (command) =>
+      spawnSync('node', [join(hooks, 'guard-bash.mjs')], {
+        input: JSON.stringify({ cwd: f.dir, tool_input: { command } }),
+        env: { ...process.env, CLAUDE_PROJECT_DIR: f.dir },
+        encoding: 'utf8',
+      });
+    expect(
+      'no agent pauses or resumes the loop',
+      fHook(`node "${kitCli}" loop resume`),
+      2,
+      "the person's own act",
+    );
     expect(
       'after it, main delegates merges to the lead by its committed rules',
       truth(
         JSON.parse(fKit('check', '--json').stdout).delegatesMerge === true &&
           JSON.parse(fKit('check', '--json').stdout).firstMerge === false,
+      ),
+      0,
+    );
+  }
+
+  // --- MAP-1 and TRAIL-1: a story's code by layer, and each requirement's trail -------------------
+  {
+    const t = newRepo();
+    cleanups.push(t.dir);
+    const tPut = (rel, body) => {
+      mkdirSync(dirname(join(t.dir, rel)), { recursive: true });
+      writeFileSync(join(t.dir, rel), body);
+    };
+    const tKit = (...args) =>
+      spawnSync('node', [kitCli, ...args], { cwd: t.dir, encoding: 'utf8' });
+    tPut(
+      'docs/spec/01-booking.md',
+      '# 01. Booking\n\n### BOOK-1 Request\n\nx\n\n### BOOK-2 Cancel\n\nx\n',
+    );
+    tPut(
+      'docs/spec/plan.md',
+      '# Plan\n\n## Milestone 1: Bookings\n\n### ST-1 Booking form\n\n**Lane:** web\n**Requirements:** BOOK-1\n**Status:** todo\n\n### ST-12 Cancel\n\n**Lane:** web\n**Requirements:** BOOK-2\n**Status:** todo\n',
+    );
+    t.git('add', '-A');
+    t.git('commit', '-q', '-m', 'plan');
+    tPut('apps/office/domain/booking.ts', 'export const booking = 1;\n');
+    tPut(
+      'apps/office/services/book.ts',
+      "import { booking } from '../domain/booking.js';\nexport const book = booking;\n",
+    );
+    tPut(
+      'apps/office/e2e/booking.spec.ts',
+      "import { book } from '../services/book';\ntest('BOOK-1 books', () => {});\n",
+    );
+    t.git('add', '-A');
+    t.git('commit', '-q', '-m', 'ST-1: booking form');
+    tPut('apps/office/services/cancel.ts', 'export const cancel = 1;\n');
+    t.git('add', '-A');
+    t.git('commit', '-q', '-m', 'ST-12: cancel');
+    const map = JSON.parse(tKit('map', 'ST-1', '--json').stdout || '{}');
+    const at = (p) => map.files?.find((f) => f.path === p);
+    expect(
+      "MAP-1 map gives a story's files by layer, with the imports between them, and not a later story's",
+      truth(
+        map.files?.length === 3 &&
+          at('apps/office/domain/booking.ts')?.layer === 'domain' &&
+          at('apps/office/services/book.ts')?.layer === 'services' &&
+          at('apps/office/services/book.ts')?.imports.join() === 'apps/office/domain/booking.ts' &&
+          at('apps/office/e2e/booking.spec.ts')?.layer === 'tests' &&
+          at('apps/office/e2e/booking.spec.ts')?.imports.join() ===
+            'apps/office/services/book.ts' &&
+          at('apps/office/services/book.ts')?.lane === 'web' &&
+          map.layers.join() === 'domain,services,tests',
+        JSON.stringify(map),
+      ),
+      0,
+    );
+    const rows = JSON.parse(tKit('trail', '--json').stdout || '{}').requirements ?? [];
+    const row = (id) => rows.find((r) => r.id === id);
+    expect(
+      'TRAIL-1 trail follows each requirement to its stories, their code and the tests that name it',
+      truth(
+        row('BOOK-1')
+          ?.stories.map((x) => x.id)
+          .join() === 'ST-1' &&
+          row('BOOK-1').files.join() ===
+            'apps/office/domain/booking.ts,apps/office/services/book.ts' &&
+          row('BOOK-1').tests.join() === 'apps/office/e2e/booking.spec.ts' &&
+          row('BOOK-2')?.files.join() === 'apps/office/services/cancel.ts' &&
+          row('BOOK-2').tests.length === 0,
+        JSON.stringify(rows),
+      ),
+      0,
+    );
+    tPut(
+      'docs/brief.md',
+      '# Bookings\n\n## Problem\n\nGroomers lose bookings on paper.\n\n## Decision log\n\n| Date | Decision | Why |\n| --- | --- | --- |\n| 2026-10-01 | Web only | Groomers use laptops |\n',
+    );
+    t.git('add', '-A');
+    t.git('commit', '-q', '-m', 'brief');
+    const events = JSON.parse(tKit('journal', '--json').stdout || '{}').events ?? [];
+    const kinds = events.map((e) => e.kind);
+    expect(
+      'JOURNAL-1 journal tells the lineage: the request and its decisions first, then the specification and the work',
+      truth(
+        kinds[0] === 'request' &&
+          events[0].text.includes('Groomers lose bookings on paper') &&
+          kinds[1] === 'decision' &&
+          events[1].text === 'Decided: Web only, because groomers use laptops.' &&
+          kinds.includes('spec'),
+        JSON.stringify(events),
+      ),
+      0,
+    );
+    const st = JSON.parse(tKit('status', '--json').stdout || '{}');
+    expect(
+      "a story carries its milestone, the plan's heading above it",
+      truth(
+        st.stories?.[0]?.milestone === 'Milestone 1: Bookings',
+        JSON.stringify(st.stories?.[0]),
       ),
       0,
     );
@@ -2234,12 +2392,13 @@ try {
   );
   mkdirSync(join(c.dir, '.ctx'));
   expect('with .ctx/, any lane records decisions', cWrite('.ctx/decisions.ctx', 'web-engineer'), 0);
+  // Context Graph runs in the background: a lane adds the guidance it finds, with no approval.
   expect(
-    "but a lane may not change ctx's rules without approval",
+    "and adds to ctx's rules: guidance applies with no one asked",
     cWrite('.ctx/graph.ctx', 'web-engineer'),
-    2,
-    "Context Graph's rules",
+    0,
   );
+  expect("but ctx's settings stay the person's", cWrite('.ctx/config.toml', 'web-engineer'), 2);
   expect("the lead owns ctx's rules", cWrite('.ctx/graph.ctx'), 0);
   expect(
     'no Claude actor writes a ratification trailer',
@@ -2426,47 +2585,61 @@ try {
   expect('the config can switch an adapter off', cWrite('.ctx/decisions.ctx', 'web-engineer'), 2);
   expect('and says so', says(cCli('adapters'), 'context-graph: switched off in the config'), 0);
 
-  // A person's ratification from their terminal is signed with the trailer, not logged by the hooks.
+  // ctx's rules change with no approval (its own gate checks a person signed any rule that blocks
+  // edits); its settings are the person's, signed with the trailer when they commit them themselves.
   const r = newRepo();
   cleanups.push(r.dir);
   mkdirSync(join(r.dir, '.ctx'));
   writeFileSync(join(r.dir, '.ctx/graph.ctx'), 'L L:repo Repo\n');
+  writeFileSync(join(r.dir, '.ctx/config.toml'), '[repo]\nratifiers = ["warren"]\n');
   r.git('add', '-A');
   r.git('commit', '-q', '-m', 'graph');
-  r.git('checkout', '-q', '-b', 'ratify');
+  r.git('checkout', '-q', '-b', 'ctx-work');
   const rVerify = () =>
     spawnSync(
       'node',
       [join(here, '..', 'bin', 'code-kit.mjs'), 'verify', '--base', 'main', '--no-checks'],
       { cwd: r.dir, encoding: 'utf8' },
     );
-  const rCommit = (line, trailer) => {
-    writeFileSync(join(r.dir, '.ctx/graph.ctx'), `L L:repo Repo\n${line}\n`);
-    r.git('add', '-A');
-    r.git('commit', '-q', '-m', 'ratify', ...(trailer ? ['--trailer', trailer] : []));
-  };
-  rCommit('C C:events Events', 'Ctx-Ratified-By: warren');
-  expect("verify accepts a graph change signed with a person's ratification trailer", rVerify(), 0);
-  rCommit('C C:jobs Jobs', 'Ctx-Ratified-By: sidequest-lead (delegated)');
-  expect(
-    'but not a delegated one, which the hooks log',
-    failsWith(rVerify(), 'no approval-log entry records this change'),
-    0,
+  writeFileSync(
+    join(r.dir, '.ctx/graph.ctx'),
+    'L L:repo Repo\nK G repo.utc L:repo Dates are stored in UTC\n',
   );
-  r.git('reset', '-q', '--hard', 'HEAD~1');
-  rCommit('C C:jobs Jobs');
-  expect(
-    'nor a later unsigned commit to the same file',
-    failsWith(rVerify(), 'no approval-log entry records this change'),
-    0,
-  );
-  r.git('reset', '-q', '--hard', 'HEAD~1');
-  writeFileSync(join(r.dir, '.ctx/config.toml'), '[repo]\nratifiers = ["warren"]\n');
   r.git('add', '-A');
-  r.git('commit', '-q', '-m', 'Set up Context Graph', '--trailer', 'Ctx-Ratified-By: warren');
+  r.git('commit', '-q', '-m', 'guidance an agent found');
   expect(
-    "verify accepts Context Graph's settings committed with the person's ratification trailer",
+    "verify accepts guidance an agent added to ctx's rules, unsigned and unlogged",
     rVerify(),
+    0,
+  );
+  const rSettings = (body, trailer) => {
+    writeFileSync(join(r.dir, '.ctx/config.toml'), body);
+    r.git('add', '-A');
+    r.git('commit', '-q', '-m', 'settings', ...(trailer ? ['--trailer', trailer] : []));
+  };
+  rSettings(
+    '[repo]\nratifiers = ["warren"]\n\n[harness]\ncurator = true\n',
+    'Ctx-Ratified-By: warren',
+  );
+  expect(
+    "verify accepts ctx's settings committed with the person's ratification trailer",
+    rVerify(),
+    0,
+  );
+  rSettings(
+    '[repo]\nratifiers = ["warren"]\n\n[harness]\ncurator = false\n',
+    'Ctx-Ratified-By: sidequest-lead (delegated)',
+  );
+  expect(
+    'but not with a delegated one, which the hooks log',
+    failsWith(rVerify(), 'no approval-log entry records this change'),
+    0,
+  );
+  r.git('reset', '-q', '--hard', 'HEAD~1');
+  rSettings('[repo]\nratifiers = ["warren"]\n\n[harness]\ncurator = false\n');
+  expect(
+    'nor a later unsigned commit to the settings',
+    failsWith(rVerify(), 'no approval-log entry records this change'),
     0,
   );
 

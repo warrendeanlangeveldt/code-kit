@@ -11,6 +11,7 @@ import { join, resolve } from 'node:path';
 import { addedPackages, dependencyApproval, isDependencyFile } from './lib/dependencies.mjs';
 import { CODE_KIT, GIT, codeOf, commandsOf, runs } from './lib/shell.mjs';
 import { block, start } from './lib/hook.mjs';
+import { CONFIG_FILE } from './lib/config.mjs';
 import { noteBefore } from './lane-audit.mjs';
 import {
   APPROVAL_LOG,
@@ -89,6 +90,14 @@ const branches = config.branches.protected
 // The branch is read before the command runs, so a command that switches to a protected branch and then
 // commits or merges in the same breath is judged by what it does, not by where it starts. Moving a
 // protected branch directly (branch -f, update-ref) is a commit on it by another name.
+/** Whether `file` is committed at HEAD in the repository at `root`. */
+function committedOnHead(root, file) {
+  return (
+    spawnSync('git', ['-C', root, 'cat-file', '-e', `HEAD:${file}`], { stdio: 'ignore' }).status ===
+    0
+  );
+}
+
 const writesHistory = runs(
   cmd,
   new RegExp(String.raw`^${GIT}(commit|merge|cherry-pick|rebase|revert|am)\b`),
@@ -150,6 +159,11 @@ if (approves && actor.kind !== 'lead')
 if ((delegatedMerge && /\s--person\b/.test(cmd)) || (approves && /\s--via\b/.test(cmd)))
   block(
     `Blocked: merging or approving as the person is the person's own act, from the code-kit pane or their terminal. Ask them, and stop.\nCommand: ${cmd}`,
+  );
+// Pausing and resuming the lead loop is the person's, from the band or their terminal.
+if (runs(cmd, new RegExp(String.raw`^${CODE_KIT}\s+loop\s+(pause|resume)\b`)))
+  block(
+    `Blocked: pausing or resuming the lead loop is the person's own act, from the code-kit band or their terminal. Ask them, and stop.\nCommand: ${cmd}`,
   );
 // The harness settings are the person's to change, from the pane or their terminal.
 if (runs(cmd, new RegExp(String.raw`^${CODE_KIT}\s+settings\s+set\b`)))
@@ -233,9 +247,17 @@ try {
 } catch {
   // not a git repository yet
 }
-if (writesHistory && config.branches.protected.includes(branch)) {
+// SETUP-1: the one exception is setting up. Until the protected branch has the rules committed, the
+// lead commits the setup the person approved straight onto it, so no first merge needs anyone; from
+// that commit on, the branch is protected by the rules it now holds.
+const settingUp =
+  actor.kind === 'lead' &&
+  runs(cmd, new RegExp(String.raw`^${GIT}commit\b`)) &&
+  !runs(cmd, new RegExp(String.raw`^${GIT}(merge|cherry-pick|rebase|revert|am)\b`)) &&
+  !committedOnHead(root, CONFIG_FILE);
+if (writesHistory && config.branches.protected.includes(branch) && !settingUp) {
   block(
-    `Blocked: never commit or merge on ${branch}. Work on a branch; a person merges after review.`,
+    `Blocked: never commit or merge on ${branch}. Work on a branch; the lead merges it after review (or the person, where merges aren't delegated).`,
   );
 }
 

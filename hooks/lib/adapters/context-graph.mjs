@@ -1,12 +1,12 @@
-// Context Graph (ctx) keeps a project's engineering context in `.ctx/`: ratified rules and concepts in
-// graph.ctx, settings in config.toml, the decisions agents record as they work in decisions.ctx, and
-// each file's card (its why) in cards.ctx. Every agent records decisions and cards for the files it
-// edits, so those two files are writable by any actor; the rules and settings
-// are the lead's, and changes to them go through the approval log. Ratifying a rule is a person's act,
-// signed with a commit trailer, so no Claude actor may write that trailer, unless the project lets the
-// lead act on what the person says in chat (`approvals.lead`). A delegated ratification, signed
-// `Ctx-Ratified-By: <ratifier> (delegated)`, is the lead's own act under the repository's [delegate]
-// rules: only the lead may write that trailer, and Context Graph's gate checks the kinds it covers.
+// Context Graph (ctx) keeps a project's engineering context in `.ctx/`: rules and concepts in graph.ctx
+// (proposals in proposals.ctx), settings in config.toml, the decisions agents record as they work in
+// decisions.ctx, and each file's card (its why) in cards.ctx. It runs in the background, so every agent
+// writes its cards, its decisions and the guidance it finds; the settings are the lead's, and a change
+// to them goes through the approval log. A rule that blocks edits, or a concept, needs a person's
+// signature, a commit trailer, and Context Graph's own gate checks it, so no Claude actor may write that
+// trailer, unless the project lets the lead act on what the person says in chat (`approvals.lead`). A
+// delegated ratification, signed `Ctx-Ratified-By: <ratifier> (delegated)`, is the lead's own act under
+// the repository's [delegate] rules: only the lead may write that trailer.
 // Ratifying with `--commit`, dropping a proposal and changing the harness settings are the person's acts
 // in ctx too, so no actor runs
 // them; only a command the line runs counts, so a heredoc or quoted text that mentions one isn't refused.
@@ -41,16 +41,12 @@ export default {
   detect: (root) => existsSync(join(root, '.ctx')),
   config: {
     lead: ['.ctx/**'],
-    anyActor: ['.ctx/decisions.ctx', '.ctx/cards.ctx'],
+    // Context Graph runs in the background: every agent writes its cards and decisions, and the guidance
+    // rules it finds (which inform and never block). A rule that blocks edits, or a concept, still needs
+    // a person's signed commit, and Context Graph's own gate checks that on every pull request.
+    anyActor: ['.ctx/decisions.ctx', '.ctx/cards.ctx', '.ctx/graph.ctx', '.ctx/proposals.ctx'],
     protected: [
-      {
-        glob: '.ctx/graph.ctx',
-        approval: 'ctx',
-        why: "Context Graph's rules and concepts",
-        // A person's ratification (`ctx ratify --commit`, `ctx drop --commit`) is signed, not logged.
-        signedBy: PERSON_SIGNED,
-      },
-      // Setting Context Graph up is ratified the same way: the person commits it from their terminal.
+      // Its settings are the person's: a change is logged, or signed when they commit it themselves.
       {
         glob: '.ctx/config.toml',
         approval: 'ctx',
@@ -100,7 +96,7 @@ export default {
       }
       return byType;
     },
-    /** Per file: the rules that apply to it, agreed and proposed. */
+    /** Per file: the rules that apply to it, agreed and proposed, and its card: current, stale or missing, with its text. */
     files: (root, paths) =>
       Object.fromEntries(
         paths.map((path) => {
@@ -108,6 +104,9 @@ export default {
           return [
             path,
             {
+              card: f?.card
+                ? { state: f.card.fresh === false ? 'stale' : 'current', text: f.card.text ?? '' }
+                : { state: 'missing', text: '' },
               rules: (f?.rules ?? []).map((r) => ({
                 id: r.id,
                 text: r.text,

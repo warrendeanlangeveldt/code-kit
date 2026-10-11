@@ -459,10 +459,21 @@ test('the mod: BAND-2 and BAND-4, the band lines and their hotkeys, and ACT-1 th
     state: projectState(check, status, null, new Set()),
     requests: { open: [request, request] },
     stops: [{ title: 'Check tests failed' }],
+    // The person runs the build: a finished story waits in the band for them (DECIDE-1).
+    check: { harness: { autonomy: 'off' } },
   });
   assert.deepEqual(
     lines.map((l) => l.text),
     ['2 approvals waiting', 'ST-4 ready for review', 'Finish check failing: Check tests failed'],
+  );
+  // While the loop runs the build, the review is the lead's and isn't in the band.
+  assert.deepEqual(
+    bandLines({
+      state: projectState(check, status, null, new Set()),
+      requests: { open: [] },
+      stops: [],
+    }).map((l) => l.text),
+    [],
   );
   assert.deepEqual(
     lines.flatMap((l) => l.actions.map((a) => `${a.hotkey} ${a.id}`)),
@@ -1033,4 +1044,217 @@ test("VIEW-6 an idle lane: its stories in plan order, the one Enter opens, and t
   assert.equal(storyToOpen({ name: 'qa', story: null }, state), null);
   assert.equal(planProgress(state), '2 of 4 stories done');
   assert.equal(planProgress({ stories: [] }), null);
+});
+
+test('MAP-2 what a tool call touches, and which files glow', async () => {
+  const { touchOf, glowOf } = await import('../hooks/mod/codemap.mjs');
+  assert.deepEqual(touchOf({ tool: 'Read', file_path: '/r/src/a.ts' }, '/r'), {
+    path: 'src/a.ts',
+    verb: 'read',
+  });
+  assert.deepEqual(
+    touchOf({ tool: 'Edit', file_path: '/r/.claude/worktrees/agent-1/src/b.ts' }, '/r'),
+    {
+      path: 'src/b.ts',
+      verb: 'edit',
+    },
+  );
+  assert.equal(touchOf({ tool: 'Bash', command: 'ls' }, '/r'), null);
+  assert.equal(touchOf({ tool: 'Read', file_path: '/elsewhere/x.ts' }, '/r'), null);
+  const glow = glowOf(
+    [
+      { path: 'a', verb: 'read', lane: 'web', at: 1000 },
+      { path: 'a', verb: 'edit', lane: 'web', at: 5000 },
+      { path: 'b', verb: 'read', lane: 'api', at: 0 },
+    ],
+    24000,
+  );
+  assert.deepEqual(glow, { a: { lane: 'web', verb: 'edit' } });
+});
+
+test('MAP-1 the code map: every file drawn once, in its layer, with lines between neighbouring layers', async () => {
+  const { layout, mapRows } = await import('../hooks/mod/codemap.mjs');
+  const map = {
+    layers: ['domain', 'services', 'tests'],
+    files: [
+      { path: 'x/domain/a.ts', layer: 'domain', imports: [] },
+      { path: 'x/domain/b.ts', layer: 'domain', imports: ['x/domain/a.ts'] },
+      { path: 'x/services/s.ts', layer: 'services', imports: ['x/domain/b.ts'] },
+      { path: 'x/tests/s.test.ts', layer: 'tests', imports: ['x/services/s.ts'] },
+    ],
+  };
+  const L = layout(map, 90);
+  const boxes = Object.values(L.nodes);
+  for (const a of boxes)
+    for (const b of boxes)
+      if (a !== b)
+        assert.ok(
+          a.x + a.w <= b.x || b.x + b.w <= a.x || a.y + a.h <= b.y || b.y + b.h <= a.y,
+          'no two boxes overlap',
+        );
+  assert.equal(L.nodes['x/services/s.ts'].x > L.nodes['x/domain/a.ts'].x, true);
+  const text = mapRows(map, { width: 90 }).map((r) => r.map((x) => x.text).join(''));
+  for (const name of ['a.ts', 'b.ts', 's.ts', 's.test.ts'])
+    assert.equal(text.join('\n').split(`│ ${name} `).length - 1, 1, `${name} drawn once`);
+  // The import from s.ts (services) to b.ts (domain) is a line between the two columns.
+  const row = text[L.nodes['x/services/s.ts'].y + 1];
+  assert.match(
+    row.slice(
+      L.nodes['x/domain/b.ts'].x + L.nodes['x/domain/b.ts'].w,
+      L.nodes['x/services/s.ts'].x,
+    ),
+    /[─┐┘└┌│]/,
+  );
+});
+
+test('MISSION-1 to MISSION-3 the goal, the next step in words, and other tools only when not zero', async () => {
+  const { goalOf, nextText, missionLines } = await import('../hooks/mod/mission.mjs');
+  assert.deepEqual(
+    goalOf([
+      { id: 'ST-1', state: 'done', milestone: 'Milestone 1: A' },
+      { id: 'ST-2', state: 'done', milestone: 'Milestone 2: B' },
+      { id: 'ST-3', state: 'review', milestone: 'Milestone 2: B' },
+    ]),
+    { name: 'Milestone 2: B', done: 1, total: 2 },
+  );
+  assert.equal(goalOf([{ id: 'ST-1', state: 'todo' }]), null);
+  assert.equal(nextText({ step: 'merge', args: 'web/st-4' }), 'Merge web/st-4');
+  assert.equal(
+    nextText({ step: 'wait', why: 'lanes are building' }),
+    'waiting: lanes are building',
+  );
+  const state = {
+    kind: 'ok',
+    stories: [],
+    lanes: [
+      { name: 'lead', active: true },
+      { name: 'web', active: false },
+    ],
+  };
+  const quiet = missionLines({ state, leadBusy: true, combined: { web: { without: 0, owed: 0 } } });
+  assert.equal(
+    quiet.some((r) => r.kind === 'facts'),
+    false,
+  );
+  const loud = missionLines({ state, leadBusy: true, combined: { web: { without: 2, owed: 0 } } });
+  assert.equal(
+    loud.find((r) => r.kind === 'facts')?.text,
+    'web edited 2 files without understanding them',
+  );
+  assert.deepEqual(missionLines({ state: { ...state, lanes: [] } }), []);
+});
+
+test('TRAIL-1 the trail drawn: requirements a story shares meet at one node, and gaps are dashed', async () => {
+  const { trailRows, trailSvg } = await import('../hooks/mod/trail.mjs');
+  const st = [{ id: 'ST-20', state: 'in progress', lane: 'ingest' }];
+  const rows = [
+    {
+      id: 'ORIG-1',
+      title: 'Every paragraph knows its source',
+      stories: st,
+      files: ['a.ts', 'b.ts'],
+      tests: ['x.test.ts'],
+    },
+    {
+      id: 'ORIG-2',
+      title: 'Each format records where',
+      stories: st,
+      files: ['c.ts'],
+      tests: ['x.test.ts'],
+    },
+    { id: 'ORIG-3', title: 'Splits keep the location', stories: [], files: [], tests: [] },
+  ];
+  const text = trailRows(rows, { width: 100 }).map((r) => r.map((x) => x.text).join(''));
+  assert.match(text[0], /ORIG-1.*───┬ ● ST-20.*2 files.*✓ x\.test\.ts/);
+  assert.match(text[1], /ORIG-2.*───┘\s+─── 1 file/);
+  assert.doesNotMatch(text[1], /ST-20/);
+  assert.match(text[2], /╌╌╌ no story.*╌╌╌ no code.*╌╌╌ no test names it/);
+  const svg = trailSvg(rows, { selected: 'ORIG-2' });
+  assert.equal(svg.match(/ST-20<\/text>/g).length, 1, 'the shared story is drawn once');
+  assert.match(svg, /stroke-dasharray="3 3"/);
+});
+
+test('JOURNAL-1 the brief read for the journal: the request, the decisions, and who approved what', async () => {
+  const { briefRequest, briefDecisions, approverOf, approvalWords } =
+    await import('../hooks/lib/journal.mjs');
+  const brief =
+    '# Book editor\n\n## Problem\n\nAn author wants a careful line edit.\nWithout losing their voice.\n\nMore detail.\n\n## Decision log\n\n| Date | Decision | Why | Rejected |\n| --- | --- | --- | --- |\n| 2026-10-10 | One author, no accounts | It is a personal tool | Teams |\n\n## Open questions\n';
+  assert.deepEqual(briefRequest(brief), {
+    title: 'Book editor',
+    problem: 'An author wants a careful line edit. Without losing their voice.',
+  });
+  assert.deepEqual(briefDecisions(brief), [
+    { date: '2026-10-10', decision: 'One author, no accounts', why: 'It is a personal tool' },
+  ]);
+  assert.equal(
+    approverOf({
+      approval: 'dependency',
+      reason:
+        'pdf panel (approved by the lead within the delegated rules: dependencies (pdfjs-dist))',
+    }),
+    'lead',
+  );
+  assert.equal(
+    approverOf({
+      approval: 'editing-rules',
+      reason: 'Yes, as they are. (given in chat, recorded by the lead)',
+    }),
+    'person',
+  );
+  assert.equal(approvalWords('dep-zod'), 'adding the package zod');
+  assert.equal(approvalWords('dependency'), 'adding a new package');
+});
+
+test('DECIDE-2 a decision card carries the lineage: the story, its requirements, what was settled, why, and each choice', async () => {
+  const { decisionCards, contextOf, limitsWhy } = await import('../hooks/mod/decisions.mjs');
+  const line = {
+    kind: 'held',
+    text: 'web wants to install dayjs',
+    actions: [
+      { id: 'approveHeld', label: 'Approve', hotkey: '1' },
+      { id: 'refuseHeld', label: 'Refuse', hotkey: '2' },
+    ],
+    held: {
+      lane: 'web',
+      command: 'npm install dayjs',
+      refusal:
+        "Blocked: a new dependency (dayjs) needs a person's approval. Write a short change request.",
+      outside:
+        "Nothing was approved. These are outside the project's delegated rules, so the person decides:\n  dep-dayjs: fewer than 1000 weekly downloads\nAsk the person.",
+    },
+  };
+  const usage = { kind: 'usage', text: 'plan at 91%', actions: [] };
+  const [card, ...rest] = decisionCards([line, usage], {
+    state: {
+      stories: [
+        { id: 'ST-4', title: 'Booking form', branch: 'web/st-4', requirements: ['BOOK-1'] },
+      ],
+      lanes: [{ name: 'web', story: { id: 'ST-4' } }],
+    },
+    status: { requirements: [{ id: 'BOOK-1', title: 'Request a booking' }] },
+    request: 'Bookings',
+    journal: [
+      { kind: 'dispatch', story: 'ST-4', text: 'ST-4 was handed to the web lane.' },
+      { kind: 'dispatch', story: 'ST-9', text: 'ST-9 was handed to the core lane.' },
+    ],
+  });
+  assert.equal(rest.length, 0, 'notes are not decisions');
+  assert.equal(card.asked, 'Bookings');
+  assert.deepEqual(card.story, { id: 'ST-4', title: 'Booking form', branch: 'web/st-4' });
+  assert.deepEqual(card.requirements, [{ id: 'BOOK-1', title: 'Request a booking' }]);
+  assert.equal(card.doing, 'npm install dayjs');
+  assert.deepEqual(card.settled, ['ST-4 was handed to the web lane.']);
+  assert.equal(
+    card.why,
+    "Blocked: a new dependency (dayjs) needs a person's approval. It's outside the limits you set for the lead: dep-dayjs: fewer than 1000 weekly downloads.",
+  );
+  assert.match(card.options[0].effect, /held call runs now/);
+  assert.equal(contextOf(card), 'for ST-4 Booking form (BOOK-1)');
+  assert.equal(
+    limitsWhy(
+      'This project delegates no approvals to the lead ("approvals.delegate" isn\'t set). Ask the person.',
+    ),
+    "You haven't let the lead approve these itself.",
+  );
+  assert.equal(limitsWhy(null), null);
 });
