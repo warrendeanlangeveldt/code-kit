@@ -5,9 +5,10 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { matchesAny } from './glob.mjs';
 import {
-  INTENT_LABEL,
   isHandle,
   isStoryId,
+  discussionActivity,
+  intentOf,
   laneOfBranch,
   storyOfBranch,
   touchesOf,
@@ -16,9 +17,10 @@ import {
 } from './teamfacts.mjs';
 
 export {
-  INTENT_LABEL,
   isHandle,
   isStoryId,
+  discussionActivity,
+  intentOf,
   laneOfBranch,
   storyOfBranch,
   touchesOf,
@@ -37,6 +39,8 @@ export function teamProblems(c) {
     if (!isHandle(t.techLead)) p.push('"team.techLead" must be the tech lead\'s GitHub handle');
     if (t.staleDays !== undefined && !(Number.isInteger(t.staleDays) && t.staleDays >= 1))
       p.push('"team.staleDays" must be a whole number of working days, 1 or more');
+    if (t.intents !== undefined && !(typeof t.intents === 'string' && t.intents.trim()))
+      p.push('"team.intents" must name the discussion category intents go in');
     if (
       t.provider !== undefined &&
       t.provider !== 'github' &&
@@ -62,6 +66,7 @@ export function teamOf(raw) {
   return {
     techLead: raw.team.techLead,
     staleDays: raw.team.staleDays ?? 3,
+    intents: raw.team.intents ?? 'Intents',
     provider: raw.team.provider ?? 'github',
     owners: Object.fromEntries(
       Object.entries(raw.lanes ?? {})
@@ -148,6 +153,75 @@ function githubProvider(root, team) {
     const r = run('gh', args, input === undefined ? {} : { input });
     return ok(r) ? r.stdout : null;
   };
+  /** A GraphQL call through gh; `repo` adds the repository as $owner and $name. Null on failure. */
+  const graphql = (query, vars = {}, repo = false) => {
+    const args = ['api', 'graphql', '-f', `query=${query}`];
+    if (repo) args.push('-F', 'owner={owner}', '-F', 'name={repo}');
+    for (const [k, v] of Object.entries(vars))
+      args.push(typeof v === 'number' ? '-F' : '-f', `${k}=${v}`);
+    const out = gh(args);
+    try {
+      return out === null ? null : (JSON.parse(out).data ?? null);
+    } catch {
+      return null;
+    }
+  };
+  /** The repository's discussions, the Intents category among its categories: null when unreadable. */
+  const discussions = () => {
+    const d = graphql(
+      `
+        query ($owner: String!, $name: String!) {
+          repository(owner: $owner, name: $name) {
+            id
+            hasDiscussionsEnabled
+            discussionCategories(first: 50) {
+              nodes {
+                id
+                name
+              }
+            }
+            discussions(first: 50, orderBy: { field: UPDATED_AT, direction: DESC }) {
+              nodes {
+                id
+                number
+                title
+                body
+                url
+                createdAt
+                closed
+                closedAt
+                stateReason
+                author {
+                  login
+                }
+                category {
+                  name
+                }
+              }
+            }
+          }
+        }
+      `,
+      {},
+      true,
+    );
+    const repo = d?.repository;
+    if (!repo) return null;
+    const category =
+      repo.discussionCategories.nodes.find(
+        (c) => c.name.toLowerCase() === team.intents.toLowerCase(),
+      ) ?? null;
+    return {
+      repoId: repo.id,
+      enabled: repo.hasDiscussionsEnabled,
+      category,
+      intents: repo.discussions.nodes.filter((n) => n.category?.name === category?.name),
+    };
+  };
+  const noCategory = (found) =>
+    found.enabled
+      ? `This repository has no "${team.intents}" discussion category, and GitHub doesn't let a tool create one. Add it once in the repository's Settings › Discussions (an "Open-ended discussion" category named ${team.intents}), then raise the intent again.`
+      : `Discussions are off for this repository. Turn them on in its Settings › Features, add a "${team.intents}" category, then raise the intent again.`;
   /** Fetch every claim on the shared repository, or null when it can't be reached. */
   const fetchClaims = () => {
     const fetched = git(['fetch', '--prune', '--quiet', 'origin', `+${CLAIMS}/*:${SEEN}/*`]);
@@ -252,18 +326,8 @@ function githubProvider(root, team) {
           if (story) pushed.set(story, Math.max(pushed.get(story) ?? 0, Number(unix) * 1000));
         }
       }
-      const intents = JSON.parse(
-        gh([
-          'issue',
-          'list',
-          '--label',
-          INTENT_LABEL,
-          '--state',
-          'open',
-          '--json',
-          'number,title,body,author,createdAt,url',
-        ]) ?? 'null',
-      );
+      const found = discussions();
+      const intents = found ? found.intents.filter((n) => !n.closed) : null;
       const pulls = JSON.parse(
         gh([
           'pr',
@@ -285,17 +349,7 @@ function githubProvider(root, team) {
         claims: claims
           ? claims.map(({ sha, ...c }) => withStaleness(c, pushed.get(c.story), team.staleDays))
           : (cached?.claims ?? []),
-        intents: intents
-          ? intents.map((i) => ({
-              id: i.number,
-              by: i.author?.login ?? null,
-              about: i.title,
-              touches: touchesOf(i.body),
-              at: i.createdAt,
-              url: i.url,
-              state: 'open',
-            }))
-          : (cached?.intents ?? []),
+        intents: intents ? intents.map(intentOf) : (cached?.intents ?? []),
         pulls: pulls
           ? pulls.map((p) => ({
               number: p.number,
@@ -314,31 +368,29 @@ function githubProvider(root, team) {
     intend(about, touches = []) {
       const by = me();
       if (!by) return { ok: false, why: 'Sign in to GitHub first (gh auth login).' };
-      gh([
-        'label',
-        'create',
-        INTENT_LABEL,
-        '--force',
-        '--color',
-        'D4A72C',
-        '--description',
-        'A change of direction raised before code (code-kit)',
-      ]);
-      const body = `${touches.length ? `Touches: ${touches.join(', ')}\n\n` : ''}Raised with code-kit by @${by} before any code, so the team sees it first. Agree or drop it here.`;
-      const url = gh([
-        'issue',
-        'create',
-        '--title',
-        about,
-        '--label',
-        INTENT_LABEL,
-        '--body',
-        body,
-      ]);
-      if (!url) return unreachable("GitHub can't be reached, so the intent wasn't raised.");
+      const found = discussions();
+      if (!found) return unreachable("GitHub can't be reached, so the intent wasn't raised.");
+      if (!found.category) return { ok: false, why: noCategory(found) };
+      const body = `${touches.length ? `Touches: ${touches.join(', ')}\n\n` : ''}Raised with code-kit by @${by} before any code, so the team sees it first. The tech lead agrees, drops or marks it a duplicate here.`;
+      const made = graphql(
+        `
+          mutation ($repo: ID!, $category: ID!, $title: String!, $body: String!) {
+            createDiscussion(
+              input: { repositoryId: $repo, categoryId: $category, title: $title, body: $body }
+            ) {
+              discussion {
+                number
+                url
+              }
+            }
+          }
+        `,
+        { repo: found.repoId, category: found.category.id, title: about, body },
+      );
+      const d = made?.createDiscussion?.discussion;
+      if (!d) return unreachable("GitHub refused the discussion, so the intent wasn't raised.");
       provider.forget();
-      const id = Number(url.trim().match(/\/(\d+)\s*$/)?.[1]);
-      return { ok: true, intent: { id, by, about, touches, url: url.trim(), state: 'open' } };
+      return { ok: true, intent: { id: d.number, by, about, touches, url: d.url, state: 'open' } };
     },
     /** TEAM-9: the tech lead hands a claim, with its lease, to someone else. */
     reassign(story, to) {
@@ -380,9 +432,13 @@ function githubProvider(root, team) {
       } catch {
         return null;
       }
-      return activityOf(events, at);
+      const found = discussions();
+      return [
+        ...activityOf(events, at),
+        ...discussionActivity(found?.intents ?? [], at, team.techLead),
+      ].sort((a, b) => a.at - b.at);
     },
-    /** TEAM-5: the tech lead agrees an intent (it's how the team goes) or drops it. */
+    /** TEAM-5: the tech lead agrees an intent (resolved), drops it (outdated) or marks it a duplicate. */
     settle(id, outcome, why = '') {
       const by = me();
       if (by !== team.techLead)
@@ -390,20 +446,61 @@ function githubProvider(root, team) {
           ok: false,
           why: `Only the tech lead (${team.techLead}) agrees or drops an intent.`,
         };
-      const said = `${outcome === 'agreed' ? 'Agreed' : 'Dropped'} by @${by}, the tech lead${why ? `: ${why}` : '.'}`;
-      const closed = gh([
-        'issue',
-        'close',
-        String(id),
-        '--reason',
-        outcome === 'agreed' ? 'completed' : 'not planned',
-        '--comment',
-        said,
-      ]);
-      if (closed === null)
+      const d = graphql(
+        `
+          query ($owner: String!, $name: String!, $number: Int!) {
+            repository(owner: $owner, name: $name) {
+              discussion(number: $number) {
+                id
+                closed
+                category {
+                  name
+                }
+              }
+            }
+          }
+        `,
+        { number: Number(id) },
+        true,
+      );
+      if (!d) return unreachable("GitHub can't be reached, so the intent wasn't settled.");
+      const found = d.repository?.discussion;
+      if (!found || found.category?.name?.toLowerCase() !== team.intents.toLowerCase())
+        return { ok: false, why: `There's no intent #${id} in ${team.intents}.` };
+      if (found.closed) return { ok: false, why: `Intent #${id} is already settled.` };
+      const words = { agreed: 'Agreed', dropped: 'Dropped', duplicate: 'Marked a duplicate' }[
+        outcome
+      ];
+      const said = `${words} by @${by}, the tech lead${why ? `: ${why}` : '.'}`;
+      const reason = { agreed: 'RESOLVED', dropped: 'OUTDATED', duplicate: 'DUPLICATE' }[outcome];
+      const commented = graphql(
+        `
+          mutation ($id: ID!, $body: String!) {
+            addDiscussionComment(input: { discussionId: $id, body: $body }) {
+              comment {
+                id
+              }
+            }
+          }
+        `,
+        { id: found.id, body: said },
+      );
+      const closed = graphql(
+        `
+          mutation ($id: ID!, $reason: DiscussionCloseReason!) {
+            closeDiscussion(input: { discussionId: $id, reason: $reason }) {
+              discussion {
+                number
+              }
+            }
+          }
+        `,
+        { id: found.id, reason },
+      );
+      if (!commented || !closed)
         return unreachable("GitHub can't be reached, so the intent wasn't settled.");
       provider.forget();
-      return { ok: true, id, outcome };
+      return { ok: true, id: Number(id), outcome };
     },
     forget: () => writeCache(root, null),
   };
@@ -554,17 +651,6 @@ export function activityOf(events, at) {
             ? 'asked for changes on'
             : 'reviewed';
       add('reviewed', `${how} #${pr.number} ${pr.title}`);
-    } else if (e.type === 'IssuesEvent') {
-      const issue = p.issue ?? {};
-      const intent = (issue.labels ?? []).some((l) => (l.name ?? l) === INTENT_LABEL);
-      if (!intent) continue;
-      const name = `#${issue.number} ${issue.title}`;
-      if (p.action === 'opened') add('intended', `raised intent ${name}`);
-      else if (p.action === 'closed')
-        add(
-          issue.state_reason === 'not_planned' ? 'dropped' : 'agreed',
-          `${issue.state_reason === 'not_planned' ? 'dropped' : 'agreed'} intent ${name}`,
-        );
     }
   }
   return out.sort((a, b) => a.at - b.at);

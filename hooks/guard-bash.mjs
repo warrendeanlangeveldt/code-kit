@@ -174,7 +174,7 @@ if (runs(cmd, new RegExp(String.raw`^${CODE_KIT}\s+team\s+reassign\b`)))
     `Blocked: reassigning a claim is the tech lead's own decision, from their terminal or the code-kit pane. Tell them who holds it, since when, and who you'd suggest, and stop.\nCommand: ${cmd}`,
   );
 // TEAM-5: agreeing or dropping an intent is the tech lead's own decision, from their terminal or the pane.
-if (runs(cmd, new RegExp(String.raw`^${CODE_KIT}\s+intend\s+(agree|drop)\b`)))
+if (runs(cmd, new RegExp(String.raw`^${CODE_KIT}\s+intend\s+(agree|drop|duplicate)\b`)))
   block(
     `Blocked: agreeing or dropping an intent is the tech lead's own decision, from their terminal or the code-kit pane. Tell them what you'd recommend and why, and stop.\nCommand: ${cmd}`,
   );

@@ -1371,7 +1371,7 @@ function teamCommand() {
 
 /**
  * TEAM-5: `intend "<what and why>" [--touches globs]` raises an intent before any code, so the team sees
- * a change of direction first; `intend agree|drop <id> [--reason "…"]` is the tech lead's answer.
+ * a change of direction first; `intend agree|drop|duplicate <id> [--reason "…"]` is the tech lead's answer.
  */
 function intendCommand() {
   const { raw } = load();
@@ -1379,14 +1379,17 @@ function intendCommand() {
   if (!team) die('This project has no "team" in its config, so intents have nowhere to go.');
   const provider = teamProvider(resolve('.'), team);
   const [first, id] = rest;
-  if (first === 'agree' || first === 'drop') {
+  if (first === 'agree' || first === 'drop' || first === 'duplicate') {
     if (!/^\d+$/.test(id ?? '')) die(`code-kit intend ${first} <issue number> [--reason "…"]`);
-    const r = provider.settle(Number(id), first === 'agree' ? 'agreed' : 'dropped', reason ?? '');
+    const outcome = { agree: 'agreed', drop: 'dropped', duplicate: 'duplicate' }[first];
+    const r = provider.settle(Number(id), outcome, reason ?? '');
     if (!r.ok) die(r.why);
     return out(
       first === 'agree'
-        ? `Agreed intent #${id}: it's how the team goes now. Put it in the specs or decisions so every agent builds on it.`
-        : `Dropped intent #${id}.`,
+        ? `Agreed intent #${id}: it's how the team goes now. Record it so every agent builds on it: code-kit intend record ${id}`
+        : first === 'drop'
+          ? `Dropped intent #${id}.`
+          : `Marked intent #${id} a duplicate.`,
     );
   }
   const about = rest.join(' ').trim();
@@ -1470,7 +1473,7 @@ function usage() {
       '              | team [--json] [--fresh] | team since [--json] [--peek]\n' +
       '              | team claim <story> [--lease globs] | team keep|release <story>\n' +
       '              | team reassign <story> <handle>\n' +
-      '              | intend "<what and why>" [--touches globs] | intend agree|drop <id> [--reason "…"]',
+      '              | intend "<what and why>" [--touches globs] | intend agree|drop|duplicate <id> [--reason "…"]',
   );
 }
 await (commands[command] ?? usage)();

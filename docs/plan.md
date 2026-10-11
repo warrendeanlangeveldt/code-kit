@@ -307,7 +307,7 @@ A Team tab: each person with their claims, branches, pull requests and intents, 
 **Lane:** lead
 **Requirements:** TEAM-5
 **Depends on:** ST-27
-**Status:** todo
+**Status:** done
 
 Intents move from issues to discussions in the Intents category, through GitHub's GraphQL API (`gh api graphql`): raise, list, and the tech lead's agree, drop or duplicate (resolved, outdated, duplicate). A missing category says how to add it. `team since` reads intents raised and closed from the discussions.
 

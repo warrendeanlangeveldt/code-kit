@@ -1282,6 +1282,7 @@ test('TEAM-1 the team in the config: a tech lead, owners on lanes, and the defau
     {
       techLead: 'alex',
       staleDays: 3,
+      intents: 'Intents',
       provider: 'github',
       owners: { web: ['sam'] },
     },
@@ -1350,7 +1351,7 @@ test('TEAM-6 GitHub activity in plain sentences, and the claims taken and releas
   );
   assert.deepEqual(
     said.map((e) => `${e.by} ${e.text}`),
-    ['sam started web/st-4', 'alex dropped intent #9 B', 'sam merged #3 A'],
+    ['sam started web/st-4', 'sam merged #3 A'],
   );
   const changes = claimChanges(
     [{ story: 'ST-1', by: 'sam', at: at(0), lease: [] }],
@@ -1380,4 +1381,49 @@ test('TEAM-7 two globs overlap when one can name a file the other names', async 
   assert.ok(globsOverlap('apps/web/**', 'apps/web/booking/form.tsx'));
   assert.ok(globsOverlap('packages/schemas/report.ts', 'packages/**'));
   assert.ok(!globsOverlap('apps/web/**', 'apps/api/**'));
+});
+
+test('TEAM-5 and TEAM-6 an intent from its discussion, and intents raised and settled since', async () => {
+  const { intentOf, discussionActivity } = await import('../hooks/lib/teamfacts.mjs');
+  const d = (n, extra) => ({
+    number: n,
+    title: `I${n}`,
+    body: 'Touches: a/**',
+    url: 'u',
+    author: { login: 'sam' },
+    createdAt: '2026-10-11T00:05:00Z',
+    closed: false,
+    closedAt: null,
+    stateReason: null,
+    ...extra,
+  });
+  assert.deepEqual(intentOf(d(1)), {
+    id: 1,
+    by: 'sam',
+    about: 'I1',
+    touches: ['a/**'],
+    at: '2026-10-11T00:05:00Z',
+    url: 'u',
+    state: 'open',
+  });
+  assert.equal(intentOf(d(2, { closed: true, stateReason: 'RESOLVED' })).state, 'agreed');
+  assert.equal(intentOf(d(3, { closed: true, stateReason: 'OUTDATED' })).state, 'dropped');
+  assert.equal(intentOf(d(4, { closed: true, stateReason: 'DUPLICATE' })).state, 'duplicate');
+  const said = discussionActivity(
+    [
+      d(5),
+      d(6, {
+        createdAt: '2026-10-10T00:00:00Z',
+        closed: true,
+        closedAt: '2026-10-11T00:06:00Z',
+        stateReason: 'RESOLVED',
+      }),
+    ],
+    Date.parse('2026-10-11T00:00:00Z'),
+    'alex',
+  );
+  assert.deepEqual(
+    said.map((e) => `${e.by} ${e.text}`),
+    ['sam raised intent #5 I5', 'alex agreed intent #6 I6'],
+  );
 });

@@ -1,8 +1,6 @@
 // Teams (docs/specs/16-teams.md), the pure parts: names, story branches, staleness and what an intent
 // touches. Shared by the hooks and CLI (team.mjs) and the mod, which runs without Node.
 
-export const INTENT_LABEL = 'code-kit:intent';
-
 /** A GitHub handle: letters, digits and single hyphens, at most 39 characters. */
 export const isHandle = (h) =>
   typeof h === 'string' && /^[A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9])){0,38}$/.test(h);
@@ -55,4 +53,51 @@ export function globsOverlap(a, b) {
   const fixed = (g) => g.split(/[*?{]/)[0];
   const [x, y] = [fixed(a), fixed(b)];
   return x.startsWith(y) || y.startsWith(x);
+}
+
+/** An intent from its discussion: { id, by, about, touches, at, url, state }. */
+export const intentOf = (d) => ({
+  id: d.number,
+  by: d.author?.login ?? null,
+  about: d.title,
+  touches: touchesOf(d.body),
+  at: d.createdAt,
+  url: d.url,
+  state: !d.closed
+    ? 'open'
+    : d.stateReason === 'DUPLICATE'
+      ? 'duplicate'
+      : d.stateReason === 'OUTDATED'
+        ? 'dropped'
+        : 'agreed',
+});
+
+/**
+ * TEAM-6: intents raised and settled since `at` (ms), from their discussions: [{ at, by, kind, text }].
+ * A settled one is the tech lead's act; its discussion doesn't say who closed it, so it reads as theirs.
+ */
+export function discussionActivity(nodes, at, techLead = null) {
+  const out = [];
+  for (const d of nodes) {
+    const name = `#${d.number} ${d.title}`;
+    const raised = Date.parse(d.createdAt);
+    if (raised > at)
+      out.push({
+        at: raised,
+        by: d.author?.login ?? 'someone',
+        kind: 'intended',
+        text: `raised intent ${name}`,
+      });
+    const closed = Date.parse(d.closedAt);
+    if (d.closed && closed > at) {
+      const state = intentOf(d).state;
+      out.push({
+        at: closed,
+        by: techLead ?? 'the tech lead',
+        kind: state === 'agreed' ? 'agreed' : 'dropped',
+        text: `${state === 'duplicate' ? 'marked as a duplicate' : state} intent ${name}`,
+      });
+    }
+  }
+  return out;
 }
