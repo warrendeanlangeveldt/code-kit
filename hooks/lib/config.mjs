@@ -3,6 +3,7 @@
 import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { harnessProblems, harnessSettings } from './harness.mjs';
+import { teamProblems } from './team.mjs';
 import { join } from 'node:path';
 import { ADAPTERS, applyAdapters } from './adapters/index.mjs';
 
@@ -232,6 +233,7 @@ export function validate(c) {
     '"branches.protected" must be a list of branch names',
   );
   p.push(...harnessProblems(c.harness));
+  p.push(...teamProblems(c));
   return p;
 }
 

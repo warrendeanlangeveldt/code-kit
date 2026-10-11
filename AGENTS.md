@@ -11,7 +11,7 @@ code-kit is a Claude Code plugin: hooks (`hooks/`), skills (`skills/<name>/SKILL
   - `layers.mjs`: imports;
   - `dependencies.mjs`: the packages a command adds, and the files installing them changes;
   - `registry.mjs`: what the npm registry says about a package, for delegated approvals;
-  - `harness.mjs`: the harness settings; `queue.mjs`: the merge queue; `loop-state.mjs`: whether the loop is paused; `storymap.mjs`: a story's code by layer, and each requirement's trail; `timeline.mjs`: when each story's work happened; `journal.mjs`: the build's lineage, from the request to each merge;
+  - `harness.mjs`: the harness settings; `queue.mjs`: the merge queue; `loop-state.mjs`: whether the loop is paused; `storymap.mjs`: a story's code by layer, and each requirement's trail; `timeline.mjs`: when each story's work happened; `journal.mjs`: the build's lineage, from the request to each merge; `team.mjs`: the team in the config and who the developer is (spec 16);
   - `checks.mjs`, `verify.mjs`, `plan.mjs`, `trace.mjs`, `next.mjs`;
   - `adapters/`: tools that share a project, such as Context Graph.
 - `hooks/mod/`: the mod, for Claude Code 2.1.287 or later: `register.mjs` (its hooks and the person's acts), `view.mjs`, `panes.mjs`, `art.mjs`, `loop.mjs`, `hold.mjs`, `review.mjs`, `mission.mjs` (the band's mission rows), `codemap.mjs` (the code map) and `trail.mjs` (the trail), `decisions.mjs` (each decision that needs the person, with its lineage) (what it draws and decides, as pure functions) and `register.test.ts` (run by `claude plugin test`, through `test/mod.mjs`). It reads the CLI's JSON and never enforces anything.

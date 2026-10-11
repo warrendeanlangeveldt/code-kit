@@ -244,7 +244,7 @@ Several people in one repository, each with their own agents, coordinated throug
 **Lane:** lead
 **Requirements:** TEAM-1
 **Depends on:** ST-23
-**Status:** todo
+**Status:** done
 
 `team.techLead`, `team.staleDays`, `team.provider` and `lanes.<name>.owners` in the config, validated, in the README's table, and reported by `check`. The developer's handle from `gh api user`, cached for the session.
 

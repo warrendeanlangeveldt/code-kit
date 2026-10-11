@@ -58,6 +58,7 @@ import { journal } from '../hooks/lib/journal.mjs';
 import { dequeue, enqueue, lastMerged, readQueue, settle, waiting } from '../hooks/lib/queue.mjs';
 import { SETTINGS, parseSetting, settingOf, withSetting } from '../hooks/lib/harness.mjs';
 import { readLoop, writeLoop } from '../hooks/lib/loop-state.mjs';
+import { teamOf, whoami } from '../hooks/lib/team.mjs';
 import {
   APPROVAL_MINUTES,
   approvalLifetime,
@@ -148,6 +149,9 @@ function checkJson() {
   report.harnessSet = Object.keys(SETTINGS).filter((k) => settingOf(raw.harness, k) !== undefined);
   // Delegation is the base's, by the rules committed there: a branch can't grant itself merges.
   const delegation = mergeDelegation('.', config, file);
+  // TEAM-1: the team, with its defaults, and who the developer at this machine is.
+  report.team = teamOf(raw);
+  report.me = report.team ? whoami(resolve('.')) : null;
   report.delegatesMerge = delegation.delegated;
   report.firstMerge = delegation.first;
   out(JSON.stringify(report, null, 2));
@@ -164,6 +168,20 @@ function check() {
   for (const c of raw.checks ?? []) out(`Check ${c.name}: ${c.run.join(' && ')}`);
   if (!raw.docs?.specs) out('No docs.specs: lanes are not held to a spec-check report.');
   for (const name of load().config.adapters) out(`Adapter ${name}: active (see \`adapters\`)`);
+  const team = teamOf(raw);
+  if (team) {
+    const me = whoami(resolve('.'));
+    out(
+      `Team: ${team.techLead} is the tech lead; a claim is stale after ${team.staleDays} working day${team.staleDays === 1 ? '' : 's'} without a push; provider ${team.provider === 'github' ? 'GitHub' : team.provider.command}.`,
+    );
+    for (const [lane, owners] of Object.entries(team.owners))
+      out(`Lane ${lane} is owned by ${owners.join(', ')}`);
+    out(
+      me
+        ? `You are ${me}${me === team.techLead ? ', the tech lead' : ''}.`
+        : "You aren't signed in to GitHub (gh auth login), so claims and owners can't be checked.",
+    );
+  }
 }
 
 function who(paths) {

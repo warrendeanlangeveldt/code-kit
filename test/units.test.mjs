@@ -1264,3 +1264,29 @@ test('DECIDE-2 a decision card carries the lineage: the story, its requirements,
   );
   assert.equal(limitsWhy(null), null);
 });
+
+test('TEAM-1 the team in the config: a tech lead, owners on lanes, and the defaults', async () => {
+  const { teamProblems, teamOf, isHandle } = await import('../hooks/lib/team.mjs');
+  assert.deepEqual(
+    teamProblems({ team: { techLead: 'alex' }, lanes: { web: { owners: ['sam'] } } }),
+    [],
+  );
+  assert.deepEqual(teamProblems({ lanes: { web: { owners: ['sam'] } } }), [
+    'lanes.web.owners needs "team", with its tech lead',
+  ]);
+  assert.equal(teamProblems({ team: { techLead: 'alex', staleDays: 2.5 } }).length, 1);
+  assert.equal(teamProblems({ team: { techLead: 'alex', provider: 'gitlab' } }).length, 1);
+  assert.deepEqual(teamProblems({ team: { techLead: 'alex', provider: { command: 'hub' } } }), []);
+  assert.deepEqual(
+    teamOf({ team: { techLead: 'alex' }, lanes: { web: { owners: ['sam'] }, api: {} } }),
+    {
+      techLead: 'alex',
+      staleDays: 3,
+      provider: 'github',
+      owners: { web: ['sam'] },
+    },
+  );
+  assert.equal(teamOf({ lanes: {} }), null);
+  for (const h of ['sam', 'a-b', 'A1']) assert.ok(isHandle(h), h);
+  for (const h of ['-sam', 'sam-', 'a--b', 'x'.repeat(40), '']) assert.ok(!isHandle(h), h);
+});

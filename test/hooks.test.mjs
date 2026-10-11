@@ -4,6 +4,7 @@
 import { spawn, spawnSync, execFileSync } from 'node:child_process';
 import {
   appendFileSync,
+  chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -1103,6 +1104,89 @@ try {
         JSON.parse(fKit('check', '--json').stdout).delegatesMerge === true &&
           JSON.parse(fKit('check', '--json').stdout).firstMerge === false,
       ),
+      0,
+    );
+  }
+
+  // --- TEAM-1: the team in the config, and who the developer at this machine is --------------------
+  {
+    const t = newRepo(false);
+    cleanups.push(t.dir);
+    mkdirSync(join(t.dir, '.claude'), { recursive: true });
+    const base = JSON.parse(fixture);
+    const teamConfig = (team, owners) =>
+      JSON.stringify({
+        ...base,
+        team,
+        lanes: { ...base.lanes, web: { ...base.lanes.web, ...(owners ? { owners } : {}) } },
+      });
+    // A stand-in for the GitHub CLI: it answers `gh api user` with the handle in GH_LOGIN.
+    const bin = join(t.dir, 'fake-bin');
+    mkdirSync(bin);
+    writeFileSync(join(bin, 'gh'), '#!/bin/sh\n[ -n "$GH_LOGIN" ] && echo "$GH_LOGIN" || exit 1\n');
+    chmodSync(join(bin, 'gh'), 0o755);
+    const tKit = (login, ...args) =>
+      spawnSync('node', [kitCli, ...args], {
+        cwd: t.dir,
+        encoding: 'utf8',
+        env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, GH_LOGIN: login ?? '' },
+      });
+    writeFileSync(join(t.dir, '.claude/code-kit.json'), teamConfig({ techLead: 'alex' }, ['sam']));
+    const report = JSON.parse(tKit('sam', 'check', '--json').stdout || '{}');
+    expect(
+      'TEAM-1 check reports the team with its defaults, and who you are',
+      truth(
+        report.team?.techLead === 'alex' &&
+          report.team.staleDays === 3 &&
+          report.team.provider === 'github' &&
+          report.team.owners.web?.[0] === 'sam' &&
+          report.me === 'sam',
+        JSON.stringify({ team: report.team, me: report.me }),
+      ),
+      0,
+    );
+    expect(
+      'who you are is cached, so a hook needs no call to GitHub',
+      truth(JSON.parse(tKit(null, 'check', '--json').stdout || '{}').me === 'sam'),
+      0,
+    );
+    const text = tKit('sam', 'check');
+    expect(
+      'check says it in words',
+      truth(
+        text.stdout.includes('Team: alex is the tech lead') &&
+          text.stdout.includes('Lane web is owned by sam') &&
+          text.stdout.includes('You are sam.'),
+        text.stdout,
+      ),
+      0,
+    );
+    writeFileSync(join(t.dir, '.claude/code-kit.json'), teamConfig(undefined, ['sam']));
+    expect(
+      'owners without a team are refused',
+      tKit('sam', 'check'),
+      1,
+      'lanes.web.owners needs "team"',
+    );
+    writeFileSync(
+      join(t.dir, '.claude/code-kit.json'),
+      teamConfig({ techLead: 'alex', staleDays: 0, provider: { command: '' } }),
+    );
+    const bad = tKit('sam', 'check');
+    expect(
+      'a bad stale threshold and provider are refused, each saying what it must be',
+      truth(
+        bad.status === 1 &&
+          bad.stderr.includes('"team.staleDays" must be a whole number') &&
+          bad.stderr.includes('"team.provider" must be "github"'),
+        bad.stderr,
+      ),
+      0,
+    );
+    writeFileSync(join(t.dir, '.claude/code-kit.json'), fixture);
+    expect(
+      'a project without a team reports none',
+      truth(JSON.parse(tKit('sam', 'check', '--json').stdout || '{}').team === null),
       0,
     );
   }
