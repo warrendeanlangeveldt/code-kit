@@ -927,6 +927,45 @@ try {
     b.git('merge', '--abort');
   }
 
+  // --- SETUP-1: the approved setup is committed straight onto main, while main has no rules yet ------
+  {
+    const u = newRepo(false);
+    cleanups.push(u.dir);
+    mkdirSync(join(u.dir, '.claude'), { recursive: true });
+    writeFileSync(join(u.dir, '.claude/code-kit.json'), fixture);
+    writeFileSync(join(u.dir, '.gitignore'), '.claude/approvals/\n.claude/state/\n');
+    const uHook = (command, agent) =>
+      spawnSync('node', [join(hooks, 'guard-bash.mjs')], {
+        input: JSON.stringify({
+          cwd: u.dir,
+          tool_input: { command },
+          ...(agent ? { agent_type: agent } : {}),
+        }),
+        env: { ...process.env, CLAUDE_PROJECT_DIR: u.dir },
+        encoding: 'utf8',
+      });
+    expect(
+      'SETUP-1 the lead commits the approved setup on main while main has no rules',
+      uHook('git add -A && git commit -m "Switch on code-kit"'),
+      0,
+    );
+    expect('but a lane may not', uHook('git commit -m x', 'web-engineer'), 2);
+    expect(
+      'nor may anyone merge onto main that way',
+      uHook('git merge web/st-1'),
+      2,
+      'never commit or merge on main',
+    );
+    u.git('add', '-A');
+    u.git('commit', '-q', '-m', 'Switch on code-kit');
+    expect(
+      'once main has the rules, a commit on it is refused as before',
+      uHook('git commit -m "more"'),
+      2,
+      'the lead merges it after review',
+    );
+  }
+
   // --- the first merge: the base has no code-kit rules committed yet, so it's the person's -----------
   {
     const f = newRepo(false);

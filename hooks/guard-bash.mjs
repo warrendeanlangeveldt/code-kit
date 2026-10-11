@@ -11,6 +11,7 @@ import { join, resolve } from 'node:path';
 import { addedPackages, dependencyApproval, isDependencyFile } from './lib/dependencies.mjs';
 import { CODE_KIT, GIT, codeOf, commandsOf, runs } from './lib/shell.mjs';
 import { block, start } from './lib/hook.mjs';
+import { CONFIG_FILE } from './lib/config.mjs';
 import { noteBefore } from './lane-audit.mjs';
 import {
   APPROVAL_LOG,
@@ -89,6 +90,14 @@ const branches = config.branches.protected
 // The branch is read before the command runs, so a command that switches to a protected branch and then
 // commits or merges in the same breath is judged by what it does, not by where it starts. Moving a
 // protected branch directly (branch -f, update-ref) is a commit on it by another name.
+/** Whether `file` is committed at HEAD in the repository at `root`. */
+function committedOnHead(root, file) {
+  return (
+    spawnSync('git', ['-C', root, 'cat-file', '-e', `HEAD:${file}`], { stdio: 'ignore' }).status ===
+    0
+  );
+}
+
 const writesHistory = runs(
   cmd,
   new RegExp(String.raw`^${GIT}(commit|merge|cherry-pick|rebase|revert|am)\b`),
@@ -238,9 +247,17 @@ try {
 } catch {
   // not a git repository yet
 }
-if (writesHistory && config.branches.protected.includes(branch)) {
+// SETUP-1: the one exception is setting up. Until the protected branch has the rules committed, the
+// lead commits the setup the person approved straight onto it, so no first merge needs anyone; from
+// that commit on, the branch is protected by the rules it now holds.
+const settingUp =
+  actor.kind === 'lead' &&
+  runs(cmd, new RegExp(String.raw`^${GIT}commit\b`)) &&
+  !runs(cmd, new RegExp(String.raw`^${GIT}(merge|cherry-pick|rebase|revert|am)\b`)) &&
+  !committedOnHead(root, CONFIG_FILE);
+if (writesHistory && config.branches.protected.includes(branch) && !settingUp) {
   block(
-    `Blocked: never commit or merge on ${branch}. Work on a branch; a person merges after review.`,
+    `Blocked: never commit or merge on ${branch}. Work on a branch; the lead merges it after review (or the person, where merges aren't delegated).`,
   );
 }
 
