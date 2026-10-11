@@ -1241,6 +1241,7 @@ if (a[0] === 'api' && a[1] === 'user') { if (!login) process.exit(1); console.lo
 else if (a[0] === 'label') {}
 else if (a[0] === 'issue' && a[1] === 'list') console.log(JSON.stringify(db.issues.filter((i) => i.state === 'open' && i.labels.includes(opt('--label')))));
 else if (a[0] === 'issue' && a[1] === 'create') { const number = 100 + db.issues.length; db.issues.push({ number, title: opt('--title'), body: opt('--body'), author: { login }, labels: [opt('--label')], state: 'open', createdAt: new Date().toISOString(), url: 'https://github.com/o/r/issues/' + number }); writeFileSync(file, JSON.stringify(db)); console.log('https://github.com/o/r/issues/' + number); }
+else if (a[0] === 'issue' && a[1] === 'close') { const i = db.issues.find((x) => x.number === Number(a[2])); if (!i) process.exit(1); i.state = 'closed'; i.closedAs = opt('--reason'); i.comment = opt('--comment'); writeFileSync(file, JSON.stringify(db)); }
 else if (a[0] === 'pr' && a[1] === 'list') console.log(JSON.stringify(db.pulls));
 else process.exit(2);
 `,
@@ -1466,6 +1467,63 @@ else process.exit(2);
       0,
     );
     for (const dir of [a, b, c]) writeFileSync(join(dir, '.claude/code-kit.json'), config);
+
+    // TEAM-5: intents before code.
+    const raised = sam(
+      'intend',
+      'Split',
+      'the',
+      'report',
+      'format',
+      '--touches',
+      'docs/reports/**,apps/office/**',
+    );
+    expect(
+      'TEAM-5 a developer raises an intent, as an issue the team sees, with what it touches',
+      truth(
+        raised.status === 0 &&
+          raised.stdout.includes('Raised intent #') &&
+          JSON.parse(dev2('team', '--json', '--fresh').stdout || '{}').intents?.some(
+            (i) =>
+              i.about === 'Split the report format' &&
+              i.by === 'sam' &&
+              i.touches.join() === 'docs/reports/**,apps/office/**',
+          ),
+        raised.stdout + raised.stderr,
+      ),
+      0,
+    );
+    const raisedId = raised.stdout.match(/#(\d+)/)?.[1];
+    expect(
+      'only the tech lead agrees or drops one',
+      sam('intend', 'agree', raisedId),
+      1,
+      'Only the tech lead (alex)',
+    );
+    expect(
+      "an agent can't agree one, even in the tech lead's session",
+      alexHook('guard-bash.mjs', { command: `node "${kitCli}" intend agree ${raisedId}` }),
+      2,
+      "the tech lead's own decision",
+    );
+    const agreed = alex('intend', 'agree', raisedId, '--reason', 'reports are per site now');
+    const closed = JSON.parse(readFileSync(store, 'utf8')).issues.find(
+      (i) => String(i.number) === raisedId,
+    );
+    expect(
+      'the tech lead agrees it: the issue closes with their words, and it leaves the open intents',
+      truth(
+        agreed.status === 0 &&
+          closed?.state === 'closed' &&
+          closed.closedAs === 'completed' &&
+          closed.comment.includes('Agreed by @alex, the tech lead: reports are per site now') &&
+          !JSON.parse(dev2('team', '--json', '--fresh').stdout || '{}').intents?.some(
+            (i) => String(i.id) === raisedId,
+          ),
+        agreed.stderr + JSON.stringify(closed),
+      ),
+      0,
+    );
 
     // TEAM-8: the shared repository can't be reached.
     execFileSync('git', ['-C', a, 'remote', 'set-url', 'origin', join(root, 'gone.git')]);

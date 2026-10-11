@@ -355,6 +355,8 @@ code-kit timeline [--json]                                    # when each story'
 code-kit journal [--json]                                     # the build's lineage: the request, its decisions, the spec, each story handed out, sent back and merged, each approval and who gave it
 code-kit team [--json] [--fresh]                              # the team: tech lead, owners, claims, intents and open pull requests (spec 16)
 code-kit team claim <story> [--lease globs] | team release <story>   # claim a story for yourself, leasing what it changes; release it (yours, or any as the tech lead)
+code-kit intend "<what and why>" [--touches globs]            # raise a change of direction before any code, as a GitHub issue the team sees
+code-kit intend agree|drop <id> [--reason "…"]               # the tech lead's answer, from their terminal or the pane
 code-kit map <story> [--json]                                 # a story's code: its files by layer, the imports between them, and what adapters know of each
 code-kit trail [--json]                                       # each requirement to its stories, the code they changed and the tests that name it
 code-kit adapters [--json --session id]                       # the adapters in use; with --json, what they know of each lane's work in a session

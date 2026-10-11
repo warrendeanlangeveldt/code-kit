@@ -103,6 +103,7 @@ const sessionId = option('--session');
 const minutesGiven = option('--minutes');
 const answerGiven = option('--answer');
 const leaseGiven = option('--lease');
+const touchesGiven = option('--touches');
 const FLAGS = ['--write', '--no-checks', '--json', '--delegated', '--person', '--fresh'];
 const flag = (name) => args.includes(name);
 const writeBaseline = flag('--write');
@@ -1311,6 +1312,39 @@ function teamCommand() {
 }
 
 /**
+ * TEAM-5: `intend "<what and why>" [--touches globs]` raises an intent before any code, so the team sees
+ * a change of direction first; `intend agree|drop <id> [--reason "…"]` is the tech lead's answer.
+ */
+function intendCommand() {
+  const { raw } = load();
+  const team = teamOf(raw);
+  if (!team) die('This project has no "team" in its config, so intents have nowhere to go.');
+  const provider = teamProvider(resolve('.'), team);
+  const [first, id] = rest;
+  if (first === 'agree' || first === 'drop') {
+    if (!/^\d+$/.test(id ?? '')) die(`code-kit intend ${first} <issue number> [--reason "…"]`);
+    const r = provider.settle(Number(id), first === 'agree' ? 'agreed' : 'dropped', reason ?? '');
+    if (!r.ok) die(r.why);
+    return out(
+      first === 'agree'
+        ? `Agreed intent #${id}: it's how the team goes now. Put it in the specs or decisions so every agent builds on it.`
+        : `Dropped intent #${id}.`,
+    );
+  }
+  const about = rest.join(' ').trim();
+  if (!about) die('code-kit intend "<what you\'ll change, and why>" [--touches "<glob>,<glob>"]');
+  const touches = (touchesGiven ?? '')
+    .split(',')
+    .map((t) => t.trim())
+    .filter(Boolean);
+  const r = provider.intend(about, touches);
+  if (!r.ok) die(r.why);
+  out(
+    `Raised intent #${r.intent.id}: ${about}${touches.length ? ` (touches ${touches.join(', ')})` : ''}. The team sees it now; the tech lead (${team.techLead}) agrees or drops it. ${r.intent.url}`,
+  );
+}
+
+/**
  * The lead loop's pause (LOOP-6): `loop` says whether the person paused it; `loop pause|resume`, the
  * person's act from the code-kit band, records it, so other tools' background work pauses with it.
  */
@@ -1343,6 +1377,7 @@ const commands = {
   hold: () => (rest.length === 1 ? hold(rest[0]) : usage()),
   queue,
   team: teamCommand,
+  intend: intendCommand,
   story: () => (rest.length === 1 ? story(rest[0]) : usage()),
   map: () => (rest.length === 1 ? mapCommand(rest[0]) : usage()),
   trail: trailCommand,
@@ -1374,7 +1409,8 @@ function usage() {
       '              | loop [--json] | loop pause|resume\n' +
       '              | map <story> [--json] | trail [--json] | journal [--json]\n' +
       '              | story <id> [--json] | timeline [--json]\n' +
-      '              | team [--json] [--fresh] | team claim <story> [--lease globs] | team release <story>',
+      '              | team [--json] [--fresh] | team claim <story> [--lease globs] | team release <story>\n' +
+      '              | intend "<what and why>" [--touches globs] | intend agree|drop <id> [--reason "…"]',
   );
 }
 await (commands[command] ?? usage)();

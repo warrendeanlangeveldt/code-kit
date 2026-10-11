@@ -318,6 +318,29 @@ function githubProvider(root, team) {
       const id = Number(url.trim().match(/\/(\d+)\s*$/)?.[1]);
       return { ok: true, intent: { id, by, about, touches, url: url.trim(), state: 'open' } };
     },
+    /** TEAM-5: the tech lead agrees an intent (it's how the team goes) or drops it. */
+    settle(id, outcome, why = '') {
+      const by = me();
+      if (by !== team.techLead)
+        return {
+          ok: false,
+          why: `Only the tech lead (${team.techLead}) agrees or drops an intent.`,
+        };
+      const said = `${outcome === 'agreed' ? 'Agreed' : 'Dropped'} by @${by}, the tech lead${why ? `: ${why}` : '.'}`;
+      const closed = gh([
+        'issue',
+        'close',
+        String(id),
+        '--reason',
+        outcome === 'agreed' ? 'completed' : 'not planned',
+        '--comment',
+        said,
+      ]);
+      if (closed === null)
+        return unreachable("GitHub can't be reached, so the intent wasn't settled.");
+      provider.forget();
+      return { ok: true, id, outcome };
+    },
     forget: () => writeCache(root, null),
   };
   return provider;
@@ -358,6 +381,7 @@ function commandProvider(root, team, command) {
         : (writeCache(root, s), s);
     },
     intend: (about, touches = []) => call('intend', { about, touches }),
+    settle: (id, outcome, why = '') => call('settle', { id, outcome, why }),
     forget: () => writeCache(root, null),
   };
 }

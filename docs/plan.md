@@ -271,9 +271,9 @@ The hooks refuse another developer's agent editing the tech lead's paths (raise 
 **Lane:** lead
 **Requirements:** TEAM-5
 **Depends on:** ST-25
-**Status:** todo
+**Status:** done
 
-`code-kit intend "<what and why>" --touches <globs>`, and the tech lead's agree and drop. An open intent touching what you own or lease reaches your band; all of them are in the Team tab.
+`code-kit intend "<what and why>" --touches <globs>` raises an issue labelled `code-kit:intent`; `intend agree|drop <id>` is the tech lead's answer, which the hooks refuse from any agent. (The band and Team tab show intents in ST-30.)
 
 ### ST-28 Since you last looked
 

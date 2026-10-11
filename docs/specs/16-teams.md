@@ -80,7 +80,7 @@ When a story is claimed, its lease is the paths the lead says it will change (`t
 
 ### TEAM-5 Intents before code
 
-`code-kit intend "<what and why>" --touches <globs>` opens an issue labelled `code-kit:intent`. Open intents are in every teammate's band when they touch what that teammate is working on, and in the Team tab always.
+`code-kit intend "<what and why>" --touches <globs>` opens an issue labelled `code-kit:intent`. The tech lead answers with `code-kit intend agree|drop <id> [--reason "…"]`, which closes the issue with their words; that's their own decision, so the hooks refuse it from any agent, as they do approvals. An agreed intent then goes into the specs or decisions, so every agent builds on it. Open intents are in every teammate's band when they touch what that teammate is working on, and in the Team tab always.
 
 ### TEAM-6 Since you last looked
 
