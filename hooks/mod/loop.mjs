@@ -3,7 +3,7 @@
 // existing skills, and the hooks judge every call as before.
 
 /** The steps the loop hands the lead; the rest (spec-design, init, check) wait for the person. */
-const LEAD_STEPS = new Set(['dispatch', 'review', 'lead', 'merge']);
+const LEAD_STEPS = new Set(['dispatch', 'review', 'lead', 'merge', 'rules']);
 
 /**
  * The prompt for a step from `code-kit next --json` (LOOP-1), or null when it isn't the lead's to
@@ -19,6 +19,9 @@ export function leadPrompt(step, { cli = 'code-kit' } = {}) {
     return ids.length
       ? `Merge ${ids[0]}, next in the merge queue: run node "${cli}" queue merge --delegated. It verifies the branch against the base as it is now, and sends it back to its lane if it conflicts or fails.`
       : null;
+  // SETUP-2: the base has no rules yet; the lead puts the approved ones there, then merges as usual.
+  if (step.step === 'rules')
+    return `Put code-kit's approved rules onto ${ids[0] ?? 'the base'}: run node "${cli}" queue rules. It commits the rules as committed on this branch, without switching branches; after it, merge the queue as usual.`;
   if (step.step === 'dispatch')
     return ids.length
       ? `Dispatch ${ids.join(', ')}: run /code-kit:dispatch ${ids.join(' ')}.`
@@ -40,8 +43,9 @@ export const stepKey = (step) => `${step.step}:${step.args ?? ''}`;
 export function stepLabel(step) {
   const ids = (step.args ?? '').split(/\s+/).filter(Boolean).join(', ');
   const verb =
-    { dispatch: 'Dispatch', review: 'Review', lead: 'Build', merge: 'Merge' }[step.step] ??
-    step.step;
+    { dispatch: 'Dispatch', review: 'Review', lead: 'Build', merge: 'Merge', rules: 'Rules onto' }[
+      step.step
+    ] ?? step.step;
   return ids ? `${verb} ${ids}` : verb;
 }
 

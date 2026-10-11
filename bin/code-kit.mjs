@@ -336,9 +336,82 @@ function configAt(ref) {
   return config ?? null;
 }
 
+/**
+ * SETUP-2: a project set up before setup committed its rules onto the base has none there, so nothing
+ * could be merged by the lead. `queue rules` commits the rules as committed on this branch (the ones the
+ * person approved) onto the base, as setup now does, without checking the base out: a commit of the base
+ * with those files changed, the base moved to it. Only while the base has no rules, and only the lead.
+ */
+function rulesOntoBase(root, config) {
+  const into = intoName ?? config.branches.protected[0];
+  const git = (args, opts = {}) =>
+    execFileSync('git', ['-C', root, ...args], { encoding: 'utf8', ...opts }).trim();
+  const head = git(['rev-parse', '--abbrev-ref', 'HEAD']);
+  if (head === into)
+    die(
+      `You're on ${into}: commit ${file} here as setup does (\`git add ${file} && git commit\`), which the hooks allow while ${into} has no rules.`,
+    );
+  if (configAt(into))
+    return out(
+      `${into} already has code-kit's rules committed; the merge queue merges under them.`,
+    );
+  if (!configAt('HEAD'))
+    die(
+      `${head} has no ${file} committed. Commit the rules the person approved first, then run this again.`,
+    );
+  const used = git(['worktree', 'list', '--porcelain'])
+    .split('\n')
+    .some((l) => l === `branch refs/heads/${into}`);
+  if (used)
+    die(
+      `${into} is checked out in a worktree, so moving it here would leave that checkout behind. Commit ${file} in that checkout instead (the hooks allow it while ${into} has no rules).`,
+    );
+  // The rules, and the baseline of existing violations they were approved with.
+  const files = [file, BASELINE_FILE].filter((f) => {
+    try {
+      execFileSync('git', ['-C', root, 'cat-file', '-e', `HEAD:${f}`], { stdio: 'ignore' });
+      return true;
+    } catch {
+      return false;
+    }
+  });
+  const index = join(tmpdir(), `code-kit-rules-${process.pid}`);
+  const env = { ...process.env, GIT_INDEX_FILE: index };
+  try {
+    git(['read-tree', into], { env });
+    for (const f of files)
+      git(
+        ['update-index', '--add', '--cacheinfo', `100644,${git(['rev-parse', `HEAD:${f}`])},${f}`],
+        {
+          env,
+        },
+      );
+    const tree = git(['write-tree'], { env });
+    const before = git(['rev-parse', into]);
+    const commit = git(
+      [
+        'commit-tree',
+        tree,
+        '-p',
+        before,
+        '-m',
+        `code-kit's rules onto ${into}, as the person approved them on ${head}\n\nFrom now on ${into}'s committed rules decide who merges into it.`,
+      ],
+      { env },
+    );
+    git(['update-ref', `refs/heads/${into}`, commit, before]);
+  } finally {
+    rmSync(index, { force: true });
+  }
+  const now = configAt(into);
+  out(
+    `Committed ${files.join(' and ')} onto ${into}, from ${head}. ${now?.approvals.delegate?.merge ? 'The lead merges the queue from now on (code-kit queue merge --delegated).' : `${into}'s rules don't delegate merges, so the person merges the queue.`}`,
+  );
+}
+
 /** Why the first merge into `into`, which has no config committed yet, is the person's. */
 const firstMerge = (into, branch) =>
-  `${into} has no ${file} committed yet, so it delegates nothing: the first merge, which brings code-kit's rules onto ${into}, is the person's. Ask them to merge ${branch} from the code-kit band (Merge), or to run \`! node "${process.argv[1]}" queue merge --person\`. From then on, ${into}'s committed rules decide who merges.`;
+  `${into} has no ${file} committed yet, so it delegates nothing. Put the approved rules onto it first: \`node "${process.argv[1]}" queue rules\`. Then merge ${branch} again; from then on ${into}'s committed rules decide who merges.`;
 
 /** Why a merge didn't happen: `refused` (the rules), `verify` (problems) or `conflict`. */
 class MergeStop extends Error {
@@ -527,6 +600,7 @@ function queue() {
     const place = waiting(readQueue(root)).length;
     return out(`Queued ${branch} to merge${place > 1 ? `, ${place - 1} ahead of it` : ', next'}.`);
   }
+  if (sub === 'rules') return rulesOntoBase(root, config);
   if (sub === 'merge') {
     const byPerson = mergeMode();
     const entries = readQueue(root);
@@ -561,7 +635,7 @@ function queue() {
   }
   if (sub !== undefined)
     die(
-      'code-kit queue [--json] | queue add <branch> | queue drop <branch> | queue merge --delegated|--person',
+      'code-kit queue [--json] | queue add <branch> | queue drop <branch> | queue rules | queue merge --delegated|--person',
     );
   const entries = readQueue(root);
   if (flag('--json')) return out(JSON.stringify(entries, null, 2));
@@ -1194,7 +1268,7 @@ function usage() {
       '              | stops [--session id] [--json] | sent-back <branch> [--reason "…"]\n' +
       '              | settings [--json] | settings set <key> <value> --reason "…" [--via pane]\n' +
       '              | hold <id> [--minutes N] | hold <id> --answer approved|refused\n' +
-      '              | queue [--json] | queue add|drop <branch> | queue merge --delegated|--person\n' +
+      '              | queue [--json] | queue add|drop <branch> | queue rules | queue merge --delegated|--person\n' +
       '              | loop [--json] | loop pause|resume\n' +
       '              | map <story> [--json] | trail [--json] | journal [--json]\n' +
       '              | story <id> [--json] | timeline [--json]',

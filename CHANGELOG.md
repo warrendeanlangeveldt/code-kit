@@ -2,6 +2,14 @@
 
 What changed in each release of code-kit, newest first. Versions follow the plugin manifest and the npm package `@warren-dean/code-kit`. Each release is also on [GitHub Releases](https://github.com/warrendeanlangeveldt/code-kit/releases).
 
+## 0.8.1 (2026-10-11)
+
+Fixes for projects set up before 0.8.0.
+
+- **No first merge for you here either.** A project set up before 0.8.0 has no code-kit rules on `main`, so its first merge still waited on you. Now the lead puts the rules you approved onto `main` itself (`code-kit queue rules`, a step the loop takes), without switching branches, and then merges the queue under them.
+- **Waiting on the merge queue isn't a broken plan.** Stories that depend on branches waiting to merge were reported as a dependency cycle, sending the build back to spec design. `next` now says they wait for the merge.
+- The band's key for decisions reads "d: Why, and what each choice does", not "d: d Why".
+
 ## 0.8.0 (2026-10-11)
 
 You decide what's built and the rules; the lead delivers it. Only real decisions reach you, each with the story behind it, and the whole build reads as one story from your request to now.

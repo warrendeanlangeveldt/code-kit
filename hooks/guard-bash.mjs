@@ -74,6 +74,7 @@ const packages = addedPackages(cmd);
 const approves = runs(cmd, new RegExp(String.raw`^${CODE_KIT}\s+approve\b`));
 const delegatedMerge = runs(cmd, new RegExp(String.raw`^${CODE_KIT}\s+(?:queue\s+)?merge\b`));
 const queues = runs(cmd, new RegExp(String.raw`^${CODE_KIT}\s+queue\s+(?:add|drop)\b`));
+const rulesOntoBase = runs(cmd, new RegExp(String.raw`^${CODE_KIT}\s+queue\s+rules\b`));
 const commits = runs(cmd, new RegExp(String.raw`^${GIT}commit\b`));
 if (error) {
   if (commits) block(`Blocked: ${error}\nFix the config before committing.`);
@@ -173,6 +174,10 @@ if (runs(cmd, new RegExp(String.raw`^${CODE_KIT}\s+settings\s+set\b`)))
 if (queues && actor.kind !== 'lead')
   block(
     `Blocked: only the lead puts branches in the merge queue, after its review passes them. Finish your story and commit it on your branch; the lead reviews it.\nCommand: ${cmd}`,
+  );
+if (rulesOntoBase && actor.kind !== 'lead')
+  block(
+    `Blocked: only the lead puts code-kit's rules onto the protected branch. Finish your story and commit it on your branch; the lead takes it from there.\nCommand: ${cmd}`,
   );
 if (delegatedMerge && actor.kind !== 'lead')
   block(

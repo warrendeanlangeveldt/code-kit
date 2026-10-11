@@ -50,7 +50,7 @@ function whyOf(line, check) {
   if (line.kind === 'proposal') return 'You asked to approve each step before the lead takes it.';
   if (line.kind === 'queue')
     return check?.firstMerge
-      ? 'main has no rules committed yet, so this first merge is yours; after it, the lead merges.'
+      ? 'The loop is off, so merging is yours. main has no rules committed yet: code-kit queue rules puts them there.'
       : "Your rules don't let the lead merge into main, so merges are yours.";
   if (line.kind === 'review') return 'The loop is off, so reviewing finished work is yours.';
   return null;

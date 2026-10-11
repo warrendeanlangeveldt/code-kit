@@ -789,6 +789,12 @@ test('LOOP-1 to LOOP-3 the loop: prompts for steps, and what a quiet agent is du
     leadPrompt({ step: 'merge', args: 'web/st-4' }, { cli: '/k/bin/code-kit.mjs' }).split(':')[0],
     'Merge web/st-4, next in the merge queue',
   );
+  // SETUP-2: the base has no rules yet; the lead puts them there.
+  assert.match(
+    leadPrompt({ step: 'rules', args: 'main' }, { cli: '/k/bin/code-kit.mjs' }),
+    /^Put code-kit's approved rules onto main: run node "\/k\/bin\/code-kit.mjs" queue rules\./,
+  );
+  assert.equal(stepLabel({ step: 'rules', args: 'main' }), 'Rules onto main');
   assert.ok(!leadPrompt({ step: 'dispatch', args: 'ST-1' }).startsWith('/'));
   assert.equal(stepKey({ step: 'dispatch', args: 'ST-1' }), 'dispatch:ST-1');
   assert.equal(stepLabel({ step: 'dispatch', args: 'ST-7 ST-9' }), 'Dispatch ST-7, ST-9');
