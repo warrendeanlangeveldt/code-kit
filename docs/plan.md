@@ -301,3 +301,39 @@ A claim with nothing on it (claimed, or its branch pushed) for `team.staleDays` 
 **Status:** done
 
 A Team tab: each person with their claims, branches, pull requests and intents, what touches yours, and "since you last looked" at the top. The band names only what needs you: a collision, an intent touching what you own, a stale claim of yours, or a review you own.
+
+### ST-31 Intents as discussions
+
+**Lane:** lead
+**Requirements:** TEAM-5
+**Depends on:** ST-27
+**Status:** todo
+
+Intents move from issues to discussions in the Intents category, through GitHub's GraphQL API (`gh api graphql`): raise, list, and the tech lead's agree, drop or duplicate (resolved, outdated, duplicate). A missing category says how to add it. `team since` reads intents raised and closed from the discussions.
+
+### ST-32 Decision records
+
+**Lane:** lead
+**Requirements:** TEAM-10
+**Depends on:** ST-31
+**Status:** todo
+
+`code-kit intend record <id>` writes the agreed intent to `docs.decisions` as a numbered decision record from the discussion's facts. Agreeing in the pane prompts the tech lead's lead to record it, commit it on a branch and open a pull request.
+
+### ST-33 CODEOWNERS from the config
+
+**Lane:** lead
+**Requirements:** TEAM-11
+**Depends on:** ST-24
+**Status:** todo
+
+`code-kit team codeowners [--write]`: the tech lead for the tech lead's paths, each owned lane's owners for its paths.
+
+### ST-34 The plan on a Project board
+
+**Lane:** lead
+**Requirements:** TEAM-12
+**Depends on:** ST-29
+**Status:** todo
+
+`team.board` in the config; `code-kit team board` mirrors stories as draft items with Lane, Claimed by, Stale and State fields through `gh project`, editing only what changed since the last sync; the mod syncs it at most every 10 minutes.

@@ -33,14 +33,14 @@ code-kit was built for one person with many agents. In a team, the same reposito
 | Claim  | at      | timestamp | yes      |                                                                           |
 | Lease  | story   | string    | yes      | The claim it belongs to; released with it                                 |
 | Lease  | paths   | glob[]    | yes      | What the story changes, from its code map and its branch's diff           |
-| Intent | id      | number    | yes      | The issue's number with the GitHub provider                               |
+| Intent | id      | number    | yes      | The discussion's number with the GitHub provider                          |
 | Intent | by      | string    | yes      |                                                                           |
 | Intent | about   | string    | yes      | One sentence: what's changing and why                                     |
 | Intent | touches | glob[]    | no       | Paths or modules it will change                                           |
 | Intent | state   | enum      | yes      | `open`, `agreed`, `dropped`, `superseded`                                 |
 | Seen   | at      | timestamp | yes      | Per person, local: when they last read the briefing                       |
 
-With the GitHub provider: a claim is the ref `refs/code-kit/claims/<story>`, pointing at a commit whose message holds the claim and lease as JSON; pushing it is the claim, and a push that fails because the ref exists means someone else has it. An intent is an issue labelled `code-kit:intent`, its body naming what it touches ("Touches: packages/schemas/**"): it's raised before any code, so it needs no branch.
+With the GitHub provider: a claim is the ref `refs/code-kit/claims/<story>`, pointing at a commit whose message holds the claim and lease as JSON; pushing it is the claim, and a push that fails because the ref exists means someone else has it. An intent is a discussion in the repository's Intents category, its body naming what it touches ("Touches: packages/schemas/**"): it's a proposal to talk over before any code, not a task, so it stays out of the issue tracker and needs no branch. Agreed, it's closed as resolved; dropped or superseded, as outdated; raised twice, as a duplicate.
 
 ## Requirements
 
@@ -80,7 +80,37 @@ When a story is claimed, its lease is the paths the lead says it will change (`t
 
 ### TEAM-5 Intents before code
 
-`code-kit intend "<what and why>" --touches <globs>` opens an issue labelled `code-kit:intent`. The tech lead answers with `code-kit intend agree|drop <id> [--reason "…"]`, which closes the issue with their words; that's their own decision, so the hooks refuse it from any agent, as they do approvals. An agreed intent then goes into the specs or decisions, so every agent builds on it. Open intents are in every teammate's band when they touch what that teammate is working on, and in the Team tab always.
+`code-kit intend "<what and why>" --touches <globs>` opens a discussion in the Intents category (`team.intents`, "Intents" unless set). GitHub doesn't let a tool create a category, so when it's missing the command says how to add it once (the repository's Settings › Discussions), and nothing is raised. The tech lead answers with `code-kit intend agree|drop|duplicate <id> [--reason "…"]`, which comments their words and closes the discussion as resolved, outdated or duplicate; that's their own decision, so the hooks refuse it from any agent, as they do approvals. Open intents are in every teammate's band when they touch what that teammate is working on, and in the Team tab always.
+
+**Acceptance**
+
+- Given sam raises "Split the report format" touching `docs/reports/**`, then it's a discussion in Intents and every teammate's `team` lists it with what it touches.
+- Given the repository has no Intents category, then `intend` raises nothing and says to add the category in Settings › Discussions.
+- Given alex, the tech lead, agrees it with a reason, then the discussion is commented with "Agreed by @alex, the tech lead: <reason>" and closed as resolved, and it leaves the open intents; sam can't agree it, nor can an agent in alex's session.
+
+### TEAM-10 An agreed intent becomes a decision record
+
+Agreeing an intent isn't enough for agents: they read the repository, not discussions. `code-kit intend record <id>` writes the agreed intent as a decision record in `docs.decisions` (`docs/decisions` unless set), numbered after the last one: its title, who raised and agreed it and when, what changes and why, what it touches, and the tech lead's words, all from the discussion. The lead commits it on a branch and opens a pull request, reviewed like any change to the tech lead's paths. When the tech lead agrees an intent from the pane, the mod asks their lead to do this.
+
+**Acceptance**
+
+- Given intent #12 agreed by alex, then `intend record 12` writes `docs/decisions/0003-split-the-report-format.md` after 0002, with the title, "Raised by @sam · Agreed by @alex", the date, the link, the body without its Touches line, the touches as a list and alex's words; an intent not yet agreed isn't recorded.
+
+### TEAM-11 GitHub enforces who reviews
+
+`code-kit team codeowners [--write]` writes `.github/CODEOWNERS` from the config: the tech lead for the tech lead's paths, and each owned lane's owners for its paths, so GitHub asks the right people to review and a ruleset can require it. It says it's generated, and from what.
+
+**Acceptance**
+
+- Given alex as tech lead over `docs/**` and `packages/schemas/**`, and web owned by sam and kim over `apps/web/**`, then CODEOWNERS has `/docs/** @alex`, `/packages/schemas/** @alex` and `/apps/web/** @sam @kim`, in that order.
+
+### TEAM-12 The plan on a Project board
+
+With `team.board` (`{ owner, number }`, a GitHub Project), `code-kit team board` mirrors each story onto the board as an item with Lane, Claimed by, Stale and State fields, creating the fields and items it needs and changing only what changed since its last sync. People who don't use code-kit see who's building what. The claims stay refs: the board is a view, never the source. The mod syncs it at most every 10 minutes. Writing to a board needs the `project` permission on the developer's `gh` sign-in (`gh auth refresh -s project`); without it, the command says so.
+
+**Acceptance**
+
+- Given ST-4 claimed by sam and stale, and ST-9 unclaimed, then the board has an item "ST-4 Booking form" with Lane web, Claimed by sam, Stale yes, and "ST-9 Pricing" with Claimed by empty; synced again with nothing changed, it edits nothing.
 
 ### TEAM-6 Since you last looked
 
