@@ -14,6 +14,8 @@ const STORY_HEADING = /^###\s+(ST-\d+)\b\s*(.*)$/;
 const REQUIREMENT_HEADING = /^###\s+((?!ST-)[A-Z][A-Z0-9]*-\d+)\b\s*(.*)$/;
 export const STATES = ['todo', 'in progress', 'review', 'done'];
 export const LEAD = 'lead';
+/** ONB-2: the pseudo-lane for design stories, which the lead designs with the person before any screen is built. */
+export const DESIGN = 'design';
 // Test files, by the usual conventions. Tests name the requirement IDs they prove.
 const TEST =
   /(^|\/)(tests?|__tests__|e2e)\/|\.(test|spec)\.[^/]+$|_test\.(go|py)$|(^|\/)test_[^/]+\.py$/;
@@ -185,7 +187,7 @@ export function traceProblems(requirements, stories, lanes) {
     if (storyIds.has(s.id)) problems.push(`${s.id} is in the plan more than once`);
     storyIds.add(s.id);
     if (!s.lane) problems.push(`${s.id} has no **Lane:**`);
-    else if (s.lane !== LEAD && !lanes.includes(s.lane))
+    else if (s.lane !== LEAD && s.lane !== DESIGN && !lanes.includes(s.lane))
       problems.push(`${s.id} names an unknown lane "${s.lane}"`);
     if (!s.requirements.length && !s.noRequirements)
       problems.push(`${s.id} cites no requirements (write "none" if it delivers none)`);

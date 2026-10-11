@@ -11,6 +11,8 @@
 //             shell.block (`person: true` marks a person's act the lead may do for them under
 //             approvals.lead); restricted: commands only the lead and the listed lanes may run
 //   setup     lines for init to apply or tell the person: ignore files, merge drivers, instructions
+//   onboard   { skill, why }: the tool's own setup skill, which `next` runs before any coding when the
+//             config wants the tool ("adapters": { "<name>": true }) but it isn't set up here yet
 //   facts     what the tool knows of the lanes' work, for the mod's combined view: { available(root),
 //             lanes(root, { session }) → { [agent type or 'lead']: { withoutUnderstanding, cardsOwed } },
 //             files(root, paths) → { [path]: { rules } }, open: { command } (its view of a file) }
@@ -38,6 +40,16 @@ export function adapterFacts(raw, root, { session = null, paths = null } = {}) {
       ...(paths && a.facts.files ? { files: a.facts.files(root, paths) } : {}),
       open: a.facts.open ?? null,
     }));
+}
+
+/**
+ * ONB-3: tools the config wants (`"adapters": { "<name>": true }`) that aren't set up in `root` yet,
+ * with each one's setup skill: [{ name, skill, why }].
+ */
+export function pendingSetup(raw, root) {
+  return ADAPTERS.filter(
+    (a) => raw?.adapters?.[a.name] === true && a.onboard && !a.detect(root),
+  ).map((a) => ({ name: a.name, ...a.onboard }));
 }
 
 /** The effective config with every active adapter's contributions merged in. */

@@ -24,7 +24,9 @@ It returns `step`, `why`, `args`, `then` (steps that can follow straight after) 
 | No config, existing code or docs                           | `init`                                                    |
 | Nothing at all                                             | `spec-design`                                             |
 | Config, but no specs, plan or stories                      | `spec-design`                                             |
+| A companion the config wants, not set up yet               | `setup`: run that tool's init skill (`args`), before code |
 | Stories finished on their branches                         | `review`, then `dispatch` what's ready                    |
+| Design stories ready (`**Lane:** design`)                  | `design`, then `dispatch` what needs no design            |
 | Stories ready                                              | `dispatch`                                                |
 | The lead's own stories ready (`**Lane:** lead`)            | `lead`: the lead builds them itself                       |
 | Stories being built, nothing else can start                | wait                                                      |
@@ -37,6 +39,7 @@ Tell the person in one or two lines what you found and what you're about to run,
 
 Run the named skill with the Skill tool: `code-kit:<step>`, with `args` (and the person's argument, if they gave one). Follow that skill in full. This skill only chooses; it never does a step's work itself.
 
+- **`setup`:** run the skill named in `args` (for example `context-graph:init`); it's another plugin's, so call it by that full name.
 - **`lead`:** there's no skill to run. Build each story yourself, on the branch `lead/st-<n>`: spec-check it first if it cites requirements, do the work, commit, then run `code-kit:review` on the branch like any other. A spike's result goes in the docs it names.
 - **`wait`:** say which stories are being built and on which branches, then stop. When a lane agent finishes, its notification arrives in this session; run this skill again then. If a story has been in progress with no agent running (the session ended, or the agent stopped without committing), dispatch it again.
 - **`done`:** give the `status` summary in a few lines, then offer to run spec-design for the next milestone or feature.

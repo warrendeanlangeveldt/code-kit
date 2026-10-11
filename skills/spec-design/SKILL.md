@@ -85,6 +85,7 @@ Each requirement gets an ID (`<AREA>-<n>`, for example `BOOK-4`) and its own hea
 - **Errors and edge cases:** invalid input, duplicates, concurrency, partial failure, timeouts, an external service being down, empty and very large data.
 - **Events and integrations:** what other parts of the system or external services are told, and what they send back.
 - **Acceptance criteria:** Given / When / Then for the main path and for each important error.
+- **Screens** (any area a person uses through a web, mobile or desktop interface): a `## Screens` section listing each screen, what it shows, what the person can do on it and which requirements it serves, with its empty, loading and error states. These are what gets designed before anything is built.
 
 A spec answers what and why, not how: no framework, file or function names unless the person requires them. Anything still undecided goes in the spec's open questions and the brief's, never into a requirement. `Status: specified`.
 
@@ -98,14 +99,17 @@ These are what `/code-kit:init` turns into enforced rules, so be concrete.
   - what each layer must not use, for example no database client in the domain;
   - the **contracts** (API schemas, events, database schema) and who may change them;
   - external services and how each is isolated;
-  - how the quality targets from phase 3 are met.
+  - how the quality targets from phase 3 are met;
+  - **recipes**: under `## Recipes`, a `### <recipe-name>` for each layer's common addition (a new screen, endpoint, migration, domain service, job): the steps in order, the files each step creates or changes, and how it's tested. Each becomes a project skill when init sets up the lanes, so every lane agent builds the same thing the same way;
+  - the **design tool** for screens, when there are any: the one the person uses (Paper, Figma, Pencil), or design files under `design/` when they have none.
     Propose the architecture from the specs and constraints, explain the choices, and ask about the ones that matter. Record each in the decision log.
 - **`docs/principles.md`:** the engineering rules; what counts as a contract; the definition of done (tests, checks, reviews, end-to-end working features); the test, lint, typecheck and database commands once they're known; and which commands only CI or a person may run, such as deploys.
 - **`docs/plan.md`**, from `${CLAUDE_PLUGIN_ROOT}/templates/plan.md`:
   - the **work split**: lanes (for example web, api, data), the paths each will own, the agent name for it and the command that proves its work, so work can run in parallel without overlap;
   - milestones, each a usable increment;
   - stories, each small enough for one lane to finish on one branch. Each story is a `### ST-<n> Title` heading with `**Lane:**`, `**Requirements:**` (the IDs it delivers, or `none` for a spike or a foundation that delivers none), `**Depends on:**` and `**Status:** todo` lines. `code-kit status` and the dispatch skill read them. A story that needs two lanes is two stories, with a dependency between them;
-  - sequencing: contracts and shared foundations first, as the lead's own stories (`**Lane:** lead`, built by the lead rather than dispatched), then work that can run in parallel.
+  - sequencing: contracts and shared foundations first, as the lead's own stories (`**Lane:** lead`, built by the lead rather than dispatched), then work that can run in parallel;
+  - **design before code**: when there are screens, a design story for each area's screens (`**Lane:** design`, citing the requirements its screens serve), early in the plan, and every story that builds those screens depends on it. The lead designs them with the person (`/code-kit:design`), and no screen is built until its design is approved.
 
 `Status: planned`.
 

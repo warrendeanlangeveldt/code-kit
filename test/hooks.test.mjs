@@ -1956,6 +1956,93 @@ else process.exit(2);
     );
   }
 
+  // --- ONB-1 to ONB-3: onboarding in the right order -----------------------------------------------
+  {
+    const o = newRepo();
+    cleanups.push(o.dir);
+    const oKit = (...args) =>
+      spawnSync('node', [kitCli, ...args], { cwd: o.dir, encoding: 'utf8' });
+    const nextOf = () => JSON.parse(oKit('next', '--json').stdout || '{}');
+    mkdirSync(join(o.dir, 'docs/spec'), { recursive: true });
+    writeFileSync(
+      join(o.dir, 'docs/spec/01-booking.md'),
+      '# 01. Booking\n\n### BOOK-1 Book\n\nx\n\n### BOOK-2 Store\n\nx\n',
+    );
+    writeFileSync(
+      join(o.dir, 'docs/spec/plan.md'),
+      '# Plan\n\n## M1\n\n### ST-1 Design: booking screens\n\n**Lane:** design\n**Requirements:** BOOK-1\n**Status:** todo\n\n### ST-2 Booking screens\n\n**Lane:** web\n**Requirements:** BOOK-1\n**Depends on:** ST-1\n**Status:** todo\n\n### ST-3 Booking store\n\n**Lane:** backend\n**Requirements:** BOOK-2\n**Status:** todo\n',
+    );
+    o.git('add', '-A');
+    o.git('commit', '-q', '-m', 'spec');
+    const designing = nextOf();
+    expect(
+      'ONB-2 a ready design story comes first, then the stories that need no design',
+      truth(
+        designing.step === 'design' &&
+          designing.args === 'ST-1' &&
+          designing.then?.some((t) => t.step === 'dispatch' && t.args === 'ST-3'),
+        JSON.stringify(designing),
+      ),
+      0,
+    );
+    expect(
+      'and the screens wait for their design',
+      truth(!JSON.stringify(designing).includes('ST-2')),
+      0,
+    );
+    const status = JSON.parse(oKit('status', '--json').stdout || '{}');
+    expect(
+      'a design story is no gap in the plan',
+      truth(
+        !status.problems?.some((p) => p.includes('unknown lane')),
+        JSON.stringify(status.problems),
+      ),
+      0,
+    );
+    // ONB-3: a companion the config wants is set up before any coding.
+    const wanting = JSON.stringify({ ...JSON.parse(fixture), adapters: { 'context-graph': true } });
+    writeFileSync(join(o.dir, '.claude/code-kit.json'), wanting);
+    const setup = nextOf();
+    expect(
+      'ONB-3 a companion the config wants and that is not set up comes before the design and the coding',
+      truth(
+        setup.step === 'setup' &&
+          setup.args === 'context-graph:init' &&
+          setup.why.includes('before any code is written'),
+        JSON.stringify(setup),
+      ),
+      0,
+    );
+    mkdirSync(join(o.dir, '.ctx'));
+    expect('once it is set up, the build goes on', truth(nextOf().step === 'design'), 0);
+    // ONB-1: an agent naming a skill that doesn't exist.
+    mkdirSync(join(o.dir, '.claude/agents'), { recursive: true });
+    writeFileSync(
+      join(o.dir, '.claude/agents/web-engineer.md'),
+      '# web-engineer\n\n**Skills to use:** spec-check, `new-screen`, context-graph:cards\n',
+    );
+    expect(
+      'ONB-1 next says when a lane agent names a skill that does not exist',
+      truth(
+        nextOf().attention?.some((a) =>
+          a.startsWith("web-engineer names a skill that doesn't exist: new-screen."),
+        ),
+        JSON.stringify(nextOf().attention),
+      ),
+      0,
+    );
+    mkdirSync(join(o.dir, '.claude/skills/new-screen'), { recursive: true });
+    writeFileSync(
+      join(o.dir, '.claude/skills/new-screen/SKILL.md'),
+      '---\nname: new-screen\n---\n',
+    );
+    expect(
+      'once the skill is written, it says nothing',
+      truth(!nextOf().attention?.some((a) => a.includes('names a skill'))),
+      0,
+    );
+  }
+
   // --- MAP-1 and TRAIL-1: a story's code by layer, and each requirement's trail -------------------
   {
     const t = newRepo();

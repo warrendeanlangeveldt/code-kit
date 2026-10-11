@@ -1,6 +1,6 @@
 # Plan
 
-`code-kit status` reads this file. Keep each story's heading and its four `**…:**` lines in this form. Use `**Lane:** lead` for the lead's own stories (contracts, foundations, spikes), and `**Requirements:** none` for a story that delivers no requirement.
+`code-kit status` reads this file. Keep each story's heading and its four `**…:**` lines in this form. Use `**Lane:** lead` for the lead's own stories (contracts, foundations, spikes), `**Lane:** design` for a design story (an area's screens, designed with the person before any of them is built; the stories building them depend on it), and `**Requirements:** none` for a story that delivers no requirement.
 
 ## Lanes
 

@@ -3,7 +3,7 @@
 // existing skills, and the hooks judge every call as before.
 
 /** The steps the loop hands the lead; the rest (spec-design, init, check) wait for the person. */
-const LEAD_STEPS = new Set(['dispatch', 'review', 'lead', 'merge', 'rules']);
+const LEAD_STEPS = new Set(['dispatch', 'review', 'lead', 'merge', 'rules', 'design', 'setup']);
 
 /**
  * The prompt for a step from `code-kit next --json` (LOOP-1), or null when it isn't the lead's to
@@ -22,6 +22,16 @@ export function leadPrompt(step, { cli = 'code-kit' } = {}) {
   // SETUP-2: the base has no rules yet; the lead puts the approved ones there, then merges as usual.
   if (step.step === 'rules')
     return `Put code-kit's approved rules onto ${ids[0] ?? 'the base'}: run node "${cli}" queue rules. It commits the rules as committed on this branch, without switching branches; after it, merge the queue as usual.`;
+  // ONB-3: a companion set up before any coding.
+  if (step.step === 'setup')
+    return ids.length
+      ? `Before any code is written, set up ${ids[0].split(':')[0]}: run /${ids[0]}. ${step.why ?? ''}`.trim()
+      : null;
+  // ONB-2: the screens designed, and approved by the person, before they're built.
+  if (step.step === 'design')
+    return ids.length
+      ? `Design ${ids.join(', ')} before any of their screens are built: run /code-kit:design ${ids.join(' ')}.`
+      : null;
   if (step.step === 'dispatch')
     return ids.length
       ? `Dispatch ${ids.join(', ')}: run /code-kit:dispatch ${ids.join(' ')}.`
@@ -43,9 +53,15 @@ export const stepKey = (step) => `${step.step}:${step.args ?? ''}`;
 export function stepLabel(step) {
   const ids = (step.args ?? '').split(/\s+/).filter(Boolean).join(', ');
   const verb =
-    { dispatch: 'Dispatch', review: 'Review', lead: 'Build', merge: 'Merge', rules: 'Rules onto' }[
-      step.step
-    ] ?? step.step;
+    {
+      dispatch: 'Dispatch',
+      review: 'Review',
+      lead: 'Build',
+      merge: 'Merge',
+      rules: 'Rules onto',
+      design: 'Design',
+      setup: 'Set up',
+    }[step.step] ?? step.step;
   return ids ? `${verb} ${ids}` : verb;
 }
 

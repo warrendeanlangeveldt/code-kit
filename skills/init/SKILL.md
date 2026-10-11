@@ -62,7 +62,11 @@ Write `.claude/code-kit.draft.json`. Follow `${CLAUDE_PLUGIN_ROOT}/README.md` â€
 - **`lead.paths`:** contracts, specs, design, root config, and anything the docs reserve for the lead.
 - **`anyActor`:** lockfiles, if lanes may update them.
 - **`protected`:** registers and contracts that need a person's sign-off, each with an `approval` name and a `why`.
-- **`designGate`:** only if the docs require designs before screens.
+- **`designGate`:** whenever a lane owns screens (web, mobile, desktop), designs come before code:
+  - `register`: `design/register.json`, written now as `{ "screens": [] }`;
+  - `screens`: a glob for each such lane's screen files (routes, pages, views), from the architecture's folders, with `not` for tests and stories;
+  - `howTo`: "Design it first: run /code-kit:design for this area's design story, and a person approves it.";
+  - a `protected` entry for the register (approval `design`, why "only approved designs are built"). Never put `design` in `approvals.delegate`: approving a design is the person's.
 - **`shell.block`:** deploy, release and production commands reserved for CI or a person.
 - **`shell.restricted`:** commands that affect a shared local service, limited to the lanes that own it.
 - **`postEdit`:** the project's existing per-file linters and formatters, with `{file}`.
@@ -97,7 +101,7 @@ Draft, alongside the config:
   - If an agent already exists, keep its content and add only what's missing.
   - Drop the spec-check lines if the config has no `docs.specs`.
 - **CLAUDE.md:** add the section from `${CLAUDE_PLUGIN_ROOT}/templates/claude-md.md`.
-- **Project skills** (recipes like "new migration" or "new endpoint"): list the recipes the docs describe step by step, and offer to write them. Don't write them unasked, and never write an empty one.
+- **Project skills, with the agents** (recipes like "new screen", "new migration" or "new endpoint"): one per recipe in the architecture's `## Recipes`, or any other doc that describes one step by step. Draft them now, alongside the agents, and show them in the same approval; the agents and their skills are one piece of work. Brownfield code without recipes in its docs: propose recipes from the patterns the code already follows (how its existing screens, endpoints or migrations are built), as drafts the person approves. Never write an empty one.
   - Write each as `.claude/skills/<name>/SKILL.md`, saying in its description which recipe in which doc it comes from, so an update can find it again.
   - List it under **Skills to use** on every lane agent whose paths the recipe touches, not only one: a recipe that adds a migration and the endpoint that uses it belongs to both lanes. A recipe only the lead follows goes in the CLAUDE.md section instead.
 
@@ -107,8 +111,9 @@ Show the person:
 2. the lanes, their agents and their paths;
 3. protected paths, blocked and restricted commands, and checks (including any left out because they fail today);
    and whether the lead may record approvals given in chat (`approvals.lead`), and how hands-off the build is (`harness.autonomy`);
-4. the active adapters and what each adds, from `adapters`;
-5. every **question**: where the docs or the code are silent, ambiguous or contradictory. Don't guess; a wrong owner or layer blocks real work.
+4. the project skills, and which lane agents use each;
+5. the active adapters and what each adds, from `adapters`. A companion tool that's installed but not set up here (its init skill is in your skills list, for example `/context-graph:init` with no `.ctx/` folder): add `"adapters": { "<name>": true }` to the draft and say it will be set up before any code is written;
+6. every **question**: where the docs or the code are silent, ambiguous or contradictory. Don't guess; a wrong owner or layer blocks real work.
 
 Once they approve (with any changes):
 
@@ -125,10 +130,11 @@ Once they approve (with any changes):
    - tell the person to make the `code-kit` check required on the protected branches.
 7. Run `check` and `unowned` again, without `--config`.
 8. Commit the setup straight onto the base branch (usually `main`), not a branch: while the base has no `.claude/code-kit.json` committed, the hooks let the lead make that one commit, so the rules the person just approved are in force on `main` and the lead can merge reviewed work from the start, with no first merge for anyone to make. The kit records the protected files in `.claude/approval-log.jsonl`. If the base already has rules (an update, section 4), commit on a branch as usual.
+9. Set up each companion the config now wants (`"adapters": { "<name>": true }`) by running its init skill, for example `/context-graph:init`, which asks nothing. Do it before reporting, so it's in place before the coding loop starts; `code-kit next` also gives `setup` until it is.
 
 Report what was set up, what's enforced from now on, how many existing violations the baseline holds, and the open questions. Say who does what from here: the person owns the intent and the rules; the lead owns delivery, so it dispatches, reviews, sends back and merges, and approves within the delegated limits, and only a real decision (scope, something outside those limits, a problem it couldn't solve) comes to the person.
 
-If the project has no `.ctx/` folder, end the report with one line about the companion plugin. If Context Graph is already installed (its `/context-graph:init` command is available to you), offer to run it now: "Context Graph is installed but has no graph here yet. `/context-graph:init` gives each lane agent the why behind the files it edits (cards, rules and decisions kept in git), with this spec's requirements and layer rules in them. Shall I run it?" If it isn't installed, don't install it unless the person asks: "Context Graph can give each lane agent the why behind the files it edits (cards, rules and decisions kept in git), with this spec's requirements and layer rules in them: `/plugin marketplace add warrendeanlangeveldt/context-graph`, then `/plugin install context-graph@context-graph`."
+If the project has no `.ctx/` folder and Context Graph isn't installed, don't install it unless the person asks: "Context Graph can give each lane agent the why behind the files it edits (cards, rules and decisions kept in git), with this spec's requirements and layer rules in them: `/plugin marketplace add warrendeanlangeveldt/context-graph`, then `/plugin install context-graph@context-graph`."
 
 ## 4. Update an existing setup
 
@@ -156,7 +162,7 @@ Re-run whenever the build has moved on: new apps or packages, folders that moved
    - a smaller baseline when `baseline` shows violations were fixed. It only ever shrinks.
 5. **On approval:**
    1. Replace `.claude/code-kit.json` with the draft and delete the draft.
-   2. Write or update the agents, and write, update or remove the project skills as approved.
+   2. Write or update the agents, and write, update or remove the project skills as approved, together.
    3. Run `baseline --write` if it shrank.
    4. Run `check` and `unowned`.
    5. Commit on a branch.

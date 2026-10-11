@@ -795,6 +795,16 @@ test('LOOP-1 to LOOP-3 the loop: prompts for steps, and what a quiet agent is du
     /^Put code-kit's approved rules onto main: run node "\/k\/bin\/code-kit.mjs" queue rules\./,
   );
   assert.equal(stepLabel({ step: 'rules', args: 'main' }), 'Rules onto main');
+  // ONB-2, ONB-3: designs before screens, and a companion set up before any coding.
+  assert.equal(
+    leadPrompt({ step: 'design', args: 'ST-1 ST-5' }),
+    'Design ST-1, ST-5 before any of their screens are built: run /code-kit:design ST-1 ST-5.',
+  );
+  assert.match(
+    leadPrompt({ step: 'setup', args: 'context-graph:init', why: 'It has no graph yet.' }),
+    /^Before any code is written, set up context-graph: run \/context-graph:init\. It has no graph yet\.$/,
+  );
+  assert.equal(stepLabel({ step: 'design', args: 'ST-1' }), 'Design ST-1');
   assert.ok(!leadPrompt({ step: 'dispatch', args: 'ST-1' }).startsWith('/'));
   assert.equal(stepKey({ step: 'dispatch', args: 'ST-1' }), 'dispatch:ST-1');
   assert.equal(stepLabel({ step: 'dispatch', args: 'ST-7 ST-9' }), 'Dispatch ST-7, ST-9');
