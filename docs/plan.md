@@ -255,7 +255,7 @@ Several people in one repository, each with their own agents, coordinated throug
 **Depends on:** ST-24
 **Status:** done
 
-`hooks/lib/team.mjs`: the interface, the built-in GitHub provider (claims as `refs/code-kit/claims/<story>`, pushed atomically; intents as issues labelled `code-kit:intent`; state read at most once a minute, cached in `.claude/state/team.json`), and a provider command for anything else. Unreachable, it fails open and says so once. `code-kit team [--json]`, `team claim|release <story>`. End-to-end tests with two clones of one bare repository; the GitHub API is stubbed.
+`hooks/lib/team.mjs`: the interface, the built-in GitHub provider (claims as `refs/code-kit/claims/<story>`, pushed atomically; intents as issues labelled `code-kit:intent`, moved to discussions in ST-31; state read at most once a minute, cached in `.claude/state/team.json`), and a provider command for anything else. Unreachable, it fails open and says so once. `code-kit team [--json]`, `team claim|release <story>`. End-to-end tests with two clones of one bare repository; the GitHub API is stubbed.
 
 ### ST-26 Ownership, claims and leases enforced
 
@@ -273,7 +273,7 @@ The hooks refuse another developer's agent editing the tech lead's paths (raise 
 **Depends on:** ST-25
 **Status:** done
 
-`code-kit intend "<what and why>" --touches <globs>` raises an issue labelled `code-kit:intent`; `intend agree|drop <id>` is the tech lead's answer, which the hooks refuse from any agent. (The band and Team tab show intents in ST-30.)
+`code-kit intend "<what and why>" --touches <globs>` raised an issue labelled `code-kit:intent` (a discussion since ST-31); `intend agree|drop <id>` is the tech lead's answer, which the hooks refuse from any agent. (The band and Team tab show intents in ST-30.)
 
 ### ST-28 Since you last looked
 

@@ -12,7 +12,7 @@ code-kit was built for one person with many agents. In a team, the same reposito
 - Owners for lanes (a split by layer) and claims on stories (a split by feature), in the committed config.
 - Leases: a claimed story also holds the files and modules it changes, for as long as it's open.
 - Open intents: "I'm changing the auth contract", visible to everyone before any code.
-- The team provider interface, and its GitHub-only implementation: claims and leases as refs in the shared repository, intents as GitHub issues, state read by polling.
+- The team provider interface, and its GitHub-only implementation: claims and leases as refs in the shared repository, intents as discussions, state read by polling.
 - The hooks refusing a dispatch or an edit that collides with someone else's claim or lease.
 - A Team tab, and team lines in the band that only name what needs you.
 - "Since you last looked": a briefing of what everyone pushed, opened, merged and decided.
