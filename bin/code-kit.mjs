@@ -1397,6 +1397,7 @@ function teamCommand() {
   const you = state.me
     ? `You are ${state.me}${state.me === team.techLead ? ', the tech lead' : ''}.`
     : "You aren't signed in to GitHub (gh auth login).";
+  out('Team mode is a preview: report anything that looks wrong.');
   out(`Tech lead: ${team.techLead}. ${you}`);
   if (state.reachable === false)
     out(

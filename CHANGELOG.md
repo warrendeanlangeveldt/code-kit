@@ -2,6 +2,27 @@
 
 What changed in each release of code-kit, newest first. Versions follow the plugin manifest and the npm package `@warren-dean/code-kit`. Each release is also on [GitHub Releases](https://github.com/warrendeanlangeveldt/code-kit/releases).
 
+## 0.9.0 (2026-10-11)
+
+Onboarding in the right order, a QA lane, maps that work on any project, and team mode as a preview.
+
+**Onboarding**
+
+- **Lane agents come with their skills.** spec-design writes a recipe for each layer's common additions (a screen, an endpoint, a migration), and init turns each into a project skill in the same approval as the agents. `next` says when an agent names a skill that doesn't exist.
+- **Screens are designed before they're built.** When the product has screens, the plan gets a design story per area (`**Lane:** design`), and the stories that build them depend on it. init switches on the design gate for every lane with screens. The new `/code-kit:design` designs them in your design tool, or as HTML files, from the spec's own content, shows you each one, and records the ones you approve. `next` and the loop run design stories before anything they hold up.
+- **A QA lane proves the journeys.** Each lane still writes its own unit tests. When there are screens or journeys across lanes, a `qa` lane with a `test-engineer` agent owns the end-to-end suites (Playwright, Maestro or Detox), with a test story per journey, and reviews run the journeys a story touches.
+- **Companions are set up before coding.** When Context Graph is installed but not set up, init records it and runs its init before reporting, and `next` and the loop do it first until it's done.
+- **An older setup is told what it's missing.** The config records the setup's version (`"setup": 2`). A project set up before gets a line from `next` naming what re-running `/code-kit:init` adds.
+
+**Fixes**
+
+- The Trail no longer goes blank on projects with more than 64 requirements: its list holds one spec at a time.
+- The Code map shows the whole project, by folder, when no story is being built, instead of saying the next story has no code yet. `code-kit map project` gives the same.
+
+**Teams (preview)**
+
+- Several people in one repository, through GitHub alone: lane owners, story claims with leases on the files they change, the tech lead's paths, intents as discussions with decision records once agreed, since-you-last-looked, stale claims, CODEOWNERS from the config, the plan on a GitHub Project, and a Team tab. New commands: `code-kit team`, `team since`, `team claim|keep|release|reassign`, `team codeowners`, `team board`, `code-kit intend`. It's tested against a stand-in for GitHub, not yet on real repositories.
+
 ## 0.8.1 (2026-10-11)
 
 Fixes for projects set up before 0.8.0.
