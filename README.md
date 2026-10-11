@@ -316,7 +316,7 @@ For several people in one repository, each with their own agents. Add `"team": {
 - **Stale claims** (nothing pushed for three working days) are flagged, never released on their own: the holder keeps or releases it, and the tech lead can reassign it.
 - **GitHub does its part.** `code-kit team codeowners --write` writes CODEOWNERS from the config, and `"board": { "owner", "number" }` mirrors the plan onto a GitHub Project.
 
-It's a preview: it's tested end to end against a stand-in for GitHub, not yet on real repositories. Spec: `docs/specs/16-teams.md`.
+It's a preview: it's tested end to end against a stand-in for GitHub, and has been run once against a real private repository (claims, leases, intents as discussions, decision records, since-you-last-looked and the Project board). Spec: `docs/specs/16-teams.md`.
 
 ## Enforce it in CI
 

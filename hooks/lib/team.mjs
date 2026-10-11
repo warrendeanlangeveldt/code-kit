@@ -272,6 +272,53 @@ function githubProvider(root, team) {
       sha ? `${sha}:${CLAIMS}/${story}` : `:${CLAIMS}/${story}`,
     ]);
   const me = () => whoami(root);
+  /**
+   * TEAM-6: commits on the shared repository's branches since `at`, by the person who made them (their
+   * GitHub handle from a noreply address, otherwise their name): [{ at, by, kind: 'pushed', text }].
+   */
+  const pushesSince = (at) => {
+    if (!ok(git(['fetch', '--prune', '--quiet', 'origin']))) return [];
+    const out = [];
+    const branches = git(['for-each-ref', '--format=%(refname:lstrip=3)', 'refs/remotes/origin/'])
+      .stdout.split('\n')
+      .filter((b) => b && b !== 'HEAD');
+    // A branch's own commits, not the default branch's it started from.
+    const head = git(['symbolic-ref', '--short', 'refs/remotes/origin/HEAD']).stdout.trim();
+    const main = head
+      ? head.replace(/^origin\//, '')
+      : branches.includes('main')
+        ? 'main'
+        : 'master';
+    for (const branch of branches) {
+      const log = git([
+        'log',
+        `refs/remotes/origin/${branch}`,
+        ...(branch !== main && branches.includes(main)
+          ? ['--not', `refs/remotes/origin/${main}`]
+          : []),
+        '--no-merges',
+        `--since=@${Math.floor(at / 1000)}`,
+        '--format=%ae%x00%an%x00%ct',
+      ]).stdout;
+      const byPerson = new Map();
+      for (const line of log.split('\n').filter(Boolean)) {
+        const [email, name, unix] = line.split('\0');
+        // git's --since is to the second; the last read may have been later in the same second.
+        if (Number(unix) * 1000 <= at) continue;
+        const who = email.match(/^(?:\d+\+)?([^@]+)@users\.noreply\.github\.com$/)?.[1] ?? name;
+        const seen = byPerson.get(who) ?? { n: 0, at: 0 };
+        byPerson.set(who, { n: seen.n + 1, at: Math.max(seen.at, Number(unix) * 1000) });
+      }
+      for (const [who, { n, at: when }] of byPerson)
+        out.push({
+          at: when,
+          by: who,
+          kind: 'pushed',
+          text: `pushed ${n} commit${n === 1 ? '' : 's'} to ${branch}`,
+        });
+    }
+    return out;
+  };
 
   const provider = {
     whoami: () => ({ login: me() }),
@@ -449,9 +496,35 @@ function githubProvider(root, team) {
       } catch {
         return null;
       }
+      // The pull requests themselves, for what GitHub's trimmed events leave out.
+      const listed = JSON.parse(
+        gh([
+          'pr',
+          'list',
+          '--state',
+          'all',
+          '--limit',
+          '100',
+          '--json',
+          'number,title,isDraft,mergedAt',
+        ]) ?? '[]',
+      );
+      const pulls = Object.fromEntries(
+        listed.map((x) => [
+          x.number,
+          { title: x.title, draft: x.isDraft, merged: Boolean(x.mergedAt) },
+        ]),
+      );
+      // Pushes from git itself: GitHub's feed publishes them late, if at all, and without counts.
+      const pushes = pushesSince(at);
       const found = discussions();
       return [
-        ...activityOf(events, at),
+        ...activityOf(
+          events.filter((e) => e.type !== 'PushEvent'),
+          at,
+          pulls,
+        ),
+        ...pushes,
         ...discussionActivity(found?.intents ?? [], at, team.techLead),
       ].sort((a, b) => a.at - b.at);
     },
@@ -683,7 +756,7 @@ export function teamRefusal({ actor, rel, branch, config, me, state }) {
  * TEAM-6: GitHub's repository events since `at` (ms) as plain sentences: [{ at, by, kind, text }],
  * oldest first. Events code-kit doesn't speak about (stars, forks, wiki edits) are left out.
  */
-export function activityOf(events, at) {
+export function activityOf(events, at, pulls = {}) {
   const out = [];
   for (const e of Array.isArray(events) ? events : []) {
     const when = Date.parse(e.created_at);
@@ -692,20 +765,31 @@ export function activityOf(events, at) {
     const p = e.payload ?? {};
     const add = (kind, text) => out.push({ at: when, by, kind, text });
     if (e.type === 'PushEvent' && String(p.ref).startsWith('refs/heads/')) {
-      const n = p.size ?? p.commits?.length ?? 0;
-      add('pushed', `pushed ${n} commit${n === 1 ? '' : 's'} to ${p.ref.slice(11)}`);
+      // GitHub's events no longer always carry the commit count: say it only when they do.
+      const n = p.size ?? p.commits?.length ?? null;
+      add(
+        'pushed',
+        `pushed ${n === null ? '' : `${n} commit${n === 1 ? '' : 's'} `}to ${p.ref.slice(11)}`,
+      );
     } else if (e.type === 'CreateEvent' && p.ref_type === 'branch')
       add('branched', `started ${p.ref}`);
     else if (e.type === 'PullRequestEvent') {
+      // GitHub's events are trimmed to the pull request's number and branches; its title, draft and
+      // merged come from the pull requests themselves (`pulls`, by number), where the event lacks them.
       const pr = p.pull_request ?? {};
-      const name = `#${pr.number} ${pr.title}`;
+      const known = pulls[pr.number ?? p.number] ?? {};
+      const title = pr.title ?? known.title;
+      const name = `#${pr.number ?? p.number}${title ? ` ${title}` : ''}`;
+      const draft = pr.draft ?? known.draft;
+      const merged = pr.merged ?? known.merged;
       if (p.action === 'opened' || p.action === 'reopened')
-        add('opened', `opened ${pr.draft ? 'draft ' : ''}pull request ${name}`);
-      else if (p.action === 'closed' && pr.merged) add('merged', `merged ${name}`);
+        add('opened', `opened ${draft ? 'draft ' : ''}pull request ${name}`);
+      else if (p.action === 'closed' && merged) add('merged', `merged ${name}`);
       else if (p.action === 'closed') add('closed', `closed ${name} without merging`);
       else if (p.action === 'ready_for_review') add('opened', `marked ${name} ready for review`);
     } else if (e.type === 'PullRequestReviewEvent') {
       const pr = p.pull_request ?? {};
+      const title = pr.title ?? pulls[pr.number]?.title;
       const state = String(p.review?.state ?? '').toLowerCase();
       const how =
         state === 'approved'
@@ -713,7 +797,7 @@ export function activityOf(events, at) {
           : state === 'changes_requested'
             ? 'asked for changes on'
             : 'reviewed';
-      add('reviewed', `${how} #${pr.number} ${pr.title}`);
+      add('reviewed', `${how} #${pr.number}${title ? ` ${title}` : ''}`);
     }
   }
   return out.sort((a, b) => a.at - b.at);
@@ -799,7 +883,15 @@ export function syncBoard(root, team, stories, claims) {
       for (const item of json(['item-list', String(number), ...at, '--limit', '1000']).items ??
         []) {
         const id = String(item.title ?? item.content?.title ?? '').split(' ')[0];
-        if (isStoryId(id) && !cache.items[id]) cache.items[id] = { id: item.id, values: {} };
+        // gh gives each item's field values under the field's name in lower case: what's there already
+        // isn't written again.
+        if (isStoryId(id) && !cache.items[id])
+          cache.items[id] = {
+            id: item.id,
+            values: Object.fromEntries(
+              BOARD_FIELDS.map((f) => [f, String(item[f.toLowerCase()] ?? '')]),
+            ),
+          };
       }
     }
     const byStory = new Map(claims.map((c) => [c.story, c]));

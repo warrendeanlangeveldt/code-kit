@@ -2,6 +2,14 @@
 
 What changed in each release of code-kit, newest first. Versions follow the plugin manifest and the npm package `@warren-dean/code-kit`. Each release is also on [GitHub Releases](https://github.com/warrendeanlangeveldt/code-kit/releases).
 
+## 0.9.1 (2026-10-12)
+
+Team mode, run against a real GitHub repository. It's still a preview.
+
+- **Since you last looked names pull requests again.** GitHub's activity feed now leaves the title out of pull request events, so they read "undefined". Titles, drafts and merges now come from the pull requests themselves.
+- **Pushes show up straight away, with how many commits.** GitHub's feed listed pushes late or not at all. code-kit now reads them from git after a fetch, counting only each branch's own commits.
+- **The board stays as it is on a new machine.** The first `code-kit team board` on another computer rewrote fields that were already right. It now reads the board's values first and changes only what differs.
+
 ## 0.9.0 (2026-10-11)
 
 Onboarding in the right order, a QA lane, maps that work on any project, and team mode as a preview.

@@ -1280,7 +1280,7 @@ else if (a[0] === 'project') {
   else if (a[1] === 'field-list') console.log(JSON.stringify({ fields: p.fields }));
   else if (a[1] === 'field-create') { const f = { id: 'F' + p.fields.length, name: opt('--name') }; p.fields.push(f); save(); console.log(JSON.stringify(f)); }
   else if (a[1] === 'item-create') { const i = { id: 'I' + p.items.length, title: opt('--title'), body: opt('--body'), values: {} }; p.items.push(i); save(); console.log(JSON.stringify({ id: i.id, title: i.title })); }
-  else if (a[1] === 'item-list') console.log(JSON.stringify({ items: p.items.map((i) => ({ id: i.id, title: i.title })) }));
+  else if (a[1] === 'item-list') console.log(JSON.stringify({ items: p.items.map((i) => ({ id: i.id, title: i.title, ...Object.fromEntries(Object.entries(i.values).map(([k, v]) => [k.toLowerCase(), v])) })) }));
   else if (a[1] === 'item-edit') { const i = p.items.find((x) => x.id === opt('--id')); const name = p.fields.find((f) => f.id === opt('--field-id')).name; if (a.includes('--clear')) delete i.values[name]; else i.values[name] = opt('--text'); p.edits += 1; save(); }
   else process.exit(2);
 }
@@ -1680,19 +1680,15 @@ else process.exit(2);
         type: 'PullRequestEvent',
         created_at: hourAgo(40),
         actor: { login: 'sam' },
-        payload: {
-          action: 'opened',
-          pull_request: { number: 14, title: 'Booking list', draft: true },
-        },
+        // As GitHub sends it now: trimmed to the number and branches. The title and draft come from
+        // the pull requests themselves.
+        payload: { action: 'opened', number: 14, pull_request: { number: 14 } },
       },
       {
         type: 'PullRequestReviewEvent',
         created_at: hourAgo(30),
         actor: { login: 'alex' },
-        payload: {
-          review: { state: 'changes_requested' },
-          pull_request: { number: 14, title: 'Booking list' },
-        },
+        payload: { review: { state: 'changes_requested' }, pull_request: { number: 14 } },
       },
       { type: 'WatchEvent', created_at: hourAgo(20), actor: { login: 'stranger' }, payload: {} },
       {
@@ -1703,6 +1699,25 @@ else process.exit(2);
       },
     ];
     writeFileSync(store, JSON.stringify(db));
+    // Pushes are read from git, not the feed: sam pushes two commits on a story branch.
+    const pusher = clone('pusher');
+    const pg = (...args) =>
+      execFileSync(
+        'git',
+        [
+          '-C',
+          pusher,
+          '-c',
+          'user.name=Sam',
+          '-c',
+          'user.email=123+sam@users.noreply.github.com',
+          ...args,
+        ],
+        { stdio: 'ignore' },
+      );
+    pg('switch', '-q', '-c', 'web/st-9');
+    for (const n of [1, 2]) pg('commit', '-q', '--allow-empty', '-m', `ST-9 part ${n}`);
+    pg('push', '-q', 'origin', 'web/st-9');
     const dev2c = as(c, 'dev2');
     rmSync(join(c, '.claude/state/team-seen.json'), { force: true });
     const first = dev2c('team', 'since');
@@ -1710,9 +1725,8 @@ else process.exit(2);
       'TEAM-6 since you last looked: by person, in plain sentences, from the last day the first time',
       truth(
         first.stdout.includes('Since yesterday:') &&
-          first.stdout.includes(
-            'sam: pushed 2 commits to web/st-4; opened draft pull request #14 Booking list; raised intent #',
-          ) &&
+          first.stdout.includes('sam: opened draft pull request #14 Booking list;') &&
+          first.stdout.includes('pushed 2 commits to web/st-9') &&
           first.stdout.includes(
             'alex: asked for changes on #14 Booking list; marked as a duplicate intent #',
           ) &&
@@ -1893,7 +1907,7 @@ else process.exit(2);
     expect(
       "on a machine that hasn't synced before, the items already there are found, not doubled",
       truth(
-        sam('team', 'board').stdout.includes('0 items added') &&
+        sam('team', 'board').stdout.includes('0 items added, 0 fields changed') &&
           JSON.parse(readFileSync(store, 'utf8')).project.items.length === 2,
       ),
       0,
