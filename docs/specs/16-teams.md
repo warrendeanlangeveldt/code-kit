@@ -60,7 +60,7 @@ A lane's owners may work in it themselves and through their agents at once: a la
 
 ### TEAM-2 The provider interface
 
-The core talks to the team through one interface: `whoami`, `claim(story, lease)`, `release(story)`, `state()` (owners, claims, leases, intents, each person's open branches and pull requests), `intend(about, touches)` and `since(at)`. The core never names a provider; the GitHub provider and the hub's are adapters.
+The core talks to the team through one interface: `whoami`, `claim(story, lease)`, `release(story)`, `state()` (owners, claims, leases, intents, each person's open branches and pull requests), `intend(about, touches)` and `since(at)`. The core never names a provider. The GitHub provider is built in; any other is a command named in the config (`team.provider.command`), called with the operation's name and its input as JSON on stdin, and answering JSON on stdout, so a provider ships in its own plugin.
 
 ### TEAM-3 The GitHub provider
 

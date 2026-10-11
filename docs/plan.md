@@ -234,3 +234,70 @@ Milestone 5 is Context Graph's harness, planned in its own `docs/plan.md`.
 **Status:** done
 
 With Context Graph installed: understanding, cards owed and rules per lane.
+
+## Milestone 7: teams
+
+Several people in one repository, each with their own agents, coordinated through GitHub with no server (spec 16). The hub (code-kit-teams, private) plugs in later through the provider command.
+
+### ST-24 The team in the config
+
+**Lane:** lead
+**Requirements:** TEAM-1
+**Depends on:** ST-23
+**Status:** todo
+
+`team.techLead`, `team.staleDays`, `team.provider` and `lanes.<name>.owners` in the config, validated, in the README's table, and reported by `check`. The developer's handle from `gh api user`, cached for the session.
+
+### ST-25 The provider interface and the GitHub provider
+
+**Lane:** lead
+**Requirements:** TEAM-2, TEAM-3, TEAM-8
+**Depends on:** ST-24
+**Status:** todo
+
+`hooks/lib/team.mjs`: the interface, the built-in GitHub provider (claims as `refs/code-kit/claims/<story>`, pushed atomically; intents as draft pull requests labelled `code-kit:intent`; state polled with conditional requests at most once a minute, cached in `.claude/state/team.json`), and a provider command for anything else. Unreachable, it fails open and says so once. `code-kit team [--json]`, `team claim|release <story>`. End-to-end tests with two clones of one bare repository; the GitHub API is stubbed.
+
+### ST-26 Ownership, claims and leases enforced
+
+**Lane:** lead
+**Requirements:** TEAM-1, TEAM-4
+**Depends on:** ST-25
+**Status:** todo
+
+The hooks refuse another developer's agent editing the tech lead's paths (raise an intent instead), dispatching a story in a lane someone else owns, dispatching a story someone else claimed, and editing a path another person's claim leases, each naming who and what to do. A dispatch claims the story with its lease, from its code map and the plan; the lease grows with its branch's diff; a merge releases it.
+
+### ST-27 Intents
+
+**Lane:** lead
+**Requirements:** TEAM-5
+**Depends on:** ST-25
+**Status:** todo
+
+`code-kit intend "<what and why>" --touches <globs>`, and the tech lead's agree and drop. An open intent touching what you own or lease reaches your band; all of them are in the Team tab.
+
+### ST-28 Since you last looked
+
+**Lane:** lead
+**Requirements:** TEAM-6
+**Depends on:** ST-25
+**Status:** todo
+
+`code-kit team since`: by person, in plain sentences, what was pushed, opened, merged, claimed, released and intended since you last read it, from the fetched remote and the GitHub API.
+
+### ST-29 Stale claims
+
+**Lane:** lead
+**Requirements:** TEAM-9
+**Depends on:** ST-26
+**Status:** todo
+
+A claim with no push for `team.staleDays` working days is stale: its holder's band asks Keep or Release, the tech lead can release or reassign it, and anyone waiting on it is told.
+
+### ST-30 The Team tab and team lines in the band
+
+**Lane:** lead
+**Requirements:** TEAM-7
+**Depends on:** ST-27, ST-28, ST-29
+**Status:** todo
+
+A Team tab: each person with their claims, branches, pull requests and intents, what touches yours, and "since you last looked" at the top. The band names only what needs you: a collision, an intent touching what you own, a stale claim of yours, or a review you own.
