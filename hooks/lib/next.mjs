@@ -180,11 +180,15 @@ export function nextStep(root, base) {
   // the person does, and always the first merge, which brings code-kit's rules onto the base.
   const delegation = queued.length ? mergeDelegation(root, config) : { delegated: false };
   const leadMerges = delegation.delegated && config.harness.autonomy === 'autonomous';
+  // SETUP-2: a base with no rules committed (a project set up before setup committed them there): the
+  // lead puts the approved rules onto it, and the queue merges under them from then on.
   if (queued.length && delegation.first)
-    attention.push(
-      `${queued[0]} passed review and is next to merge. ${delegation.into} has no code-kit config committed yet, so this first merge, which brings the rules onto it, is the person's (code-kit queue merge --person, or Merge in the code-kit band); after it, the lead merges.`,
+    return result(
+      'rules',
+      `${queued[0]} passed review and is next to merge, but ${delegation.into} has no code-kit rules committed yet. Put the rules the person approved onto it (code-kit queue rules); then the queue merges under them.`,
+      { args: delegation.into },
     );
-  else if (queued.length && !leadMerges)
+  if (queued.length && !leadMerges)
     attention.push(
       `${queued.join(', ')} passed review and ${queued.length === 1 ? 'waits' : 'wait'} for the person to merge (code-kit queue merge --person, or Merge in the code-kit band).`,
     );
@@ -226,6 +230,12 @@ export function nextStep(root, base) {
     return result(
       'wait',
       `${building.join(', ')} ${building.length === 1 ? 'is' : 'are'} being built; nothing else can start until one finishes. A lane that stopped without finishing is dispatched again.`,
+    );
+  // Stories waiting on branches in the merge queue wait for the merge, not on a broken plan.
+  if (queued.length)
+    return result(
+      'wait',
+      `${queued.join(', ')} passed review and ${queued.length === 1 ? 'waits' : 'wait'} to be merged; the stories that depend on ${queued.length === 1 ? 'it' : 'them'} start after.`,
     );
   if (unbuildable.length)
     return result(

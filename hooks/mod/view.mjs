@@ -798,15 +798,13 @@ export function bandLines({
     });
   // MQ-2: where the lead doesn't merge, the head of the queue waits for the person's Merge.
   const next = queue.find((e) => ['waiting', 'merging'].includes(e.state));
-  const leadMerges =
-    check?.delegatesMerge && (check?.harness?.autonomy ?? 'autonomous') === 'autonomous';
+  const autonomous = (check?.harness?.autonomy ?? 'autonomous') === 'autonomous';
+  // SETUP-2: with no rules on the base yet, the lead puts them there first and then merges.
+  const leadMerges = autonomous && (check?.delegatesMerge || check?.firstMerge);
   if (next && !leadMerges)
     lines.push({
       kind: 'queue',
-      // The first merge brings code-kit's rules onto the base, so it's the person's even under autonomy.
-      text: check?.firstMerge
-        ? `${next.branch} is next to merge: the first merge is yours, then the lead merges`
-        : `${next.branch} is next to merge`,
+      text: `${next.branch} is next to merge`,
       branch: next.branch,
       actions: [{ id: 'mergeQueue', label: 'Merge' }],
     });
@@ -931,7 +929,7 @@ export function band(lines, { Box, Text, Button }, onAction) {
           Text({ children: [''.padEnd(LABEL)] }),
           Button({
             key: 'band-decide',
-            label: 'd Why, and what each choice does',
+            label: 'Why, and what each choice does',
             hotkey: 'd',
             plain: true,
             onPress: () => onAction('decide', first),

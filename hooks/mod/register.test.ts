@@ -2066,18 +2066,31 @@ test('MQ-2 where the person merges, the head of the queue waits in the band for 
   expect(w.opened).toContain(RESULT);
 });
 
-test('MQ-2 the first merge, before the base has code-kit rules committed, is offered to the person', async ($, on) => {
+test("SETUP-2 with no rules on the base yet, the lead puts them there under autonomy: the band doesn't ask the person to merge", async ($, on) => {
   const w = project();
   (w.check as any).firstMerge = true;
   w.queue = [{ branch: 'lead/st-1', passed: '2026-10-10T00:00:00Z', state: 'waiting' }];
+  w.next = { step: 'rules', args: 'main', then: [] };
   await start($, on, w);
   const ui = await bandUi($);
-  expect(
-    await ui.find({
-      type: 'Text',
-      text: 'lead/st-1 is next to merge: the first merge is yours, then the lead merges',
-    }),
-  ).toBeDefined();
+  expect(await ui.find({ type: 'Text', text: /next to merge/ })).toBeUndefined();
+  await ui.unmount();
+});
+
+test("SETUP-2 with the loop off, the merge is the person's, and its card says how the rules get onto main", async ($, on) => {
+  const w = project();
+  (w.check as any).firstMerge = true;
+  (w.check as any).harness = { autonomy: 'off' };
+  w.queue = [{ branch: 'lead/st-1', passed: '2026-10-10T00:00:00Z', state: 'waiting' }];
+  await start($, on, w);
+  const band = await bandUi($);
+  expect(await band.find({ type: 'Text', text: 'lead/st-1 is next to merge' })).toBeDefined();
+  await press($, 'band-decide');
+  await band.unmount();
+  const ui = await pane($, PANE);
+  expect((await ui.find({ key: 'decision-card' }))?.text).toMatch(
+    /code-kit queue rules puts them there/,
+  );
   await ui.unmount();
 });
 

@@ -22,6 +22,15 @@ Setting up code-kit commits the approved rules straight onto the base branch: th
 - Given a repository whose main has no `.claude/code-kit.json`, when the lead commits on main, then the commit is allowed; when it merges into main, then it's refused.
 - Given main with the rules committed, when the lead commits on main, then it's refused.
 
+### SETUP-2 A project set up before SETUP-1
+
+A project whose base has no rules committed (set up before setup committed them there) doesn't wait on the person either. With a branch in the merge queue, `code-kit next` gives the lead the `rules` step, and `code-kit queue rules` commits the rules as committed on the lead's branch (the ones the person approved, with their baseline) onto the base, without switching branches or touching uncommitted work. Only the lead may run it, only while the base has no rules, and not while the base is checked out somewhere. From then on the queue merges under the base's rules. Stories waiting on branches in the queue are reported as waiting for the merge, not as a broken plan.
+
+**Acceptance**
+
+- Given the rules committed on lead/st-1 but not on main, and lead/st-1 queued, then `next` gives the lead `rules` for main; a lane running `code-kit queue rules` is refused; the lead's run commits only `.claude/code-kit.json` onto main, leaves the lead on its branch with its uncommitted files, and says so; run again, it says main already has them; then `next` gives `merge`, and the lead's delegated merge goes through.
+- Given the same under autonomy, then the band doesn't ask the person to merge; with the loop off, it offers Merge, and the card says `code-kit queue rules` puts the rules onto main.
+
 ### DECIDE-1 Lane work is the lead's while the loop runs
 
 While the loop is on (autonomous or propose), a lane's finished work never waits in the band for the person: reviewing and merging it is the lead's. With the loop off the person runs the build, and the band offers Review and Merge as before.

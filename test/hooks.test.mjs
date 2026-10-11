@@ -966,7 +966,7 @@ try {
     );
   }
 
-  // --- the first merge: the base has no code-kit rules committed yet, so it's the person's -----------
+  // --- SETUP-2: the base has no code-kit rules committed yet (set up before 0.8.0): the lead puts them there
   {
     const f = newRepo(false);
     cleanups.push(f.dir);
@@ -986,7 +986,7 @@ try {
     );
     writeFileSync(
       join(f.dir, 'docs/spec/plan.md'),
-      '# Plan\n\n## M1\n\n### ST-1 Booking form\n\n**Lane:** web\n**Requirements:** BOOK-1\n**Status:** todo\n',
+      '# Plan\n\n## M1\n\n### ST-1 Booking form\n\n**Lane:** web\n**Requirements:** BOOK-1\n**Status:** todo\n\n### ST-2 Booking list\n\n**Lane:** web\n**Requirements:** BOOK-1\n**Depends on:** ST-1\n**Status:** todo\n',
     );
     // Committed through the commit hook, which logs the kit's files as it does in a session.
     spawnSync('node', [join(hooks, 'guard-bash.mjs')], {
@@ -1004,13 +1004,8 @@ try {
     fKit('queue', 'add', 'lead/st-1');
     const step = JSON.parse(fKit('next', '--json').stdout);
     expect(
-      'next offers the first merge to the person, not the lead',
-      truth(
-        step.step !== 'merge' &&
-          step.attention.some((a) =>
-            a.includes("this first merge, which brings the rules onto it, is the person's"),
-          ),
-      ),
+      'next gives the lead the rules step, not the person a first merge',
+      truth(step.step === 'rules' && step.args === 'main', JSON.stringify(step)),
       0,
     );
     expect(
@@ -1022,12 +1017,67 @@ try {
       0,
     );
     expect(
-      "the lead's merge is refused, saying the person makes it and how",
+      "the lead's merge is refused, saying to put the rules onto main first",
       fKit('queue', 'merge', '--delegated'),
       1,
-      'queue merge --person',
+      'queue rules',
     );
-    expect('the person makes the first merge', fKit('queue', 'merge', '--person'), 0);
+    const rHook = (command, agent) =>
+      spawnSync('node', [join(hooks, 'guard-bash.mjs')], {
+        input: JSON.stringify({
+          cwd: f.dir,
+          tool_input: { command },
+          ...(agent ? { agent_type: agent } : {}),
+        }),
+        env: { ...process.env, CLAUDE_PROJECT_DIR: f.dir },
+        encoding: 'utf8',
+      });
+    expect(
+      'a lane may not put the rules onto main',
+      rHook(`node "${kitCli}" queue rules`, 'web-engineer'),
+      2,
+      'only the lead',
+    );
+    expect('the lead may', rHook(`node "${kitCli}" queue rules`), 0);
+    writeFileSync(join(f.dir, 'scratch.txt'), 'uncommitted work\n');
+    const put = fKit('queue', 'rules');
+    expect(
+      'queue rules commits the approved rules onto main',
+      truth(put.status === 0 && put.stdout.includes('onto main'), put.stdout + put.stderr),
+      0,
+    );
+    expect(
+      "without switching branches or touching the lead's work",
+      truth(
+        f.git('rev-parse', '--abbrev-ref', 'HEAD').trim() === 'lead/st-2' &&
+          existsSync(join(f.dir, 'scratch.txt')),
+      ),
+      0,
+    );
+    expect(
+      'main holds only the rules on top of what it had',
+      truth(
+        f.git('diff', '--name-only', 'main~1', 'main').trim() === '.claude/code-kit.json',
+        f.git('diff', '--name-only', 'main~1', 'main'),
+      ),
+      0,
+    );
+    const again = fKit('queue', 'rules');
+    expect(
+      'run again, it says main already has them',
+      truth(again.status === 0 && again.stdout.includes('already has'), again.stdout),
+      0,
+    );
+    expect(
+      'next now has the lead merge the queue',
+      truth(JSON.parse(fKit('next', '--json').stdout).step === 'merge'),
+      0,
+    );
+    expect(
+      'the lead merges within the rules now on main',
+      fKit('queue', 'merge', '--delegated'),
+      0,
+    );
     // LOOP-6: the loop's pause, recorded for other tools.
     const loopNow = () => JSON.parse(fKit('loop', '--json').stdout);
     expect('the loop starts unpaused', truth(loopNow().paused === false), 0);
