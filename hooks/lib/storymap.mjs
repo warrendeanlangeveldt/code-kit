@@ -153,3 +153,65 @@ export function trail(root, status, from) {
       };
     });
 }
+
+/** The code map of no story in particular: the whole project. */
+export const PROJECT = 'project';
+
+/**
+ * MAP-5: the whole project's code, for when no story is at work: its folders (`depth` deep, shallower
+ * when that makes more than `most`) by the layer most of their files sit in, with the imports between
+ * folders. The same shape as a story's map, each node a folder with its file count.
+ */
+export function projectMap(root, config, tracked, { depth = 3, most = 60 } = {}) {
+  const code = tracked.filter(isCode);
+  const set = new Set(code);
+  const aliases = config.importAliases ?? {};
+  const folderAt = (d) => (rel) => {
+    const parts = rel.split('/');
+    return parts.length === 1 ? '.' : parts.slice(0, Math.min(d, parts.length - 1)).join('/');
+  };
+  let d = depth;
+  while (d > 1 && new Set(code.map(folderAt(d))).size > most) d -= 1;
+  const folderOf = folderAt(d);
+  const nodes = new Map();
+  for (const rel of code) {
+    const path = folderOf(rel);
+    const node = nodes.get(path) ?? {
+      path,
+      lane: laneOfFile(rel, config),
+      layers: new Map(),
+      imports: new Set(),
+      files: 0,
+    };
+    nodes.set(path, node);
+    const layer = TEST.test(rel) ? 'tests' : (layerOf(rel, config.layers)?.name ?? 'other');
+    node.layers.set(layer, (node.layers.get(layer) ?? 0) + 1);
+    node.files += 1;
+    let source = '';
+    try {
+      source = readFileSync(join(root, rel), 'utf8');
+    } catch {
+      // unreadable: no imports
+    }
+    for (const spec of importsOf(source)) {
+      const target = resolveIn(spec, rel, aliases, set);
+      if (target && folderOf(target) !== path) node.imports.add(folderOf(target));
+    }
+  }
+  const files = [...nodes.values()]
+    .map((n) => ({
+      path: n.path,
+      layer: [...n.layers.entries()].sort((a, b) => b[1] - a[1])[0][0],
+      lane: n.lane,
+      imports: [...n.imports].sort(),
+      files: n.files,
+    }))
+    .sort((a, b) => a.path.localeCompare(b.path));
+  const used = new Set(files.map((f) => f.layer));
+  const layers = [...config.layers.map((l) => l.name), 'tests', 'other'].filter((l) => used.has(l));
+  return {
+    story: { id: PROJECT, title: 'The whole project', lane: null, state: null },
+    layers,
+    files,
+  };
+}

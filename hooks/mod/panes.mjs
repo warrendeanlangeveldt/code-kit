@@ -5,7 +5,9 @@ import { teamTab } from './teamview.mjs';
 import { trailRows as trailRowsDrawn, trailSvg } from './trail.mjs';
 import {
   MAP_LEGEND,
+  PROJECT,
   cardOf,
+  glowByFolder,
   mapRows as codeRows,
   mapStoryOf,
   mapSvg,
@@ -848,6 +850,21 @@ export function moveCell(requirements, id, step, { rows = false } = {}) {
   return specs[(row + step + specs.length) % specs.length].requirements[0].id;
 }
 
+/** The engine's limit on a Select's options. */
+export const SELECT_MAX = 64;
+
+/**
+ * TRACE-2: the requirements the picker offers: those in the selected one's spec, at most SELECT_MAX,
+ * a window around the selected one when the spec has more.
+ */
+export function pickerOf(requirements, selected) {
+  const same = requirements.filter((r) => r.file === selected.file);
+  if (same.length <= SELECT_MAX) return same;
+  const at = same.findIndex((r) => r.id === selected.id);
+  const start = Math.max(0, Math.min(at - SELECT_MAX / 2, same.length - SELECT_MAX));
+  return same.slice(start, start + SELECT_MAX);
+}
+
 /**
  * The Map tab (TRACE-1 to TRACE-4): a row per spec, a cell per requirement, a legend, and the
  * selected requirement's stories and tests. `status` is `code-kit status --json`'s.
@@ -953,7 +970,8 @@ export function mapTab(
         key: 'map-select',
         label: 'Requirement',
         value: selected.id,
-        options: requirements.map((r) => ({
+        // A Select holds at most 64 options: the selected requirement's own spec, around it.
+        options: pickerOf(requirements, selected).map((r) => ({
           value: r.id,
           label: `${CELL[cellOf(r)].glyph} ${r.id} ${r.title}`,
         })),
@@ -1087,11 +1105,16 @@ const RUN_STYLE = {
  */
 export function codeTab(view, { Box, Text, Button, Svg }, on) {
   const text = (value, style = {}) => Text({ ...style, children: [value] });
-  const { state, ui = DEFAULT_UI, codeMap: map = null, glow = {}, art = null } = view;
+  const { state, ui = DEFAULT_UI, codeMap: map = null, art = null } = view;
+  let glow = view.glow ?? {};
   const storyId = mapStoryOf(state, ui.selected, ui.mapStory);
-  const choices = (state?.stories ?? []).filter(
-    (s) => s.id === storyId || ['in progress', 'review', 'sent back'].includes(s.state),
-  );
+  const project = { id: PROJECT, title: 'Whole project' };
+  const choices = [
+    project,
+    ...(state?.stories ?? []).filter(
+      (s) => s.id === storyId || ['in progress', 'review', 'sent back'].includes(s.state),
+    ),
+  ];
   const picker = Box({
     key: 'map-stories',
     flexDirection: 'row',
@@ -1100,7 +1123,7 @@ export function codeTab(view, { Box, Text, Button, Svg }, on) {
     children: choices.map((s) =>
       Button({
         key: `map-story-${s.id}`,
-        label: `${s.id} ${s.title}`,
+        label: s.id === PROJECT ? s.title : `${s.id} ${s.title}`,
         ...(s.id === storyId ? { variant: 'primary' } : { plain: true }),
         onPress: () => on.onMapStory(s.id),
       }),
@@ -1108,9 +1131,28 @@ export function codeTab(view, { Box, Text, Button, Svg }, on) {
   });
   if (!storyId) return [text('No story to map yet: the plan has none open.', { dimColor: true })];
   if (!map || map.story?.id !== storyId)
-    return [picker, text(`Reading ${storyId}'s code…`, { dimColor: true })];
+    return [
+      picker,
+      text(storyId === PROJECT ? "Reading the project's code…" : `Reading ${storyId}'s code…`, {
+        dimColor: true,
+      }),
+    ];
   if (!map.files.length)
-    return [picker, text(`${storyId} hasn't changed any code yet.`, { dimColor: true })];
+    return [
+      picker,
+      text(
+        storyId === PROJECT
+          ? 'The project has no code yet.'
+          : `${storyId} hasn't changed any code yet. Whole project shows the code that's there.`,
+        { dimColor: true },
+      ),
+    ];
+  // MAP-5: on the project map, a file at work glows on its folder.
+  if (storyId === PROJECT)
+    glow = glowByFolder(
+      glow,
+      map.files.map((f) => f.path),
+    );
   const selected = map.files.some((f) => f.path === ui.mapFile) ? ui.mapFile : map.files[0].path;
   // The lanes' tints are RGB numbers (the characters' colours); text and SVG take them as hex.
   const tints = Object.fromEntries(

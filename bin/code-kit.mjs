@@ -53,7 +53,7 @@ import { traceFile } from '../hooks/lib/trace.mjs';
 import { buildStatus, specCheckRows } from '../hooks/lib/plan.mjs';
 import { recordSentBack } from '../hooks/lib/reviews.mjs';
 import { storyTimes } from '../hooks/lib/timeline.mjs';
-import { storyMap, trail } from '../hooks/lib/storymap.mjs';
+import { PROJECT, projectMap, storyMap, trail } from '../hooks/lib/storymap.mjs';
 import { journal } from '../hooks/lib/journal.mjs';
 import { dequeue, enqueue, lastMerged, readQueue, settle, waiting } from '../hooks/lib/queue.mjs';
 import { SETTINGS, parseSetting, settingOf, withSetting } from '../hooks/lib/harness.mjs';
@@ -683,6 +683,18 @@ function queue() {
  */
 function mapCommand(id) {
   const { config, raw } = load();
+  // MAP-5: the whole project, by folder, for when no story is at work.
+  if (id === PROJECT) {
+    const map = projectMap(resolve('.'), config, tracked());
+    if (flag('--json')) return out(JSON.stringify(map, null, 2));
+    out(`The whole project (${map.files.length} folder(s)):`);
+    for (const layer of map.layers) {
+      out(`  ${layer}`);
+      for (const f of map.files.filter((x) => x.layer === layer))
+        out(`    ${f.path} (${f.files})${f.imports.length ? `  → ${f.imports.join(', ')}` : ''}`);
+    }
+    return;
+  }
   const { specs, plan } = config.docs ?? {};
   if (!specs || !plan)
     die('map needs docs.specs and docs.plan in the config. The spec-design skill writes both.');
@@ -1527,7 +1539,7 @@ function usage() {
       '              | hold <id> [--minutes N] | hold <id> --answer approved|refused\n' +
       '              | queue [--json] | queue add|drop <branch> | queue rules | queue merge --delegated|--person\n' +
       '              | loop [--json] | loop pause|resume\n' +
-      '              | map <story> [--json] | trail [--json] | journal [--json]\n' +
+      '              | map <story>|project [--json] | trail [--json] | journal [--json]\n' +
       '              | story <id> [--json] | timeline [--json]\n' +
       '              | team [--json] [--fresh] | team since [--json] [--peek]\n' +
       '              | team claim <story> [--lease globs] | team keep|release <story>\n' +

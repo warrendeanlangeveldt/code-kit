@@ -69,6 +69,7 @@ let result = null; // what the last merge reported
 let notice = null; // why the person's last act failed
 let teamSince = null; // TEAM-6: since you last looked, as read when the Team tab opened
 let boardSynced = -Infinity; // TEAM-12: when the board was last synced
+let projectRead = -Infinity; // MAP-5: when the whole project's map was last read
 const BOARD_EVERY_MS = 10 * 60000;
 let act = null; // the session's actions, made at session start
 let settingRows = []; // the harness settings, from `code-kit settings --json`
@@ -256,7 +257,14 @@ export function register(on) {
         if (model.state?.kind !== 'ok') return;
         if (paneUi.tab === 'code') {
           const id = mapStoryOf(stateNow(), paneUi.selected, paneUi.mapStory);
-          codeMap = id ? ((await json('map', id)) ?? codeMap) : null;
+          // MAP-5: the whole project reads every code file, so at most every 30 seconds.
+          const now = await $.clock.now();
+          const fresh =
+            id === 'project' && codeMap?.story?.id === 'project' && now - projectRead < 30000;
+          if (!fresh) {
+            codeMap = id ? ((await json('map', id)) ?? codeMap) : null;
+            if (id === 'project') projectRead = now;
+          }
         }
         if (paneUi.tab === 'map') trailData = (await json('trail')) ?? trailData;
         // TEAM-6: since you last looked, read once each time the Team tab opens, which marks it read.

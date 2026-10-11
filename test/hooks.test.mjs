@@ -2041,6 +2041,29 @@ else process.exit(2);
       truth(!nextOf().attention?.some((a) => a.includes('names a skill'))),
       0,
     );
+    // MAP-5: the whole project's code, by folder, for when no story is at work.
+    mkdirSync(join(o.dir, 'apps/web/src'), { recursive: true });
+    mkdirSync(join(o.dir, 'packages/core/src'), { recursive: true });
+    writeFileSync(join(o.dir, 'packages/core/src/price.ts'), 'export const price = 1;\n');
+    writeFileSync(
+      join(o.dir, 'apps/web/src/form.ts'),
+      "import { price } from '../../../packages/core/src/price';\nexport const f = price;\n",
+    );
+    o.git('add', '-A');
+    o.git('commit', '-q', '-m', 'code');
+    const whole = JSON.parse(oKit('map', 'project', '--json').stdout || '{}');
+    const web = whole.files?.find((f) => f.path === 'apps/web/src');
+    expect(
+      'MAP-5 map project lists the folders with their file counts and the imports between them',
+      truth(
+        whole.story?.id === 'project' &&
+          web?.files === 1 &&
+          web.imports.join() === 'packages/core/src' &&
+          whole.files.some((f) => f.path === 'packages/core/src'),
+        JSON.stringify(whole),
+      ),
+      0,
+    );
   }
 
   // --- MAP-1 and TRAIL-1: a story's code by layer, and each requirement's trail -------------------

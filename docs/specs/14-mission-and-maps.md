@@ -81,3 +81,20 @@ The Trail tab (3) keeps the requirement map, and draws the selected requirement'
 
 | Question | Owner | Blocks |
 | -------- | ----- | ------ |
+
+### MAP-5 The whole project when no story is at work
+
+With no story being built or reviewed, the Code map shows the whole project instead of a story with no code yet: its folders (three deep, shallower when that makes more than 60), each in the layer most of its files sit in, with its file count and the folders it imports. A file a lane is reading or editing glows on its folder. "Whole project" is always first in the story picker. `code-kit map project [--json]` gives the same. It reads every code file, so the pane reads it at most every 30 seconds.
+
+**Acceptance**
+
+- Given web's form importing core's price, then `map project` lists `apps/web/src` with 1 file importing `packages/core/src`.
+- Given no story in progress, then the Code map opens on Whole project.
+
+### TRACE-4 The requirement list holds one spec
+
+The Trail's requirement list holds the selected requirement's own spec, at most 64 (the most a list holds), a window around the selected one when a spec has more. A project with more requirements than that still draws its Trail.
+
+**Acceptance**
+
+- Given 134 requirements in one spec, then the Trail draws, and its list offers 64.
