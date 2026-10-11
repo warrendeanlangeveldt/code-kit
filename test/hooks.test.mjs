@@ -2333,12 +2333,13 @@ try {
   );
   mkdirSync(join(c.dir, '.ctx'));
   expect('with .ctx/, any lane records decisions', cWrite('.ctx/decisions.ctx', 'web-engineer'), 0);
+  // Context Graph runs in the background: a lane adds the guidance it finds, with no approval.
   expect(
-    "but a lane may not change ctx's rules without approval",
+    "and adds to ctx's rules: guidance applies with no one asked",
     cWrite('.ctx/graph.ctx', 'web-engineer'),
-    2,
-    "Context Graph's rules",
+    0,
   );
+  expect("but ctx's settings stay the person's", cWrite('.ctx/config.toml', 'web-engineer'), 2);
   expect("the lead owns ctx's rules", cWrite('.ctx/graph.ctx'), 0);
   expect(
     'no Claude actor writes a ratification trailer',
@@ -2525,47 +2526,61 @@ try {
   expect('the config can switch an adapter off', cWrite('.ctx/decisions.ctx', 'web-engineer'), 2);
   expect('and says so', says(cCli('adapters'), 'context-graph: switched off in the config'), 0);
 
-  // A person's ratification from their terminal is signed with the trailer, not logged by the hooks.
+  // ctx's rules change with no approval (its own gate checks a person signed any rule that blocks
+  // edits); its settings are the person's, signed with the trailer when they commit them themselves.
   const r = newRepo();
   cleanups.push(r.dir);
   mkdirSync(join(r.dir, '.ctx'));
   writeFileSync(join(r.dir, '.ctx/graph.ctx'), 'L L:repo Repo\n');
+  writeFileSync(join(r.dir, '.ctx/config.toml'), '[repo]\nratifiers = ["warren"]\n');
   r.git('add', '-A');
   r.git('commit', '-q', '-m', 'graph');
-  r.git('checkout', '-q', '-b', 'ratify');
+  r.git('checkout', '-q', '-b', 'ctx-work');
   const rVerify = () =>
     spawnSync(
       'node',
       [join(here, '..', 'bin', 'code-kit.mjs'), 'verify', '--base', 'main', '--no-checks'],
       { cwd: r.dir, encoding: 'utf8' },
     );
-  const rCommit = (line, trailer) => {
-    writeFileSync(join(r.dir, '.ctx/graph.ctx'), `L L:repo Repo\n${line}\n`);
-    r.git('add', '-A');
-    r.git('commit', '-q', '-m', 'ratify', ...(trailer ? ['--trailer', trailer] : []));
-  };
-  rCommit('C C:events Events', 'Ctx-Ratified-By: warren');
-  expect("verify accepts a graph change signed with a person's ratification trailer", rVerify(), 0);
-  rCommit('C C:jobs Jobs', 'Ctx-Ratified-By: sidequest-lead (delegated)');
-  expect(
-    'but not a delegated one, which the hooks log',
-    failsWith(rVerify(), 'no approval-log entry records this change'),
-    0,
+  writeFileSync(
+    join(r.dir, '.ctx/graph.ctx'),
+    'L L:repo Repo\nK G repo.utc L:repo Dates are stored in UTC\n',
   );
-  r.git('reset', '-q', '--hard', 'HEAD~1');
-  rCommit('C C:jobs Jobs');
-  expect(
-    'nor a later unsigned commit to the same file',
-    failsWith(rVerify(), 'no approval-log entry records this change'),
-    0,
-  );
-  r.git('reset', '-q', '--hard', 'HEAD~1');
-  writeFileSync(join(r.dir, '.ctx/config.toml'), '[repo]\nratifiers = ["warren"]\n');
   r.git('add', '-A');
-  r.git('commit', '-q', '-m', 'Set up Context Graph', '--trailer', 'Ctx-Ratified-By: warren');
+  r.git('commit', '-q', '-m', 'guidance an agent found');
   expect(
-    "verify accepts Context Graph's settings committed with the person's ratification trailer",
+    "verify accepts guidance an agent added to ctx's rules, unsigned and unlogged",
     rVerify(),
+    0,
+  );
+  const rSettings = (body, trailer) => {
+    writeFileSync(join(r.dir, '.ctx/config.toml'), body);
+    r.git('add', '-A');
+    r.git('commit', '-q', '-m', 'settings', ...(trailer ? ['--trailer', trailer] : []));
+  };
+  rSettings(
+    '[repo]\nratifiers = ["warren"]\n\n[harness]\ncurator = true\n',
+    'Ctx-Ratified-By: warren',
+  );
+  expect(
+    "verify accepts ctx's settings committed with the person's ratification trailer",
+    rVerify(),
+    0,
+  );
+  rSettings(
+    '[repo]\nratifiers = ["warren"]\n\n[harness]\ncurator = false\n',
+    'Ctx-Ratified-By: sidequest-lead (delegated)',
+  );
+  expect(
+    'but not with a delegated one, which the hooks log',
+    failsWith(rVerify(), 'no approval-log entry records this change'),
+    0,
+  );
+  r.git('reset', '-q', '--hard', 'HEAD~1');
+  rSettings('[repo]\nratifiers = ["warren"]\n\n[harness]\ncurator = false\n');
+  expect(
+    'nor a later unsigned commit to the settings',
+    failsWith(rVerify(), 'no approval-log entry records this change'),
     0,
   );
 
