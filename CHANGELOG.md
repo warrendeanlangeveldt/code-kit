@@ -2,6 +2,31 @@
 
 What changed in each release of code-kit, newest first. Versions follow the plugin manifest and the npm package `@warren-dean/code-kit`. Each release is also on [GitHub Releases](https://github.com/warrendeanlangeveldt/code-kit/releases).
 
+## 0.8.0 (2026-10-11)
+
+You decide what's built and the rules; the lead delivers it. Only real decisions reach you, each with the story behind it, and the whole build reads as one story from your request to now.
+
+**Who decides what**
+
+- **No first merge.** Setting up commits the rules you approved straight onto `main`, so the lead can merge reviewed work from the start. Under autonomy, setup also drafts limits within which the lead merges and approves new packages itself; you adjust them before approving.
+- **Lane work is the lead's.** While the loop runs, a lane's finished work never waits for you: the lead reviews, sends back and merges it. With the loop off, Review and Merge are offered to you as before.
+- **Decisions come with their story.** Each one above the prompt says which story it's for ("for ST-4 Booking form (BOOK-1)"), and **d** opens it as a card in the new Decisions tab: what you asked for, the story and its requirements, what the agent was doing, what's already settled, why the lead couldn't settle it (the rule, and the limit it missed), and what each answer does. Usage and pauses are labelled "note", not "you".
+- **The Journal.** A Journal tab, and `code-kit journal`, tell the build by day: your request and the decisions in your brief, the specification, each story handed out, sent back and merged, each approval and who gave it, each milestone finished, and the loop's steps this session.
+
+**Seeing the build**
+
+- **The mission band.** Above the prompt, while the build moves: the milestone being built and how far along it is, what the lead is doing, the loop's next step, and each agent at work with its current tool.
+- **The Lanes pane** opens on the loop as a card (its mode, its steps, the next one), keeps each lane on fixed columns, shows a lane's stories as cards, and reads "orchestrating" while the lead works.
+- **The code map.** A story's files in a column per layer with the imports between them; a file fills with a lane's colour while that lane reads or edits it, and says whether its why is written. `code-kit map <story>`.
+- **The trail.** Each requirement drawn to its stories, code and tests, with a missing link in red. `code-kit trail`.
+- Tabs are now Lanes 1, Decisions 2, Journal 3, Code map 4, Trail 5, Queue 6, Usage 7.
+
+**Fixes**
+
+- Pausing the loop is recorded (`code-kit loop`), so Context Graph's background work pauses with it. A new session starts unpaused.
+- The stall check no longer nudges or restarts agents whose work is done, and until you choose how hands-off the loop is, a restart is offered, not taken.
+- With Context Graph, agents can add the guidance they find without your approval; only its settings stay yours.
+
 ## 0.7.0 (2026-10-10)
 
 The rest of the harness, in the mod (Claude Code 2.1.287 or later), and fixes from building a whole app with it.
