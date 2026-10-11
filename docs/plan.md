@@ -234,3 +234,106 @@ Milestone 5 is Context Graph's harness, planned in its own `docs/plan.md`.
 **Status:** done
 
 With Context Graph installed: understanding, cards owed and rules per lane.
+
+## Milestone 7: teams
+
+Several people in one repository, each with their own agents, coordinated through GitHub with no server (spec 16). The hub (code-kit-teams, private) plugs in later through the provider command.
+
+### ST-24 The team in the config
+
+**Lane:** lead
+**Requirements:** TEAM-1
+**Depends on:** ST-23
+**Status:** done
+
+`team.techLead`, `team.staleDays`, `team.provider` and `lanes.<name>.owners` in the config, validated, in the README's table, and reported by `check`. The developer's handle from `gh api user`, cached for the session.
+
+### ST-25 The provider interface and the GitHub provider
+
+**Lane:** lead
+**Requirements:** TEAM-2, TEAM-3, TEAM-8
+**Depends on:** ST-24
+**Status:** done
+
+`hooks/lib/team.mjs`: the interface, the built-in GitHub provider (claims as `refs/code-kit/claims/<story>`, pushed atomically; intents as issues labelled `code-kit:intent`, moved to discussions in ST-31; state read at most once a minute, cached in `.claude/state/team.json`), and a provider command for anything else. Unreachable, it fails open and says so once. `code-kit team [--json]`, `team claim|release <story>`. End-to-end tests with two clones of one bare repository; the GitHub API is stubbed.
+
+### ST-26 Ownership, claims and leases enforced
+
+**Lane:** lead
+**Requirements:** TEAM-1, TEAM-4
+**Depends on:** ST-25
+**Status:** done
+
+The hooks refuse another developer's agent editing the tech lead's paths (raise an intent instead), dispatching a story in a lane someone else owns, dispatching a story someone else claimed, and editing a path another person's claim leases, each naming who and what to do. A dispatch claims the story with the lease the lead gives it; making its branch claims it too; the lease grows with each commit by what the branch changed; a merge releases it.
+
+### ST-27 Intents
+
+**Lane:** lead
+**Requirements:** TEAM-5
+**Depends on:** ST-25
+**Status:** done
+
+`code-kit intend "<what and why>" --touches <globs>` raised an issue labelled `code-kit:intent` (a discussion since ST-31); `intend agree|drop <id>` is the tech lead's answer, which the hooks refuse from any agent. (The band and Team tab show intents in ST-30.)
+
+### ST-28 Since you last looked
+
+**Lane:** lead
+**Requirements:** TEAM-6
+**Depends on:** ST-25
+**Status:** done
+
+`code-kit team since [--json] [--peek]`: by person, in plain sentences, what was pushed, branched, opened, merged, reviewed, intended, agreed or dropped (GitHub's repository events), and claimed or released (the claims against those you last saw), since you last read it; the first time, the last day.
+
+### ST-29 Stale claims
+
+**Lane:** lead
+**Requirements:** TEAM-9
+**Depends on:** ST-26
+**Status:** done
+
+A claim with nothing on it (claimed, or its branch pushed) for `team.staleDays` working days is stale: `team` marks it, `team keep <story>` restarts its clock, the tech lead releases or reassigns it (`team reassign <story> <handle>`, never through an agent), and a refusal it causes says it's stale. (The band's Keep and Release are in ST-30.)
+
+### ST-30 The Team tab and team lines in the band
+
+**Lane:** lead
+**Requirements:** TEAM-7
+**Depends on:** ST-27, ST-28, ST-29
+**Status:** done
+
+A Team tab: each person with their claims, branches, pull requests and intents, what touches yours, and "since you last looked" at the top. The band names only what needs you: a collision, an intent touching what you own, a stale claim of yours, or a review you own.
+
+### ST-31 Intents as discussions
+
+**Lane:** lead
+**Requirements:** TEAM-5
+**Depends on:** ST-27
+**Status:** done
+
+Intents move from issues to discussions in the Intents category, through GitHub's GraphQL API (`gh api graphql`): raise, list, and the tech lead's agree, drop or duplicate (resolved, outdated, duplicate). A missing category says how to add it. `team since` reads intents raised and closed from the discussions.
+
+### ST-32 Decision records
+
+**Lane:** lead
+**Requirements:** TEAM-10
+**Depends on:** ST-31
+**Status:** done
+
+`code-kit intend record <id>` writes the agreed intent to `docs.decisions` as a numbered decision record from the discussion's facts. Agreeing in the pane prompts the tech lead's lead to record it, commit it on a branch and open a pull request.
+
+### ST-33 CODEOWNERS from the config
+
+**Lane:** lead
+**Requirements:** TEAM-11
+**Depends on:** ST-24
+**Status:** done
+
+`code-kit team codeowners [--write]`: the tech lead for the tech lead's paths, each owned lane's owners for its paths.
+
+### ST-34 The plan on a Project board
+
+**Lane:** lead
+**Requirements:** TEAM-12
+**Depends on:** ST-29
+**Status:** done
+
+`team.board` in the config; `code-kit team board` mirrors stories as draft items with Lane, Claimed by, Stale and State fields through `gh project`, editing only what changed since the last sync; the mod syncs it at most every 10 minutes.

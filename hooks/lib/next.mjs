@@ -5,7 +5,9 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join, posix } from 'node:path';
 import { loadConfig, mergeDelegation } from './config.mjs';
-import { buildStatus, readStories, LEAD } from './plan.mjs';
+import { buildStatus, readStories, DESIGN, LEAD } from './plan.mjs';
+import { pendingSetup } from './adapters/index.mjs';
+import { CONFIG_FILE, SETUP_VERSION } from './config.mjs';
 import { readQueue, waiting } from './queue.mjs';
 
 export const DRAFT_FILE = '.claude/code-kit.draft.json';
@@ -138,6 +140,23 @@ export function nextStep(root, base) {
       `${plan} has no stories in the \`### ST-n\` form yet; spec-design writes the plan.`,
     );
 
+  // ONB-3: a companion the config wants is set up before any coding starts.
+  let raw = null;
+  try {
+    raw = JSON.parse(readFileSync(join(root, CONFIG_FILE), 'utf8'));
+  } catch {
+    // read and validated above; nothing to add
+  }
+  const [setup] = pendingSetup(raw, root);
+  if (setup) return result('setup', setup.why, { args: setup.skill });
+  // ONB-5: a project set up before setup did all of this is told what re-running init adds.
+  if ((raw?.setup ?? 1) < SETUP_VERSION)
+    attention.push(
+      "This project's code-kit setup predates what init now sets up: project skills with each lane agent, designs approved before screens are built, a QA lane for end-to-end tests, and companion tools set up before coding. Re-run /code-kit:init to add what's missing; it keeps everything that's still right and shows you the difference first.",
+    );
+  // ONB-1: a lane agent naming a skill that doesn't exist works without the recipe it was given.
+  for (const missing of missingSkills(root)) attention.push(missing);
+
   const from = base(config);
   if (!from)
     attention.push('The base branch has no commits yet, so story branches are read against HEAD.');
@@ -163,13 +182,17 @@ export function nextStep(root, base) {
   // A ready story with a gap (unknown lane, a requirement no spec defines) waits for the plan's fix.
   const defined = new Set(status.requirements.map((r) => r.id));
   const buildable = (s) =>
-    (Boolean(config.lanes[s.lane]) || s.lane === LEAD) &&
+    (Boolean(config.lanes[s.lane]) || s.lane === LEAD || s.lane === DESIGN) &&
     (s.requirements.length > 0 || s.noRequirements) &&
     s.requirements.every((r) => defined.has(r));
   const readyStories = status.stories.filter((s) => s.state === 'ready');
   // The lead's own stories are built by the lead, not dispatched to a lane agent.
   const forLead = readyStories.filter((s) => buildable(s) && s.lane === LEAD).map((s) => s.id);
-  const ready = readyStories.filter((s) => buildable(s) && s.lane !== LEAD).map((s) => s.id);
+  const ready = readyStories
+    .filter((s) => buildable(s) && s.lane !== LEAD && s.lane !== DESIGN)
+    .map((s) => s.id);
+  // ONB-2: design stories, designed with the person before any screen that depends on them is built.
+  const forDesign = readyStories.filter((s) => buildable(s) && s.lane === DESIGN).map((s) => s.id);
   const unbuildable = readyStories.filter((s) => !buildable(s)).map((s) => s.id);
   if (unbuildable.length)
     attention.push(
@@ -201,6 +224,7 @@ export function nextStep(root, base) {
   const then = [];
   // A sent-back story goes back to its lane with the review's findings, before new work starts.
   const toDispatch = [...fixes, ...ready];
+  if (review.length && forDesign.length) then.push({ step: 'design', args: forDesign.join(' ') });
   if (review.length && toDispatch.length)
     then.push({ step: 'dispatch', args: toDispatch.join(' ') });
   if (forLead.length) then.push({ step: 'lead', args: forLead.join(' ') });
@@ -209,6 +233,18 @@ export function nextStep(root, base) {
       args: review.join(' '),
       then,
     });
+  if (forDesign.length)
+    return result(
+      'design',
+      `${forDesign.join(', ')} ${forDesign.length === 1 ? 'designs' : 'design'} the screens before any code is written for them; the person approves each design.`,
+      {
+        args: forDesign.join(' '),
+        then: [
+          ...(toDispatch.length ? [{ step: 'dispatch', args: toDispatch.join(' ') }] : []),
+          ...(forLead.length ? [{ step: 'lead', args: forLead.join(' ') }] : []),
+        ],
+      },
+    );
   if (fixes.length)
     return result(
       'dispatch',
@@ -256,4 +292,40 @@ export function nextStep(root, base) {
     'done',
     `All ${status.stories.length} stories are done; spec-design plans the next milestone or feature.`,
   );
+}
+
+/** The code-kit skills every agent may name without a project copy. */
+const KIT_SKILLS = (() => {
+  try {
+    return new Set(readdirSync(new URL('../../skills/', import.meta.url)));
+  } catch {
+    return new Set();
+  }
+})();
+
+/**
+ * ONB-1: lane agents naming skills under **Skills to use** that don't exist, in words: ["web-engineer
+ * names a skill that doesn't exist: new-screen"]. Plugin skills (`plugin:skill`) and code-kit's own are
+ * left alone.
+ */
+export function missingSkills(root) {
+  const dir = join(root, '.claude/agents');
+  if (!existsSync(dir)) return [];
+  const out = [];
+  for (const file of readdirSync(dir).filter((f) => f.endsWith('.md'))) {
+    const line = readFileSync(join(dir, file), 'utf8').match(/^\*\*Skills to use:\*\*(.*)$/m)?.[1];
+    if (!line) continue;
+    const missing = line
+      .split(',')
+      .map((n) => n.replace(/[`*]/g, '').trim())
+      .filter((n) => /^[a-z0-9][a-z0-9-]*$/.test(n))
+      .filter(
+        (n) => !KIT_SKILLS.has(n) && !existsSync(join(root, '.claude/skills', n, 'SKILL.md')),
+      );
+    if (missing.length)
+      out.push(
+        `${file.replace(/\.md$/, '')} names ${missing.length === 1 ? "a skill that doesn't" : "skills that don't"} exist: ${missing.join(', ')}. Write ${missing.length === 1 ? 'it' : 'them'} from the architecture's recipes (re-run init), or take ${missing.length === 1 ? 'it' : 'them'} off the agent.`,
+      );
+  }
+  return out;
 }

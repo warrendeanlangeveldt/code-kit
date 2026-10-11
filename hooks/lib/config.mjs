@@ -3,6 +3,7 @@
 import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { harnessProblems, harnessSettings } from './harness.mjs';
+import { teamProblems } from './team.mjs';
 import { join } from 'node:path';
 import { ADAPTERS, applyAdapters } from './adapters/index.mjs';
 
@@ -140,6 +141,13 @@ const isRegExp = (v) => {
   }
 };
 
+/**
+ * ONB-5: the version of init's setup. 2 adds project skills with the lane agents, the design gate for
+ * lanes with screens, a QA lane for end-to-end tests, and companions set up before coding (spec 17). A
+ * project set up before (no `setup`, or a lower one) is told what re-running init adds.
+ */
+export const SETUP_VERSION = 2;
+
 /** Every problem with a parsed config, as readable sentences; empty when it is valid. */
 export function validate(c) {
   if (!isObj(c)) return ['the config must be a JSON object'];
@@ -156,9 +164,14 @@ export function validate(c) {
     );
   };
   need(c.version === 1, '"version" must be 1');
+  need(
+    c.setup === undefined ||
+      (Number.isInteger(c.setup) && c.setup >= 1 && c.setup <= SETUP_VERSION),
+    `"setup" must be a whole number from 1 to ${SETUP_VERSION}: the version of init's setup the project has`,
+  );
   // A brownfield project may have no specs yet: then there is no spec-check gate.
   need(c.docs === undefined || isObj(c.docs), '"docs" must be an object');
-  for (const k of ['specs', 'principles', 'plan'])
+  for (const k of ['specs', 'principles', 'plan', 'decisions'])
     need(c.docs?.[k] === undefined || isStr(c.docs[k]), `"docs.${k}" must be a path`);
   need(isObj(c.lead) && isList(c.lead?.paths), '"lead.paths" must be a list of globs');
   need(
@@ -232,6 +245,7 @@ export function validate(c) {
     '"branches.protected" must be a list of branch names',
   );
   p.push(...harnessProblems(c.harness));
+  p.push(...teamProblems(c));
   return p;
 }
 

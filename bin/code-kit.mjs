@@ -53,11 +53,20 @@ import { traceFile } from '../hooks/lib/trace.mjs';
 import { buildStatus, specCheckRows } from '../hooks/lib/plan.mjs';
 import { recordSentBack } from '../hooks/lib/reviews.mjs';
 import { storyTimes } from '../hooks/lib/timeline.mjs';
-import { storyMap, trail } from '../hooks/lib/storymap.mjs';
+import { PROJECT, projectMap, storyMap, trail } from '../hooks/lib/storymap.mjs';
 import { journal } from '../hooks/lib/journal.mjs';
 import { dequeue, enqueue, lastMerged, readQueue, settle, waiting } from '../hooks/lib/queue.mjs';
 import { SETTINGS, parseSetting, settingOf, withSetting } from '../hooks/lib/harness.mjs';
 import { readLoop, writeLoop } from '../hooks/lib/loop-state.mjs';
+import {
+  claimChanges,
+  storyOfBranch,
+  syncBoard,
+  teamOf,
+  teamProvider,
+  whoami,
+} from '../hooks/lib/team.mjs';
+import { codeowners, decisionRecord, slugOf } from '../hooks/lib/teamfacts.mjs';
 import {
   APPROVAL_MINUTES,
   approvalLifetime,
@@ -101,7 +110,9 @@ const via = option('--via');
 const sessionId = option('--session');
 const minutesGiven = option('--minutes');
 const answerGiven = option('--answer');
-const FLAGS = ['--write', '--no-checks', '--json', '--delegated', '--person'];
+const leaseGiven = option('--lease');
+const touchesGiven = option('--touches');
+const FLAGS = ['--write', '--no-checks', '--json', '--delegated', '--person', '--fresh', '--peek'];
 const flag = (name) => args.includes(name);
 const writeBaseline = flag('--write');
 const [command, ...rest] = args.filter((a) => !FLAGS.includes(a));
@@ -148,6 +159,9 @@ function checkJson() {
   report.harnessSet = Object.keys(SETTINGS).filter((k) => settingOf(raw.harness, k) !== undefined);
   // Delegation is the base's, by the rules committed there: a branch can't grant itself merges.
   const delegation = mergeDelegation('.', config, file);
+  // TEAM-1: the team, with its defaults, and who the developer at this machine is.
+  report.team = teamOf(raw);
+  report.me = report.team ? whoami(resolve('.')) : null;
   report.delegatesMerge = delegation.delegated;
   report.firstMerge = delegation.first;
   out(JSON.stringify(report, null, 2));
@@ -164,6 +178,20 @@ function check() {
   for (const c of raw.checks ?? []) out(`Check ${c.name}: ${c.run.join(' && ')}`);
   if (!raw.docs?.specs) out('No docs.specs: lanes are not held to a spec-check report.');
   for (const name of load().config.adapters) out(`Adapter ${name}: active (see \`adapters\`)`);
+  const team = teamOf(raw);
+  if (team) {
+    const me = whoami(resolve('.'));
+    out(
+      `Team: ${team.techLead} is the tech lead; a claim is stale after ${team.staleDays} working day${team.staleDays === 1 ? '' : 's'} without a push; provider ${team.provider === 'github' ? 'GitHub' : team.provider.command}.`,
+    );
+    for (const [lane, owners] of Object.entries(team.owners))
+      out(`Lane ${lane} is owned by ${owners.join(', ')}`);
+    out(
+      me
+        ? `You are ${me}${me === team.techLead ? ', the tech lead' : ''}.`
+        : "You aren't signed in to GitHub (gh auth login), so claims and owners can't be checked.",
+    );
+  }
 }
 
 function who(paths) {
@@ -547,6 +575,10 @@ function mergeOne(branch, config, byPerson) {
         'conflict',
       );
     }
+    // TEAM-1: a merged story's claim ends, whoever merged it.
+    const team = teamOf(config);
+    const story = storyOfBranch(branch);
+    if (team && story) teamProvider(resolve('.'), team).release(story, { merged: true });
     // A lane agent's worktree has done its work once its branch is merged: removed when it holds
     // nothing uncommitted (the branch stays), so finished lanes don't pile up checkouts.
     let removed = '';
@@ -651,6 +683,18 @@ function queue() {
  */
 function mapCommand(id) {
   const { config, raw } = load();
+  // MAP-5: the whole project, by folder, for when no story is at work.
+  if (id === PROJECT) {
+    const map = projectMap(resolve('.'), config, tracked());
+    if (flag('--json')) return out(JSON.stringify(map, null, 2));
+    out(`The whole project (${map.files.length} folder(s)):`);
+    for (const layer of map.layers) {
+      out(`  ${layer}`);
+      for (const f of map.files.filter((x) => x.layer === layer))
+        out(`    ${f.path} (${f.files})${f.imports.length ? `  → ${f.imports.join(', ')}` : ''}`);
+    }
+    return;
+  }
   const { specs, plan } = config.docs ?? {};
   if (!specs || !plan)
     die('map needs docs.specs and docs.plan in the config. The spec-design skill writes both.');
@@ -1209,6 +1253,230 @@ async function approve(given) {
   );
 }
 
+/** How long ago an ISO time was, in words: "3 hours ago". */
+function ago(iso) {
+  const minutes = Math.max(0, Math.round((Date.now() - Date.parse(iso)) / 60000));
+  if (minutes < 1) return 'just now';
+  if (minutes < 60) return `${minutes} minute${minutes === 1 ? '' : 's'} ago`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 48) return `${hours} hour${hours === 1 ? '' : 's'} ago`;
+  return `${Math.round(hours / 24)} days ago`;
+}
+
+/**
+ * The team (TEAM-2, TEAM-3, TEAM-8): `team` says who's on it and what's claimed, intended and open;
+ * `team claim <story> [--lease globs]` and `team release <story>` change a claim through the provider.
+ */
+function teamCommand() {
+  const { raw } = load();
+  const team = teamOf(raw);
+  if (!team)
+    die(
+      'This project has no "team" in its config, so it has no claims or owners. Add "team": { "techLead": "<GitHub handle>" } to share them.',
+    );
+  const provider = teamProvider(resolve('.'), team);
+  const [sub, story] = rest;
+  const holderWords = (h) =>
+    `${h.story} is claimed by ${h.by} (${ago(h.at)}). Ask them, or the tech lead (${team.techLead}), to release it.`;
+  if (sub === 'claim') {
+    if (!story) die('code-kit team claim <story> [--lease "<glob>,<glob>"]');
+    const lease = (leaseGiven ?? '')
+      .split(',')
+      .map((g) => g.trim())
+      .filter(Boolean);
+    const r = provider.claim(story, lease);
+    if (r.holder) die(holderWords(r.holder));
+    if (!r.ok) die(r.why);
+    return out(
+      `Claimed ${story} as ${r.claim.by}${lease.length ? `, leasing ${lease.join(', ')}` : ''}.`,
+    );
+  }
+  // TEAM-12: the plan mirrored onto the team's GitHub Project.
+  if (sub === 'board') {
+    if (!team.board)
+      die(
+        'This team has no board. Add "board": { "owner": "<user or organisation>", "number": <the Project\'s number> } to "team" in the config.',
+      );
+    const { config, raw: rawConfig } = load();
+    if (!rawConfig.docs?.plan)
+      die('The board mirrors the plan, and this project has no docs.plan.');
+    const status = buildStatus('.', config, base(config, false), tracked());
+    const state = provider.state();
+    const r = syncBoard(resolve('.'), team, status.stories, state.claims ?? []);
+    if (!r.ok) die(r.why);
+    return out(
+      `Board ${team.board.owner}/${team.board.number} synced: ${r.created} item${r.created === 1 ? '' : 's'} added, ${r.edited} field${r.edited === 1 ? '' : 's'} changed.`,
+    );
+  }
+  // TEAM-11: GitHub's CODEOWNERS from the config, so GitHub asks the right people to review.
+  if (sub === 'codeowners') {
+    const text = codeowners({
+      techLead: team.techLead,
+      leadPaths: raw.lead.paths,
+      lanes: raw.lanes,
+    });
+    if (!flag('--write')) return out(text.trimEnd());
+    mkdirSync(resolve('.github'), { recursive: true });
+    writeFileSync(resolve('.github/CODEOWNERS'), text);
+    return out(
+      "Wrote .github/CODEOWNERS. Commit it, and require code owners' review in a ruleset on the protected branch, so GitHub holds every pull request to it.",
+    );
+  }
+  // TEAM-9: the holder keeps a stale claim (the clock starts again); the tech lead reassigns one.
+  if (sub === 'keep') {
+    if (!story) die('code-kit team keep <story>');
+    const r = provider.claim(story);
+    if (r.holder) die(holderWords(r.holder));
+    if (!r.ok) die(r.why);
+    return out(
+      `Kept ${story}: it isn't stale until ${team.staleDays} more working day${team.staleDays === 1 ? '' : 's'} without a push.`,
+    );
+  }
+  if (sub === 'reassign') {
+    const to = rest[2];
+    if (!story || !to) die('code-kit team reassign <story> <GitHub handle>');
+    const r = provider.reassign(story, to);
+    if (!r.ok) die(r.why);
+    return out(`Reassigned ${story} from ${r.from} to ${r.to}, with its lease.`);
+  }
+  if (sub === 'release') {
+    if (!story) die('code-kit team release <story>');
+    const r = provider.release(story);
+    if (!r.ok) die(r.why ?? holderWords(r.holder));
+    return out(
+      r.released ? `Released ${story} (${r.claim.by}'s claim).` : `${story} isn't claimed.`,
+    );
+  }
+  // TEAM-6: what everyone did since you last looked; reading it marks it read, unless --peek.
+  if (sub === 'since') {
+    const root = resolve('.');
+    const seenFile = join(root, '.claude/state/team-seen.json');
+    let seen = null;
+    try {
+      seen = JSON.parse(readFileSync(seenFile, 'utf8'));
+    } catch {
+      // never looked: the last day
+    }
+    const from = seen ? Date.parse(seen.at) : Date.now() - 24 * 3600_000;
+    const state = provider.state({ fresh: true });
+    const activity = provider.since(from);
+    const changes =
+      seen && state.reachable !== false ? claimChanges(seen.claims, state.claims) : [];
+    const all = [...(activity ?? []), ...changes].sort((a, b) => a.at - b.at);
+    const people = {};
+    for (const e of all) (people[e.by] ??= []).push(e);
+    if (!flag('--peek')) {
+      mkdirSync(join(root, '.claude/state'), { recursive: true });
+      writeFileSync(
+        seenFile,
+        JSON.stringify({ at: new Date().toISOString(), claims: state.claims ?? [] }) + '\n',
+      );
+    }
+    if (flag('--json'))
+      return out(
+        JSON.stringify(
+          { since: new Date(from).toISOString(), github: activity !== null, people },
+          null,
+          2,
+        ),
+      );
+    out(
+      `Since ${seen ? ago(seen.at) : 'yesterday'}${activity === null ? " (GitHub's activity couldn't be read; claims only)" : ''}:`,
+    );
+    if (!all.length) return out('  Nothing new.');
+    for (const [who, list] of Object.entries(people))
+      out(`  ${who}${who === state.me ? ' (you)' : ''}: ${list.map((e) => e.text).join('; ')}.`);
+    return;
+  }
+  if (sub !== undefined)
+    die(
+      'code-kit team [--json] [--fresh] | team since [--json] [--peek] | team claim|keep|release <story> | team reassign <story> <handle>',
+    );
+  const state = provider.state({ fresh: flag('--fresh') });
+  if (flag('--json')) return out(JSON.stringify(state, null, 2));
+  const you = state.me
+    ? `You are ${state.me}${state.me === team.techLead ? ', the tech lead' : ''}.`
+    : "You aren't signed in to GitHub (gh auth login).";
+  out('Team mode is a preview: report anything that looks wrong.');
+  out(`Tech lead: ${team.techLead}. ${you}`);
+  if (state.reachable === false)
+    out(
+      `${state.why ?? "The shared repository can't be reached"}: claims and leases aren't checked until it can be; every other rule still holds.`,
+    );
+  if (state.github === false) out("GitHub's issues and pull requests couldn't be read (gh).");
+  for (const [lane, owners] of Object.entries(team.owners))
+    out(`Lane ${lane}: ${owners.join(', ')}`);
+  out(state.claims.length ? 'Claims:' : 'Nothing is claimed.');
+  for (const c of state.claims)
+    out(
+      `  ${c.story} by ${c.by}, ${ago(c.at)}${c.stale ? ` · stale, nothing since ${ago(c.active)}` : ''}${c.lease.length ? ` · leases ${c.lease.join(', ')}` : ''}`,
+    );
+  if (state.intents.length) out('Intents:');
+  for (const i of state.intents)
+    out(
+      `  #${i.id} ${i.about} (${i.by})${i.touches.length ? ` · touches ${i.touches.join(', ')}` : ''}`,
+    );
+  if (state.pulls.length) out('Open pull requests:');
+  for (const p of state.pulls)
+    out(`  #${p.number} ${p.title} (${p.by}, ${p.branch}${p.draft ? ', draft' : ''})`);
+}
+
+/**
+ * TEAM-5: `intend "<what and why>" [--touches globs]` raises an intent before any code, so the team sees
+ * a change of direction first; `intend agree|drop|duplicate <id> [--reason "…"]` is the tech lead's answer.
+ */
+function intendCommand() {
+  const { raw } = load();
+  const team = teamOf(raw);
+  if (!team) die('This project has no "team" in its config, so intents have nowhere to go.');
+  const provider = teamProvider(resolve('.'), team);
+  const [first, id] = rest;
+  // TEAM-10: an agreed intent, written where agents read it.
+  if (first === 'record') {
+    if (!/^\d+$/.test(id ?? '')) die('code-kit intend record <discussion number>');
+    const d = provider.intent(Number(id));
+    if (!d) die("GitHub can't be reached, so the intent can't be read.");
+    if (d.missing) die(`There's no intent #${id} in ${team.intents}.`);
+    if (!(d.closed && d.stateReason === 'RESOLVED'))
+      die(`Intent #${id} isn't agreed yet: only an agreed intent becomes a decision record.`);
+    const dir = raw.docs?.decisions ?? 'docs/decisions';
+    mkdirSync(resolve(dir), { recursive: true });
+    const existing = readdirSync(resolve(dir)).filter((f) => f.endsWith('.md'));
+    const already = existing.find((f) => read(join(dir, f)).includes(`**Discussion:** ${d.url}`));
+    if (already) return out(`Intent #${id} is already recorded: ${join(dir, already)}`);
+    const last = Math.max(0, ...existing.map((f) => Number(f.match(/^(\d+)-/)?.[1] ?? 0)));
+    const path = join(dir, `${String(last + 1).padStart(4, '0')}-${slugOf(d.title)}.md`);
+    writeFileSync(resolve(path), decisionRecord(d, team.techLead));
+    return out(
+      `Wrote ${path}. Commit it on a branch (lead/decision-${id}), push it and open a pull request, so it's reviewed and merged like any change; once merged, every agent reads it.`,
+    );
+  }
+  if (first === 'agree' || first === 'drop' || first === 'duplicate') {
+    if (!/^\d+$/.test(id ?? '')) die(`code-kit intend ${first} <issue number> [--reason "…"]`);
+    const outcome = { agree: 'agreed', drop: 'dropped', duplicate: 'duplicate' }[first];
+    const r = provider.settle(Number(id), outcome, reason ?? '');
+    if (!r.ok) die(r.why);
+    return out(
+      first === 'agree'
+        ? `Agreed intent #${id}: it's how the team goes now. Record it so every agent builds on it: code-kit intend record ${id}`
+        : first === 'drop'
+          ? `Dropped intent #${id}.`
+          : `Marked intent #${id} a duplicate.`,
+    );
+  }
+  const about = rest.join(' ').trim();
+  if (!about) die('code-kit intend "<what you\'ll change, and why>" [--touches "<glob>,<glob>"]');
+  const touches = (touchesGiven ?? '')
+    .split(',')
+    .map((t) => t.trim())
+    .filter(Boolean);
+  const r = provider.intend(about, touches);
+  if (!r.ok) die(r.why);
+  out(
+    `Raised intent #${r.intent.id}: ${about}${touches.length ? ` (touches ${touches.join(', ')})` : ''}. The team sees it now; the tech lead (${team.techLead}) agrees or drops it. ${r.intent.url}`,
+  );
+}
+
 /**
  * The lead loop's pause (LOOP-6): `loop` says whether the person paused it; `loop pause|resume`, the
  * person's act from the code-kit band, records it, so other tools' background work pauses with it.
@@ -1241,6 +1509,8 @@ const commands = {
   settings,
   hold: () => (rest.length === 1 ? hold(rest[0]) : usage()),
   queue,
+  team: teamCommand,
+  intend: intendCommand,
   story: () => (rest.length === 1 ? story(rest[0]) : usage()),
   map: () => (rest.length === 1 ? mapCommand(rest[0]) : usage()),
   trail: trailCommand,
@@ -1270,8 +1540,12 @@ function usage() {
       '              | hold <id> [--minutes N] | hold <id> --answer approved|refused\n' +
       '              | queue [--json] | queue add|drop <branch> | queue rules | queue merge --delegated|--person\n' +
       '              | loop [--json] | loop pause|resume\n' +
-      '              | map <story> [--json] | trail [--json] | journal [--json]\n' +
-      '              | story <id> [--json] | timeline [--json]',
+      '              | map <story>|project [--json] | trail [--json] | journal [--json]\n' +
+      '              | story <id> [--json] | timeline [--json]\n' +
+      '              | team [--json] [--fresh] | team since [--json] [--peek]\n' +
+      '              | team claim <story> [--lease globs] | team keep|release <story>\n' +
+      '              | team reassign <story> <handle> | team codeowners [--write] | team board\n' +
+      '              | intend "<what and why>" [--touches globs] | intend agree|drop|duplicate <id> [--reason "…"] | intend record <id>',
   );
 }
 await (commands[command] ?? usage)();

@@ -795,6 +795,16 @@ test('LOOP-1 to LOOP-3 the loop: prompts for steps, and what a quiet agent is du
     /^Put code-kit's approved rules onto main: run node "\/k\/bin\/code-kit.mjs" queue rules\./,
   );
   assert.equal(stepLabel({ step: 'rules', args: 'main' }), 'Rules onto main');
+  // ONB-2, ONB-3: designs before screens, and a companion set up before any coding.
+  assert.equal(
+    leadPrompt({ step: 'design', args: 'ST-1 ST-5' }),
+    'Design ST-1, ST-5 before any of their screens are built: run /code-kit:design ST-1 ST-5.',
+  );
+  assert.match(
+    leadPrompt({ step: 'setup', args: 'context-graph:init', why: 'It has no graph yet.' }),
+    /^Before any code is written, set up context-graph: run \/context-graph:init\. It has no graph yet\.$/,
+  );
+  assert.equal(stepLabel({ step: 'design', args: 'ST-1' }), 'Design ST-1');
   assert.ok(!leadPrompt({ step: 'dispatch', args: 'ST-1' }).startsWith('/'));
   assert.equal(stepKey({ step: 'dispatch', args: 'ST-1' }), 'dispatch:ST-1');
   assert.equal(stepLabel({ step: 'dispatch', args: 'ST-7 ST-9' }), 'Dispatch ST-7, ST-9');
@@ -1263,4 +1273,220 @@ test('DECIDE-2 a decision card carries the lineage: the story, its requirements,
     "You haven't let the lead approve these itself.",
   );
   assert.equal(limitsWhy(null), null);
+});
+
+test('TEAM-1 the team in the config: a tech lead, owners on lanes, and the defaults', async () => {
+  const { teamProblems, teamOf, isHandle } = await import('../hooks/lib/team.mjs');
+  assert.deepEqual(
+    teamProblems({ team: { techLead: 'alex' }, lanes: { web: { owners: ['sam'] } } }),
+    [],
+  );
+  assert.deepEqual(teamProblems({ lanes: { web: { owners: ['sam'] } } }), [
+    'lanes.web.owners needs "team", with its tech lead',
+  ]);
+  assert.equal(teamProblems({ team: { techLead: 'alex', staleDays: 2.5 } }).length, 1);
+  assert.equal(teamProblems({ team: { techLead: 'alex', provider: 'gitlab' } }).length, 1);
+  assert.deepEqual(teamProblems({ team: { techLead: 'alex', provider: { command: 'hub' } } }), []);
+  assert.deepEqual(
+    teamOf({ team: { techLead: 'alex' }, lanes: { web: { owners: ['sam'] }, api: {} } }),
+    {
+      techLead: 'alex',
+      staleDays: 3,
+      intents: 'Intents',
+      board: null,
+      provider: 'github',
+      owners: { web: ['sam'] },
+    },
+  );
+  assert.equal(teamOf({ lanes: {} }), null);
+  for (const h of ['sam', 'a-b', 'A1']) assert.ok(isHandle(h), h);
+  for (const h of ['-sam', 'sam-', 'a--b', 'x'.repeat(40), '']) assert.ok(!isHandle(h), h);
+});
+
+test('TEAM-2 story ids a claim ref can carry, and the paths an intent touches', async () => {
+  const { isStoryId, touchesOf } = await import('../hooks/lib/team.mjs');
+  for (const id of ['ST-9', 'AUTH-12']) assert.ok(isStoryId(id), id);
+  for (const id of ['ST9', 'ST-', '../x', 'ST-1/x', '']) assert.ok(!isStoryId(id), id);
+  assert.deepEqual(touchesOf('Touches: `packages/schemas/**`, apps/api/**\n\nWhy.'), [
+    'packages/schemas/**',
+    'apps/api/**',
+  ]);
+  assert.deepEqual(touchesOf('No paths named.'), []);
+});
+
+test('TEAM-6 GitHub activity in plain sentences, and the claims taken and released between reads', async () => {
+  const { activityOf, claimChanges } = await import('../hooks/lib/team.mjs');
+  const at = (m) => new Date(Date.UTC(2026, 9, 11, 0, m)).toISOString();
+  const said = activityOf(
+    [
+      {
+        type: 'PullRequestEvent',
+        created_at: at(5),
+        actor: { login: 'sam' },
+        payload: { action: 'closed', pull_request: { number: 3, title: 'A', merged: true } },
+      },
+      {
+        type: 'IssuesEvent',
+        created_at: at(4),
+        actor: { login: 'alex' },
+        payload: {
+          action: 'closed',
+          issue: {
+            number: 9,
+            title: 'B',
+            state_reason: 'not_planned',
+            labels: [{ name: 'code-kit:intent' }],
+          },
+        },
+      },
+      {
+        type: 'IssuesEvent',
+        created_at: at(3),
+        actor: { login: 'kim' },
+        payload: { action: 'opened', issue: { number: 8, title: 'a bug', labels: [] } },
+      },
+      {
+        type: 'CreateEvent',
+        created_at: at(2),
+        actor: { login: 'sam' },
+        payload: { ref_type: 'branch', ref: 'web/st-4' },
+      },
+      {
+        type: 'PushEvent',
+        created_at: at(0),
+        actor: { login: 'sam' },
+        payload: { ref: 'refs/heads/main', size: 1 },
+      },
+    ],
+    Date.parse(at(1)),
+  );
+  assert.deepEqual(
+    said.map((e) => `${e.by} ${e.text}`),
+    ['sam started web/st-4', 'sam merged #3 A'],
+  );
+  const changes = claimChanges(
+    [{ story: 'ST-1', by: 'sam', at: at(0), lease: [] }],
+    [{ story: 'ST-2', by: 'kim', at: at(6), lease: [] }],
+  );
+  assert.deepEqual(
+    changes.map((c) => `${c.by} ${c.kind} ${c.text}`),
+    ['kim claimed claimed ST-2', 'sam released ST-1 is no longer claimed by them'],
+  );
+});
+
+test('TEAM-9 working days, and when a claim goes stale', async () => {
+  const { workingDaysBetween, withStaleness } = await import('../hooks/lib/team.mjs');
+  const day = (d) => Date.parse(`2026-10-${String(d).padStart(2, '0')}T09:00:00Z`);
+  // 2026-10-09 is a Friday, 10-12 a Monday.
+  assert.equal(workingDaysBetween(day(9), day(9)), 0);
+  assert.equal(workingDaysBetween(day(9), day(12)), 1);
+  assert.equal(workingDaysBetween(day(8), day(13)), 3);
+  const claim = { story: 'ST-7', by: 'sam', at: new Date(day(8)).toISOString(), lease: [] };
+  assert.equal(withStaleness(claim, null, 3, day(13)).stale, true);
+  assert.equal(withStaleness(claim, day(12), 3, day(13)).stale, false);
+  assert.equal(withStaleness(claim, day(12), 3, day(13)).active, new Date(day(12)).toISOString());
+});
+
+test('TEAM-7 two globs overlap when one can name a file the other names', async () => {
+  const { globsOverlap } = await import('../hooks/lib/teamfacts.mjs');
+  assert.ok(globsOverlap('apps/web/**', 'apps/web/booking/form.tsx'));
+  assert.ok(globsOverlap('packages/schemas/report.ts', 'packages/**'));
+  assert.ok(!globsOverlap('apps/web/**', 'apps/api/**'));
+});
+
+test('TEAM-5 and TEAM-6 an intent from its discussion, and intents raised and settled since', async () => {
+  const { intentOf, discussionActivity } = await import('../hooks/lib/teamfacts.mjs');
+  const d = (n, extra) => ({
+    number: n,
+    title: `I${n}`,
+    body: 'Touches: a/**',
+    url: 'u',
+    author: { login: 'sam' },
+    createdAt: '2026-10-11T00:05:00Z',
+    closed: false,
+    closedAt: null,
+    stateReason: null,
+    ...extra,
+  });
+  assert.deepEqual(intentOf(d(1)), {
+    id: 1,
+    by: 'sam',
+    about: 'I1',
+    touches: ['a/**'],
+    at: '2026-10-11T00:05:00Z',
+    url: 'u',
+    state: 'open',
+  });
+  assert.equal(intentOf(d(2, { closed: true, stateReason: 'RESOLVED' })).state, 'agreed');
+  assert.equal(intentOf(d(3, { closed: true, stateReason: 'OUTDATED' })).state, 'dropped');
+  assert.equal(intentOf(d(4, { closed: true, stateReason: 'DUPLICATE' })).state, 'duplicate');
+  const said = discussionActivity(
+    [
+      d(5),
+      d(6, {
+        createdAt: '2026-10-10T00:00:00Z',
+        closed: true,
+        closedAt: '2026-10-11T00:06:00Z',
+        stateReason: 'RESOLVED',
+      }),
+    ],
+    Date.parse('2026-10-11T00:00:00Z'),
+    'alex',
+  );
+  assert.deepEqual(
+    said.map((e) => `${e.by} ${e.text}`),
+    ['sam raised intent #5 I5', 'alex agreed intent #6 I6'],
+  );
+});
+
+test('TEAM-10 a decision record holds only what the discussion says', async () => {
+  const { decisionRecord, slugOf } = await import('../hooks/lib/teamfacts.mjs');
+  assert.equal(slugOf('Split the report format!'), 'split-the-report-format');
+  const text = decisionRecord(
+    {
+      title: 'Split the report format',
+      body: 'Touches: docs/reports/**\n\nReports differ per site.\n\nRaised with code-kit by @sam before any code, so the team sees it first.',
+      url: 'u',
+      author: { login: 'sam' },
+      createdAt: '2026-10-10T01:00:00Z',
+      closedAt: '2026-10-11T02:00:00Z',
+      comments: [
+        { author: { login: 'kim' }, body: 'Agreed by @kim, the tech lead: not really' },
+        { author: { login: 'alex' }, body: 'Agreed by @alex, the tech lead: per site now' },
+      ],
+    },
+    'alex',
+  );
+  assert.equal(
+    text,
+    '# Split the report format\n\n**Status:** agreed\n**Date:** 2026-10-11\n**Raised by:** @sam · **Agreed by:** @alex\n**Discussion:** u\n\n## What changes, and why\n\nReports differ per site.\n\n## What it touches\n\n- `docs/reports/**`\n\n## Agreed\n\nper site now\n',
+  );
+});
+
+test('TEAM-11 CODEOWNERS from the config, braces expanded and the kit left out', async () => {
+  const { codeowners, ownersPatterns } = await import('../hooks/lib/teamfacts.mjs');
+  assert.deepEqual(ownersPatterns('apps/{web,admin}/**'), ['/apps/web/**', '/apps/admin/**']);
+  assert.deepEqual(ownersPatterns('**/*.sql'), ['**/*.sql']);
+  const text = codeowners({
+    techLead: 'alex',
+    leadPaths: ['docs/**', '.claude/**'],
+    lanes: {
+      web: { paths: ['apps/web/**'], owners: ['sam', 'kim'] },
+      api: { paths: ['apps/api/**'] },
+    },
+  });
+  assert.match(text, /^\/docs\/\*\* @alex$/m);
+  assert.match(text, /^\/apps\/web\/\*\* @sam @kim$/m);
+  assert.doesNotMatch(text, /^\/\.claude|apps\/api/m);
+});
+
+test('TEAM-12 a story on the board, and only the fields that changed', async () => {
+  const { boardValues, boardChanges } = await import('../hooks/lib/teamfacts.mjs');
+  const now = boardValues({ lane: 'web', state: 'in progress' }, { by: 'sam', stale: true });
+  assert.deepEqual(now, { Lane: 'web', 'Claimed by': 'sam', Stale: 'yes', State: 'in progress' });
+  assert.deepEqual(boardChanges(now, now), []);
+  assert.deepEqual(
+    boardChanges({ ...now, Stale: '' }, boardValues({ lane: 'web', state: 'in progress' }, null)),
+    [['Claimed by', '']],
+  );
 });

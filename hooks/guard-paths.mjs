@@ -8,6 +8,8 @@ import { loadBaseline, newProblems } from './lib/baseline.mjs';
 import { CONFIG_FILE } from './lib/config.mjs';
 import { layerProblems } from './lib/layers.mjs';
 import { block, start } from './lib/hook.mjs';
+import { teamOf, teamProvider, teamRefusal, whoami } from './lib/team.mjs';
+import { spawnSync } from 'node:child_process';
 import {
   actorFor,
   projectWorktrees,
@@ -34,6 +36,23 @@ if (error) {
 
 const problem = writeProblem(actorFor(input, root, config), rel, root, config);
 if (problem) block(`Blocked: ${problem}`);
+
+// TEAM-1, TEAM-4: in a team, the tech lead's paths, other people's lanes, claims and leases.
+const team = teamOf(config);
+if (team) {
+  const branch = spawnSync('git', ['-C', root, 'symbolic-ref', '--short', '-q', 'HEAD'], {
+    encoding: 'utf8',
+  }).stdout?.trim();
+  const refusal = teamRefusal({
+    actor: actorFor(input, root, config),
+    rel,
+    branch,
+    config,
+    me: whoami(project),
+    state: teamProvider(project, team).state(),
+  });
+  if (refusal) block(`Blocked: ${refusal}`);
+}
 
 /** The file's text after this call, when the call carries enough to know it. */
 function textAfter(before) {

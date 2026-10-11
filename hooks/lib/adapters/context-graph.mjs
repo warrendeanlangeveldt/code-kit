@@ -120,6 +120,11 @@ export default {
     /** The command that opens Context Graph's pane on a file, given its path. */
     open: { command: 'graph' },
   },
+  // ONB-3: set up before the coding loop, so every lane's first edit already has the why behind it.
+  onboard: {
+    skill: 'context-graph:init',
+    why: 'Context Graph is installed but has no graph in this project yet. Set it up before any code is written, so every lane works from the why behind each file from its first edit.',
+  },
   setup: [
     '.gitignore: .ctx/archive/, .ctx/bench/, .ctx/models/ and .ctx/serve.json (ctx working files, never committed)',
     '.gitattributes: .ctx/decisions.ctx merge=union and .ctx/cards.ctx merge=union (lanes record decisions and cards on parallel branches; merging keeps them all)',

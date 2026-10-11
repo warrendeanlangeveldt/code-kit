@@ -12,6 +12,8 @@ import { addedPackages, dependencyApproval, isDependencyFile } from './lib/depen
 import { CODE_KIT, GIT, codeOf, commandsOf, runs } from './lib/shell.mjs';
 import { block, start } from './lib/hook.mjs';
 import { CONFIG_FILE } from './lib/config.mjs';
+import { laneOfBranch, storyOfBranch, teamOf, teamProvider, whoami } from './lib/team.mjs';
+import { matchesAny } from './lib/glob.mjs';
 import { noteBefore } from './lane-audit.mjs';
 import {
   APPROVAL_LOG,
@@ -166,6 +168,16 @@ if (runs(cmd, new RegExp(String.raw`^${CODE_KIT}\s+loop\s+(pause|resume)\b`)))
   block(
     `Blocked: pausing or resuming the lead loop is the person's own act, from the code-kit band or their terminal. Ask them, and stop.\nCommand: ${cmd}`,
   );
+// TEAM-9: handing someone's claim to someone else is the tech lead's own decision too.
+if (runs(cmd, new RegExp(String.raw`^${CODE_KIT}\s+team\s+reassign\b`)))
+  block(
+    `Blocked: reassigning a claim is the tech lead's own decision, from their terminal or the code-kit pane. Tell them who holds it, since when, and who you'd suggest, and stop.\nCommand: ${cmd}`,
+  );
+// TEAM-5: agreeing or dropping an intent is the tech lead's own decision, from their terminal or the pane.
+if (runs(cmd, new RegExp(String.raw`^${CODE_KIT}\s+intend\s+(agree|drop|duplicate)\b`)))
+  block(
+    `Blocked: agreeing or dropping an intent is the tech lead's own decision, from their terminal or the code-kit pane. Tell them what you'd recommend and why, and stop.\nCommand: ${cmd}`,
+  );
 // The harness settings are the person's to change, from the pane or their terminal.
 if (runs(cmd, new RegExp(String.raw`^${CODE_KIT}\s+settings\s+set\b`)))
   block(
@@ -264,6 +276,58 @@ if (writesHistory && config.branches.protected.includes(branch) && !settingUp) {
   block(
     `Blocked: never commit or merge on ${branch}. Work on a branch; the lead merges it after review (or the person, where merges aren't delegated).`,
   );
+}
+
+// TEAM-1, TEAM-4: in a team, making a story's branch claims the story (the dispatch), refused when the
+// lane is someone else's or the story is already claimed; a commit on it grows the claim's lease with
+// what the branch changes. When the shared repository can't be reached, nothing here is checked.
+const team = teamOf(config);
+if (team) {
+  const me = whoami(project);
+  const made = commandsOf(cmd)
+    .map((c) =>
+      c.text.match(
+        new RegExp(
+          String.raw`^${GIT}(?:switch\s+(?:-c|--create)|checkout\s+-b|worktree\s+add\b.*?\s-b)\s+(\S+)`,
+        ),
+      ),
+    )
+    .find(Boolean)?.[1];
+  const story = storyOfBranch(made);
+  if (story && me) {
+    const lane = laneOfBranch(made);
+    const owners = team.owners[lane];
+    if (owners && !owners.includes(me))
+      block(
+        `Blocked: the ${lane} lane is ${owners.join(' and ')}'s, so ${story} is theirs to dispatch. Leave it for them, or ask the tech lead (${team.techLead}) to change the lane's owners.\nCommand: ${cmd}`,
+      );
+    const claimed = teamProvider(project, team).claim(story);
+    if (claimed.holder)
+      block(
+        `Blocked: ${story} is already claimed by ${claimed.holder.by}, so someone is building it. Pick another story, or ask ${claimed.holder.by} or the tech lead (${team.techLead}) to release it.\nCommand: ${cmd}`,
+      );
+  }
+  // The branch by name, which also works before its first commit.
+  const named = spawnSync('git', ['-C', root, 'symbolic-ref', '--short', '-q', 'HEAD'], {
+    encoding: 'utf8',
+  }).stdout?.trim();
+  const mine = storyOfBranch(named || branch);
+  if (commits && mine && me) {
+    const provider = teamProvider(project, team);
+    const claim = provider.state().claims?.find((c) => c.story === mine && c.by === me);
+    const base = config.branches.protected[0];
+    const since = spawnSync('git', ['-C', root, 'merge-base', 'HEAD', base], { encoding: 'utf8' });
+    const changed = (args) =>
+      spawnSync('git', ['-C', root, 'diff', '--name-only', ...args], { encoding: 'utf8' })
+        .stdout.split('\n')
+        .filter(Boolean);
+    const files = [
+      ...(since.status === 0 ? changed([since.stdout.trim()]) : []),
+      ...changed(['--cached']),
+    ];
+    const grown = files.filter((f) => !matchesAny(f, claim?.lease ?? []));
+    if (claim && grown.length) provider.claim(mine, grown);
+  }
 }
 
 // Kit files edited through the shell follow the same rule as edits through Write/Edit: a command that

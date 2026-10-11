@@ -309,13 +309,28 @@ export function neighboursOf(map, path) {
   };
 }
 
+/** MAP-5: the map of the whole project, by folder. */
+export const PROJECT = 'project';
+
+/** Each glowing file shown on the folder holding it, for the project map's folder nodes. */
+export function glowByFolder(glow, folders) {
+  const out = {};
+  const byDepth = [...folders].sort((a, b) => b.length - a.length);
+  for (const [path, g] of Object.entries(glow)) {
+    const folder = byDepth.find((f) => f === '.' || path === f || path.startsWith(`${f}/`));
+    if (folder) out[folder] = g;
+  }
+  return out;
+}
+
 /** The story the code map opens on: the one asked for, else the selected lane's, else one at work. */
 export function mapStoryOf(state, selectedLane, asked = null) {
   if (asked) return asked;
   const lane = state?.lanes?.find((l) => l.name === selectedLane);
   if (lane?.story) return lane.story.id;
   const busy = state?.lanes?.find((l) => l.story && ['building', 'in review'].includes(l.state));
-  return busy?.story.id ?? state?.stories?.find((s) => s.state !== 'done')?.id ?? null;
+  // MAP-5: with no story at work, the whole project, not a story that has no code yet.
+  return busy?.story.id ?? PROJECT;
 }
 
 /** MAP-2, MAP-3: the map's legend: what the colours and words mean, a card being the file's why. */

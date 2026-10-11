@@ -17,7 +17,7 @@ The CLI is `node "${CLAUDE_PLUGIN_ROOT}/bin/code-kit.mjs"`, run from the project
 node "${CLAUDE_PLUGIN_ROOT}/bin/code-kit.mjs" status
 ```
 
-A story is **ready** when its dependencies are done and nobody has started it. `status` also lists gaps between the specs and the plan; a story with a gap (an unknown lane, a requirement no spec defines) isn't dispatched until the lead fixes the plan. Stories in the `lead` lane are never dispatched: the lead builds them itself.
+A story is **ready** when its dependencies are done and nobody has started it. `status` also lists gaps between the specs and the plan; a story with a gap (an unknown lane, a requirement no spec defines) isn't dispatched until the lead fixes the plan. Stories in the `lead` lane are never dispatched: the lead builds them itself. Nor are design stories (`**Lane:** design`): the lead designs them with the person (`/code-kit:design`), and the screen stories that depend on them wait until their designs are approved and merged.
 
 If the project has no `docs.plan`, or the plan has no stories in the `### ST-n` form (`${CLAUDE_PLUGIN_ROOT}/templates/plan.md`), stop and suggest the spec-design skill.
 
@@ -39,6 +39,14 @@ Then check:
 Commit everything the lanes need first. Each lane branches from the lead's branch as committed, so uncommitted work isn't there.
 
 ## 3. Brief and start each lane
+
+**In a team** (the config has `team`): claim each story before you brief its agent, leasing what it will change, so nobody else's agents build on the same files meanwhile:
+
+```bash
+node "${CLAUDE_PLUGIN_ROOT}/bin/code-kit.mjs" team claim ST-<n> --lease "<glob>,<glob>"
+```
+
+The lease is the paths the story will create or change: its lane's folders for this feature, and any contract it changes. A claim someone else holds is refused with who holds it; pick another story or ask them. Stories in a lane another person owns are theirs to dispatch. Making the story's branch also claims it, and each commit on it adds what it changed to the lease; merging it ends the claim.
 
 Start each story with the Agent tool: `subagent_type` is the lane's agent, `isolation: "worktree"`, and run them in the background. Start every story in the batch in the same message so they run in parallel.
 

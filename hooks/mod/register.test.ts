@@ -154,6 +154,8 @@ function project() {
     map: null as any, // `code-kit map <story> --json`
     trail: null as any, // `code-kit trail --json`
     journal: { events: [] as any[] }, // `code-kit journal --json`
+    team: null as any, // `code-kit team --json`, for a team's project
+    teamSince: { people: {} } as any, // `code-kit team since --json`
     holdWaits: false, // false: the hold ends at once, as if timed out (tests about cards, not hold)
     waiting: new Map<string, (answer: string) => void>(),
   };
@@ -194,6 +196,19 @@ function stub(on: any, w: World) {
     if (sub === 'map') return ran(w.map ? 0 : 1, JSON.stringify(w.map));
     if (sub === 'trail') return ran(w.trail ? 0 : 1, JSON.stringify(w.trail));
     if (sub === 'journal') return ran(0, JSON.stringify(w.journal));
+    if (sub === 'team' && argv[3] === 'since') {
+      w.acts.push([...argv.slice(2)]);
+      return ran(0, JSON.stringify(w.teamSince));
+    }
+    if (sub === 'team' && ['keep', 'release', 'board'].includes(argv[3])) {
+      w.acts.push([...argv.slice(2)]);
+      return ran(0, '');
+    }
+    if (sub === 'team') return ran(w.team ? 0 : 1, JSON.stringify(w.team));
+    if (sub === 'intend') {
+      w.acts.push([...argv.slice(2)]);
+      return ran(0, '');
+    }
     if (sub === 'loop' && ['pause', 'resume'].includes(argv[3])) {
       w.acts.push([...argv.slice(2)]);
       w.loopPaused = argv[3] === 'pause';
@@ -2465,13 +2480,18 @@ test('TRACE-2 selecting a cell, by keys or the list, shows its spec, stories wit
   expect(JSON.stringify((await ui.find({ key: 'cell-BOOK-21' }))?.children)).toMatch(
     /"inverse":true/,
   );
+  // The list holds the selected requirement's spec: payments' twenty, none of booking's.
+  const options = (await ui.find({ key: 'map-select' }))?.props.options ?? [];
+  expect(options.length).toBe(20);
+  expect(options.every((o: any) => Number(o.value.split('-')[1]) > 20)).toBe(true);
+  await $.ui.select({ plugin: 'code-kit', key: 'map-select', value: 'BOOK-40', requestId: PANE });
+  expect((await ui.find({ key: 'map-detail' }))?.text).toMatch(/No story delivers it yet/);
+  await press($, 'row-prev', PANE);
   await $.ui.select({ plugin: 'code-kit', key: 'map-select', value: 'BOOK-3', requestId: PANE });
   const detail = (await ui.find({ key: 'map-detail' }))?.text ?? '';
   expect(detail).toMatch(/docs\/spec\/01-booking.md · done and tested/);
   expect(detail).toMatch(/ST-4 Booking form · web · in progress · web\/st-4/);
   expect(detail).toMatch(/apps\/web\/b3.test.ts/);
-  await $.ui.select({ plugin: 'code-kit', key: 'map-select', value: 'BOOK-40', requestId: PANE });
-  expect((await ui.find({ key: 'map-detail' }))?.text).toMatch(/No story delivers it yet/);
   await ui.unmount();
 });
 
@@ -2877,5 +2897,214 @@ test('the lead reads orchestrating while its turn runs, and idle once it ends; a
   await $.turn.complete({ turnId: 't-1', answer: '', durationMs: 1, isAborted: false } as any);
   await settle(clock);
   expect((await ui.find({ key: 'lane-lead' }))?.text).toMatch(/lead\s*idle/);
+  await ui.unmount();
+});
+
+// --- teams (spec 16) ---------------------------------------------------------------------------------
+
+/** A team's state as `code-kit team --json` reports it, seen by `me`. */
+function teamOf(me: string) {
+  const at = '2026-10-06T09:00:00.000Z'; // a Tuesday
+  return {
+    at,
+    reachable: true,
+    github: true,
+    me,
+    techLead: 'alex',
+    owners: { web: ['sam'] },
+    staleDays: 3,
+    claims: [
+      { story: 'ST-4', by: 'sam', at, active: at, stale: true, lease: ['apps/web/booking/**'] },
+      {
+        story: 'ST-9',
+        by: 'kim',
+        at,
+        active: at,
+        stale: false,
+        lease: ['apps/web/booking/form.tsx'],
+      },
+    ],
+    intents: [
+      {
+        id: 12,
+        by: 'kim',
+        about: 'Split the booking form',
+        touches: ['apps/web/**'],
+        at,
+        url: 'u',
+        state: 'open',
+      },
+    ],
+    pulls: [
+      {
+        number: 14,
+        title: 'Booking list',
+        by: 'kim',
+        branch: 'web/st-9',
+        draft: false,
+        updated: at,
+        url: 'u',
+      },
+    ],
+  };
+}
+
+test('TEAM-7 and TEAM-9 the band names what of the team needs you: your stale claim, a collision, an intent touching yours, a review in your lane', async ($, on) => {
+  const w = project();
+  w.team = teamOf('sam');
+  (w.check as any).team = { techLead: 'alex' };
+  (w.check as any).lanes.web.paths = ['apps/web/**'];
+  await start($, on, w);
+  const band = await bandUi($);
+  expect(
+    await band.find({ type: 'Text', text: 'Still on ST-4? Nothing on it since Tuesday' }),
+  ).toBeDefined();
+  expect(
+    await band.find({ type: 'Text', text: "ST-4 and kim's ST-9 both change apps/web/booking/**" }),
+  ).toBeDefined();
+  expect(
+    await band.find({ type: 'Text', text: 'kim intends: Split the booking form (touches yours)' }),
+  ).toBeDefined();
+  expect(
+    await band.find({
+      type: 'Text',
+      text: "kim's #14 Booking list is in your web lane and waits for your review",
+    }),
+  ).toBeDefined();
+  await press($, 'band-keepClaim');
+  expect(w.acts).toContainEqual(['team', 'keep', 'ST-4']);
+  await band.unmount();
+});
+
+test('TEAM-5 the tech lead sees every open intent with Agree and Drop, which act as them', async ($, on) => {
+  const w = project();
+  w.team = teamOf('alex');
+  (w.check as any).team = { techLead: 'alex' };
+  await start($, on, w);
+  const band = await bandUi($);
+  expect(
+    await band.find({ type: 'Text', text: 'kim intends: Split the booking form' }),
+  ).toBeDefined();
+  expect(await band.find({ type: 'Text', text: /Still on/ })).toBeUndefined();
+  await press($, 'band-agreeIntent');
+  expect(w.acts).toContainEqual([
+    'intend',
+    'agree',
+    '12',
+    '--reason',
+    'agreed in the code-kit pane',
+  ]);
+  // TEAM-10: then the lead records it where agents read it, through a pull request.
+  expect(
+    w.prompts.some((p) => p.includes('intend record 12') && p.includes('lead/decision-12')),
+  ).toBe(true);
+  await band.unmount();
+});
+
+test("TEAM-8 when the shared repository can't be reached the band says so as a note", async ($, on) => {
+  const w = project();
+  w.team = { ...teamOf('sam'), reachable: false, claims: [], intents: [], pulls: [] };
+  (w.check as any).team = { techLead: 'alex' };
+  await start($, on, w);
+  const band = await bandUi($);
+  expect(
+    await band.find({
+      type: 'Text',
+      text: "team: the shared repository can't be reached, so claims aren't checked",
+    }),
+  ).toBeDefined();
+  expect(await band.find({ type: 'Text', text: 'note' })).toBeDefined();
+  await band.unmount();
+});
+
+test('TEAM-6 and TEAM-7 the Team tab: since you last looked, then each person with their lanes, claims, pulls and intents', async ($, on) => {
+  const w = project();
+  w.team = teamOf('sam');
+  w.teamSince = {
+    since: '2026-10-10T00:00:00Z',
+    github: true,
+    people: { kim: [{ at: 1, by: 'kim', kind: 'pushed', text: 'pushed 2 commits to web/st-9' }] },
+  };
+  (w.check as any).team = { techLead: 'alex' };
+  await start($, on, w);
+  await lanes($);
+  const ui = await pane($, PANE);
+  expect((await ui.find({ key: 'tab-team' }))?.props.hotkey).toBe('8');
+  await press($, 'tab-team', PANE);
+  expect(w.acts).toContainEqual(['team', 'since', '--json']);
+  expect((await ui.find({ key: 'team-since' }))?.text).toMatch(
+    /kim: pushed 2 commits to web\/st-9/,
+  );
+  expect((await ui.find({ key: 'team-person-alex' }))?.text).toMatch(/alex · tech lead/);
+  expect((await ui.find({ key: 'team-person-sam' }))?.text).toMatch(
+    /sam · you · owns web[\s\S]*ST-4 · stale since Tuesday/,
+  );
+  expect((await ui.find({ key: 'team-person-kim' }))?.text).toMatch(
+    /#14 Booking list \(web\/st-9\)[\s\S]*intends: Split the booking form/,
+  );
+  await press($, 'team-release-ST-4', PANE);
+  expect(w.acts).toContainEqual(['team', 'release', 'ST-4']);
+  await ui.unmount();
+});
+
+test('TEAM-7 without a team there is no Team tab', async ($, on) => {
+  const w = project();
+  await start($, on, w);
+  await lanes($);
+  const ui = await pane($, PANE);
+  expect(await ui.find({ key: 'tab-team' })).toBeUndefined();
+  await ui.unmount();
+});
+
+test('TEAM-12 with a board, the mod syncs it in the background, at most every 10 minutes', async ($, on) => {
+  const w = project();
+  w.team = teamOf('sam');
+  (w.check as any).team = { techLead: 'alex', board: { owner: 'o', number: 3 } };
+  const clock = await start($, on, w);
+  const syncs = () => w.acts.filter((a) => a[0] === 'team' && a[1] === 'board').length;
+  expect(syncs()).toBe(1);
+  await clock.advance(60000);
+  expect(syncs()).toBe(1);
+  await clock.advance(10 * 60000);
+  expect(syncs()).toBe(2);
+});
+
+test('TRACE-2 a project with more requirements than a list holds still draws its trail', async ($, on) => {
+  const w = project();
+  w.requirements = Array.from({ length: 134 }, (_, i) => ({
+    id: `AILA-${i + 1}`,
+    title: `Requirement ${i + 1}`,
+    file: 'docs/spec/03-aila.md',
+    removed: false,
+    state: 'todo',
+    stories: ['ST-4'],
+    tests: [],
+  }));
+  await start($, on, w);
+  await lanes($);
+  const ui = await pane($, PANE);
+  await press($, 'tab-map', PANE);
+  expect((await ui.find({ key: 'map-select' }))?.props.options.length).toBe(64);
+  await ui.unmount();
+});
+
+test('MAP-5 with no story at work, the code map shows the whole project, by folder', async ($, on) => {
+  const w = project();
+  w.stories = w.stories.map((s) => ({ ...s, state: 'ready' }));
+  w.map = {
+    story: { id: 'project', title: 'The whole project', lane: null, state: null },
+    layers: ['other'],
+    files: [
+      { path: 'apps/web/src', layer: 'other', lane: 'web', imports: ['packages/core'], files: 12 },
+      { path: 'packages/core', layer: 'other', lane: 'core', imports: [], files: 4 },
+    ],
+  };
+  await start($, on, w);
+  await lanes($);
+  const ui = await pane($, PANE);
+  await press($, 'tab-code', PANE);
+  expect((await ui.find({ key: 'map-story-project' }))?.props.variant).toBe('primary');
+  expect(await ui.find({ type: 'Text', text: /hasn't changed any code yet/ })).toBeUndefined();
+  expect(JSON.stringify(await ui.find({ key: 'map-stories' }))).toMatch(/Whole project/);
   await ui.unmount();
 });

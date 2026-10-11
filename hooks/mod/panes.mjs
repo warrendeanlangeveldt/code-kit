@@ -1,10 +1,13 @@
 // Panes v2 (docs/specs/11-panes.md): the Lanes pane's frame. A counts header, tabs, what needs the
 // person, the tab's body and the keys, as pure functions of what the mod already holds. The Lanes
 // tab's body is view.mjs's lanesPane; the Queue and Usage tabs reuse its sections.
+import { teamTab } from './teamview.mjs';
 import { trailRows as trailRowsDrawn, trailSvg } from './trail.mjs';
 import {
   MAP_LEGEND,
+  PROJECT,
   cardOf,
+  glowByFolder,
   mapRows as codeRows,
   mapStoryOf,
   mapSvg,
@@ -29,6 +32,7 @@ export const TABS = [
   { id: 'map', label: 'Trail', hotkey: '5' },
   { id: 'queue', label: 'Queue', hotkey: '6' },
   { id: 'usage', label: 'Usage', hotkey: '7' },
+  { id: 'team', label: 'Team', hotkey: '8' },
 ];
 
 /** The pane's own state, kept by the mod between draws. */
@@ -242,7 +246,8 @@ export function lanesFrame(view, els, on) {
     key: 'tabs',
     flexDirection: 'row',
     columnGap: 1,
-    children: TABS.map((t) =>
+    // The Team tab is there only for a team (TEAM-7).
+    children: TABS.filter((t) => t.id !== 'team' || view.team).map((t) =>
       Button({
         key: `tab-${t.id}`,
         label: t.label,
@@ -267,48 +272,52 @@ export function lanesFrame(view, els, on) {
 
   const selected = state.lanes.find((l) => l.name === ui.selected) ?? null;
   const body =
-    ui.tab === 'decisions'
-      ? decisionsTab(view.cards ?? [], ui, els, on)
-      : ui.tab === 'journal'
-        ? journalTab(view.journal ?? [], els, view.now)
-        : ui.tab === 'code'
-          ? codeTab(view, els, on)
-          : ui.tab === 'map'
-            ? mapTab(view.status, ui.cell, els, on, view.trail, {
-                surface: view.surface,
-                columns: view.columns,
-              })
-            : ui.tab === 'queue'
-              ? queueSection(loop, text, Box)
-              : ui.tab === 'usage'
-                ? usageSection(view.usage, plan, text, Box)
-                : [
-                    lanesPane(state, els, view.usage, plan, loop, {
-                      filter: ui.filter,
-                      search: ui.search,
-                      selected: ui.selected,
-                      live: view.live ?? {},
-                      art: view.art ?? null,
-                      detail: selected
-                        ? {
-                            agent: selected.agent ?? null,
-                            owns: view.paths?.[selected.name] ?? [],
-                            stories: laneStories(selected, state),
-                          }
-                        : null,
-                      combined: view.combined ?? null,
-                    }),
-                  ];
+    ui.tab === 'team'
+      ? teamTab(view.team ?? null, view.teamSince ?? null, els, on)
+      : ui.tab === 'decisions'
+        ? decisionsTab(view.cards ?? [], ui, els, on)
+        : ui.tab === 'journal'
+          ? journalTab(view.journal ?? [], els, view.now)
+          : ui.tab === 'code'
+            ? codeTab(view, els, on)
+            : ui.tab === 'map'
+              ? mapTab(view.status, ui.cell, els, on, view.trail, {
+                  surface: view.surface,
+                  columns: view.columns,
+                })
+              : ui.tab === 'queue'
+                ? queueSection(loop, text, Box)
+                : ui.tab === 'usage'
+                  ? usageSection(view.usage, plan, text, Box)
+                  : [
+                      lanesPane(state, els, view.usage, plan, loop, {
+                        filter: ui.filter,
+                        search: ui.search,
+                        selected: ui.selected,
+                        live: view.live ?? {},
+                        art: view.art ?? null,
+                        detail: selected
+                          ? {
+                              agent: selected.agent ?? null,
+                              owns: view.paths?.[selected.name] ?? [],
+                              stories: laneStories(selected, state),
+                            }
+                          : null,
+                        combined: view.combined ?? null,
+                      }),
+                    ];
   const empty =
-    ui.tab === 'decisions'
-      ? 'Nothing needs you. The lead is handling the build.'
-      : ui.tab === 'journal'
-        ? 'Nothing recorded yet: the journal starts with the brief.'
-        : ui.tab === 'queue'
-          ? 'The merge queue is empty.'
-          : ui.tab === 'usage'
-            ? 'No usage measured yet this session.'
-            : null;
+    ui.tab === 'team'
+      ? 'This project has no team in its config.'
+      : ui.tab === 'decisions'
+        ? 'Nothing needs you. The lead is handling the build.'
+        : ui.tab === 'journal'
+          ? 'Nothing recorded yet: the journal starts with the brief.'
+          : ui.tab === 'queue'
+            ? 'The merge queue is empty.'
+            : ui.tab === 'usage'
+              ? 'No usage measured yet this session.'
+              : null;
 
   // VIEW-6: j/k move between lanes; the selected lane's acts; f filters.
   const opening = selected ? storyToOpen(selected, state) : null;
@@ -841,6 +850,21 @@ export function moveCell(requirements, id, step, { rows = false } = {}) {
   return specs[(row + step + specs.length) % specs.length].requirements[0].id;
 }
 
+/** The engine's limit on a Select's options. */
+export const SELECT_MAX = 64;
+
+/**
+ * TRACE-2: the requirements the picker offers: those in the selected one's spec, at most SELECT_MAX,
+ * a window around the selected one when the spec has more.
+ */
+export function pickerOf(requirements, selected) {
+  const same = requirements.filter((r) => r.file === selected.file);
+  if (same.length <= SELECT_MAX) return same;
+  const at = same.findIndex((r) => r.id === selected.id);
+  const start = Math.max(0, Math.min(at - SELECT_MAX / 2, same.length - SELECT_MAX));
+  return same.slice(start, start + SELECT_MAX);
+}
+
 /**
  * The Map tab (TRACE-1 to TRACE-4): a row per spec, a cell per requirement, a legend, and the
  * selected requirement's stories and tests. `status` is `code-kit status --json`'s.
@@ -946,7 +970,8 @@ export function mapTab(
         key: 'map-select',
         label: 'Requirement',
         value: selected.id,
-        options: requirements.map((r) => ({
+        // A Select holds at most 64 options: the selected requirement's own spec, around it.
+        options: pickerOf(requirements, selected).map((r) => ({
           value: r.id,
           label: `${CELL[cellOf(r)].glyph} ${r.id} ${r.title}`,
         })),
@@ -1080,11 +1105,16 @@ const RUN_STYLE = {
  */
 export function codeTab(view, { Box, Text, Button, Svg }, on) {
   const text = (value, style = {}) => Text({ ...style, children: [value] });
-  const { state, ui = DEFAULT_UI, codeMap: map = null, glow = {}, art = null } = view;
+  const { state, ui = DEFAULT_UI, codeMap: map = null, art = null } = view;
+  let glow = view.glow ?? {};
   const storyId = mapStoryOf(state, ui.selected, ui.mapStory);
-  const choices = (state?.stories ?? []).filter(
-    (s) => s.id === storyId || ['in progress', 'review', 'sent back'].includes(s.state),
-  );
+  const project = { id: PROJECT, title: 'Whole project' };
+  const choices = [
+    project,
+    ...(state?.stories ?? []).filter(
+      (s) => s.id === storyId || ['in progress', 'review', 'sent back'].includes(s.state),
+    ),
+  ];
   const picker = Box({
     key: 'map-stories',
     flexDirection: 'row',
@@ -1093,7 +1123,7 @@ export function codeTab(view, { Box, Text, Button, Svg }, on) {
     children: choices.map((s) =>
       Button({
         key: `map-story-${s.id}`,
-        label: `${s.id} ${s.title}`,
+        label: s.id === PROJECT ? s.title : `${s.id} ${s.title}`,
         ...(s.id === storyId ? { variant: 'primary' } : { plain: true }),
         onPress: () => on.onMapStory(s.id),
       }),
@@ -1101,9 +1131,28 @@ export function codeTab(view, { Box, Text, Button, Svg }, on) {
   });
   if (!storyId) return [text('No story to map yet: the plan has none open.', { dimColor: true })];
   if (!map || map.story?.id !== storyId)
-    return [picker, text(`Reading ${storyId}'s code…`, { dimColor: true })];
+    return [
+      picker,
+      text(storyId === PROJECT ? "Reading the project's code…" : `Reading ${storyId}'s code…`, {
+        dimColor: true,
+      }),
+    ];
   if (!map.files.length)
-    return [picker, text(`${storyId} hasn't changed any code yet.`, { dimColor: true })];
+    return [
+      picker,
+      text(
+        storyId === PROJECT
+          ? 'The project has no code yet.'
+          : `${storyId} hasn't changed any code yet. Whole project shows the code that's there.`,
+        { dimColor: true },
+      ),
+    ];
+  // MAP-5: on the project map, a file at work glows on its folder.
+  if (storyId === PROJECT)
+    glow = glowByFolder(
+      glow,
+      map.files.map((f) => f.path),
+    );
   const selected = map.files.some((f) => f.path === ui.mapFile) ? ui.mapFile : map.files[0].path;
   // The lanes' tints are RGB numbers (the characters' colours); text and SVG take them as hex.
   const tints = Object.fromEntries(

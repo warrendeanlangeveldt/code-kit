@@ -4,6 +4,7 @@
 import { spawn, spawnSync, execFileSync } from 'node:child_process';
 import {
   appendFileSync,
+  chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -1102,6 +1103,988 @@ try {
       truth(
         JSON.parse(fKit('check', '--json').stdout).delegatesMerge === true &&
           JSON.parse(fKit('check', '--json').stdout).firstMerge === false,
+      ),
+      0,
+    );
+  }
+
+  // --- TEAM-1: the team in the config, and who the developer at this machine is --------------------
+  {
+    const t = newRepo(false);
+    cleanups.push(t.dir);
+    mkdirSync(join(t.dir, '.claude'), { recursive: true });
+    const base = JSON.parse(fixture);
+    const teamConfig = (team, owners) =>
+      JSON.stringify({
+        ...base,
+        team,
+        lanes: { ...base.lanes, web: { ...base.lanes.web, ...(owners ? { owners } : {}) } },
+      });
+    // A stand-in for the GitHub CLI: it answers `gh api user` with the handle in GH_LOGIN.
+    const bin = join(t.dir, 'fake-bin');
+    mkdirSync(bin);
+    writeFileSync(join(bin, 'gh'), '#!/bin/sh\n[ -n "$GH_LOGIN" ] && echo "$GH_LOGIN" || exit 1\n');
+    chmodSync(join(bin, 'gh'), 0o755);
+    const tKit = (login, ...args) =>
+      spawnSync('node', [kitCli, ...args], {
+        cwd: t.dir,
+        encoding: 'utf8',
+        env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, GH_LOGIN: login ?? '' },
+      });
+    writeFileSync(join(t.dir, '.claude/code-kit.json'), teamConfig({ techLead: 'alex' }, ['sam']));
+    const report = JSON.parse(tKit('sam', 'check', '--json').stdout || '{}');
+    expect(
+      'TEAM-1 check reports the team with its defaults, and who you are',
+      truth(
+        report.team?.techLead === 'alex' &&
+          report.team.staleDays === 3 &&
+          report.team.provider === 'github' &&
+          report.team.owners.web?.[0] === 'sam' &&
+          report.me === 'sam',
+        JSON.stringify({ team: report.team, me: report.me }),
+      ),
+      0,
+    );
+    expect(
+      'who you are is cached, so a hook needs no call to GitHub',
+      truth(JSON.parse(tKit(null, 'check', '--json').stdout || '{}').me === 'sam'),
+      0,
+    );
+    const text = tKit('sam', 'check');
+    expect(
+      'check says it in words',
+      truth(
+        text.stdout.includes('Team: alex is the tech lead') &&
+          text.stdout.includes('Lane web is owned by sam') &&
+          text.stdout.includes('You are sam.'),
+        text.stdout,
+      ),
+      0,
+    );
+    writeFileSync(join(t.dir, '.claude/code-kit.json'), teamConfig(undefined, ['sam']));
+    expect(
+      'owners without a team are refused',
+      tKit('sam', 'check'),
+      1,
+      'lanes.web.owners needs "team"',
+    );
+    writeFileSync(
+      join(t.dir, '.claude/code-kit.json'),
+      teamConfig({ techLead: 'alex', staleDays: 0, provider: { command: '' } }),
+    );
+    const bad = tKit('sam', 'check');
+    expect(
+      'a bad stale threshold and provider are refused, each saying what it must be',
+      truth(
+        bad.status === 1 &&
+          bad.stderr.includes('"team.staleDays" must be a whole number') &&
+          bad.stderr.includes('"team.provider" must be "github"'),
+        bad.stderr,
+      ),
+      0,
+    );
+    writeFileSync(join(t.dir, '.claude/code-kit.json'), fixture);
+    expect(
+      'a project without a team reports none',
+      truth(JSON.parse(tKit('sam', 'check', '--json').stdout || '{}').team === null),
+      0,
+    );
+  }
+
+  // --- TEAM-2, TEAM-3, TEAM-8: two developers share claims through the repository --------------------
+  {
+    const root = mkdtempSync(join(tmpdir(), 'ck-team-'));
+    cleanups.push(root);
+    const origin = join(root, 'origin.git');
+    execFileSync('git', ['init', '-q', '--bare', '-b', 'main', origin]);
+    const store = join(root, 'github.json');
+    writeFileSync(
+      store,
+      JSON.stringify({
+        categories: [
+          { id: 'C1', name: 'Intents' },
+          { id: 'C2', name: 'General' },
+        ],
+        discussions: [
+          {
+            id: 'D12',
+            number: 12,
+            title: 'Move report storage to the data lane',
+            body: 'Touches: packages/schemas/**, apps/api/reports/**\n\nWhy.',
+            author: { login: 'alex' },
+            category: { name: 'Intents' },
+            closed: false,
+            closedAt: null,
+            stateReason: null,
+            createdAt: '2026-10-10T00:00:00Z',
+            url: 'https://github.com/o/r/discussions/12',
+            comments: [],
+          },
+          {
+            id: 'D13',
+            number: 13,
+            title: 'Lunch on Friday?',
+            body: 'Not an intent.',
+            author: { login: 'kim' },
+            category: { name: 'General' },
+            closed: false,
+            closedAt: null,
+            stateReason: null,
+            createdAt: '2026-10-10T00:00:00Z',
+            url: 'https://github.com/o/r/discussions/13',
+            comments: [],
+          },
+        ],
+        pulls: [
+          {
+            number: 14,
+            title: 'Booking list',
+            author: { login: 'sam' },
+            headRefName: 'web/st-4',
+            isDraft: true,
+            updatedAt: '2026-10-10T00:00:00Z',
+            url: 'https://github.com/o/r/pull/14',
+          },
+        ],
+      }),
+    );
+    // A stand-in for the GitHub CLI, answering from the store as the person in GH_LOGIN.
+    const bin = join(root, 'bin');
+    mkdirSync(bin);
+    writeFileSync(
+      join(bin, 'gh'),
+      `#!/usr/bin/env node
+const { readFileSync, writeFileSync } = require('node:fs');
+const a = process.argv.slice(2), file = process.env.GH_STORE, login = process.env.GH_LOGIN;
+const db = JSON.parse(readFileSync(file, 'utf8'));
+const opt = (n) => a[a.indexOf(n) + 1];
+if (process.env.GH_DOWN) process.exit(1);
+if (a[0] === 'api' && a[1] === 'user') { if (!login) process.exit(1); console.log(login); }
+else if (a[0] === 'api' && a[1].startsWith('repos/{owner}/{repo}/events')) console.log(JSON.stringify(db.events ?? []));
+else if (a[0] === 'api' && a[1] === 'graphql') {
+  const vars = {};
+  for (let k = 2; k < a.length; k++) if (a[k] === '-f' || a[k] === '-F') { const [n, ...v] = a[k + 1].split('='); vars[n] = v.join('='); k++; }
+  const q = vars.query, save = () => writeFileSync(file, JSON.stringify(db)), out = (data) => console.log(JSON.stringify({ data }));
+  const byId = (id) => db.discussions.find((d) => d.id === id);
+  if (q.includes('createDiscussion')) { const number = 200 + db.discussions.length; const d = { id: 'D' + number, number, title: vars.title, body: vars.body, url: 'https://github.com/o/r/discussions/' + number, createdAt: new Date().toISOString(), closed: false, closedAt: null, stateReason: null, author: { login }, category: { name: db.categories.find((c) => c.id === vars.category).name }, comments: [] }; db.discussions.push(d); save(); out({ createDiscussion: { discussion: { number, url: d.url } } }); }
+  else if (q.includes('addDiscussionComment')) { byId(vars.id).comments.push({ author: { login }, body: vars.body }); save(); out({ addDiscussionComment: { comment: { id: 'X' } } }); }
+  else if (q.includes('closeDiscussion')) { const d = byId(vars.id); d.closed = true; d.closedAt = new Date().toISOString(); d.stateReason = vars.reason; save(); out({ closeDiscussion: { discussion: { number: d.number } } }); }
+  else if (q.includes('discussion(number')) out({ repository: { discussion: db.discussions.find((d) => d.number === Number(vars.number)) ?? null } });
+  else if (q.includes('discussions(')) out({ repository: { id: 'R1', hasDiscussionsEnabled: db.discussionsEnabled !== false, discussionCategories: { nodes: db.categories }, discussions: { nodes: db.discussions } } });
+  else process.exit(3);
+}
+else if (a[0] === 'project') {
+  const p = (db.project ??= { id: 'PVT_1', fields: [{ id: 'F0', name: 'Title' }], items: [], edits: 0 });
+  const save = () => writeFileSync(file, JSON.stringify(db));
+  if (a[1] === 'view') console.log(JSON.stringify({ id: p.id, number: Number(a[2]) }));
+  else if (a[1] === 'field-list') console.log(JSON.stringify({ fields: p.fields }));
+  else if (a[1] === 'field-create') { const f = { id: 'F' + p.fields.length, name: opt('--name') }; p.fields.push(f); save(); console.log(JSON.stringify(f)); }
+  else if (a[1] === 'item-create') { const i = { id: 'I' + p.items.length, title: opt('--title'), body: opt('--body'), values: {} }; p.items.push(i); save(); console.log(JSON.stringify({ id: i.id, title: i.title })); }
+  else if (a[1] === 'item-list') console.log(JSON.stringify({ items: p.items.map((i) => ({ id: i.id, title: i.title })) }));
+  else if (a[1] === 'item-edit') { const i = p.items.find((x) => x.id === opt('--id')); const name = p.fields.find((f) => f.id === opt('--field-id')).name; if (a.includes('--clear')) delete i.values[name]; else i.values[name] = opt('--text'); p.edits += 1; save(); }
+  else process.exit(2);
+}
+else if (a[0] === 'pr' && a[1] === 'list') console.log(JSON.stringify(db.pulls));
+else process.exit(2);
+`,
+    );
+    chmodSync(join(bin, 'gh'), 0o755);
+    const config = JSON.stringify({ ...JSON.parse(fixture), team: { techLead: 'alex' } });
+    const clone = (name) => {
+      const dir = join(root, name);
+      execFileSync('git', ['clone', '-q', origin, dir], { stdio: 'ignore' });
+      mkdirSync(join(dir, '.claude'), { recursive: true });
+      writeFileSync(join(dir, '.claude/code-kit.json'), config);
+      return dir;
+    };
+    const a = clone('sam');
+    const b = clone('dev2');
+    const as =
+      (dir, login, extra = {}) =>
+      (...args) =>
+        spawnSync('node', [kitCli, ...args], {
+          cwd: dir,
+          encoding: 'utf8',
+          env: {
+            ...process.env,
+            PATH: `${bin}:${process.env.PATH}`,
+            GH_LOGIN: login,
+            GH_STORE: store,
+            ...extra,
+          },
+        });
+    const sam = as(a, 'sam');
+    const dev2 = as(b, 'dev2');
+    const claimed = sam('team', 'claim', 'ST-9', '--lease', 'packages/core/**');
+    expect(
+      'TEAM-3 a developer claims a story through the shared repository',
+      truth(claimed.status === 0 && claimed.stdout.includes('Claimed ST-9 as sam'), claimed.stderr),
+      0,
+    );
+    const seen = JSON.parse(dev2('team', '--json', '--fresh').stdout || '{}');
+    expect(
+      "another developer's session sees the claim with its lease",
+      truth(
+        seen.reachable === true &&
+          seen.me === 'dev2' &&
+          seen.claims?.some(
+            (c) => c.story === 'ST-9' && c.by === 'sam' && c.lease[0] === 'packages/core/**',
+          ),
+        JSON.stringify(seen.claims),
+      ),
+      0,
+    );
+    expect(
+      'and its own claim of the story fails, naming who holds it',
+      dev2('team', 'claim', 'ST-9'),
+      1,
+      'ST-9 is claimed by sam',
+    );
+    expect(
+      'the intents and open pull requests come from GitHub, with what each touches',
+      truth(
+        seen.intents?.[0]?.id === 12 &&
+          seen.intents[0].touches.join() === 'packages/schemas/**,apps/api/reports/**' &&
+          seen.pulls?.[0]?.branch === 'web/st-4' &&
+          seen.pulls[0].draft === true,
+        JSON.stringify({ intents: seen.intents, pulls: seen.pulls }),
+      ),
+      0,
+    );
+    expect(
+      "a developer can't release someone else's claim",
+      dev2('team', 'release', 'ST-9'),
+      1,
+      "ST-9 is sam's claim: only they or the tech lead (alex) can release it.",
+    );
+    const regrown = sam('team', 'claim', 'ST-9', '--lease', 'packages/core/**,apps/web/**');
+    expect(
+      'the holder can claim it again, with a grown lease',
+      truth(regrown.status === 0, regrown.stderr),
+      0,
+    );
+    // The same clone, now as the tech lead.
+    rmSync(join(b, '.claude/state/whoami.json'), { force: true });
+    const alex = as(b, 'alex');
+    expect(
+      'the tech lead can release any claim',
+      truth(alex('team', 'release', 'ST-9').stdout.includes("Released ST-9 (sam's claim)")),
+      0,
+    );
+    expect(
+      'and after it, the story is free for anyone',
+      truth(alex('team', 'claim', 'ST-9').status === 0),
+      0,
+    );
+    const words = sam('team', '--fresh');
+    expect(
+      'team says it in words',
+      truth(
+        words.stdout.includes('Tech lead: alex. You are sam.') &&
+          words.stdout.includes('ST-9 by alex') &&
+          words.stdout.includes('#12 Move report storage to the data lane (alex)') &&
+          words.stdout.includes('#14 Booking list (sam, web/st-4, draft)'),
+        words.stdout,
+      ),
+      0,
+    );
+    // TEAM-1, TEAM-4: the hooks, as each developer's session runs them.
+    const c = clone('dev2b');
+    const owned = JSON.stringify({
+      ...JSON.parse(fixture),
+      team: { techLead: 'alex' },
+      lanes: {
+        ...JSON.parse(fixture).lanes,
+        web: { ...JSON.parse(fixture).lanes.web, owners: ['sam'] },
+      },
+    });
+    for (const dir of [a, b, c]) writeFileSync(join(dir, '.claude/code-kit.json'), owned);
+    const hookAs = (dir, login) => (name, toolInput, agent) =>
+      spawnSync('node', [join(hooks, name)], {
+        input: JSON.stringify({
+          cwd: dir,
+          tool_name: name === 'guard-bash.mjs' ? 'Bash' : 'Write',
+          tool_input: toolInput,
+          ...(agent ? { agent_type: agent } : {}),
+        }),
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          CLAUDE_PROJECT_DIR: dir,
+          PATH: `${bin}:${process.env.PATH}`,
+          GH_LOGIN: login,
+          GH_STORE: store,
+        },
+      });
+    const dev2Hook = hookAs(c, 'dev2');
+    const samHook = hookAs(a, 'sam');
+    const alexHook = hookAs(b, 'alex');
+    const write = (dir, rel) => ({ file_path: join(dir, rel), content: 'x\n' });
+    expect(
+      "TEAM-1 another developer's lead may not edit the tech lead's paths, and is told to raise an intent",
+      dev2Hook('guard-paths.mjs', write(c, 'docs/notes.md')),
+      2,
+      "docs/notes.md is the tech lead's (alex)",
+    );
+    expect('the tech lead may', alexHook('guard-paths.mjs', write(b, 'docs/notes.md')), 0);
+    expect(
+      "making a story's branch in a lane someone else owns is refused, naming them",
+      dev2Hook('guard-bash.mjs', { command: 'git switch -c web/st-4' }),
+      2,
+      "the web lane is sam's",
+    );
+    expect(
+      "making a story's branch someone else claimed is refused, naming them",
+      dev2Hook('guard-bash.mjs', { command: 'git switch -c core/st-9' }),
+      2,
+      'ST-9 is already claimed by alex',
+    );
+    expect(
+      "the lane's owner makes the branch, which claims the story",
+      truth(
+        samHook('guard-bash.mjs', { command: 'git switch -c web/st-4' }).status === 0 &&
+          JSON.parse(sam('team', '--json', '--fresh').stdout || '{}').claims?.some(
+            (x) => x.story === 'ST-4' && x.by === 'sam',
+          ),
+      ),
+      0,
+    );
+    execFileSync('git', ['-C', a, 'switch', '-q', '-c', 'web/st-4']);
+    mkdirSync(join(a, 'apps/office'), { recursive: true });
+    writeFileSync(join(a, 'apps/office/report.ts'), 'export const r = 1;\n');
+    execFileSync('git', ['-C', a, 'add', 'apps/office/report.ts']);
+    const committed = samHook('guard-bash.mjs', { command: 'git commit -m report' });
+    expect('the commit itself is allowed', committed, 0);
+    const grown = JSON.parse(sam('team', '--json', '--fresh').stdout || '{}').claims?.find(
+      (x) => x.story === 'ST-4',
+    );
+    expect(
+      "TEAM-4 a commit on the story's branch grows its lease with what the branch changes",
+      truth(grown?.lease.includes('apps/office/report.ts'), JSON.stringify(grown)),
+      0,
+    );
+    expect(
+      "another person's agent editing a leased file is refused, naming who leases it and for which story",
+      truth(
+        (() => {
+          sam('team', 'claim', 'ST-4', '--lease', 'docs/reports/**');
+          rmSync(join(b, '.claude/state/team.json'), { force: true });
+          const r = alexHook('guard-paths.mjs', write(b, 'docs/reports/format.md'));
+          return (
+            r.status === 2 && r.stderr.includes('docs/reports/format.md is leased by sam for ST-4')
+          );
+        })(),
+      ),
+      0,
+    );
+    expect(
+      "an edit by another lane's owner's agent in their own lane is that owner's rule, before any lease",
+      alexHook('guard-paths.mjs', write(b, 'apps/office/report.ts'), 'web-engineer'),
+      2,
+      "The web lane is sam's",
+    );
+    expect(
+      'a merged story releases its claim, whoever merged it',
+      truth(
+        spawnSync(
+          'node',
+          [
+            '--input-type=module',
+            '-e',
+            `import { teamProvider } from ${JSON.stringify(join(hooks, 'lib/team.mjs'))};
+             const r = teamProvider(process.cwd(), { techLead: 'alex', provider: 'github', owners: {} }).release('ST-4', { merged: true });
+             process.exit(r.released ? 0 : 1);`,
+          ],
+          {
+            cwd: c,
+            env: {
+              ...process.env,
+              PATH: `${bin}:${process.env.PATH}`,
+              GH_LOGIN: 'dev2',
+              GH_STORE: store,
+            },
+          },
+        ).status === 0,
+      ),
+      0,
+    );
+    for (const dir of [a, b, c]) writeFileSync(join(dir, '.claude/code-kit.json'), config);
+
+    // TEAM-5: intents before code.
+    const raised = sam(
+      'intend',
+      'Split',
+      'the',
+      'report',
+      'format',
+      '--touches',
+      'docs/reports/**,apps/office/**',
+    );
+    expect(
+      'TEAM-5 a developer raises an intent, as a discussion in Intents the team sees, with what it touches',
+      truth(
+        raised.status === 0 &&
+          raised.stdout.includes('Raised intent #') &&
+          JSON.parse(dev2('team', '--json', '--fresh').stdout || '{}').intents?.some(
+            (i) =>
+              i.about === 'Split the report format' &&
+              i.by === 'sam' &&
+              i.touches.join() === 'docs/reports/**,apps/office/**',
+          ),
+        raised.stdout + raised.stderr,
+      ),
+      0,
+    );
+    const raisedId = raised.stdout.match(/#(\d+)/)?.[1];
+    expect(
+      'a discussion in another category is not an intent',
+      truth(
+        !JSON.parse(dev2('team', '--json', '--fresh').stdout || '{}').intents?.some(
+          (i) => i.id === 13,
+        ),
+      ),
+      0,
+    );
+    const withoutCategory = JSON.parse(readFileSync(store, 'utf8'));
+    writeFileSync(
+      store,
+      JSON.stringify({ ...withoutCategory, categories: [{ id: 'C2', name: 'General' }] }),
+    );
+    expect(
+      "without an Intents category nothing is raised, and it says how to add one, since GitHub won't let a tool",
+      sam('intend', 'Anything'),
+      1,
+      "Add it once in the repository's Settings › Discussions",
+    );
+    writeFileSync(store, JSON.stringify(withoutCategory));
+    const twice = sam('intend', 'Split the report format again');
+    const twiceId = twice.stdout.match(/#(\d+)/)?.[1];
+    expect(
+      'the tech lead marks one a duplicate: closed as such',
+      truth(
+        alex('intend', 'duplicate', twiceId).stdout.includes(
+          `Marked intent #${twiceId} a duplicate`,
+        ) &&
+          JSON.parse(readFileSync(store, 'utf8')).discussions.find(
+            (d) => String(d.number) === twiceId,
+          )?.stateReason === 'DUPLICATE',
+      ),
+      0,
+    );
+    expect(
+      'only the tech lead agrees or drops one',
+      sam('intend', 'agree', raisedId),
+      1,
+      'Only the tech lead (alex)',
+    );
+    expect(
+      "an agent can't agree one, even in the tech lead's session",
+      alexHook('guard-bash.mjs', { command: `node "${kitCli}" intend agree ${raisedId}` }),
+      2,
+      "the tech lead's own decision",
+    );
+    const agreed = alex('intend', 'agree', raisedId, '--reason', 'reports are per site now');
+    const closed = JSON.parse(readFileSync(store, 'utf8')).discussions.find(
+      (d) => String(d.number) === raisedId,
+    );
+    expect(
+      'the tech lead agrees it: the issue closes with their words, and it leaves the open intents',
+      truth(
+        agreed.status === 0 &&
+          closed?.closed === true &&
+          closed.stateReason === 'RESOLVED' &&
+          closed.comments.some((c) =>
+            c.body.includes('Agreed by @alex, the tech lead: reports are per site now'),
+          ) &&
+          !JSON.parse(dev2('team', '--json', '--fresh').stdout || '{}').intents?.some(
+            (i) => String(i.id) === raisedId,
+          ),
+        agreed.stderr + JSON.stringify(closed),
+      ),
+      0,
+    );
+
+    // TEAM-11: CODEOWNERS from the config.
+    writeFileSync(join(a, '.claude/code-kit.json'), owned);
+    const printed = sam('team', 'codeowners');
+    expect(
+      "TEAM-11 CODEOWNERS names the tech lead for their paths, then each owned lane's owners",
+      truth(
+        printed.stdout.includes('/docs/** @alex') &&
+          printed.stdout.includes('/packages/schemas/** @alex') &&
+          printed.stdout.includes('/apps/office/** @sam') &&
+          printed.stdout.indexOf('@alex') < printed.stdout.indexOf('@sam') &&
+          !printed.stdout.includes('.claude/**'),
+        printed.stdout,
+      ),
+      0,
+    );
+    expect(
+      '--write puts it in .github/CODEOWNERS',
+      truth(
+        sam('team', 'codeowners', '--write').status === 0 &&
+          readFileSync(join(a, '.github/CODEOWNERS'), 'utf8').includes('/apps/office/** @sam'),
+      ),
+      0,
+    );
+    writeFileSync(join(a, '.claude/code-kit.json'), config);
+
+    // TEAM-10: an agreed intent becomes a decision record.
+    expect(
+      "an intent that isn't agreed isn't recorded",
+      sam('intend', 'record', '12'),
+      1,
+      "Intent #12 isn't agreed yet",
+    );
+    mkdirSync(join(b, 'docs/decisions'), { recursive: true });
+    writeFileSync(join(b, 'docs/decisions/0002-use-postgres.md'), '# Use Postgres\n');
+    const recorded = alex('intend', 'record', raisedId);
+    const recordPath = join(b, 'docs/decisions/0003-split-the-report-format.md');
+    const record = existsSync(recordPath) ? readFileSync(recordPath, 'utf8') : '';
+    expect(
+      'TEAM-10 the agreed intent is written as the next decision record, from the discussion',
+      truth(
+        recorded.stdout.includes('Wrote docs/decisions/0003-split-the-report-format.md') &&
+          record.startsWith('# Split the report format\n') &&
+          record.includes('**Raised by:** @sam · **Agreed by:** @alex') &&
+          record.includes(`**Discussion:** https://github.com/o/r/discussions/${raisedId}`) &&
+          record.includes('- `docs/reports/**`') &&
+          record.includes('## Agreed\n\nreports are per site now') &&
+          !record.includes('Touches:') &&
+          !record.includes('Raised with code-kit'),
+        recorded.stdout + recorded.stderr + record,
+      ),
+      0,
+    );
+    expect(
+      'recorded again, it says where it already is',
+      truth(
+        alex('intend', 'record', raisedId).stdout.includes(
+          'is already recorded: docs/decisions/0003-split-the-report-format.md',
+        ),
+      ),
+      0,
+    );
+
+    // TEAM-6: since you last looked.
+    const hourAgo = (m) => new Date(Date.now() - m * 60000).toISOString();
+    const db = JSON.parse(readFileSync(store, 'utf8'));
+    db.events = [
+      {
+        type: 'PushEvent',
+        created_at: hourAgo(50),
+        actor: { login: 'sam' },
+        payload: { ref: 'refs/heads/web/st-4', size: 2 },
+      },
+      {
+        type: 'PullRequestEvent',
+        created_at: hourAgo(40),
+        actor: { login: 'sam' },
+        payload: {
+          action: 'opened',
+          pull_request: { number: 14, title: 'Booking list', draft: true },
+        },
+      },
+      {
+        type: 'PullRequestReviewEvent',
+        created_at: hourAgo(30),
+        actor: { login: 'alex' },
+        payload: {
+          review: { state: 'changes_requested' },
+          pull_request: { number: 14, title: 'Booking list' },
+        },
+      },
+      { type: 'WatchEvent', created_at: hourAgo(20), actor: { login: 'stranger' }, payload: {} },
+      {
+        type: 'PushEvent',
+        created_at: hourAgo(60 * 30),
+        actor: { login: 'old' },
+        payload: { ref: 'refs/heads/x', size: 1 },
+      },
+    ];
+    writeFileSync(store, JSON.stringify(db));
+    const dev2c = as(c, 'dev2');
+    rmSync(join(c, '.claude/state/team-seen.json'), { force: true });
+    const first = dev2c('team', 'since');
+    expect(
+      'TEAM-6 since you last looked: by person, in plain sentences, from the last day the first time',
+      truth(
+        first.stdout.includes('Since yesterday:') &&
+          first.stdout.includes(
+            'sam: pushed 2 commits to web/st-4; opened draft pull request #14 Booking list; raised intent #',
+          ) &&
+          first.stdout.includes(
+            'alex: asked for changes on #14 Booking list; marked as a duplicate intent #',
+          ) &&
+          first.stdout.includes('; agreed intent #') &&
+          !first.stdout.includes('Lunch') &&
+          !first.stdout.includes('stranger') &&
+          !first.stdout.includes('old:'),
+        first.stdout,
+      ),
+      0,
+    );
+    expect(
+      'reading it marks it read',
+      truth(dev2c('team', 'since').stdout.includes('Nothing new.')),
+      0,
+    );
+    sam('team', 'claim', 'ST-21');
+    const later = JSON.parse(dev2c('team', 'since', '--json', '--peek').stdout || '{}');
+    expect(
+      'a claim taken since shows under its holder',
+      truth(
+        later.people?.sam?.some((e) => e.kind === 'claimed' && e.text === 'claimed ST-21'),
+        JSON.stringify(later),
+      ),
+      0,
+    );
+    expect(
+      '--peek leaves it unread',
+      truth(dev2c('team', 'since').stdout.includes('claimed ST-21')),
+      0,
+    );
+
+    // TEAM-9: stale claims. An old claim, as sam's session would have pushed it ten days ago.
+    const oldAt = new Date(Date.now() - 10 * 86400_000).toISOString();
+    const tree = execFileSync('git', ['-C', a, 'mktree'], { input: '', encoding: 'utf8' }).trim();
+    const oldSha = execFileSync(
+      'git',
+      [
+        '-C',
+        a,
+        '-c',
+        'user.name=sam',
+        '-c',
+        'user.email=sam@users.noreply.github.com',
+        'commit-tree',
+        tree,
+        '-m',
+        JSON.stringify({ story: 'ST-30', by: 'sam', at: oldAt, lease: ['docs/old/**'] }),
+      ],
+      { encoding: 'utf8' },
+    ).trim();
+    execFileSync('git', ['-C', a, 'push', '-q', 'origin', `${oldSha}:refs/code-kit/claims/ST-30`]);
+    const staleNow = JSON.parse(dev2c('team', '--json', '--fresh').stdout || '{}').claims?.find(
+      (x) => x.story === 'ST-30',
+    );
+    expect(
+      'TEAM-9 a claim with nothing on it for more than the stale days is stale',
+      truth(staleNow?.stale === true && staleNow.active === oldAt, JSON.stringify(staleNow)),
+      0,
+    );
+    expect(
+      'team marks it stale',
+      truth(
+        dev2c('team').stdout.includes(
+          'ST-30 by sam, 10 days ago · stale, nothing since 10 days ago',
+        ),
+      ),
+      0,
+    );
+    rmSync(join(b, '.claude/state/team.json'), { force: true });
+    expect(
+      "someone held up by it is told it's stale and that the tech lead may reassign it",
+      alexHook('guard-paths.mjs', write(b, 'docs/old/notes.md')),
+      2,
+      "It's stale: nothing on it since",
+    );
+    expect(
+      'only the tech lead reassigns a claim',
+      dev2c('team', 'reassign', 'ST-30', 'dev2'),
+      1,
+      'Only the tech lead (alex) reassigns a claim.',
+    );
+    expect(
+      "and not through an agent, even in the tech lead's session",
+      alexHook('guard-bash.mjs', { command: `node "${kitCli}" team reassign ST-30 dev2` }),
+      2,
+      "the tech lead's own decision",
+    );
+    const kept = sam('team', 'keep', 'ST-30');
+    expect(
+      'the holder keeps it, and the clock starts again',
+      truth(
+        kept.stdout.includes('Kept ST-30') &&
+          JSON.parse(dev2c('team', '--json', '--fresh').stdout || '{}').claims?.find(
+            (x) => x.story === 'ST-30',
+          )?.stale === false,
+        kept.stdout + kept.stderr,
+      ),
+      0,
+    );
+    const handed = alex('team', 'reassign', 'ST-30', 'dev2');
+    const nowHeld = JSON.parse(dev2c('team', '--json', '--fresh').stdout || '{}').claims?.find(
+      (x) => x.story === 'ST-30',
+    );
+    expect(
+      'the tech lead reassigns it: the new holder has it with its lease',
+      truth(
+        handed.stdout.includes('Reassigned ST-30 from sam to dev2') &&
+          nowHeld?.by === 'dev2' &&
+          nowHeld.lease.join() === 'docs/old/**',
+        handed.stdout + handed.stderr + JSON.stringify(nowHeld),
+      ),
+      0,
+    );
+
+    // TEAM-12: the plan on a Project board.
+    execFileSync('git', [
+      '-C',
+      a,
+      '-c',
+      'user.name=sam',
+      '-c',
+      'user.email=s@x',
+      'commit',
+      '-q',
+      '--allow-empty',
+      '-m',
+      'start',
+    ]);
+    execFileSync('git', ['-C', a, 'branch', '-f', 'main']);
+    mkdirSync(join(a, 'docs/spec'), { recursive: true });
+    writeFileSync(
+      join(a, 'docs/spec/01-pricing.md'),
+      '# 01. Pricing\n\n### PRICE-1 Price\n\nx\n\n### PRICE-2 Old\n\nx\n',
+    );
+    writeFileSync(
+      join(a, 'docs/spec/plan.md'),
+      '# Plan\n\n## M1\n\n### ST-9 Pricing\n\n**Lane:** data\n**Requirements:** PRICE-1\n**Status:** todo\n\n### ST-30 Old reports\n\n**Lane:** data\n**Requirements:** PRICE-2\n**Status:** todo\n',
+    );
+    writeFileSync(
+      join(a, '.claude/code-kit.json'),
+      JSON.stringify({
+        ...JSON.parse(fixture),
+        team: { techLead: 'alex', board: { owner: 'o', number: 3 } },
+      }),
+    );
+    rmSync(join(a, '.claude/state/team.json'), { force: true });
+    const synced = sam('team', 'board');
+    const board = JSON.parse(readFileSync(store, 'utf8')).project;
+    const item = (title) => board?.items.find((i) => i.title === title);
+    expect(
+      'TEAM-12 each story is on the board with its lane, who has claimed it and its state',
+      truth(
+        synced.stdout.includes('Board o/3 synced: 2 items added') &&
+          item('ST-9 Pricing')?.values.Lane === 'data' &&
+          item('ST-9 Pricing').values['Claimed by'] === 'alex' &&
+          item('ST-30 Old reports')?.values['Claimed by'] === 'dev2' &&
+          item('ST-30 Old reports').body === 'Requirements: PRICE-2' &&
+          ['Lane', 'Claimed by', 'Stale', 'State'].every((n) =>
+            board.fields.some((f) => f.name === n),
+          ),
+        synced.stdout + synced.stderr + JSON.stringify(board),
+      ),
+      0,
+    );
+    const edits = board.edits;
+    const again = sam('team', 'board');
+    expect(
+      'synced again with nothing changed, it adds and edits nothing',
+      truth(
+        again.stdout.includes('0 items added, 0 fields changed') &&
+          JSON.parse(readFileSync(store, 'utf8')).project.edits === edits,
+        again.stdout + again.stderr,
+      ),
+      0,
+    );
+    rmSync(join(a, '.claude/state/board.json'), { force: true });
+    expect(
+      "on a machine that hasn't synced before, the items already there are found, not doubled",
+      truth(
+        sam('team', 'board').stdout.includes('0 items added') &&
+          JSON.parse(readFileSync(store, 'utf8')).project.items.length === 2,
+      ),
+      0,
+    );
+    writeFileSync(join(a, '.claude/code-kit.json'), config);
+
+    // TEAM-8: the shared repository can't be reached.
+    execFileSync('git', ['-C', a, 'remote', 'set-url', 'origin', join(root, 'gone.git')]);
+    const cut = sam('team', '--fresh');
+    expect(
+      "TEAM-8 when the repository can't be reached, team says claims aren't checked and every other rule holds",
+      truth(
+        cut.status === 0 &&
+          cut.stdout.includes(
+            "claims and leases aren't checked until it can be; every other rule still holds",
+          ),
+        cut.stdout,
+      ),
+      0,
+    );
+    expect(
+      "and a claim says it couldn't be made",
+      sam('team', 'claim', 'ST-11'),
+      1,
+      "can't be reached",
+    );
+    // TEAM-2: another provider, as a command.
+    writeFileSync(
+      join(root, 'provider.mjs'),
+      `const op = process.argv[2]; let input = ''; process.stdin.on('data', (d) => (input += d)).on('end', () => {
+  const { team } = JSON.parse(input);
+  if (op === 'state') console.log(JSON.stringify({ at: new Date().toISOString(), reachable: true, me: 'sam', techLead: team.techLead, claims: [{ story: 'ST-3', by: 'kim', at: new Date().toISOString(), lease: [] }], intents: [], pulls: [] }));
+  else if (op === 'claim') console.log(JSON.stringify({ ok: false, holder: { story: JSON.parse(input).story, by: 'kim', at: new Date().toISOString() } }));
+  else process.exit(3);
+});`,
+    );
+    writeFileSync(
+      join(a, '.claude/code-kit.json'),
+      JSON.stringify({
+        ...JSON.parse(fixture),
+        team: { techLead: 'alex', provider: { command: `node "${join(root, 'provider.mjs')}"` } },
+      }),
+    );
+    const viaCommand = JSON.parse(sam('team', '--json', '--fresh').stdout || '{}');
+    expect(
+      'TEAM-2 a provider named by a command answers the same questions',
+      truth(viaCommand.claims?.[0]?.by === 'kim', JSON.stringify(viaCommand)),
+      0,
+    );
+    expect(
+      'and its refusal of a claim names who holds it',
+      sam('team', 'claim', 'ST-3'),
+      1,
+      'ST-3 is claimed by kim',
+    );
+    expect(
+      'a provider that fails is unreachable, and team says so',
+      truth(sam('team', 'release', 'ST-3').stderr.includes('The team provider')),
+      0,
+    );
+  }
+
+  // --- ONB-1 to ONB-3: onboarding in the right order -----------------------------------------------
+  {
+    const o = newRepo();
+    cleanups.push(o.dir);
+    const oKit = (...args) =>
+      spawnSync('node', [kitCli, ...args], { cwd: o.dir, encoding: 'utf8' });
+    const nextOf = () => JSON.parse(oKit('next', '--json').stdout || '{}');
+    mkdirSync(join(o.dir, 'docs/spec'), { recursive: true });
+    writeFileSync(
+      join(o.dir, 'docs/spec/01-booking.md'),
+      '# 01. Booking\n\n### BOOK-1 Book\n\nx\n\n### BOOK-2 Store\n\nx\n',
+    );
+    writeFileSync(
+      join(o.dir, 'docs/spec/plan.md'),
+      '# Plan\n\n## M1\n\n### ST-1 Design: booking screens\n\n**Lane:** design\n**Requirements:** BOOK-1\n**Status:** todo\n\n### ST-2 Booking screens\n\n**Lane:** web\n**Requirements:** BOOK-1\n**Depends on:** ST-1\n**Status:** todo\n\n### ST-3 Booking store\n\n**Lane:** backend\n**Requirements:** BOOK-2\n**Status:** todo\n',
+    );
+    o.git('add', '-A');
+    o.git('commit', '-q', '-m', 'spec');
+    const designing = nextOf();
+    expect(
+      'ONB-2 a ready design story comes first, then the stories that need no design',
+      truth(
+        designing.step === 'design' &&
+          designing.args === 'ST-1' &&
+          designing.then?.some((t) => t.step === 'dispatch' && t.args === 'ST-3'),
+        JSON.stringify(designing),
+      ),
+      0,
+    );
+    expect(
+      'and the screens wait for their design',
+      truth(!JSON.stringify(designing).includes('ST-2')),
+      0,
+    );
+    const status = JSON.parse(oKit('status', '--json').stdout || '{}');
+    expect(
+      'a design story is no gap in the plan',
+      truth(
+        !status.problems?.some((p) => p.includes('unknown lane')),
+        JSON.stringify(status.problems),
+      ),
+      0,
+    );
+    // ONB-3: a companion the config wants is set up before any coding.
+    const wanting = JSON.stringify({ ...JSON.parse(fixture), adapters: { 'context-graph': true } });
+    writeFileSync(join(o.dir, '.claude/code-kit.json'), wanting);
+    const setup = nextOf();
+    expect(
+      'ONB-3 a companion the config wants and that is not set up comes before the design and the coding',
+      truth(
+        setup.step === 'setup' &&
+          setup.args === 'context-graph:init' &&
+          setup.why.includes('before any code is written'),
+        JSON.stringify(setup),
+      ),
+      0,
+    );
+    mkdirSync(join(o.dir, '.ctx'));
+    expect('once it is set up, the build goes on', truth(nextOf().step === 'design'), 0);
+    // ONB-1: an agent naming a skill that doesn't exist.
+    mkdirSync(join(o.dir, '.claude/agents'), { recursive: true });
+    writeFileSync(
+      join(o.dir, '.claude/agents/web-engineer.md'),
+      '# web-engineer\n\n**Skills to use:** spec-check, `new-screen`, context-graph:cards\n',
+    );
+    expect(
+      'ONB-1 next says when a lane agent names a skill that does not exist',
+      truth(
+        nextOf().attention?.some((a) =>
+          a.startsWith("web-engineer names a skill that doesn't exist: new-screen."),
+        ),
+        JSON.stringify(nextOf().attention),
+      ),
+      0,
+    );
+    mkdirSync(join(o.dir, '.claude/skills/new-screen'), { recursive: true });
+    writeFileSync(
+      join(o.dir, '.claude/skills/new-screen/SKILL.md'),
+      '---\nname: new-screen\n---\n',
+    );
+    expect(
+      'once the skill is written, it says nothing',
+      truth(!nextOf().attention?.some((a) => a.includes('names a skill'))),
+      0,
+    );
+    // ONB-5: a setup older than init's tells the person what re-running it adds.
+    const older = (n) =>
+      nextOf().attention?.some((x) => x.startsWith("This project's code-kit setup predates"));
+    expect(
+      'ONB-5 a project set up before setup 2 is told to re-run init, and why',
+      truth(older()),
+      0,
+    );
+    writeFileSync(
+      join(o.dir, '.claude/code-kit.json'),
+      JSON.stringify({ ...JSON.parse(wanting), setup: 2 }),
+    );
+    expect('one set up by the current init is not', truth(!older()), 0);
+    writeFileSync(
+      join(o.dir, '.claude/code-kit.json'),
+      JSON.stringify({ ...JSON.parse(wanting), setup: 9 }),
+    );
+    expect(
+      'a setup newer than this code-kit is refused',
+      oKit('check'),
+      1,
+      '"setup" must be a whole number from 1 to 2',
+    );
+    writeFileSync(join(o.dir, '.claude/code-kit.json'), wanting);
+    // MAP-5: the whole project's code, by folder, for when no story is at work.
+    mkdirSync(join(o.dir, 'apps/web/src'), { recursive: true });
+    mkdirSync(join(o.dir, 'packages/core/src'), { recursive: true });
+    writeFileSync(join(o.dir, 'packages/core/src/price.ts'), 'export const price = 1;\n');
+    writeFileSync(
+      join(o.dir, 'apps/web/src/form.ts'),
+      "import { price } from '../../../packages/core/src/price';\nexport const f = price;\n",
+    );
+    o.git('add', '-A');
+    o.git('commit', '-q', '-m', 'code');
+    const whole = JSON.parse(oKit('map', 'project', '--json').stdout || '{}');
+    const web = whole.files?.find((f) => f.path === 'apps/web/src');
+    expect(
+      'MAP-5 map project lists the folders with their file counts and the imports between them',
+      truth(
+        whole.story?.id === 'project' &&
+          web?.files === 1 &&
+          web.imports.join() === 'packages/core/src' &&
+          whole.files.some((f) => f.path === 'packages/core/src'),
+        JSON.stringify(whole),
       ),
       0,
     );
