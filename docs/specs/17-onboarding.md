@@ -36,6 +36,19 @@ When init finds a companion tool installed but not set up in the project (Contex
 - Given `"adapters": { "context-graph": true }`, a plan with ready stories and no `.ctx/`, then `next` gives `setup` with `context-graph:init` and says why; once `.ctx/` exists, it gives `dispatch`.
 - Given the loop running and `next` giving `setup`, then the lead is prompted to run `/context-graph:init`.
 
+### ONB-4 A QA lane proves the journeys
+
+Each lane writes and runs the unit tests for its own code. When the product has screens, or journeys that cross lanes, spec-design adds a `qa` lane with a `test-engineer` agent that owns the end-to-end suites (Playwright for web, Maestro or Detox for mobile), and plans a test story per main journey, depending on the screen and service stories it goes through. init sets the lane up even when the docs forgot it, with a check that runs the suites when they change. The review of a story runs the end-to-end suites covering its requirements, and a broken journey fails it.
+
+### ONB-5 An older setup is told what it's missing
+
+The config records the version of init's setup (`"setup": 2`). A project set up before (no `setup`, or a lower one) gets a line under `next`'s attention naming what re-running init adds: project skills with each lane agent, designs approved before screens are built, a QA lane, and companions set up before coding. Re-running init adds whichever are missing, shows the difference first, and sets `setup` to 2.
+
+**Acceptance**
+
+- Given a config without `setup`, then `next` says the setup predates what init now sets up, and to re-run `/code-kit:init`; given `"setup": 2`, it doesn't.
+- Given `"setup": 9`, then the config is invalid, saying it must be from 1 to 2.
+
 ## Open questions
 
 | Question | Owner | Blocks |

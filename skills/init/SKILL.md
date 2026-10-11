@@ -59,6 +59,8 @@ Write `.claude/code-kit.draft.json`. Follow `${CLAUDE_PLUGIN_ROOT}/README.md` â€
 - **`lanes`:** one per documented or discovered ownership area. Each needs:
   - `agent`: a kebab-case agent name, for example `api-engineer`;
   - `paths` and `exclude`: every path must have exactly one owner.
+- **A QA lane:** when lanes own screens, or the plan's journeys cross lanes, a `qa` lane with a `test-engineer` agent owning the end-to-end suites (the plan's work split names them; brownfield: the folders the existing end-to-end tests live in), even if the docs forgot it. Its agent's proving command runs the suites. Add a `checks` entry for them scoped by `files` to the suites, so verify runs them when they change. Unit tests stay with each lane.
+- **`setup`:** `2`, the version of this setup, so `code-kit next` can tell an older project what re-running init adds.
 - **`lead.paths`:** contracts, specs, design, root config, and anything the docs reserve for the lead.
 - **`anyActor`:** lockfiles, if lanes may update them.
 - **`protected`:** registers and contracts that need a person's sign-off, each with an `approval` name and a `why`.
@@ -142,6 +144,11 @@ Re-run whenever the build has moved on: new apps or packages, folders that moved
 
 1. **Re-read** the docs and the repository as in section 1, including the brownfield steps if the code has grown past the docs.
 2. **Draft** the whole config again into `.claude/code-kit.draft.json`, starting from the live one. Keep everything that's still right, so the diff shows only real changes. If the live config has no `harness.autonomy`, ask the person about it as in section 2.
+   A config without `"setup": 2` predates what setup now includes; add whichever of these the project is missing, as section 2 and 3 describe, and set `"setup": 2`:
+   - project skills for the recipes in the docs (or, without recipes, the patterns the code follows), listed on the lane agents;
+   - the design gate for every lane that owns screens, with its register; and design stories in the plan for screens not yet built (ask the person before adding stories);
+   - the QA lane, its agent and its checks, when there are screens or journeys across lanes;
+   - `"adapters": { "<name>": true }` for a companion that's installed but not set up, which is then set up before any code.
 3. **Show the difference:**
 
    ```bash

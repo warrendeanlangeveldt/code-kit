@@ -42,6 +42,7 @@ Read the story, every requirement it cites, and the full diff (`git diff <base>.
 
 - **Built end to end:** the behaviour works from the entry point to storage and back, including the errors, permissions and states the spec lists. A mock, stub, hard-coded response, placeholder screen, `TODO` or "coming soon" in shipped code fails the requirement.
 - **Tested:** a test proves each acceptance criterion and names the requirement ID. The test would fail if the behaviour were broken; one that asserts nothing, or only asserts a mock, doesn't count.
+- **Its journeys still pass end to end:** where the project has a QA lane, run the end-to-end suites that cover this story's requirements (the qa lane's command, filtered to them) against the branch. A journey that broke fails the review, even when the story's own tests pass. A story the QA lane delivered is reviewed the same way: each journey's test proves the requirements it cites, through the real screens and services, with no mocked responses.
 - **The spec-check report matches:** its table has no row still `missing` or `conflicts` without an answer, and its questions were answered, not guessed.
 - **Only the story:** changes beyond the story (refactors elsewhere, other stories' requirements, new dependencies) are called out. They may be fine, but they're the person's call.
 - **Contracts respected:** the code uses the contracts as written. A lane that needed a contract change should have asked, not worked around it.

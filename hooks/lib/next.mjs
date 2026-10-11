@@ -7,7 +7,7 @@ import { join, posix } from 'node:path';
 import { loadConfig, mergeDelegation } from './config.mjs';
 import { buildStatus, readStories, DESIGN, LEAD } from './plan.mjs';
 import { pendingSetup } from './adapters/index.mjs';
-import { CONFIG_FILE } from './config.mjs';
+import { CONFIG_FILE, SETUP_VERSION } from './config.mjs';
 import { readQueue, waiting } from './queue.mjs';
 
 export const DRAFT_FILE = '.claude/code-kit.draft.json';
@@ -149,6 +149,11 @@ export function nextStep(root, base) {
   }
   const [setup] = pendingSetup(raw, root);
   if (setup) return result('setup', setup.why, { args: setup.skill });
+  // ONB-5: a project set up before setup did all of this is told what re-running init adds.
+  if ((raw?.setup ?? 1) < SETUP_VERSION)
+    attention.push(
+      "This project's code-kit setup predates what init now sets up: project skills with each lane agent, designs approved before screens are built, a QA lane for end-to-end tests, and companion tools set up before coding. Re-run /code-kit:init to add what's missing; it keeps everything that's still right and shows you the difference first.",
+    );
   // ONB-1: a lane agent naming a skill that doesn't exist works without the recipe it was given.
   for (const missing of missingSkills(root)) attention.push(missing);
 

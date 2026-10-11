@@ -105,10 +105,12 @@ These are what `/code-kit:init` turns into enforced rules, so be concrete.
     Propose the architecture from the specs and constraints, explain the choices, and ask about the ones that matter. Record each in the decision log.
 - **`docs/principles.md`:** the engineering rules; what counts as a contract; the definition of done (tests, checks, reviews, end-to-end working features); the test, lint, typecheck and database commands once they're known; and which commands only CI or a person may run, such as deploys.
 - **`docs/plan.md`**, from `${CLAUDE_PLUGIN_ROOT}/templates/plan.md`:
-  - the **work split**: lanes (for example web, api, data), the paths each will own, the agent name for it and the command that proves its work, so work can run in parallel without overlap;
+  - the **work split**: lanes (for example web, api, data), the paths each will own, the agent name for it and the command that proves its work, so work can run in parallel without overlap. Each lane writes and runs the unit tests for its own code;
+  - a **QA lane** (`qa`, agent `test-engineer`) whenever the product has screens or journeys that cross lanes: it owns the end-to-end suites (for example `e2e/**` or `apps/*/e2e/**`), in the runner that suits each surface (Playwright for web, Maestro or Detox for mobile), and its command runs them. Nobody else owns these tests, so without it nothing proves a journey works across the lanes;
   - milestones, each a usable increment;
   - stories, each small enough for one lane to finish on one branch. Each story is a `### ST-<n> Title` heading with `**Lane:**`, `**Requirements:**` (the IDs it delivers, or `none` for a spike or a foundation that delivers none), `**Depends on:**` and `**Status:** todo` lines. `code-kit status` and the dispatch skill read them. A story that needs two lanes is two stories, with a dependency between them;
   - sequencing: contracts and shared foundations first, as the lead's own stories (`**Lane:** lead`, built by the lead rather than dispatched), then work that can run in parallel;
+  - **a test story per journey**: for each main user journey, a story in the `qa` lane citing the journey's requirements and depending on the screen and service stories it goes through, so the journey is proven end to end as soon as its parts are built;
   - **design before code**: when there are screens, a design story for each area's screens (`**Lane:** design`, citing the requirements its screens serve), early in the plan, and every story that builds those screens depends on it. The lead designs them with the person (`/code-kit:design`), and no screen is built until its design is approved.
 
 `Status: planned`.

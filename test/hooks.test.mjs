@@ -2041,6 +2041,30 @@ else process.exit(2);
       truth(!nextOf().attention?.some((a) => a.includes('names a skill'))),
       0,
     );
+    // ONB-5: a setup older than init's tells the person what re-running it adds.
+    const older = (n) =>
+      nextOf().attention?.some((x) => x.startsWith("This project's code-kit setup predates"));
+    expect(
+      'ONB-5 a project set up before setup 2 is told to re-run init, and why',
+      truth(older()),
+      0,
+    );
+    writeFileSync(
+      join(o.dir, '.claude/code-kit.json'),
+      JSON.stringify({ ...JSON.parse(wanting), setup: 2 }),
+    );
+    expect('one set up by the current init is not', truth(!older()), 0);
+    writeFileSync(
+      join(o.dir, '.claude/code-kit.json'),
+      JSON.stringify({ ...JSON.parse(wanting), setup: 9 }),
+    );
+    expect(
+      'a setup newer than this code-kit is refused',
+      oKit('check'),
+      1,
+      '"setup" must be a whole number from 1 to 2',
+    );
+    writeFileSync(join(o.dir, '.claude/code-kit.json'), wanting);
     // MAP-5: the whole project's code, by folder, for when no story is at work.
     mkdirSync(join(o.dir, 'apps/web/src'), { recursive: true });
     mkdirSync(join(o.dir, 'packages/core/src'), { recursive: true });
