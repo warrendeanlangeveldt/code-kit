@@ -289,9 +289,9 @@ The hooks refuse another developer's agent editing the tech lead's paths (raise 
 **Lane:** lead
 **Requirements:** TEAM-9
 **Depends on:** ST-26
-**Status:** todo
+**Status:** done
 
-A claim with no push for `team.staleDays` working days is stale: its holder's band asks Keep or Release, the tech lead can release or reassign it, and anyone waiting on it is told.
+A claim with nothing on it (claimed, or its branch pushed) for `team.staleDays` working days is stale: `team` marks it, `team keep <story>` restarts its clock, the tech lead releases or reassigns it (`team reassign <story> <handle>`, never through an agent), and a refusal it causes says it's stale. (The band's Keep and Release are in ST-30.)
 
 ### ST-30 The Team tab and team lines in the band
 

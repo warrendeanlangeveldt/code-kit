@@ -1361,3 +1361,16 @@ test('TEAM-6 GitHub activity in plain sentences, and the claims taken and releas
     ['kim claimed claimed ST-2', 'sam released ST-1 is no longer claimed by them'],
   );
 });
+
+test('TEAM-9 working days, and when a claim goes stale', async () => {
+  const { workingDaysBetween, withStaleness } = await import('../hooks/lib/team.mjs');
+  const day = (d) => Date.parse(`2026-10-${String(d).padStart(2, '0')}T09:00:00Z`);
+  // 2026-10-09 is a Friday, 10-12 a Monday.
+  assert.equal(workingDaysBetween(day(9), day(9)), 0);
+  assert.equal(workingDaysBetween(day(9), day(12)), 1);
+  assert.equal(workingDaysBetween(day(8), day(13)), 3);
+  const claim = { story: 'ST-7', by: 'sam', at: new Date(day(8)).toISOString(), lease: [] };
+  assert.equal(withStaleness(claim, null, 3, day(13)).stale, true);
+  assert.equal(withStaleness(claim, day(12), 3, day(13)).stale, false);
+  assert.equal(withStaleness(claim, day(12), 3, day(13)).active, new Date(day(12)).toISOString());
+});

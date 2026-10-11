@@ -356,6 +356,7 @@ code-kit journal [--json]                                     # the build's line
 code-kit team [--json] [--fresh]                              # the team: tech lead, owners, claims, intents and open pull requests (spec 16)
 code-kit team since [--json] [--peek]                         # what everyone pushed, opened, merged, reviewed, claimed and intended since you last looked
 code-kit team claim <story> [--lease globs] | team release <story>   # claim a story for yourself, leasing what it changes; release it (yours, or any as the tech lead)
+code-kit team keep <story> | team reassign <story> <handle>   # keep your stale claim (its clock starts again); the tech lead hands a claim to someone else
 code-kit intend "<what and why>" [--touches globs]            # raise a change of direction before any code, as a GitHub issue the team sees
 code-kit intend agree|drop <id> [--reason "…"]               # the tech lead's answer, from their terminal or the pane
 code-kit map <story> [--json]                                 # a story's code: its files by layer, the imports between them, and what adapters know of each

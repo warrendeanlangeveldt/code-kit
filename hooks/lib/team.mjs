@@ -120,6 +120,30 @@ function claimOf(message) {
   }
 }
 
+/** Whole working days (Monday to Friday) from `from` to `to`, both in ms. */
+export function workingDaysBetween(from, to) {
+  let days = 0;
+  const d = new Date(from);
+  d.setUTCHours(0, 0, 0, 0);
+  const end = new Date(to);
+  end.setUTCHours(0, 0, 0, 0);
+  while (d < end) {
+    d.setUTCDate(d.getUTCDate() + 1);
+    if (d.getUTCDay() !== 0 && d.getUTCDay() !== 6) days += 1;
+  }
+  return days;
+}
+
+/** TEAM-9: a claim with when it was last worked on (claimed, or its branch pushed) and whether it's stale. */
+export function withStaleness(claim, lastPush, staleDays, now = Date.now()) {
+  const active = Math.max(Date.parse(claim.at) || 0, lastPush ?? 0);
+  return {
+    ...claim,
+    active: new Date(active).toISOString(),
+    stale: workingDaysBetween(active, now) >= staleDays,
+  };
+}
+
 /** The provider for this project's team: GitHub's, or the config's command. */
 export function teamProvider(root, team) {
   return team.provider === 'github'
@@ -232,6 +256,20 @@ function githubProvider(root, team) {
       if (!fresh && cached && Date.now() - Date.parse(cached.at) < STATE_SECONDS * 1000)
         return cached;
       const claims = fetchClaims();
+      // TEAM-9: when each story's branch was last pushed, from the shared repository's branches.
+      const pushed = new Map();
+      if (claims && ok(git(['fetch', '--prune', '--quiet', 'origin']))) {
+        const refs = git([
+          'for-each-ref',
+          '--format=%(refname:lstrip=3) %(committerdate:unix)',
+          'refs/remotes/origin/',
+        ]).stdout;
+        for (const line of refs.split('\n').filter(Boolean)) {
+          const [branch, unix] = line.split(' ');
+          const story = storyOfBranch(branch);
+          if (story) pushed.set(story, Math.max(pushed.get(story) ?? 0, Number(unix) * 1000));
+        }
+      }
       const intents = JSON.parse(
         gh([
           'issue',
@@ -262,7 +300,9 @@ function githubProvider(root, team) {
         techLead: team.techLead,
         owners: team.owners,
         staleDays: team.staleDays,
-        claims: (claims ?? cached?.claims ?? []).map(({ sha, ...c }) => c),
+        claims: claims
+          ? claims.map(({ sha, ...c }) => withStaleness(c, pushed.get(c.story), team.staleDays))
+          : (cached?.claims ?? []),
         intents: intents
           ? intents.map((i) => ({
               id: i.number,
@@ -317,6 +357,32 @@ function githubProvider(root, team) {
       provider.forget();
       const id = Number(url.trim().match(/\/(\d+)\s*$/)?.[1]);
       return { ok: true, intent: { id, by, about, touches, url: url.trim(), state: 'open' } };
+    },
+    /** TEAM-9: the tech lead hands a claim, with its lease, to someone else. */
+    reassign(story, to) {
+      const by = me();
+      if (by !== team.techLead)
+        return { ok: false, why: `Only the tech lead (${team.techLead}) reassigns a claim.` };
+      if (!isHandle(to)) return { ok: false, why: `"${to}" isn't a GitHub handle.` };
+      const claims = fetchClaims();
+      if (!claims) return notReached();
+      const held = claims.find((c) => c.story === story);
+      if (!held) return { ok: false, why: `${story} isn't claimed.` };
+      const at = new Date().toISOString();
+      const email = `${by}@users.noreply.github.com`;
+      const env = {
+        ...process.env,
+        GIT_AUTHOR_NAME: by,
+        GIT_AUTHOR_EMAIL: email,
+        GIT_COMMITTER_NAME: by,
+        GIT_COMMITTER_EMAIL: email,
+      };
+      const tree = git(['mktree'], { input: '' }).stdout.trim();
+      const message = JSON.stringify({ story, by: to, at, lease: held.lease });
+      const sha = git(['commit-tree', tree, '-m', message], { env }).stdout.trim();
+      if (!ok(pushClaim(story, sha, held.sha))) return notReached();
+      provider.forget();
+      return { ok: true, from: held.by, to };
     },
     /**
      * TEAM-6: what happened since `at` (ms), from the repository's activity on GitHub: [{ at, by, kind,
@@ -398,6 +464,7 @@ function commandProvider(root, team, command) {
     },
     intend: (about, touches = []) => call('intend', { about, touches }),
     settle: (id, outcome, why = '') => call('settle', { id, outcome, why }),
+    reassign: (story, to) => call('reassign', { story, to }),
     since: (at) => {
       const r = call('since', { at });
       return Array.isArray(r) ? r : null;
@@ -463,15 +530,19 @@ export function teamRefusal({ actor, rel, branch, config, me, state }) {
   if (!state || state.reachable === false) return null;
   const story = storyOfBranch(branch);
   const theirs = state.claims.find((c) => c.story === story && c.by !== me);
+  const staleNote = (c) =>
+    c.stale
+      ? ` It's stale: nothing on it since ${String(c.active).slice(0, 10)}, so the tech lead may reassign it.`
+      : '';
   if (theirs)
-    return `${story} is ${theirs.by}'s claim, so this branch is their work. Ask ${theirs.by} or the tech lead (${team.techLead}) to release it before you work on it.`;
+    return `${story} is ${theirs.by}'s claim, so this branch is their work. Ask ${theirs.by} or the tech lead (${team.techLead}) to release it before you work on it.${staleNote(theirs)}`;
   const fileLane = laneOf(rel, config);
   if (fileLane && team.owners[fileLane]?.includes(me)) return null;
   const leased = state.claims.find(
     (c) => c.by !== me && c.story !== story && c.lease.length && matchesAny(rel, c.lease),
   );
   if (leased)
-    return `${rel} is leased by ${leased.by} for ${leased.story}, which is changing it now. Ask ${leased.by}, wait for ${leased.story} to merge, or raise what you need as an intent: ${intend}`;
+    return `${rel} is leased by ${leased.by} for ${leased.story}, which is changing it now. Ask ${leased.by}, wait for ${leased.story} to merge, or raise what you need as an intent: ${intend}${staleNote(leased)}`;
   return null;
 }
 

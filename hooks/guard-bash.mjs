@@ -168,6 +168,11 @@ if (runs(cmd, new RegExp(String.raw`^${CODE_KIT}\s+loop\s+(pause|resume)\b`)))
   block(
     `Blocked: pausing or resuming the lead loop is the person's own act, from the code-kit band or their terminal. Ask them, and stop.\nCommand: ${cmd}`,
   );
+// TEAM-9: handing someone's claim to someone else is the tech lead's own decision too.
+if (runs(cmd, new RegExp(String.raw`^${CODE_KIT}\s+team\s+reassign\b`)))
+  block(
+    `Blocked: reassigning a claim is the tech lead's own decision, from their terminal or the code-kit pane. Tell them who holds it, since when, and who you'd suggest, and stop.\nCommand: ${cmd}`,
+  );
 // TEAM-5: agreeing or dropping an intent is the tech lead's own decision, from their terminal or the pane.
 if (runs(cmd, new RegExp(String.raw`^${CODE_KIT}\s+intend\s+(agree|drop)\b`)))
   block(

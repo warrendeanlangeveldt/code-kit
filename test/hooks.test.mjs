@@ -1601,6 +1601,89 @@ else process.exit(2);
       0,
     );
 
+    // TEAM-9: stale claims. An old claim, as sam's session would have pushed it ten days ago.
+    const oldAt = new Date(Date.now() - 10 * 86400_000).toISOString();
+    const tree = execFileSync('git', ['-C', a, 'mktree'], { input: '', encoding: 'utf8' }).trim();
+    const oldSha = execFileSync(
+      'git',
+      [
+        '-C',
+        a,
+        '-c',
+        'user.name=sam',
+        '-c',
+        'user.email=sam@users.noreply.github.com',
+        'commit-tree',
+        tree,
+        '-m',
+        JSON.stringify({ story: 'ST-30', by: 'sam', at: oldAt, lease: ['docs/old/**'] }),
+      ],
+      { encoding: 'utf8' },
+    ).trim();
+    execFileSync('git', ['-C', a, 'push', '-q', 'origin', `${oldSha}:refs/code-kit/claims/ST-30`]);
+    const staleNow = JSON.parse(dev2c('team', '--json', '--fresh').stdout || '{}').claims?.find(
+      (x) => x.story === 'ST-30',
+    );
+    expect(
+      'TEAM-9 a claim with nothing on it for more than the stale days is stale',
+      truth(staleNow?.stale === true && staleNow.active === oldAt, JSON.stringify(staleNow)),
+      0,
+    );
+    expect(
+      'team marks it stale',
+      truth(
+        dev2c('team').stdout.includes(
+          'ST-30 by sam, 10 days ago · stale, nothing since 10 days ago',
+        ),
+      ),
+      0,
+    );
+    rmSync(join(b, '.claude/state/team.json'), { force: true });
+    expect(
+      "someone held up by it is told it's stale and that the tech lead may reassign it",
+      alexHook('guard-paths.mjs', write(b, 'docs/old/notes.md')),
+      2,
+      "It's stale: nothing on it since",
+    );
+    expect(
+      'only the tech lead reassigns a claim',
+      dev2c('team', 'reassign', 'ST-30', 'dev2'),
+      1,
+      'Only the tech lead (alex) reassigns a claim.',
+    );
+    expect(
+      "and not through an agent, even in the tech lead's session",
+      alexHook('guard-bash.mjs', { command: `node "${kitCli}" team reassign ST-30 dev2` }),
+      2,
+      "the tech lead's own decision",
+    );
+    const kept = sam('team', 'keep', 'ST-30');
+    expect(
+      'the holder keeps it, and the clock starts again',
+      truth(
+        kept.stdout.includes('Kept ST-30') &&
+          JSON.parse(dev2c('team', '--json', '--fresh').stdout || '{}').claims?.find(
+            (x) => x.story === 'ST-30',
+          )?.stale === false,
+        kept.stdout + kept.stderr,
+      ),
+      0,
+    );
+    const handed = alex('team', 'reassign', 'ST-30', 'dev2');
+    const nowHeld = JSON.parse(dev2c('team', '--json', '--fresh').stdout || '{}').claims?.find(
+      (x) => x.story === 'ST-30',
+    );
+    expect(
+      'the tech lead reassigns it: the new holder has it with its lease',
+      truth(
+        handed.stdout.includes('Reassigned ST-30 from sam to dev2') &&
+          nowHeld?.by === 'dev2' &&
+          nowHeld.lease.join() === 'docs/old/**',
+        handed.stdout + handed.stderr + JSON.stringify(nowHeld),
+      ),
+      0,
+    );
+
     // TEAM-8: the shared repository can't be reached.
     execFileSync('git', ['-C', a, 'remote', 'set-url', 'origin', join(root, 'gone.git')]);
     const cut = sam('team', '--fresh');

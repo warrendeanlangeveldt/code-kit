@@ -1271,6 +1271,23 @@ function teamCommand() {
       `Claimed ${story} as ${r.claim.by}${lease.length ? `, leasing ${lease.join(', ')}` : ''}.`,
     );
   }
+  // TEAM-9: the holder keeps a stale claim (the clock starts again); the tech lead reassigns one.
+  if (sub === 'keep') {
+    if (!story) die('code-kit team keep <story>');
+    const r = provider.claim(story);
+    if (r.holder) die(holderWords(r.holder));
+    if (!r.ok) die(r.why);
+    return out(
+      `Kept ${story}: it isn't stale until ${team.staleDays} more working day${team.staleDays === 1 ? '' : 's'} without a push.`,
+    );
+  }
+  if (sub === 'reassign') {
+    const to = rest[2];
+    if (!story || !to) die('code-kit team reassign <story> <GitHub handle>');
+    const r = provider.reassign(story, to);
+    if (!r.ok) die(r.why);
+    return out(`Reassigned ${story} from ${r.from} to ${r.to}, with its lease.`);
+  }
   if (sub === 'release') {
     if (!story) die('code-kit team release <story>');
     const r = provider.release(story);
@@ -1322,7 +1339,7 @@ function teamCommand() {
   }
   if (sub !== undefined)
     die(
-      'code-kit team [--json] [--fresh] | team since [--json] [--peek] | team claim <story> [--lease globs] | team release <story>',
+      'code-kit team [--json] [--fresh] | team since [--json] [--peek] | team claim|keep|release <story> | team reassign <story> <handle>',
     );
   const state = provider.state({ fresh: flag('--fresh') });
   if (flag('--json')) return out(JSON.stringify(state, null, 2));
@@ -1340,7 +1357,7 @@ function teamCommand() {
   out(state.claims.length ? 'Claims:' : 'Nothing is claimed.');
   for (const c of state.claims)
     out(
-      `  ${c.story} by ${c.by}, ${ago(c.at)}${c.lease.length ? ` · leases ${c.lease.join(', ')}` : ''}`,
+      `  ${c.story} by ${c.by}, ${ago(c.at)}${c.stale ? ` · stale, nothing since ${ago(c.active)}` : ''}${c.lease.length ? ` · leases ${c.lease.join(', ')}` : ''}`,
     );
   if (state.intents.length) out('Intents:');
   for (const i of state.intents)
@@ -1451,7 +1468,8 @@ function usage() {
       '              | map <story> [--json] | trail [--json] | journal [--json]\n' +
       '              | story <id> [--json] | timeline [--json]\n' +
       '              | team [--json] [--fresh] | team since [--json] [--peek]\n' +
-      '              | team claim <story> [--lease globs] | team release <story>\n' +
+      '              | team claim <story> [--lease globs] | team keep|release <story>\n' +
+      '              | team reassign <story> <handle>\n' +
       '              | intend "<what and why>" [--touches globs] | intend agree|drop <id> [--reason "…"]',
   );
 }
