@@ -62,7 +62,7 @@ The loop doesn't cap how many lanes run. It dispatches what `next` reports ready
 
 ### LOOP-3 Stalls: nudge, restart, flag
 
-A lane agent with no tool call for 5 minutes is messaged: "No tool call for 5 minutes: report where you are, or carry on." At 10 minutes it's stopped and its story dispatched again with the same brief on the same branch, by prompting the lead. After 2 restarts on one story, the lane is flagged in the band for the person and not restarted again. An agent waiting on a held call (06) or running a long command is never counted as quiet while that call is open.
+A lane agent with no tool call for 5 minutes is messaged: "No tool call for 5 minutes: report where you are, or carry on." At 10 minutes it's stopped and its story dispatched again with the same brief on the same branch, by prompting the lead. After 2 restarts on one story, the lane is flagged in the band for the person and not restarted again. An agent waiting on a held call (06) or running a long command is never counted as quiet while that call is open. Nor is an agent whose work is done: it has handed back, or its story is in review, in the merge queue or merged. Until the person has chosen how hands-off the loop is (and under propose), a restart is offered in the band like any other step, not taken.
 
 - **Errors:** a message that can't be delivered counts as a nudge; the restart follows at 10 minutes.
 

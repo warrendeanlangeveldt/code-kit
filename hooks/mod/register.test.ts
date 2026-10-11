@@ -1548,6 +1548,51 @@ test('LOOP-3 a quiet lane agent is nudged at 5 minutes, restarted through the le
   await band.unmount();
 });
 
+test('LOOP-3 an agent whose work is done is never nudged or restarted: it handed back, or its branch waits in the merge queue', async ($, on) => {
+  const w = project();
+  w.next = { step: 'wait', args: '', then: [] };
+  w.agents = [
+    { id: 'a1', type: 'web-engineer', description: 'ST-4 booking form', status: 'running' },
+  ];
+  const clock = await start($, on, w);
+  await clock.advance(2000);
+  // The agent hands its work back, but stays listed as running while it waits for messages.
+  await $.turn.complete({
+    turnId: 't-a1',
+    agentId: 'a1',
+    answer: 'ST-4 done.',
+    durationMs: 1,
+    isAborted: false,
+  } as any);
+  await clock.advance(11 * 60000);
+  expect(w.sent).toEqual([]);
+  expect(w.prompts).toEqual([]);
+  // Another, whose story's branch is in the merge queue, isn't stalled either.
+  w.agents = [
+    { id: 'a2', type: 'web-engineer', description: 'ST-4 booking form', status: 'running' },
+  ];
+  w.queue = [{ branch: 'web/st-4', passed: '2026-10-11T00:00:00Z', state: 'waiting' }];
+  await clock.advance(11 * 60000);
+  expect(w.sent).toEqual([]);
+  expect(w.prompts).toEqual([]);
+});
+
+test('LOOP-3 until the person has chosen how hands-off the loop is, a restart is offered, not taken', async ($, on) => {
+  const w = project();
+  (w.check as any).harnessSet = [];
+  w.next = { step: 'wait', args: '', then: [] };
+  w.agents = [
+    { id: 'a1', type: 'web-engineer', description: 'ST-4 booking form', status: 'running' },
+  ];
+  const clock = await start($, on, w);
+  await clock.advance(10 * 60000 + 4000);
+  expect(w.prompts).toEqual([]);
+  const band = await bandUi($);
+  expect(await band.find({ type: 'Text', text: /Next: Restart ST-4/ })).toBeDefined();
+  expect(await band.find({ key: 'band-keepGoing' })).toBeDefined();
+  await band.unmount();
+});
+
 test('LOOP-3 an agent waiting on a held call (or running a long command) is never quiet', async ($, on) => {
   const w = project();
   w.next = { step: 'wait', args: '', then: [] };

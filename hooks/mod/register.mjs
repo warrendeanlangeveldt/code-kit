@@ -94,6 +94,19 @@ let leadTurn = null; // the lead's running turn, if any
 const activity = new Map(); // agent id → { at, inFlight, nudged, stopped, lane, story }
 const restarts = new Map(); // story → times the loop restarted it
 const flagged = new Map(); // story → { lane, story, count }: stalled past its restarts
+/**
+ * LOOP-3: whether an agent's work is done, so it isn't stalled however quiet: it handed back, or its
+ * story is in review, waiting in the merge queue or merged.
+ */
+const finishedWork = (a) => {
+  if (a.handedBack) return true;
+  const story = (model.state?.stories ?? []).find((s) => s.id === a.story);
+  if (!story) return false;
+  if (['review', 'done'].includes(story.state)) return true;
+  return (model.queue ?? []).some(
+    (q) => q.branch === story.branch && ['waiting', 'merging'].includes(q.state),
+  );
+};
 /** An agent's activity record, made on first sight. */
 const activityOf = (agentId, now) => {
   let a = activity.get(agentId);
@@ -614,6 +627,20 @@ export function register(on) {
         if (box?.text?.trim()) return;
         if (loop.pending.length) {
           const { story, prompt } = loop.pending.shift();
+          // Until the person has chosen how hands-off the loop is, or under propose, a restart is offered
+          // like any other step, not taken.
+          const chosenYet = (model.check?.harnessSet ?? []).includes('autonomy');
+          if (!chosenYet || h.autonomy === 'propose') {
+            loop.proposal = {
+              prompt,
+              label: `Restart ${story}`,
+              kind: 'restart',
+              target: story,
+              first: !chosenYet,
+            };
+            $.ui.invalidate('ui.render');
+            return;
+          }
           return act.submit(prompt, 'restart', story);
         }
         const ran = await $.process.run(['node', cli, 'next', '--json'], { cwd });
@@ -766,6 +793,12 @@ export function register(on) {
           a.story = attribution(agent.id, agent, model.check, model.state).story ?? lane;
           // A held call, or a long command still running, isn't quiet.
           if (a.inFlight > 0 || waitingOnPerson.has(agent.id)) {
+            a.at = now;
+            continue;
+          }
+          // LOOP-3: an agent whose work is done isn't stalled: it handed back, or its story is in review,
+          // in the merge queue or merged. Nothing to nudge or restart.
+          if (finishedWork(a)) {
             a.at = now;
             continue;
           }
@@ -1015,6 +1048,7 @@ export function register(on) {
       busy.inFlight += 1;
       busy.nudged = false;
       busy.stopped = false;
+      busy.handedBack = false;
       // VIEW-4: the agent's current or last tool call.
       busy.tool = toolLine(e);
       busy.at = calledAt;
@@ -1163,6 +1197,9 @@ export function register(on) {
       $.ui.invalidate('ui.render');
     }
     const res = await next(e);
+    // LOOP-3: a lane agent that has handed back its work isn't stalled while it waits; a message that
+    // starts it again shows as its next tool call.
+    if (e.agentId) activityOf(e.agentId, await $.clock.now()).handedBack = true;
     // REVW-3: a subagent's last turn may be the reviewer's report.
     if (e.agentId && act) await act.reviewed(e.agentId, e.answer).catch(() => {});
     // LOOP-1: the lead is idle; the loop's next step, if one is due (submitted from turn.complete,
