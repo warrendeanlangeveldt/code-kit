@@ -60,7 +60,7 @@ Write `.claude/code-kit.draft.json`. Follow `${CLAUDE_PLUGIN_ROOT}/README.md` â€
   - `agent`: a kebab-case agent name, for example `api-engineer`;
   - `paths` and `exclude`: every path must have exactly one owner.
 - **A QA lane:** when lanes own screens, or the plan's journeys cross lanes, a `qa` lane with a `test-engineer` agent owning the end-to-end suites (the plan's work split names them; brownfield: the folders the existing end-to-end tests live in), even if the docs forgot it. Its agent's proving command runs the suites. Add a `checks` entry for them scoped by `files` to the suites, so verify runs them when they change. Unit tests stay with each lane.
-- **`setup`:** `2`, the version of this setup, so `code-kit next` can tell an older project what re-running init adds.
+- **`setup`:** `3`, the version of this setup, so `code-kit next` can tell an older project what re-running init adds.
 - **`lead.paths`:** contracts, specs, design, root config, and anything the docs reserve for the lead.
 - **`anyActor`:** lockfiles, if lanes may update them.
 - **`protected`:** registers and contracts that need a person's sign-off, each with an `approval` name and a `why`.
@@ -102,6 +102,12 @@ Draft, alongside the config:
   - its lane rules.
   - If an agent already exists, keep its content and add only what's missing.
   - Drop the spec-check lines if the config has no `docs.specs`.
+- **A security reviewer:** write `.claude/agents/security-reviewer.md` from `${CLAUDE_PLUGIN_ROOT}/templates/security-reviewer.md`, in the same approval as the lane agents, whenever the product handles sign-in, personal data, payments, input from outside (forms, APIs, webhooks, uploads) or secrets. That's almost every product; leave it out only for one with none of these, such as a static site or a local tool with no accounts, and say why. It is a reviewer, not a lane: no entry in `lanes`, no paths, and only read-only tools (Read, Grep, Glob, and Bash for commands that change nothing), so the hooks treat it as read-only too. Fill it in from the docs (or the code, for brownfield):
+  - what's sensitive, who might attack it and the trust boundaries, from the specs' `## Threat model` sections (brownfield, or specs without one: from the data the code stores and the routes it exposes, as a question to the person);
+  - the spec files it reads;
+  - the privacy and data residency targets in the principles;
+  - the project's audit commands (for example `npm audit --omit=dev`, `pip-audit`), each run once now; leave out one that isn't installed, and say so.
+  - If the agent already exists, keep its content and add only what's missing.
 - **CLAUDE.md:** add the section from `${CLAUDE_PLUGIN_ROOT}/templates/claude-md.md`.
 - **Project skills, with the agents** (recipes like "new screen", "new migration" or "new endpoint"): one per recipe in the architecture's `## Recipes`, or any other doc that describes one step by step. Draft them now, alongside the agents, and show them in the same approval; the agents and their skills are one piece of work. Brownfield code without recipes in its docs: propose recipes from the patterns the code already follows (how its existing screens, endpoints or migrations are built), as drafts the person approves. Never write an empty one.
   - Write each as `.claude/skills/<name>/SKILL.md`, saying in its description which recipe in which doc it comes from, so an update can find it again.
@@ -110,7 +116,7 @@ Draft, alongside the config:
 Show the person:
 
 1. the layers and what each may depend on, and for brownfield the existing violations the baseline will record;
-2. the lanes, their agents and their paths;
+2. the lanes, their agents and their paths, and the security reviewer (or why it's left out);
 3. protected paths, blocked and restricted commands, and checks (including any left out because they fail today);
    and whether the lead may record approvals given in chat (`approvals.lead`), and how hands-off the build is (`harness.autonomy`);
 4. the project skills, and which lane agents use each;
@@ -144,10 +150,11 @@ Re-run whenever the build has moved on: new apps or packages, folders that moved
 
 1. **Re-read** the docs and the repository as in section 1, including the brownfield steps if the code has grown past the docs.
 2. **Draft** the whole config again into `.claude/code-kit.draft.json`, starting from the live one. Keep everything that's still right, so the diff shows only real changes. If the live config has no `harness.autonomy`, ask the person about it as in section 2.
-   A config without `"setup": 2` predates what setup now includes; add whichever of these the project is missing, as section 2 and 3 describe, and set `"setup": 2`:
+   A config without `"setup": 3` predates what setup now includes; add whichever of these the project is missing, as section 2 and 3 describe, and set `"setup": 3`:
    - project skills for the recipes in the docs (or, without recipes, the patterns the code follows), listed on the lane agents;
    - the design gate for every lane that owns screens, with its register; and design stories in the plan for screens not yet built (ask the person before adding stories);
    - the QA lane, its agent and its checks, when there are screens or journeys across lanes;
+   - the security reviewer (`.claude/agents/security-reviewer.md`), unless the product handles no sign-in, personal data, payments, outside input or secrets; and, as a proposal for the person, a threat model and security requirements for each spec that lacks them (spec-design's section 4);
    - `"adapters": { "<name>": true }` for a companion that's installed but not set up, which is then set up before any code.
 3. **Show the difference:**
 
@@ -159,7 +166,7 @@ Re-run whenever the build has moved on: new apps or packages, folders that moved
    `diff` lists lanes, layers, checks and rules that were added (`+`), removed (`-`) or changed (`~`), and how many files change owner, route by route. Explain each change in a sentence, with where it came from: the doc section, or the folder in the repository.
 
 4. **Also propose:**
-   - agent files for new lanes, and updates to agents whose paths changed;
+   - agent files for new lanes, and updates to agents whose paths changed, and to the security reviewer when the specs' threat models changed;
    - **project skills**, by reading the recipes in the docs again and comparing them with `.claude/skills/`:
      - a new skill for each recipe the docs now describe that has none;
      - an update to each skill whose recipe changed, showing what changed;

@@ -10,6 +10,7 @@ import { pendingSetup } from './adapters/index.mjs';
 import { CONFIG_FILE, SETUP_VERSION } from './config.mjs';
 import { readQueue, waiting } from './queue.mjs';
 import { laneOf } from './rules.mjs';
+import { SECURITY_AGENT_FILE } from './security.mjs';
 
 export const DRAFT_FILE = '.claude/code-kit.draft.json';
 export const BRIEF_STATES = ['framed', 'explored', 'scoped', 'specified', 'planned', 'ready'];
@@ -156,7 +157,7 @@ export function nextStep(root, base) {
   const gaps = older ? setupGaps(config, readStories(root, plan), files) : [];
   if (older && !gaps.length)
     attention.push(
-      "This project's code-kit setup predates what init now sets up: project skills with each lane agent, designs approved before screens are built, a QA lane for end-to-end tests, and companion tools set up before coding. Re-run /code-kit:init to add what's missing; it keeps everything that's still right and shows you the difference first.",
+      "This project's code-kit setup predates what init now sets up: project skills with each lane agent, designs approved before screens are built, a QA lane for end-to-end tests, a security reviewer that checks each sensitive change as an attacker would, and companion tools set up before coding. Re-run /code-kit:init to add what's missing; it keeps everything that's still right and shows you the difference first.",
     );
   const missingWords = gaps.length
     ? `This project's setup is missing what init now sets up: ${gaps.join('; ')}.`
@@ -326,9 +327,20 @@ const QA_LANE = /(^|-)(qa|e2e|tests?)(-|$)/;
  * ONB-6: what a setup older than init's is missing, in words, from the config, the plan and the code.
  * A lane owns screens when its name or agent says so (web, mobile, desktop…) or it holds screen
  * files. It's missing the design gate, design stories before the screen stories not yet started, and a
- * QA lane for the end-to-end suites.
+ * QA lane for the end-to-end suites; and, with or without screens, the security reviewer (ONB-7), when
+ * its agent file isn't among the tracked files.
  */
 export function setupGaps(config, stories, files = []) {
+  const gaps = screenGaps(config, stories, files);
+  if (!files.includes(SECURITY_AGENT_FILE))
+    gaps.push(
+      `a security reviewer (${SECURITY_AGENT_FILE}) that checks each change touching sign-in, permissions, personal data, payments, secrets or dependencies as an attacker would`,
+    );
+  return gaps;
+}
+
+/** ONB-6: the gaps of a setup whose lanes own screens: the design gate, design stories, a QA lane. */
+function screenGaps(config, stories, files) {
   const lanes = Object.entries(config.lanes);
   const holdsScreens = new Set(
     files.filter((f) => SCREEN_FILE.test(f) && !TEST_FILE.test(f)).map((f) => laneOf(f, config)),

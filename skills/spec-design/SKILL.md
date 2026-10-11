@@ -85,6 +85,8 @@ Each requirement gets an ID (`<AREA>-<n>`, for example `BOOK-4`) and its own hea
 - **Errors and edge cases:** invalid input, duplicates, concurrency, partial failure, timeouts, an external service being down, empty and very large data.
 - **Events and integrations:** what other parts of the system or external services are told, and what they send back.
 - **Acceptance criteria:** Given / When / Then for the main path and for each important error.
+- **Threat model:** a short `## Threat model` per area: what in it is sensitive (personal data, children's data, credentials, money), who might attack it (a signed-out visitor, another customer, a staff member with the wrong role), and its trust boundaries (where outside input enters). A few concrete lines, not a compliance checklist; leave it out for an area that holds nothing sensitive and takes no outside input.
+- **Security requirements:** under `## Security requirements`, the rules that stop the attacks the threat model names, each with an ID and heading like any other requirement (`### BOOK-9 A customer sees only their own bookings`) and acceptance criteria written from the attacker's side. Stories cite them like any other requirement; a story that cites one always gets the security review.
 - **Screens** (any area a person uses through a web, mobile or desktop interface): a `## Screens` section listing each screen, what it shows, what the person can do on it and which requirements it serves, with its empty, loading and error states. These are what gets designed before anything is built.
 
 A spec answers what and why, not how: no framework, file or function names unless the person requires them. Anything still undecided goes in the spec's open questions and the brief's, never into a requirement. `Status: specified`.
@@ -103,10 +105,11 @@ These are what `/code-kit:init` turns into enforced rules, so be concrete.
   - **recipes**: under `## Recipes`, a `### <recipe-name>` for each layer's common addition (a new screen, endpoint, migration, domain service, job): the steps in order, the files each step creates or changes, and how it's tested. Each becomes a project skill when init sets up the lanes, so every lane agent builds the same thing the same way;
   - the **design tool** for screens, when there are any: the one the person uses (Paper, Figma, Pencil), or design files under `design/` when they have none.
     Propose the architecture from the specs and constraints, explain the choices, and ask about the ones that matter. Record each in the decision log.
-- **`docs/principles.md`:** the engineering rules; what counts as a contract; the definition of done (tests, checks, reviews, end-to-end working features); the test, lint, typecheck and database commands once they're known; and which commands only CI or a person may run, such as deploys.
+- **`docs/principles.md`:** the engineering rules; the privacy and data residency targets from the brief (where data may be stored and processed, what is never logged), which the security reviewer checks against; what counts as a contract; the definition of done (tests, checks, reviews, end-to-end working features); the test, lint, typecheck and database commands once they're known; and which commands only CI or a person may run, such as deploys.
 - **`docs/plan.md`**, from `${CLAUDE_PLUGIN_ROOT}/templates/plan.md`:
   - the **work split**: lanes (for example web, api, data), the paths each will own, the agent name for it and the command that proves its work, so work can run in parallel without overlap. Each lane writes and runs the unit tests for its own code;
   - a **QA lane** (`qa`, agent `test-engineer`) whenever the product has screens or journeys that cross lanes: it owns the end-to-end suites (for example `e2e/**` or `apps/*/e2e/**`), in the runner that suits each surface (Playwright for web, Maestro or Detox for mobile), and its command runs them. Nobody else owns these tests, so without it nothing proves a journey works across the lanes;
+  - no lane for security: it owns no paths. init adds a read-only security reviewer that checks every story touching the threat models' sensitive parts, so security requirements are delivered by the lanes whose code they constrain;
   - milestones, each a usable increment;
   - stories, each small enough for one lane to finish on one branch. Each story is a `### ST-<n> Title` heading with `**Lane:**`, `**Requirements:**` (the IDs it delivers, or `none` for a spike or a foundation that delivers none), `**Depends on:**` and `**Status:** todo` lines. `code-kit status` and the dispatch skill read them. A story that needs two lanes is two stories, with a dependency between them;
   - sequencing: contracts and shared foundations first, as the lead's own stories (`**Lane:** lead`, built by the lead rather than dispatched), then work that can run in parallel;
@@ -121,7 +124,7 @@ Before handing over, review everything once, as a sceptical engineer about to bu
 
 - every journey step maps to a requirement, and every requirement to a story;
 - every requirement is testable and has acceptance criteria where it matters;
-- data, states, permissions and errors are covered for every area;
+- data, states, permissions and errors are covered for every area, and every area holding something sensitive or taking outside input has a threat model and security requirements;
 - no requirement contradicts another, the constraints or a non-goal;
 - nothing is left as "TBD" outside the open-questions lists.
 

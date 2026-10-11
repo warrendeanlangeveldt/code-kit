@@ -1496,3 +1496,69 @@ test('TEAM-12 a story on the board, and only the fields that changed', async () 
     [['Claimed by', '']],
   );
 });
+
+test('ONB-7 which changes need the security review, and why', async () => {
+  const { addedLines, securityReasons, securityRequirementIds, reasonsInWords } =
+    await import('../hooks/lib/security.mjs');
+  const added = addedLines(
+    [
+      'diff --git a/apps/api/orders.ts b/apps/api/orders.ts',
+      '--- a/apps/api/orders.ts',
+      '+++ b/apps/api/orders.ts',
+      '@@ -3,0 +4,2 @@ export',
+      '+const rows = await db.$queryRawUnsafe(`select * from orders where id = ${req.query.id}`);',
+      '+return rows;',
+      'diff --git a/src/cancel.ts b/src/cancel.ts',
+      '+++ b/src/cancel.ts',
+      '@@ -1 +1 @@',
+      '-const x = 1;',
+      '+export const cancelOrder = () => canvas;',
+    ].join('\n'),
+  );
+  assert.deepEqual(added[0], {
+    file: 'apps/api/orders.ts',
+    line: 4,
+    text: 'const rows = await db.$queryRawUnsafe(`select * from orders where id = ${req.query.id}`);',
+  });
+  assert.equal(added[2].line, 1);
+  const reasons = securityReasons({ files: ['apps/api/orders.ts', 'src/cancel.ts'], added });
+  assert.deepEqual(
+    reasons.map((r) => r.kind),
+    ['input', 'injection'],
+  );
+  assert.deepEqual(reasons[0].where, ['apps/api/orders.ts', 'apps/api/orders.ts:4']);
+  assert.match(reasonsInWords(reasons), /^input from outside .*; queries, commands/);
+  // Words that only look like a permission check (cancel, canvas) don't count.
+  assert.deepEqual(securityReasons({ files: ['src/cancel.ts'], added: added.slice(2) }), []);
+  // Tests and docs describe a change; they don't ship.
+  assert.deepEqual(
+    securityReasons({
+      files: ['src/auth/login.test.ts', 'docs/auth.md'],
+      added: [{ file: 'src/auth/login.test.ts', line: 1, text: 'login(req.body.password)' }],
+    }),
+    [],
+  );
+  assert.deepEqual(
+    securityReasons({ files: ['apps/web/package.json'] }).map((r) => r.kind),
+    ['dependencies'],
+  );
+  const security = securityRequirementIds([
+    '## Requirements\n\n### ORD-1 Place\n\n## Security requirements\n\n### ORD-2 Own orders only\n\n## Quality targets\n\n### ORD-3 Not here\n',
+  ]);
+  assert.deepEqual([...security], ['ORD-2']);
+  assert.deepEqual(
+    securityReasons({ files: ['src/list.ts'], cites: ['ORD-1', 'ORD-2'], security }),
+    [{ kind: 'requirements', why: 'security requirements it cites', where: ['ORD-2'] }],
+  );
+});
+
+test('ONB-7 an older setup is missing the security reviewer, with or without screens', async () => {
+  const { setupGaps } = await import('../hooks/lib/next.mjs');
+  const config = { lanes: { api: { agent: 'api-engineer', paths: ['apps/api/**'] } } };
+  assert.deepEqual(setupGaps(config, [], ['apps/api/x.ts']).length, 1);
+  assert.match(
+    setupGaps(config, [], [])[0],
+    /^a security reviewer \(\.claude\/agents\/security-reviewer\.md\)/,
+  );
+  assert.deepEqual(setupGaps(config, [], ['.claude/agents/security-reviewer.md']), []);
+});

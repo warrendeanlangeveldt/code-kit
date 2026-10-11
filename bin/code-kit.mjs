@@ -8,6 +8,8 @@
 //   graph [--depth N]     which folders import which (to find the layers in existing code)
 //   verify [--base ref] [--branch name] [--no-checks]
 //                         the rules for everything this branch changed since base (for CI and review)
+//   security [--base ref] [--branch name] [--json]
+//                         whether a branch's changes need the security reviewer, and why (ONB-7)
 //   status [--base ref] [--json]
 //                         each story and requirement in the plan: built, in review, ready, blocked, tested
 //   adapters              other tools detected in the project, what each adds to the rules, and its setup
@@ -52,6 +54,12 @@ import { nextStep } from '../hooks/lib/next.mjs';
 import { traceFile } from '../hooks/lib/trace.mjs';
 import { buildStatus, specCheckRows } from '../hooks/lib/plan.mjs';
 import { recordSentBack } from '../hooks/lib/reviews.mjs';
+import {
+  SECURITY_AGENT,
+  SECURITY_AGENT_FILE,
+  reasonsInWords,
+  securityReview,
+} from '../hooks/lib/security.mjs';
 import { storyTimes } from '../hooks/lib/timeline.mjs';
 import { PROJECT, projectMap, storyMap, trail } from '../hooks/lib/storymap.mjs';
 import { journal } from '../hooks/lib/journal.mjs';
@@ -1063,6 +1071,39 @@ function verify() {
   out('No problems.');
 }
 
+/**
+ * ONB-7: whether a branch's changes need the security reviewer, and why: sign-in, permissions, outside
+ * input, personal data, encryption, payments, secrets, commands built from strings, new dependencies,
+ * or a security requirement the story cites.
+ */
+function security() {
+  const { config } = load();
+  const from = base(config, false);
+  let branch = branchName;
+  if (!branch) {
+    try {
+      branch = currentBranch('.');
+    } catch {
+      die('This checkout has no branch; pass --branch <name>.');
+    }
+  }
+  if (!refExists(branch)) die(`--branch ${branch} is not a known branch.`);
+  const found = securityReview(resolve('.'), { base: from, branch, config });
+  if (flag('--json')) return out(JSON.stringify({ base: from, ...found }, null, 2));
+  const what = found.story ? `${found.story} on ${branch}` : branch;
+  if (!found.needed)
+    return out(
+      `${what} needs no security review: against ${from}, it touches no sign-in, permissions, outside input, personal data, encryption, payments or secrets, adds no dependencies and cites no security requirement.`,
+    );
+  out(`${what} needs the security review. Against ${from}, it touches:`);
+  for (const r of found.reasons) out(`  ${reasonsInWords([r])}`);
+  out(
+    found.agent
+      ? `\nRun the ${SECURITY_AGENT} agent on the diff (git diff ${from}...${branch}) with the story's specs and their threat models. A blocker it finds sends the branch back, like a failing test.`
+      : `\nThis project has no ${SECURITY_AGENT} agent (${SECURITY_AGENT_FILE}). Re-run /code-kit:init to add it; until then, review the diff as an attacker would yourself, against the specs' threat models.`,
+  );
+}
+
 const pad = (s, n) => String(s).padEnd(n);
 
 function status() {
@@ -1521,6 +1562,7 @@ const commands = {
   adapters,
   next,
   verify,
+  security,
   status,
   unowned,
   diff,
@@ -1532,6 +1574,7 @@ function usage() {
   die(
     'Usage: code-kit check | who <path>... | unowned | diff | baseline [--write] | graph [--depth N]\n' +
       '              | verify [--base ref] [--branch name] [--no-checks] | status [--base ref] [--json]\n' +
+      '              | security [--base ref] [--branch name] [--json]\n' +
       '              | next [--base ref] [--json] | adapters | trace <path>... [--json]\n' +
       '              | approve <name>... --reason "…" [--lane name]   [--config file]\n' +
       '              | merge <branch> --delegated|--person [--into branch] | requests [--json]\n' +

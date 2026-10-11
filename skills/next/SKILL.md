@@ -41,7 +41,7 @@ Tell the person in one or two lines what you found and what you're about to run,
 Run the named skill with the Skill tool: `code-kit:<step>`, with `args` (and the person's argument, if they gave one). Follow that skill in full. This skill only chooses; it never does a step's work itself.
 
 - **`setup`:** run the skill named in `args` (for example `context-graph:init`); it's another plugin's, so call it by that full name.
-- **`update`:** run `code-kit:init`. `why` names what the setup is missing (the design gate, design stories, a QA lane); init adds those, shows the person the difference, and sets `"setup": 2`. Until then no new story starts; work already started goes on to review and merge.
+- **`update`:** run `code-kit:init`. `why` names what the setup is missing (the design gate, design stories, a QA lane, a security reviewer); init adds those, shows the person the difference, and sets `"setup": 3`. Until then no new story starts; work already started goes on to review and merge.
 - **`lead`:** there's no skill to run. Build each story yourself, on the branch `lead/st-<n>`: spec-check it first if it cites requirements, do the work, commit, then run `code-kit:review` on the branch like any other. A spike's result goes in the docs it names.
 - **`wait`:** say which stories are being built and on which branches, then stop. When a lane agent finishes, its notification arrives in this session; run this skill again then. If a story has been in progress with no agent running (the session ended, or the agent stopped without committing), dispatch it again.
 - **`done`:** give the `status` summary in a few lines, then offer to run spec-design for the next milestone or feature.
