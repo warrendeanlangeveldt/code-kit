@@ -23,10 +23,12 @@ import {
 
 export const TABS = [
   { id: 'lanes', label: 'Lanes', hotkey: '1' },
-  { id: 'code', label: 'Code map', hotkey: '2' },
-  { id: 'map', label: 'Trail', hotkey: '3' },
-  { id: 'queue', label: 'Queue', hotkey: '4' },
-  { id: 'usage', label: 'Usage', hotkey: '5' },
+  { id: 'decisions', label: 'Decisions', hotkey: '2' },
+  { id: 'journal', label: 'Journal', hotkey: '3' },
+  { id: 'code', label: 'Code map', hotkey: '4' },
+  { id: 'map', label: 'Trail', hotkey: '5' },
+  { id: 'queue', label: 'Queue', hotkey: '6' },
+  { id: 'usage', label: 'Usage', hotkey: '7' },
 ];
 
 /** The pane's own state, kept by the mod between draws. */
@@ -182,6 +184,8 @@ export function lanesFrame(view, els, on) {
       children: [
         text('!', { color: 'yellow', bold: true }),
         text(line.text, { bold: true }),
+        // DECIDE-2: which story it's for.
+        ...(line.context ? [text(line.context, { dimColor: true, wrap: 'truncate-end' })] : []),
         ...actions.map((a) => {
           const letter = LETTER[a.id] && !used.has(LETTER[a.id]) ? LETTER[a.id] : undefined;
           if (letter) used.add(letter);
@@ -263,40 +267,48 @@ export function lanesFrame(view, els, on) {
 
   const selected = state.lanes.find((l) => l.name === ui.selected) ?? null;
   const body =
-    ui.tab === 'code'
-      ? codeTab(view, els, on)
-      : ui.tab === 'map'
-        ? mapTab(view.status, ui.cell, els, on, view.trail, {
-            surface: view.surface,
-            columns: view.columns,
-          })
-        : ui.tab === 'queue'
-          ? queueSection(loop, text, Box)
-          : ui.tab === 'usage'
-            ? usageSection(view.usage, plan, text, Box)
-            : [
-                lanesPane(state, els, view.usage, plan, loop, {
-                  filter: ui.filter,
-                  search: ui.search,
-                  selected: ui.selected,
-                  live: view.live ?? {},
-                  art: view.art ?? null,
-                  detail: selected
-                    ? {
-                        agent: selected.agent ?? null,
-                        owns: view.paths?.[selected.name] ?? [],
-                        stories: laneStories(selected, state),
-                      }
-                    : null,
-                  combined: view.combined ?? null,
-                }),
-              ];
+    ui.tab === 'decisions'
+      ? decisionsTab(view.cards ?? [], ui, els, on)
+      : ui.tab === 'journal'
+        ? journalTab(view.journal ?? [], els, view.now)
+        : ui.tab === 'code'
+          ? codeTab(view, els, on)
+          : ui.tab === 'map'
+            ? mapTab(view.status, ui.cell, els, on, view.trail, {
+                surface: view.surface,
+                columns: view.columns,
+              })
+            : ui.tab === 'queue'
+              ? queueSection(loop, text, Box)
+              : ui.tab === 'usage'
+                ? usageSection(view.usage, plan, text, Box)
+                : [
+                    lanesPane(state, els, view.usage, plan, loop, {
+                      filter: ui.filter,
+                      search: ui.search,
+                      selected: ui.selected,
+                      live: view.live ?? {},
+                      art: view.art ?? null,
+                      detail: selected
+                        ? {
+                            agent: selected.agent ?? null,
+                            owns: view.paths?.[selected.name] ?? [],
+                            stories: laneStories(selected, state),
+                          }
+                        : null,
+                      combined: view.combined ?? null,
+                    }),
+                  ];
   const empty =
-    ui.tab === 'queue'
-      ? 'The merge queue is empty.'
-      : ui.tab === 'usage'
-        ? 'No usage measured yet this session.'
-        : null;
+    ui.tab === 'decisions'
+      ? 'Nothing needs you. The lead is handling the build.'
+      : ui.tab === 'journal'
+        ? 'Nothing recorded yet: the journal starts with the brief.'
+        : ui.tab === 'queue'
+          ? 'The merge queue is empty.'
+          : ui.tab === 'usage'
+            ? 'No usage measured yet this session.'
+            : null;
 
   // VIEW-6: j/k move between lanes; the selected lane's acts; f filters.
   const opening = selected ? storyToOpen(selected, state) : null;
@@ -1199,4 +1211,168 @@ export function codeTab(view, { Box, Text, Button, Svg }, on) {
     ),
   });
   return [picker, drawing, legend, detail, keys];
+}
+
+/**
+ * DECIDE-3: the Decisions tab: each decision that needs the person, the selected one as a card with its
+ * lineage (what they asked for, the story and requirements, what was happening, what's settled, why it
+ * needs them) and its options, each saying what it does. `on`: onDecision(i), onNeed(id, line).
+ */
+export function decisionsTab(cards, ui, { Box, Text, Button }, on) {
+  const text = (value, style = {}) => Text({ ...style, children: [value] });
+  if (!cards.length) return [];
+  const at = Math.min(ui.decision ?? 0, cards.length - 1);
+  const card = cards[at];
+  const row = (label, value, style = {}) =>
+    Box({
+      key: `decision-${label}`,
+      flexDirection: 'row',
+      columnGap: 1,
+      children: [
+        text(label.padEnd(15), { dimColor: true }),
+        text(value, { wrap: 'wrap', ...style }),
+      ],
+    });
+  const list = Box({
+    key: 'decision-list',
+    flexDirection: 'column',
+    children: cards.map((c, i) =>
+      Button({
+        key: `decision-pick-${i}`,
+        label: `${i === at ? '›' : ' '} ${c.title}`,
+        plain: true,
+        onPress: () => on.onDecision(i),
+      }),
+    ),
+  });
+  const detail = Box({
+    key: 'decision-card',
+    flexDirection: 'column',
+    borderStyle: 'round',
+    borderColor: 'yellow',
+    paddingX: 1,
+    rowGap: 0,
+    children: [
+      text(card.title, { bold: true }),
+      ...(card.asked ? [row('You asked for', card.asked)] : []),
+      ...(card.story
+        ? [
+            row(
+              'Story',
+              `${card.story.id} ${card.story.title}${card.story.branch ? ` · ${card.story.branch}` : ''}`,
+            ),
+          ]
+        : []),
+      ...(card.requirements.length
+        ? [
+            row(
+              'Requirements',
+              card.requirements.map((r) => `${r.id}${r.title ? ` ${r.title}` : ''}`).join('; '),
+            ),
+          ]
+        : []),
+      ...(card.doing ? [row('Happening', card.doing)] : []),
+      ...(card.settled.length
+        ? [
+            text('Already settled', { dimColor: true }),
+            ...card.settled.map((line, i) =>
+              Box({
+                key: `decision-settled-${i}`,
+                children: [text(`  · ${line}`, { wrap: 'wrap' })],
+              }),
+            ),
+          ]
+        : []),
+      ...(card.why ? [row('Why it is yours', card.why, { color: 'yellow' })] : []),
+      text('Your options', { dimColor: true }),
+      ...card.options.map((o) =>
+        Box({
+          key: `decision-option-${o.id}`,
+          flexDirection: 'row',
+          columnGap: 2,
+          children: [
+            Button({
+              key: `decide-${o.id}`,
+              label: o.label,
+              ...(o.hotkey ? { hotkey: o.hotkey } : {}),
+              variant: 'primary',
+              onPress: () => on.onNeed(o.id, card.line),
+            }),
+            ...(o.effect ? [text(o.effect, { dimColor: true, wrap: 'wrap' })] : []),
+          ],
+        }),
+      ),
+    ],
+  });
+  return [
+    text(
+      `${cards.length} decision${cards.length === 1 ? '' : 's'} need${cards.length === 1 ? 's' : ''} you. Everything else is the lead's.`,
+      { bold: true },
+    ),
+    ...(cards.length > 1 ? [list] : []),
+    detail,
+  ];
+}
+
+const JOURNAL_GLYPH = {
+  request: '✦',
+  decision: '◆',
+  spec: '▤',
+  setup: '⚙',
+  dispatch: '→',
+  sentBack: '↩',
+  merge: '✓',
+  approval: '✔',
+  milestone: '★',
+  loop: '·',
+};
+
+/**
+ * JOURNAL-1: the Journal tab: the build's lineage, newest last, each event with its time and a glyph,
+ * your own approvals and choices marked. The latest 60 are drawn.
+ */
+export function journalTab(events, { Box, Text }, now = Date.now()) {
+  const text = (value, style = {}) => Text({ ...style, children: [value] });
+  if (!events.length) return [];
+  const shown = events.slice(-60);
+  const day = (at) => new Date(at).toISOString().slice(0, 10);
+  const time = (at) => new Date(at).toISOString().slice(11, 16);
+  const rows = [];
+  let lastDay = null;
+  shown.forEach((e, i) => {
+    if (day(e.at) !== lastDay) {
+      lastDay = day(e.at);
+      rows.push(
+        Box({ key: `journal-day-${i}`, children: [text(lastDay, { bold: true, dimColor: true })] }),
+      );
+    }
+    const yours = e.who === 'person' || e.kind === 'request';
+    rows.push(
+      Box({
+        key: `journal-${i}`,
+        flexDirection: 'row',
+        columnGap: 1,
+        children: [
+          text(time(e.at), { dimColor: true }),
+          text(JOURNAL_GLYPH[e.kind] ?? '·', {
+            color: yours
+              ? 'yellow'
+              : e.kind === 'merge' || e.kind === 'milestone'
+                ? 'green'
+                : e.kind === 'sentBack'
+                  ? 'magenta'
+                  : undefined,
+          }),
+          text(e.text, { wrap: 'wrap', ...(yours ? { color: 'yellow' } : {}) }),
+        ],
+      }),
+    );
+  });
+  return [
+    text(
+      `From your request to now: ${events.length} event${events.length === 1 ? '' : 's'}${events.length > shown.length ? `, the latest ${shown.length} shown` : ''}. Yours are in yellow.`,
+      { dimColor: true },
+    ),
+    Box({ key: 'journal', flexDirection: 'column', children: rows }),
+  ];
 }

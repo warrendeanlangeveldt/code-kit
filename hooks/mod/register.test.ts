@@ -97,6 +97,8 @@ function project() {
     allowed: false, // an approval in force: the hooks beneath let the call through
     bashRuns: 0,
     delegateExit: 1,
+    delegateRefusal:
+      'This project delegates no approvals to the lead ("approvals.delegate" isn\'t set). Ask the person.',
     delegated: [] as string[][],
     holds: [] as string[][],
     draft: '', // what the person has typed in the prompt
@@ -151,6 +153,7 @@ function project() {
     loopPaused: false, // the pause recorded by `code-kit loop`
     map: null as any, // `code-kit map <story> --json`
     trail: null as any, // `code-kit trail --json`
+    journal: { events: [] as any[] }, // `code-kit journal --json`
     holdWaits: false, // false: the hold ends at once, as if timed out (tests about cards, not hold)
     waiting: new Map<string, (answer: string) => void>(),
   };
@@ -190,6 +193,7 @@ function stub(on: any, w: World) {
       return ran(0, JSON.stringify({ base: 'main', now: 0, stories: w.times }));
     if (sub === 'map') return ran(w.map ? 0 : 1, JSON.stringify(w.map));
     if (sub === 'trail') return ran(w.trail ? 0 : 1, JSON.stringify(w.trail));
+    if (sub === 'journal') return ran(0, JSON.stringify(w.journal));
     if (sub === 'loop' && ['pause', 'resume'].includes(argv[3])) {
       w.acts.push([...argv.slice(2)]);
       w.loopPaused = argv[3] === 'pause';
@@ -209,7 +213,7 @@ function stub(on: any, w: World) {
     if (sub === 'approve' && argv.includes('--delegated')) {
       w.delegated.push([...argv.slice(2)]);
       if (w.delegateExit === 0) w.allowed = true;
-      return ran(w.delegateExit, '', w.delegateExit ? 'Nothing was approved.' : '');
+      return ran(w.delegateExit, '', w.delegateExit ? w.delegateRefusal : '');
     }
     if (sub === 'hold') {
       const id = argv[3];
@@ -1220,6 +1224,117 @@ test('HOLD-1 and HOLD-2 a lane installing a new package is held, and the band as
   w.waiting.get('tu-h1')?.('timed out');
 });
 
+test('DECIDE-2 a decision in the band says which story it is for, and d opens it as a card with its lineage', async ($, on) => {
+  const w = project();
+  w.refusal = webInstall;
+  w.stories[0] = { ...w.stories[0], requirements: ['BOOK-1'] };
+  w.requirements = [{ id: 'BOOK-1', title: 'Request a booking', state: 'in progress' }];
+  w.journal = {
+    events: [
+      { at: 1, kind: 'request', text: 'You asked for “Bookings”: guests book a room online.' },
+      {
+        at: 2,
+        kind: 'dispatch',
+        story: 'ST-4',
+        text: 'ST-4 Booking form (BOOK-1) was handed to the web lane.',
+      },
+    ],
+  };
+  w.agents = [{ id: 'a1', type: 'web-engineer', description: 'ST-4', status: 'running' }];
+  const clock = await start($, on, w);
+  await lanes($);
+  await heldCall($, w, clock);
+  const band = await bandUi($);
+  expect(await band.find({ type: 'Text', text: 'for ST-4 Booking form (BOOK-1)' })).toBeDefined();
+  expect((await band.find({ key: 'band-decide' }))?.props.hotkey).toBe('d');
+  await press($, 'band-decide');
+  await band.unmount();
+  const ui = await pane($, PANE);
+  const card = await ui.find({ key: 'decision-card' });
+  expect(card?.text).toMatch(/ST-4 Booking form · web\/st-4/);
+  expect(card?.text).toMatch(/BOOK-1 Request a booking/);
+  expect(card?.text).toMatch(/npm install dayjs/);
+  expect(card?.text).toMatch(/ST-4 Booking form \(BOOK-1\) was handed to the web lane/);
+  expect(card?.text).toMatch(
+    /Blocked: a new dependency \(dayjs\) needs a person's approval\. You haven't let the lead approve these itself\./,
+  );
+  expect((await ui.find({ key: 'decision-option-approveHeld' }))?.text).toMatch(
+    /The held call runs now, and the agent carries on/,
+  );
+  await ui.unmount();
+  w.waiting.get('tu-h1')?.('timed out');
+});
+
+test('DECIDE-3 an option on the card answers the decision, as the band would', async ($, on) => {
+  const w = project();
+  w.refusal = webInstall;
+  w.agents = [{ id: 'a1', type: 'web-engineer', description: 'ST-4', status: 'running' }];
+  const clock = await start($, on, w);
+  await lanes($);
+  const { call } = await heldCall($, w, clock);
+  const band = await bandUi($);
+  await press($, 'band-decide');
+  await band.unmount();
+  const ui = await pane($, PANE);
+  await press($, 'decide-refuseHeld', PANE);
+  expect(refused(await call)).toBe(true);
+  await ui.unmount();
+  const after = await bandUi($);
+  expect(await after.find({ key: 'band-decide' })).toBeUndefined();
+  await after.unmount();
+});
+
+test('DECIDE-3 notes are labelled note, not you, and need no decision', async ($, on) => {
+  const w = project();
+  w.limits = [{ kind: 'five_hour', percentUsed: 91 }];
+  await start($, on, w);
+  const band = await bandUi($);
+  expect(await band.find({ type: 'Text', text: 'you' })).toBeUndefined();
+  expect(await band.find({ key: 'band-decide' })).toBeUndefined();
+  await band.unmount();
+});
+
+test('JOURNAL-1 the Journal tab tells the lineage, from the request to now, with the loop and your choices in it', async ($, on) => {
+  const w = project();
+  w.journal = {
+    events: [
+      {
+        at: Date.parse('2026-10-01T09:00:00Z'),
+        kind: 'request',
+        text: 'You asked for “Bookings”.',
+      },
+      {
+        at: Date.parse('2026-10-01T09:30:00Z'),
+        kind: 'dispatch',
+        story: 'ST-4',
+        text: 'ST-4 Booking form was handed to the web lane.',
+      },
+      {
+        at: Date.parse('2026-10-02T10:00:00Z'),
+        kind: 'approval',
+        who: 'person',
+        text: 'You approved adding the package dayjs: “dates”.',
+      },
+      {
+        at: Date.parse('2026-10-02T11:00:00Z'),
+        kind: 'merge',
+        story: 'ST-4',
+        text: 'ST-4 Booking form was merged into main.',
+      },
+    ],
+  };
+  await start($, on, w);
+  await lanes($);
+  const ui = await pane($, PANE);
+  expect((await ui.find({ key: 'tab-journal' }))?.props.hotkey).toBe('3');
+  await press($, 'tab-journal', PANE);
+  const journal = await ui.find({ key: 'journal' });
+  expect(journal?.text).toMatch(
+    /2026-10-01[\s\S]*You asked for “Bookings”[\s\S]*handed to the web lane[\s\S]*2026-10-02[\s\S]*You approved adding the package dayjs[\s\S]*merged into main/,
+  );
+  await ui.unmount();
+});
+
 test('HOLD-3 on Approve the approval is written as the pane writes it, and the same call runs', async ($, on) => {
   const w = project();
   w.refusal = webInstall;
@@ -2110,7 +2225,9 @@ test('VIEW-5 what needs the person is pinned at the top with its letter: a held 
   await heldCall($, w, clock);
   await lanes($);
   const ui = await pane($, PANE);
-  expect((await ui.find({ key: 'need-held' }))?.text).toMatch(/web wants to install dayjs/);
+  expect((await ui.find({ key: 'need-held' }))?.text).toMatch(
+    /web wants to install dayjs · 2:00for ST-4 Booking form/,
+  );
   expect((await ui.find({ key: 'need-approveHeld' }))?.props.hotkey).toBe('a');
   await press($, 'need-approveHeld', PANE);
   expect(w.opened).toContain(APPROVE);
@@ -2118,14 +2235,14 @@ test('VIEW-5 what needs the person is pinned at the top with its letter: a held 
   w.waiting.get('tu-h1')?.('timed out');
 });
 
-test('VIEW-6 tabs on 1 to 5, j and k move between lanes, and the selected lane has its keys', async ($, on) => {
+test('VIEW-6 tabs on 1 to 7, j and k move between lanes, and the selected lane has its keys', async ($, on) => {
   const w = project();
   w.agents = [{ id: 'a1', type: 'web-engineer', description: 'ST-4', status: 'running' }];
   await start($, on, w);
   await lanes($);
   const ui = await pane($, PANE);
-  expect((await ui.find({ key: 'tab-queue' }))?.props.hotkey).toBe('4');
-  expect((await ui.find({ key: 'tab-code' }))?.props.hotkey).toBe('2');
+  expect((await ui.find({ key: 'tab-queue' }))?.props.hotkey).toBe('6');
+  expect((await ui.find({ key: 'tab-code' }))?.props.hotkey).toBe('4');
   await press($, 'tab-queue', PANE);
   expect(await ui.find({ type: 'Text', text: 'The merge queue is empty.' })).toBeDefined();
   await press($, 'tab-lanes', PANE);
@@ -2305,7 +2422,7 @@ test('TRACE-1 the map: a cell per requirement, a row per spec, and a legend with
   await lanes($);
   const ui = await pane($, PANE);
   expect((await ui.find({ key: 'tab-map' }))?.props.label).toBe('Trail');
-  expect((await ui.find({ key: 'tab-map' }))?.props.hotkey).toBe('3');
+  expect((await ui.find({ key: 'tab-map' }))?.props.hotkey).toBe('5');
   await press($, 'tab-map', PANE);
   const legend = (await ui.find({ key: 'map-legend' }))?.text ?? '';
   expect(legend).toMatch(/■ 20 done and tested/);

@@ -46,7 +46,8 @@ import {
   toolLine,
 } from './panes.mjs';
 import { leadPrompt, nudgeText, restartPrompt, stallDue, stepKey, stepLabel } from './loop.mjs';
-import { nextText } from './mission.mjs';
+import { goalOf, nextText } from './mission.mjs';
+import { contextOf, decisionCards } from './decisions.mjs';
 import { glowOf, mapStoryOf, touchOf } from './codemap.mjs';
 import { harnessSettings } from '../lib/harness.mjs';
 import {
@@ -128,6 +129,7 @@ let paneSurface = null;
 let paneColumns = 80;
 let codeMap = null; // MAP-1: `code-kit map <story> --json` for the Code map tab's story
 let trailData = null; // TRAIL-1: `code-kit trail --json` while the Trail tab shows
+let journalData = null; // JOURNAL-1: `code-kit journal --json`, for the Journal tab and the decisions
 const touches = []; // MAP-2: { path, verb, lane, at }, the files agents read and edited lately
 const TOUCHES_KEPT = 200;
 // The reviewer (spec 07): each branch's review at its head, and the agent type registered for it.
@@ -244,6 +246,10 @@ export function register(on) {
           codeMap = id ? ((await json('map', id)) ?? codeMap) : null;
         }
         if (paneUi.tab === 'map') trailData = (await json('trail')) ?? trailData;
+        // JOURNAL-1, DECIDE-2: the lineage, for the Journal tab and the decisions' cards.
+        const deciding = held.size > 0 || (model.requests?.open ?? []).length > 0;
+        if (model.check?.docs?.plan && (['journal', 'decisions'].includes(paneUi.tab) || deciding))
+          journalData = (await json('journal')) ?? journalData;
       },
       // REVW-2: the reviewer, read-only by the hooks' rule for agents outside the lanes. Registered
       // again when its model setting changes.
@@ -405,6 +411,21 @@ export function register(on) {
         });
         // Opened but not drawn yet: it waits for room, and the reason says what seats it.
         if (!placed.isPlaced) return { text: `The Lanes pane is waiting: ${placed.reason}` };
+        return {};
+      },
+      // DECIDE-3: the Decisions tab, on the decision the person asked about.
+      decide: async (line) => {
+        const cards = cardsNow(await $.clock.now());
+        const at = Math.max(
+          0,
+          cards.findIndex((c) => c.line.kind === line?.kind),
+        );
+        paneUi = { ...paneUi, tab: 'decisions', decision: at, story: null };
+        if (!(await $.ui.panes()).some((p) => p.id === PANE_ID))
+          await $.ui.open({ id: PANE_ID, title: 'Lanes', focus: true, closeOnEscape: true });
+        $.ui.invalidate('ui.render');
+        await act.readMaps();
+        $.ui.invalidate('ui.render');
         return {};
       },
       // ACT-1: the confirmation, prefilled from the request.
@@ -1081,6 +1102,7 @@ export function register(on) {
       // HOLD-6: nobody to ask (claude -p, the SDK), or hold switched off: refused as today.
       if (!ask || !where?.interactive || minutes <= 0 || model.state?.kind !== 'ok') return res;
       const id = e.tool_use_id;
+      let outsideLimits = null;
       // HOLD-5: under autonomy, the project's delegated rules decide first, without asking.
       if ((settings?.autonomy ?? 'autonomous') === 'autonomous') {
         const delegated = await $.process.run(
@@ -1097,6 +1119,8 @@ export function register(on) {
           { cwd: where.cwd, timeoutMs: 60000 },
         );
         if (delegated.exitCode === 0) return next(e);
+        // DECIDE-2: why it's outside the limits the person set, for the decision's card.
+        outsideLimits = (delegated.stderr || delegated.stdout || '').trim();
       }
       const agent = e.agentId ? agentsSeen.get(e.agentId) : null;
       held.set(id, {
@@ -1109,6 +1133,10 @@ export function register(on) {
         what: ask.what,
         since: await $.clock.now(),
         minutes,
+        // DECIDE-2: the call itself, the rule that refused it, and why the lead couldn't approve it.
+        command: e.command ?? e.file_path ?? null,
+        refusal: text.split('\n')[0],
+        outside: outsideLimits,
       });
       $.ui.invalidate('ui.render');
       // The wait is a process the band's answer ends (`code-kit hold`), so it isn't the hook's own time.
@@ -1364,7 +1392,58 @@ export function register(on) {
     };
   };
   // The band's lines, which the pane pins as what needs the person (VIEW-5).
-  const linesNow = (now) =>
+  // JOURNAL-1: the lineage from the project's records, with this session's loop steps and your own acts
+  // in it, in time order.
+  const STEP_WORDS = {
+    dispatch: (t) => `The loop asked the lead to hand out ${t}.`,
+    review: (t) => `The loop asked the lead to review ${t}.`,
+    lead: (t) => `The loop asked the lead to build ${t} itself.`,
+    merge: (t) => `The loop asked the lead to merge ${t}.`,
+    restart: (t) => `The loop asked the lead to restart ${t}, which had gone quiet.`,
+    nudge: (t) => `The loop nudged ${t}, which had gone quiet.`,
+    flag: (t) => `${t} stalled again after its restarts, so it came to you.`,
+    pause: () => 'You paused the loop.',
+    resume: () => 'You resumed the loop.',
+    done: (t) => `Every story was done (${t}).`,
+  };
+  const journalNow = () => {
+    const recorded = journalData?.events ?? [];
+    const steps = loop.steps
+      .filter((x) => STEP_WORDS[x.kind])
+      .map((x) => ({
+        at: x.at,
+        kind: 'loop',
+        who: ['pause', 'resume'].includes(x.kind) ? 'person' : 'lead',
+        text: STEP_WORDS[x.kind](x.target),
+      }));
+    return [...recorded, ...steps].sort((a, b) => a.at - b.at);
+  };
+  // DECIDE-2: the decisions that need the person, each with its lineage.
+  const cardsNow = (now, lines = linesNowRaw(now)) => {
+    const events = journalData?.events ?? [];
+    const goal = goalOf(model.state?.stories ?? []);
+    const asked =
+      events.find((e) => e.kind === 'request')?.text.replace(/^You asked for /, '') ?? null;
+    return decisionCards(lines, {
+      state: model.state,
+      status: model.status,
+      check: model.check,
+      goal: goal ? goal.name : null,
+      request: asked,
+      journal: events,
+      inForce: model.requests?.inForce ?? [],
+    });
+  };
+  // The band's lines, each that needs the person carrying which story it's for.
+  const linesNow = (now) => {
+    const lines = linesNowRaw(now);
+    const cards = cardsNow(now, lines);
+    return lines.map((l) => {
+      const card = cards.find((c) => c.line === l);
+      return card ? { ...l, context: contextOf(card) } : l;
+    });
+  };
+  const linesNowRaw = (now) =>
     bandLines({
       ...model,
       reviewing,
@@ -1392,6 +1471,9 @@ export function register(on) {
         plan,
         loop: { ...loopNow(now), queue: model.queue ?? [] },
         needs: linesNow(now).filter((l) => !l.mission),
+        cards: cardsNow(now),
+        journal: journalNow(),
+        now,
         live: liveNow(now),
         held: [...held.values()],
         requests: model.requests?.open ?? [],
@@ -1420,6 +1502,10 @@ export function register(on) {
           paneUi = { ...paneUi, tab };
           $.ui.invalidate('ui.render');
           act?.readMaps().then(() => $.ui.invalidate('ui.render'));
+        },
+        onDecision: (i) => {
+          paneUi = { ...paneUi, decision: i };
+          $.ui.invalidate('ui.render');
         },
         onMapStory: (id) => {
           paneUi = { ...paneUi, mapStory: id, mapFile: null };

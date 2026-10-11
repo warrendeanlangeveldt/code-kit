@@ -893,8 +893,10 @@ export function band(lines, { Box, Text, Button }, onAction) {
             : []),
         ],
       });
-    const label = line.mission ? line.label : saidYou ? '' : 'you';
-    if (!line.mission) saidYou = true;
+    // DECIDE-3: what needs the person is labelled "you", once; notes (usage, the plan's pause) are "note".
+    const note = NOTE_KINDS.has(line.kind);
+    const label = line.mission ? line.label : note ? 'note' : saidYou ? '' : 'you';
+    if (!line.mission && !note) saidYou = true;
     return Box({
       key: `band-${line.kind}`,
       flexDirection: 'row',
@@ -909,12 +911,39 @@ export function band(lines, { Box, Text, Button }, onAction) {
           ...(line.kind === 'facts' ? { color: COLOR.facts } : {}),
           children: [line.text],
         }),
+        // DECIDE-2: which story it's for, so it isn't a fragment.
+        ...(line.context
+          ? [Text({ dimColor: true, wrap: 'truncate-end', children: [line.context] })]
+          : []),
         ...buttons(line),
       ],
     });
   });
+  // DECIDE-3: one key opens the decisions as cards, each with its lineage and what each choice does.
+  const first = lines.find((l) => !l.mission && !NOTE_KINDS.has(l.kind));
+  if (first)
+    rows.push(
+      Box({
+        key: 'band-why',
+        flexDirection: 'row',
+        columnGap: 1,
+        children: [
+          Text({ children: [''.padEnd(LABEL)] }),
+          Button({
+            key: 'band-decide',
+            label: 'd Why, and what each choice does',
+            hotkey: 'd',
+            plain: true,
+            onPress: () => onAction('decide', first),
+          }),
+        ],
+      }),
+    );
   return Box({ flexDirection: 'column', children: rows });
 }
+
+/** Band lines that inform rather than ask: they never need the person's answer. */
+const NOTE_KINDS = new Set(['usage', 'paused', 'finish', 'done']);
 
 /** The Approve… confirmation (ACT-1): what it grants, to whom, for how long, and the reason. */
 export function approvePane(

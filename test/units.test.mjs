@@ -1204,3 +1204,57 @@ test('JOURNAL-1 the brief read for the journal: the request, the decisions, and 
   assert.equal(approvalWords('dep-zod'), 'adding the package zod');
   assert.equal(approvalWords('dependency'), 'adding a new package');
 });
+
+test('DECIDE-2 a decision card carries the lineage: the story, its requirements, what was settled, why, and each choice', async () => {
+  const { decisionCards, contextOf, limitsWhy } = await import('../hooks/mod/decisions.mjs');
+  const line = {
+    kind: 'held',
+    text: 'web wants to install dayjs',
+    actions: [
+      { id: 'approveHeld', label: 'Approve', hotkey: '1' },
+      { id: 'refuseHeld', label: 'Refuse', hotkey: '2' },
+    ],
+    held: {
+      lane: 'web',
+      command: 'npm install dayjs',
+      refusal:
+        "Blocked: a new dependency (dayjs) needs a person's approval. Write a short change request.",
+      outside:
+        "Nothing was approved. These are outside the project's delegated rules, so the person decides:\n  dep-dayjs: fewer than 1000 weekly downloads\nAsk the person.",
+    },
+  };
+  const usage = { kind: 'usage', text: 'plan at 91%', actions: [] };
+  const [card, ...rest] = decisionCards([line, usage], {
+    state: {
+      stories: [
+        { id: 'ST-4', title: 'Booking form', branch: 'web/st-4', requirements: ['BOOK-1'] },
+      ],
+      lanes: [{ name: 'web', story: { id: 'ST-4' } }],
+    },
+    status: { requirements: [{ id: 'BOOK-1', title: 'Request a booking' }] },
+    request: 'Bookings',
+    journal: [
+      { kind: 'dispatch', story: 'ST-4', text: 'ST-4 was handed to the web lane.' },
+      { kind: 'dispatch', story: 'ST-9', text: 'ST-9 was handed to the core lane.' },
+    ],
+  });
+  assert.equal(rest.length, 0, 'notes are not decisions');
+  assert.equal(card.asked, 'Bookings');
+  assert.deepEqual(card.story, { id: 'ST-4', title: 'Booking form', branch: 'web/st-4' });
+  assert.deepEqual(card.requirements, [{ id: 'BOOK-1', title: 'Request a booking' }]);
+  assert.equal(card.doing, 'npm install dayjs');
+  assert.deepEqual(card.settled, ['ST-4 was handed to the web lane.']);
+  assert.equal(
+    card.why,
+    "Blocked: a new dependency (dayjs) needs a person's approval. It's outside the limits you set for the lead: dep-dayjs: fewer than 1000 weekly downloads.",
+  );
+  assert.match(card.options[0].effect, /held call runs now/);
+  assert.equal(contextOf(card), 'for ST-4 Booking form (BOOK-1)');
+  assert.equal(
+    limitsWhy(
+      'This project delegates no approvals to the lead ("approvals.delegate" isn\'t set). Ask the person.',
+    ),
+    "You haven't let the lead approve these itself.",
+  );
+  assert.equal(limitsWhy(null), null);
+});
