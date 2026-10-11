@@ -1593,6 +1593,31 @@ else process.exit(2);
       0,
     );
 
+    // TEAM-11: CODEOWNERS from the config.
+    writeFileSync(join(a, '.claude/code-kit.json'), owned);
+    const printed = sam('team', 'codeowners');
+    expect(
+      "TEAM-11 CODEOWNERS names the tech lead for their paths, then each owned lane's owners",
+      truth(
+        printed.stdout.includes('/docs/** @alex') &&
+          printed.stdout.includes('/packages/schemas/** @alex') &&
+          printed.stdout.includes('/apps/office/** @sam') &&
+          printed.stdout.indexOf('@alex') < printed.stdout.indexOf('@sam') &&
+          !printed.stdout.includes('.claude/**'),
+        printed.stdout,
+      ),
+      0,
+    );
+    expect(
+      '--write puts it in .github/CODEOWNERS',
+      truth(
+        sam('team', 'codeowners', '--write').status === 0 &&
+          readFileSync(join(a, '.github/CODEOWNERS'), 'utf8').includes('/apps/office/** @sam'),
+      ),
+      0,
+    );
+    writeFileSync(join(a, '.claude/code-kit.json'), config);
+
     // TEAM-10: an agreed intent becomes a decision record.
     expect(
       "an intent that isn't agreed isn't recorded",

@@ -59,7 +59,7 @@ import { dequeue, enqueue, lastMerged, readQueue, settle, waiting } from '../hoo
 import { SETTINGS, parseSetting, settingOf, withSetting } from '../hooks/lib/harness.mjs';
 import { readLoop, writeLoop } from '../hooks/lib/loop-state.mjs';
 import { claimChanges, storyOfBranch, teamOf, teamProvider, whoami } from '../hooks/lib/team.mjs';
-import { decisionRecord, slugOf } from '../hooks/lib/teamfacts.mjs';
+import { codeowners, decisionRecord, slugOf } from '../hooks/lib/teamfacts.mjs';
 import {
   APPROVAL_MINUTES,
   approvalLifetime,
@@ -1272,6 +1272,20 @@ function teamCommand() {
       `Claimed ${story} as ${r.claim.by}${lease.length ? `, leasing ${lease.join(', ')}` : ''}.`,
     );
   }
+  // TEAM-11: GitHub's CODEOWNERS from the config, so GitHub asks the right people to review.
+  if (sub === 'codeowners') {
+    const text = codeowners({
+      techLead: team.techLead,
+      leadPaths: raw.lead.paths,
+      lanes: raw.lanes,
+    });
+    if (!flag('--write')) return out(text.trimEnd());
+    mkdirSync(resolve('.github'), { recursive: true });
+    writeFileSync(resolve('.github/CODEOWNERS'), text);
+    return out(
+      "Wrote .github/CODEOWNERS. Commit it, and require code owners' review in a ruleset on the protected branch, so GitHub holds every pull request to it.",
+    );
+  }
   // TEAM-9: the holder keeps a stale claim (the clock starts again); the tech lead reassigns one.
   if (sub === 'keep') {
     if (!story) die('code-kit team keep <story>');
@@ -1493,7 +1507,7 @@ function usage() {
       '              | story <id> [--json] | timeline [--json]\n' +
       '              | team [--json] [--fresh] | team since [--json] [--peek]\n' +
       '              | team claim <story> [--lease globs] | team keep|release <story>\n' +
-      '              | team reassign <story> <handle>\n' +
+      '              | team reassign <story> <handle> | team codeowners [--write]\n' +
       '              | intend "<what and why>" [--touches globs] | intend agree|drop|duplicate <id> [--reason "…"] | intend record <id>',
   );
 }

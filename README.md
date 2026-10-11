@@ -357,6 +357,7 @@ code-kit team [--json] [--fresh]                              # the team: tech l
 code-kit team since [--json] [--peek]                         # what everyone pushed, opened, merged, reviewed, claimed and intended since you last looked
 code-kit team claim <story> [--lease globs] | team release <story>   # claim a story for yourself, leasing what it changes; release it (yours, or any as the tech lead)
 code-kit team keep <story> | team reassign <story> <handle>   # keep your stale claim (its clock starts again); the tech lead hands a claim to someone else
+code-kit team codeowners [--write]                            # .github/CODEOWNERS from the config: the tech lead for their paths, each lane's owners for its paths
 code-kit intend "<what and why>" [--touches globs]            # raise a change of direction before any code, as a discussion in the repository's Intents category
 code-kit intend agree|drop|duplicate <id> [--reason "…"]     # the tech lead's answer, from their terminal or the pane
 code-kit intend record <id>                                   # write an agreed intent as a numbered decision record in docs.decisions, for a pull request

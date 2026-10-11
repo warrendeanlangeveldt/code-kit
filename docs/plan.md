@@ -325,7 +325,7 @@ Intents move from issues to discussions in the Intents category, through GitHub'
 **Lane:** lead
 **Requirements:** TEAM-11
 **Depends on:** ST-24
-**Status:** todo
+**Status:** done
 
 `code-kit team codeowners [--write]`: the tech lead for the tech lead's paths, each owned lane's owners for its paths.
 

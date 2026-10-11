@@ -1451,3 +1451,20 @@ test('TEAM-10 a decision record holds only what the discussion says', async () =
     '# Split the report format\n\n**Status:** agreed\n**Date:** 2026-10-11\n**Raised by:** @sam · **Agreed by:** @alex\n**Discussion:** u\n\n## What changes, and why\n\nReports differ per site.\n\n## What it touches\n\n- `docs/reports/**`\n\n## Agreed\n\nper site now\n',
   );
 });
+
+test('TEAM-11 CODEOWNERS from the config, braces expanded and the kit left out', async () => {
+  const { codeowners, ownersPatterns } = await import('../hooks/lib/teamfacts.mjs');
+  assert.deepEqual(ownersPatterns('apps/{web,admin}/**'), ['/apps/web/**', '/apps/admin/**']);
+  assert.deepEqual(ownersPatterns('**/*.sql'), ['**/*.sql']);
+  const text = codeowners({
+    techLead: 'alex',
+    leadPaths: ['docs/**', '.claude/**'],
+    lanes: {
+      web: { paths: ['apps/web/**'], owners: ['sam', 'kim'] },
+      api: { paths: ['apps/api/**'] },
+    },
+  });
+  assert.match(text, /^\/docs\/\*\* @alex$/m);
+  assert.match(text, /^\/apps\/web\/\*\* @sam @kim$/m);
+  assert.doesNotMatch(text, /^\/\.claude|apps\/api/m);
+});
