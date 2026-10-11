@@ -1345,6 +1345,128 @@ else process.exit(2);
       ),
       0,
     );
+    // TEAM-1, TEAM-4: the hooks, as each developer's session runs them.
+    const c = clone('dev2b');
+    const owned = JSON.stringify({
+      ...JSON.parse(fixture),
+      team: { techLead: 'alex' },
+      lanes: {
+        ...JSON.parse(fixture).lanes,
+        web: { ...JSON.parse(fixture).lanes.web, owners: ['sam'] },
+      },
+    });
+    for (const dir of [a, b, c]) writeFileSync(join(dir, '.claude/code-kit.json'), owned);
+    const hookAs = (dir, login) => (name, toolInput, agent) =>
+      spawnSync('node', [join(hooks, name)], {
+        input: JSON.stringify({
+          cwd: dir,
+          tool_name: name === 'guard-bash.mjs' ? 'Bash' : 'Write',
+          tool_input: toolInput,
+          ...(agent ? { agent_type: agent } : {}),
+        }),
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          CLAUDE_PROJECT_DIR: dir,
+          PATH: `${bin}:${process.env.PATH}`,
+          GH_LOGIN: login,
+          GH_STORE: store,
+        },
+      });
+    const dev2Hook = hookAs(c, 'dev2');
+    const samHook = hookAs(a, 'sam');
+    const alexHook = hookAs(b, 'alex');
+    const write = (dir, rel) => ({ file_path: join(dir, rel), content: 'x\n' });
+    expect(
+      "TEAM-1 another developer's lead may not edit the tech lead's paths, and is told to raise an intent",
+      dev2Hook('guard-paths.mjs', write(c, 'docs/notes.md')),
+      2,
+      "docs/notes.md is the tech lead's (alex)",
+    );
+    expect('the tech lead may', alexHook('guard-paths.mjs', write(b, 'docs/notes.md')), 0);
+    expect(
+      "making a story's branch in a lane someone else owns is refused, naming them",
+      dev2Hook('guard-bash.mjs', { command: 'git switch -c web/st-4' }),
+      2,
+      "the web lane is sam's",
+    );
+    expect(
+      "making a story's branch someone else claimed is refused, naming them",
+      dev2Hook('guard-bash.mjs', { command: 'git switch -c core/st-9' }),
+      2,
+      'ST-9 is already claimed by alex',
+    );
+    expect(
+      "the lane's owner makes the branch, which claims the story",
+      truth(
+        samHook('guard-bash.mjs', { command: 'git switch -c web/st-4' }).status === 0 &&
+          JSON.parse(sam('team', '--json', '--fresh').stdout || '{}').claims?.some(
+            (x) => x.story === 'ST-4' && x.by === 'sam',
+          ),
+      ),
+      0,
+    );
+    execFileSync('git', ['-C', a, 'switch', '-q', '-c', 'web/st-4']);
+    mkdirSync(join(a, 'apps/office'), { recursive: true });
+    writeFileSync(join(a, 'apps/office/report.ts'), 'export const r = 1;\n');
+    execFileSync('git', ['-C', a, 'add', 'apps/office/report.ts']);
+    const committed = samHook('guard-bash.mjs', { command: 'git commit -m report' });
+    expect('the commit itself is allowed', committed, 0);
+    const grown = JSON.parse(sam('team', '--json', '--fresh').stdout || '{}').claims?.find(
+      (x) => x.story === 'ST-4',
+    );
+    expect(
+      "TEAM-4 a commit on the story's branch grows its lease with what the branch changes",
+      truth(grown?.lease.includes('apps/office/report.ts'), JSON.stringify(grown)),
+      0,
+    );
+    expect(
+      "another person's agent editing a leased file is refused, naming who leases it and for which story",
+      truth(
+        (() => {
+          sam('team', 'claim', 'ST-4', '--lease', 'docs/reports/**');
+          rmSync(join(b, '.claude/state/team.json'), { force: true });
+          const r = alexHook('guard-paths.mjs', write(b, 'docs/reports/format.md'));
+          return (
+            r.status === 2 && r.stderr.includes('docs/reports/format.md is leased by sam for ST-4')
+          );
+        })(),
+      ),
+      0,
+    );
+    expect(
+      "an edit by another lane's owner's agent in their own lane is that owner's rule, before any lease",
+      alexHook('guard-paths.mjs', write(b, 'apps/office/report.ts'), 'web-engineer'),
+      2,
+      "The web lane is sam's",
+    );
+    expect(
+      'a merged story releases its claim, whoever merged it',
+      truth(
+        spawnSync(
+          'node',
+          [
+            '--input-type=module',
+            '-e',
+            `import { teamProvider } from ${JSON.stringify(join(hooks, 'lib/team.mjs'))};
+             const r = teamProvider(process.cwd(), { techLead: 'alex', provider: 'github', owners: {} }).release('ST-4', { merged: true });
+             process.exit(r.released ? 0 : 1);`,
+          ],
+          {
+            cwd: c,
+            env: {
+              ...process.env,
+              PATH: `${bin}:${process.env.PATH}`,
+              GH_LOGIN: 'dev2',
+              GH_STORE: store,
+            },
+          },
+        ).status === 0,
+      ),
+      0,
+    );
+    for (const dir of [a, b, c]) writeFileSync(join(dir, '.claude/code-kit.json'), config);
+
     // TEAM-8: the shared repository can't be reached.
     execFileSync('git', ['-C', a, 'remote', 'set-url', 'origin', join(root, 'gone.git')]);
     const cut = sam('team', '--fresh');

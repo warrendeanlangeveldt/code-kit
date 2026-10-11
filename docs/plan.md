@@ -262,9 +262,9 @@ Several people in one repository, each with their own agents, coordinated throug
 **Lane:** lead
 **Requirements:** TEAM-1, TEAM-4
 **Depends on:** ST-25
-**Status:** todo
+**Status:** done
 
-The hooks refuse another developer's agent editing the tech lead's paths (raise an intent instead), dispatching a story in a lane someone else owns, dispatching a story someone else claimed, and editing a path another person's claim leases, each naming who and what to do. A dispatch claims the story with its lease, from its code map and the plan; the lease grows with its branch's diff; a merge releases it.
+The hooks refuse another developer's agent editing the tech lead's paths (raise an intent instead), dispatching a story in a lane someone else owns, dispatching a story someone else claimed, and editing a path another person's claim leases, each naming who and what to do. A dispatch claims the story with the lease the lead gives it; making its branch claims it too; the lease grows with each commit by what the branch changed; a merge releases it.
 
 ### ST-27 Intents
 

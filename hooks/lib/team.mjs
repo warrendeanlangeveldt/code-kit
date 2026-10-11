@@ -3,6 +3,7 @@
 import { spawnSync } from 'node:child_process';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
+import { matchesAny } from './glob.mjs';
 
 /** A GitHub handle: letters, digits and single hyphens, at most 39 characters. */
 export const isHandle = (h) =>
@@ -195,7 +196,9 @@ function githubProvider(root, team) {
         GIT_COMMITTER_EMAIL: email,
       };
       const tree = git(['mktree'], { input: '' }).stdout.trim();
-      const message = JSON.stringify({ story, by, at, lease: [...new Set(lease)] });
+      // A lease only grows while the story is open: a claim again adds to it.
+      lease = [...new Set([...(held?.lease ?? []), ...lease])];
+      const message = JSON.stringify({ story, by, at, lease });
       const sha = git(['commit-tree', tree, '-m', message], { env }).stdout.trim();
       const pushed = pushClaim(story, sha, held?.sha ?? '');
       if (!ok(pushed)) {
@@ -207,13 +210,14 @@ function githubProvider(root, team) {
       provider.forget();
       return { ok: true, claim: { story, by, at, lease } };
     },
-    release(story) {
+    /** `merged`: the story merged, so its claim ends whoever releases it. */
+    release(story, { merged = false } = {}) {
       const by = me();
       const claims = fetchClaims();
       if (!claims) return notReached();
       const held = claims.find((c) => c.story === story);
       if (!held) return { ok: true, released: false };
-      if (held.by !== by && by !== team.techLead)
+      if (!merged && held.by !== by && by !== team.techLead)
         return {
           ok: false,
           holder: held,
@@ -346,7 +350,7 @@ function commandProvider(root, team, command) {
   return {
     whoami: () => call('whoami'),
     claim: (story, lease = []) => call('claim', { story, lease }),
-    release: (story) => call('release', { story }),
+    release: (story, { merged = false } = {}) => call('release', { story, merged }),
     state: ({ fresh = false } = {}) => {
       const s = call('state', { fresh });
       return s.unreachable
@@ -375,4 +379,54 @@ function writeCache(root, state) {
   } catch {
     // a read-only checkout: read fresh next time
   }
+}
+
+// --- the rules (TEAM-1, TEAM-4) -----------------------------------------------------------------------
+
+/** The story a branch is for: web/st-4 → ST-4. Null for any other branch. */
+export const storyOfBranch = (branch) => {
+  const m = String(branch ?? '').match(/^[a-z][a-z0-9-]*\/([a-z][a-z0-9]*-\d+)$/i);
+  return m ? m[1].toUpperCase() : null;
+};
+
+/** The lane a story branch is in: web/st-4 → web. */
+export const laneOfBranch = (branch) => (storyOfBranch(branch) ? branch.split('/')[0] : null);
+
+/** The lane that owns a file, by its paths. */
+const laneOf = (rel, config) =>
+  Object.keys(config.lanes).find((name) => {
+    const { paths, exclude = [] } = config.lanes[name];
+    return matchesAny(rel, paths) && !matchesAny(rel, exclude);
+  }) ?? null;
+
+/** The project's own lead paths: the plan, specs and contracts, without the kit's `.claude/**`. */
+const techLeadPaths = (config) => config.lead.paths.filter((p) => p !== '.claude/**' && p !== '*');
+
+/**
+ * Why this person's agent may not write `rel`, as a team, or null. `actor` is the hooks' actor, `branch`
+ * the checkout's branch, `me` the developer's handle, `state` the provider's last-read state. Only what
+ * the config says is checked when the shared repository can't be reached (TEAM-8).
+ */
+export function teamRefusal({ actor, rel, branch, config, me, state }) {
+  const team = teamOf(config);
+  if (!team || !me) return null;
+  const intend = `code-kit intend "<what you'd change, and why>" --touches ${rel}`;
+  if (actor.kind === 'lead' && me !== team.techLead && matchesAny(rel, techLeadPaths(config)))
+    return `${rel} is the tech lead's (${team.techLead}): the plan, specs and contracts change only in their sessions, so the team agrees a change before code is built on it. Raise it as an intent instead: ${intend}`;
+  const owners = actor.kind === 'lane' ? team.owners[actor.lane] : null;
+  if (owners && !owners.includes(me))
+    return `The ${actor.lane} lane is ${owners.join(' and ')}'s, so agents in your session don't work it. Leave this story for them, or ask the tech lead (${team.techLead}) to change the lane's owners.`;
+  if (!state || state.reachable === false) return null;
+  const story = storyOfBranch(branch);
+  const theirs = state.claims.find((c) => c.story === story && c.by !== me);
+  if (theirs)
+    return `${story} is ${theirs.by}'s claim, so this branch is their work. Ask ${theirs.by} or the tech lead (${team.techLead}) to release it before you work on it.`;
+  const fileLane = laneOf(rel, config);
+  if (fileLane && team.owners[fileLane]?.includes(me)) return null;
+  const leased = state.claims.find(
+    (c) => c.by !== me && c.story !== story && c.lease.length && matchesAny(rel, c.lease),
+  );
+  if (leased)
+    return `${rel} is leased by ${leased.by} for ${leased.story}, which is changing it now. Ask ${leased.by}, wait for ${leased.story} to merge, or raise what you need as an intent: ${intend}`;
+  return null;
 }

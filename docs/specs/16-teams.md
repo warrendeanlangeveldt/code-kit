@@ -72,7 +72,7 @@ Without the hub, the GitHub provider implements the interface with refs, issues 
 
 ### TEAM-4 Leases protect what a story changes
 
-When a story is claimed, its lease is the paths its code map and the plan say it changes, and grows as its branch changes more. An edit by another person's agent to a leased path is refused with who holds it and for which story, unless the lane's owner is that person.
+When a story is claimed, its lease is the paths the lead says it will change (`team claim <story> --lease <globs>`, at dispatch), and it grows with each commit on the story's branch by what the branch changed. Making the story's branch claims it if it isn't claimed yet; merging it ends the claim. An edit by another person's agent to a leased path is refused with who holds it and for which story, unless the lane's owner is that person.
 
 **Acceptance**
 

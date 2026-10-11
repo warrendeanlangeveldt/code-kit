@@ -58,7 +58,7 @@ import { journal } from '../hooks/lib/journal.mjs';
 import { dequeue, enqueue, lastMerged, readQueue, settle, waiting } from '../hooks/lib/queue.mjs';
 import { SETTINGS, parseSetting, settingOf, withSetting } from '../hooks/lib/harness.mjs';
 import { readLoop, writeLoop } from '../hooks/lib/loop-state.mjs';
-import { teamOf, teamProvider, whoami } from '../hooks/lib/team.mjs';
+import { storyOfBranch, teamOf, teamProvider, whoami } from '../hooks/lib/team.mjs';
 import {
   APPROVAL_MINUTES,
   approvalLifetime,
@@ -566,6 +566,10 @@ function mergeOne(branch, config, byPerson) {
         'conflict',
       );
     }
+    // TEAM-1: a merged story's claim ends, whoever merged it.
+    const team = teamOf(config);
+    const story = storyOfBranch(branch);
+    if (team && story) teamProvider(resolve('.'), team).release(story, { merged: true });
     // A lane agent's worktree has done its work once its branch is merged: removed when it holds
     // nothing uncommitted (the branch stays), so finished lanes don't pile up checkouts.
     let removed = '';
