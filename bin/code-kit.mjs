@@ -58,7 +58,7 @@ import { journal } from '../hooks/lib/journal.mjs';
 import { dequeue, enqueue, lastMerged, readQueue, settle, waiting } from '../hooks/lib/queue.mjs';
 import { SETTINGS, parseSetting, settingOf, withSetting } from '../hooks/lib/harness.mjs';
 import { readLoop, writeLoop } from '../hooks/lib/loop-state.mjs';
-import { teamOf, whoami } from '../hooks/lib/team.mjs';
+import { teamOf, teamProvider, whoami } from '../hooks/lib/team.mjs';
 import {
   APPROVAL_MINUTES,
   approvalLifetime,
@@ -102,7 +102,8 @@ const via = option('--via');
 const sessionId = option('--session');
 const minutesGiven = option('--minutes');
 const answerGiven = option('--answer');
-const FLAGS = ['--write', '--no-checks', '--json', '--delegated', '--person'];
+const leaseGiven = option('--lease');
+const FLAGS = ['--write', '--no-checks', '--json', '--delegated', '--person', '--fresh'];
 const flag = (name) => args.includes(name);
 const writeBaseline = flag('--write');
 const [command, ...rest] = args.filter((a) => !FLAGS.includes(a));
@@ -1227,6 +1228,84 @@ async function approve(given) {
   );
 }
 
+/** How long ago an ISO time was, in words: "3 hours ago". */
+function ago(iso) {
+  const minutes = Math.max(0, Math.round((Date.now() - Date.parse(iso)) / 60000));
+  if (minutes < 1) return 'just now';
+  if (minutes < 60) return `${minutes} minute${minutes === 1 ? '' : 's'} ago`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 48) return `${hours} hour${hours === 1 ? '' : 's'} ago`;
+  return `${Math.round(hours / 24)} days ago`;
+}
+
+/**
+ * The team (TEAM-2, TEAM-3, TEAM-8): `team` says who's on it and what's claimed, intended and open;
+ * `team claim <story> [--lease globs]` and `team release <story>` change a claim through the provider.
+ */
+function teamCommand() {
+  const { raw } = load();
+  const team = teamOf(raw);
+  if (!team)
+    die(
+      'This project has no "team" in its config, so it has no claims or owners. Add "team": { "techLead": "<GitHub handle>" } to share them.',
+    );
+  const provider = teamProvider(resolve('.'), team);
+  const [sub, story] = rest;
+  const holderWords = (h) =>
+    `${h.story} is claimed by ${h.by} (${ago(h.at)}). Ask them, or the tech lead (${team.techLead}), to release it.`;
+  if (sub === 'claim') {
+    if (!story) die('code-kit team claim <story> [--lease "<glob>,<glob>"]');
+    const lease = (leaseGiven ?? '')
+      .split(',')
+      .map((g) => g.trim())
+      .filter(Boolean);
+    const r = provider.claim(story, lease);
+    if (r.holder) die(holderWords(r.holder));
+    if (!r.ok) die(r.why);
+    return out(
+      `Claimed ${story} as ${r.claim.by}${lease.length ? `, leasing ${lease.join(', ')}` : ''}.`,
+    );
+  }
+  if (sub === 'release') {
+    if (!story) die('code-kit team release <story>');
+    const r = provider.release(story);
+    if (!r.ok) die(r.why ?? holderWords(r.holder));
+    return out(
+      r.released ? `Released ${story} (${r.claim.by}'s claim).` : `${story} isn't claimed.`,
+    );
+  }
+  if (sub !== undefined)
+    die(
+      'code-kit team [--json] [--fresh] | team claim <story> [--lease globs] | team release <story>',
+    );
+  const state = provider.state({ fresh: flag('--fresh') });
+  if (flag('--json')) return out(JSON.stringify(state, null, 2));
+  const you = state.me
+    ? `You are ${state.me}${state.me === team.techLead ? ', the tech lead' : ''}.`
+    : "You aren't signed in to GitHub (gh auth login).";
+  out(`Tech lead: ${team.techLead}. ${you}`);
+  if (state.reachable === false)
+    out(
+      `${state.why ?? "The shared repository can't be reached"}: claims and leases aren't checked until it can be; every other rule still holds.`,
+    );
+  if (state.github === false) out("GitHub's issues and pull requests couldn't be read (gh).");
+  for (const [lane, owners] of Object.entries(team.owners))
+    out(`Lane ${lane}: ${owners.join(', ')}`);
+  out(state.claims.length ? 'Claims:' : 'Nothing is claimed.');
+  for (const c of state.claims)
+    out(
+      `  ${c.story} by ${c.by}, ${ago(c.at)}${c.lease.length ? ` · leases ${c.lease.join(', ')}` : ''}`,
+    );
+  if (state.intents.length) out('Intents:');
+  for (const i of state.intents)
+    out(
+      `  #${i.id} ${i.about} (${i.by})${i.touches.length ? ` · touches ${i.touches.join(', ')}` : ''}`,
+    );
+  if (state.pulls.length) out('Open pull requests:');
+  for (const p of state.pulls)
+    out(`  #${p.number} ${p.title} (${p.by}, ${p.branch}${p.draft ? ', draft' : ''})`);
+}
+
 /**
  * The lead loop's pause (LOOP-6): `loop` says whether the person paused it; `loop pause|resume`, the
  * person's act from the code-kit band, records it, so other tools' background work pauses with it.
@@ -1259,6 +1338,7 @@ const commands = {
   settings,
   hold: () => (rest.length === 1 ? hold(rest[0]) : usage()),
   queue,
+  team: teamCommand,
   story: () => (rest.length === 1 ? story(rest[0]) : usage()),
   map: () => (rest.length === 1 ? mapCommand(rest[0]) : usage()),
   trail: trailCommand,
@@ -1289,7 +1369,8 @@ function usage() {
       '              | queue [--json] | queue add|drop <branch> | queue rules | queue merge --delegated|--person\n' +
       '              | loop [--json] | loop pause|resume\n' +
       '              | map <story> [--json] | trail [--json] | journal [--json]\n' +
-      '              | story <id> [--json] | timeline [--json]',
+      '              | story <id> [--json] | timeline [--json]\n' +
+      '              | team [--json] [--fresh] | team claim <story> [--lease globs] | team release <story>',
   );
 }
 await (commands[command] ?? usage)();

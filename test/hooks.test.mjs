@@ -1191,6 +1191,216 @@ try {
     );
   }
 
+  // --- TEAM-2, TEAM-3, TEAM-8: two developers share claims through the repository --------------------
+  {
+    const root = mkdtempSync(join(tmpdir(), 'ck-team-'));
+    cleanups.push(root);
+    const origin = join(root, 'origin.git');
+    execFileSync('git', ['init', '-q', '--bare', '-b', 'main', origin]);
+    const store = join(root, 'github.json');
+    writeFileSync(
+      store,
+      JSON.stringify({
+        issues: [
+          {
+            number: 12,
+            title: 'Move report storage to the data lane',
+            body: 'Touches: packages/schemas/**, apps/api/reports/**\n\nWhy.',
+            author: { login: 'alex' },
+            labels: ['code-kit:intent'],
+            state: 'open',
+            createdAt: '2026-10-10T00:00:00Z',
+            url: 'https://github.com/o/r/issues/12',
+          },
+        ],
+        pulls: [
+          {
+            number: 14,
+            title: 'Booking list',
+            author: { login: 'sam' },
+            headRefName: 'web/st-4',
+            isDraft: true,
+            updatedAt: '2026-10-10T00:00:00Z',
+            url: 'https://github.com/o/r/pull/14',
+          },
+        ],
+      }),
+    );
+    // A stand-in for the GitHub CLI, answering from the store as the person in GH_LOGIN.
+    const bin = join(root, 'bin');
+    mkdirSync(bin);
+    writeFileSync(
+      join(bin, 'gh'),
+      `#!/usr/bin/env node
+const { readFileSync, writeFileSync } = require('node:fs');
+const a = process.argv.slice(2), file = process.env.GH_STORE, login = process.env.GH_LOGIN;
+const db = JSON.parse(readFileSync(file, 'utf8'));
+const opt = (n) => a[a.indexOf(n) + 1];
+if (process.env.GH_DOWN) process.exit(1);
+if (a[0] === 'api' && a[1] === 'user') { if (!login) process.exit(1); console.log(login); }
+else if (a[0] === 'label') {}
+else if (a[0] === 'issue' && a[1] === 'list') console.log(JSON.stringify(db.issues.filter((i) => i.state === 'open' && i.labels.includes(opt('--label')))));
+else if (a[0] === 'issue' && a[1] === 'create') { const number = 100 + db.issues.length; db.issues.push({ number, title: opt('--title'), body: opt('--body'), author: { login }, labels: [opt('--label')], state: 'open', createdAt: new Date().toISOString(), url: 'https://github.com/o/r/issues/' + number }); writeFileSync(file, JSON.stringify(db)); console.log('https://github.com/o/r/issues/' + number); }
+else if (a[0] === 'pr' && a[1] === 'list') console.log(JSON.stringify(db.pulls));
+else process.exit(2);
+`,
+    );
+    chmodSync(join(bin, 'gh'), 0o755);
+    const config = JSON.stringify({ ...JSON.parse(fixture), team: { techLead: 'alex' } });
+    const clone = (name) => {
+      const dir = join(root, name);
+      execFileSync('git', ['clone', '-q', origin, dir], { stdio: 'ignore' });
+      mkdirSync(join(dir, '.claude'), { recursive: true });
+      writeFileSync(join(dir, '.claude/code-kit.json'), config);
+      return dir;
+    };
+    const a = clone('sam');
+    const b = clone('dev2');
+    const as =
+      (dir, login, extra = {}) =>
+      (...args) =>
+        spawnSync('node', [kitCli, ...args], {
+          cwd: dir,
+          encoding: 'utf8',
+          env: {
+            ...process.env,
+            PATH: `${bin}:${process.env.PATH}`,
+            GH_LOGIN: login,
+            GH_STORE: store,
+            ...extra,
+          },
+        });
+    const sam = as(a, 'sam');
+    const dev2 = as(b, 'dev2');
+    const claimed = sam('team', 'claim', 'ST-9', '--lease', 'packages/core/**');
+    expect(
+      'TEAM-3 a developer claims a story through the shared repository',
+      truth(claimed.status === 0 && claimed.stdout.includes('Claimed ST-9 as sam'), claimed.stderr),
+      0,
+    );
+    const seen = JSON.parse(dev2('team', '--json', '--fresh').stdout || '{}');
+    expect(
+      "another developer's session sees the claim with its lease",
+      truth(
+        seen.reachable === true &&
+          seen.me === 'dev2' &&
+          seen.claims?.some(
+            (c) => c.story === 'ST-9' && c.by === 'sam' && c.lease[0] === 'packages/core/**',
+          ),
+        JSON.stringify(seen.claims),
+      ),
+      0,
+    );
+    expect(
+      'and its own claim of the story fails, naming who holds it',
+      dev2('team', 'claim', 'ST-9'),
+      1,
+      'ST-9 is claimed by sam',
+    );
+    expect(
+      'the intents and open pull requests come from GitHub, with what each touches',
+      truth(
+        seen.intents?.[0]?.id === 12 &&
+          seen.intents[0].touches.join() === 'packages/schemas/**,apps/api/reports/**' &&
+          seen.pulls?.[0]?.branch === 'web/st-4' &&
+          seen.pulls[0].draft === true,
+        JSON.stringify({ intents: seen.intents, pulls: seen.pulls }),
+      ),
+      0,
+    );
+    expect(
+      "a developer can't release someone else's claim",
+      dev2('team', 'release', 'ST-9'),
+      1,
+      "ST-9 is sam's claim: only they or the tech lead (alex) can release it.",
+    );
+    const regrown = sam('team', 'claim', 'ST-9', '--lease', 'packages/core/**,apps/web/**');
+    expect(
+      'the holder can claim it again, with a grown lease',
+      truth(regrown.status === 0, regrown.stderr),
+      0,
+    );
+    // The same clone, now as the tech lead.
+    rmSync(join(b, '.claude/state/whoami.json'), { force: true });
+    const alex = as(b, 'alex');
+    expect(
+      'the tech lead can release any claim',
+      truth(alex('team', 'release', 'ST-9').stdout.includes("Released ST-9 (sam's claim)")),
+      0,
+    );
+    expect(
+      'and after it, the story is free for anyone',
+      truth(alex('team', 'claim', 'ST-9').status === 0),
+      0,
+    );
+    const words = sam('team', '--fresh');
+    expect(
+      'team says it in words',
+      truth(
+        words.stdout.includes('Tech lead: alex. You are sam.') &&
+          words.stdout.includes('ST-9 by alex') &&
+          words.stdout.includes('#12 Move report storage to the data lane (alex)') &&
+          words.stdout.includes('#14 Booking list (sam, web/st-4, draft)'),
+        words.stdout,
+      ),
+      0,
+    );
+    // TEAM-8: the shared repository can't be reached.
+    execFileSync('git', ['-C', a, 'remote', 'set-url', 'origin', join(root, 'gone.git')]);
+    const cut = sam('team', '--fresh');
+    expect(
+      "TEAM-8 when the repository can't be reached, team says claims aren't checked and every other rule holds",
+      truth(
+        cut.status === 0 &&
+          cut.stdout.includes(
+            "claims and leases aren't checked until it can be; every other rule still holds",
+          ),
+        cut.stdout,
+      ),
+      0,
+    );
+    expect(
+      "and a claim says it couldn't be made",
+      sam('team', 'claim', 'ST-11'),
+      1,
+      "can't be reached",
+    );
+    // TEAM-2: another provider, as a command.
+    writeFileSync(
+      join(root, 'provider.mjs'),
+      `const op = process.argv[2]; let input = ''; process.stdin.on('data', (d) => (input += d)).on('end', () => {
+  const { team } = JSON.parse(input);
+  if (op === 'state') console.log(JSON.stringify({ at: new Date().toISOString(), reachable: true, me: 'sam', techLead: team.techLead, claims: [{ story: 'ST-3', by: 'kim', at: new Date().toISOString(), lease: [] }], intents: [], pulls: [] }));
+  else if (op === 'claim') console.log(JSON.stringify({ ok: false, holder: { story: JSON.parse(input).story, by: 'kim', at: new Date().toISOString() } }));
+  else process.exit(3);
+});`,
+    );
+    writeFileSync(
+      join(a, '.claude/code-kit.json'),
+      JSON.stringify({
+        ...JSON.parse(fixture),
+        team: { techLead: 'alex', provider: { command: `node "${join(root, 'provider.mjs')}"` } },
+      }),
+    );
+    const viaCommand = JSON.parse(sam('team', '--json', '--fresh').stdout || '{}');
+    expect(
+      'TEAM-2 a provider named by a command answers the same questions',
+      truth(viaCommand.claims?.[0]?.by === 'kim', JSON.stringify(viaCommand)),
+      0,
+    );
+    expect(
+      'and its refusal of a claim names who holds it',
+      sam('team', 'claim', 'ST-3'),
+      1,
+      'ST-3 is claimed by kim',
+    );
+    expect(
+      'a provider that fails is unreachable, and team says so',
+      truth(sam('team', 'release', 'ST-3').stderr.includes('The team provider')),
+      0,
+    );
+  }
+
   // --- MAP-1 and TRAIL-1: a story's code by layer, and each requirement's trail -------------------
   {
     const t = newRepo();

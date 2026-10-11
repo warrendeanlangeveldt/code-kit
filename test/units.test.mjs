@@ -1290,3 +1290,14 @@ test('TEAM-1 the team in the config: a tech lead, owners on lanes, and the defau
   for (const h of ['sam', 'a-b', 'A1']) assert.ok(isHandle(h), h);
   for (const h of ['-sam', 'sam-', 'a--b', 'x'.repeat(40), '']) assert.ok(!isHandle(h), h);
 });
+
+test('TEAM-2 story ids a claim ref can carry, and the paths an intent touches', async () => {
+  const { isStoryId, touchesOf } = await import('../hooks/lib/team.mjs');
+  for (const id of ['ST-9', 'AUTH-12']) assert.ok(isStoryId(id), id);
+  for (const id of ['ST9', 'ST-', '../x', 'ST-1/x', '']) assert.ok(!isStoryId(id), id);
+  assert.deepEqual(touchesOf('Touches: `packages/schemas/**`, apps/api/**\n\nWhy.'), [
+    'packages/schemas/**',
+    'apps/api/**',
+  ]);
+  assert.deepEqual(touchesOf('No paths named.'), []);
+});

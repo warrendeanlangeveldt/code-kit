@@ -253,9 +253,9 @@ Several people in one repository, each with their own agents, coordinated throug
 **Lane:** lead
 **Requirements:** TEAM-2, TEAM-3, TEAM-8
 **Depends on:** ST-24
-**Status:** todo
+**Status:** done
 
-`hooks/lib/team.mjs`: the interface, the built-in GitHub provider (claims as `refs/code-kit/claims/<story>`, pushed atomically; intents as draft pull requests labelled `code-kit:intent`; state polled with conditional requests at most once a minute, cached in `.claude/state/team.json`), and a provider command for anything else. Unreachable, it fails open and says so once. `code-kit team [--json]`, `team claim|release <story>`. End-to-end tests with two clones of one bare repository; the GitHub API is stubbed.
+`hooks/lib/team.mjs`: the interface, the built-in GitHub provider (claims as `refs/code-kit/claims/<story>`, pushed atomically; intents as issues labelled `code-kit:intent`; state read at most once a minute, cached in `.claude/state/team.json`), and a provider command for anything else. Unreachable, it fails open and says so once. `code-kit team [--json]`, `team claim|release <story>`. End-to-end tests with two clones of one bare repository; the GitHub API is stubbed.
 
 ### ST-26 Ownership, claims and leases enforced
 

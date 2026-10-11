@@ -12,7 +12,7 @@ code-kit was built for one person with many agents. In a team, the same reposito
 - Owners for lanes (a split by layer) and claims on stories (a split by feature), in the committed config.
 - Leases: a claimed story also holds the files and modules it changes, for as long as it's open.
 - Open intents: "I'm changing the auth contract", visible to everyone before any code.
-- The team provider interface, and its GitHub-only implementation: claims and leases as refs in the shared repository, intents as draft pull requests, state read by polling.
+- The team provider interface, and its GitHub-only implementation: claims and leases as refs in the shared repository, intents as GitHub issues, state read by polling.
 - The hooks refusing a dispatch or an edit that collides with someone else's claim or lease.
 - A Team tab, and team lines in the band that only name what needs you.
 - "Since you last looked": a briefing of what everyone pushed, opened, merged and decided.
@@ -33,14 +33,14 @@ code-kit was built for one person with many agents. In a team, the same reposito
 | Claim  | at      | timestamp | yes      |                                                                           |
 | Lease  | story   | string    | yes      | The claim it belongs to; released with it                                 |
 | Lease  | paths   | glob[]    | yes      | What the story changes, from its code map and its branch's diff           |
-| Intent | id      | string    | yes      | The draft pull request's number with the GitHub provider                  |
+| Intent | id      | number    | yes      | The issue's number with the GitHub provider                               |
 | Intent | by      | string    | yes      |                                                                           |
 | Intent | about   | string    | yes      | One sentence: what's changing and why                                     |
 | Intent | touches | glob[]    | no       | Paths or modules it will change                                           |
 | Intent | state   | enum      | yes      | `open`, `agreed`, `dropped`, `superseded`                                 |
 | Seen   | at      | timestamp | yes      | Per person, local: when they last read the briefing                       |
 
-With the GitHub provider: a claim is the ref `refs/code-kit/claims/<story>`, pointing at a commit whose message holds the claim and lease as JSON; pushing it is the claim, and a push that fails because the ref exists means someone else has it. An intent is a draft pull request labelled `code-kit:intent`.
+With the GitHub provider: a claim is the ref `refs/code-kit/claims/<story>`, pointing at a commit whose message holds the claim and lease as JSON; pushing it is the claim, and a push that fails because the ref exists means someone else has it. An intent is an issue labelled `code-kit:intent`, its body naming what it touches ("Touches: packages/schemas/**"): it's raised before any code, so it needs no branch.
 
 ## Requirements
 
@@ -64,7 +64,7 @@ The core talks to the team through one interface: `whoami`, `claim(story, lease)
 
 ### TEAM-3 The GitHub provider
 
-Without the hub, the GitHub provider implements the interface with refs, draft pull requests and the GitHub API. It polls with conditional requests, so an unchanged state costs nothing against the rate limit, at most once a minute per session.
+Without the hub, the GitHub provider implements the interface with refs, issues and the GitHub API. A claim is pushed only if its ref is as last fetched (`--force-with-lease`), so two people claiming at once can't both win. The state is read at most once a minute per session and kept in `.claude/state/team.json` for the hooks and the mod between reads.
 
 **Acceptance**
 
@@ -80,7 +80,7 @@ When a story is claimed, its lease is the paths its code map and the plan say it
 
 ### TEAM-5 Intents before code
 
-`code-kit intend "<what and why>" --touches <globs>` opens a draft pull request labelled as an intent. Open intents are in every teammate's band when they touch what that teammate is working on, and in the Team tab always.
+`code-kit intend "<what and why>" --touches <globs>` opens an issue labelled `code-kit:intent`. Open intents are in every teammate's band when they touch what that teammate is working on, and in the Team tab always.
 
 ### TEAM-6 Since you last looked
 
