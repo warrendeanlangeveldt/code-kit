@@ -113,6 +113,14 @@ The lead is prompted with one step at most twice in a row. A step still next aft
 
 - Given `next` reporting the same merge after each of four lead turns while lanes commit, then the lead is prompted twice, the band offers the third, and Go submits it.
 
+### LOOP-9 Never a story already in flight
+
+`code-kit next` reads only the branches, so it can't tell a branch its lane agent is still building, or one a reviewer is already reviewing, from one that waits; nor a story dispatched a moment ago, before its first commit. Before prompting, the loop leaves out every story an agent at work names in its task (a lane agent is dispatched as "ST-12 booking form", a reviewer as "Review web/st-12"). A step left with no stories gives way to the next one `next` listed; with none left, the loop waits ("waiting: ST-10 is still with its agent"), and goes on when an agent finishes.
+
+**Acceptance**
+
+- Given ST-9 dispatched and its agent at work, and ST-4's lane agent still building, when `next` says review ST-4, then dispatch ST-9, then the lead isn't prompted and the band says it's waiting on both; when ST-4's agent finishes, the lead is asked to review ST-4 only.
+
 ## Quality targets
 
 - A step is submitted within 5 seconds of the lead going idle with work to do.

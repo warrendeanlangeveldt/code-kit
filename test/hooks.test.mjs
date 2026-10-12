@@ -742,7 +742,64 @@ try {
       "the person's own act",
     );
     put('.claude/code-kit.json', fixture);
+
+    // CARD-5: a read-only agent (a reviewer) is never asked about: what it changed goes back.
     rmSync(requestsFile, { force: true });
+    const byReviewer = write('design/approved-screens.json', 'code-kit:reviewer');
+    expect(
+      'CARD-5 a reviewer writing a protected file is refused, told to put it back, and asks no one',
+      truth(
+        byReviewer.status === 2 &&
+          byReviewer.stderr.includes('code-kit:reviewer is read-only') &&
+          byReviewer.stderr.includes('git restore -- design/approved-screens.json') &&
+          reqs().open.length === 0,
+        byReviewer.stderr + JSON.stringify(reqs().open),
+      ),
+      0,
+    );
+    // CARD-5: a request is answered by an approval given after it, even once that approval is gone.
+    write('design/approved-screens.json', 'web-engineer');
+    kit('approve', 'design', '--lane', 'web', '--reason', 'the booking screens are approved');
+    rmSync(join(repo, '.claude/approvals/web/design'), { force: true });
+    expect(
+      'CARD-5 an approval given after a request answers it, even after it expired or was used up',
+      truth(!reqs().open.some((r) => r.names.join() === 'design'), JSON.stringify(reqs().open)),
+      0,
+    );
+    // CARD-5: a request whose file someone else has since committed is no longer waiting.
+    rmSync(requestsFile, { force: true });
+    rmSync(join(repo, '.claude/state/approvals-given.jsonl'), { force: true });
+    write('design/approved-screens.json', 'web-engineer');
+    expect(
+      'the request is open until then',
+      truth(reqs().open.some((r) => r.names.join() === 'design')),
+      0,
+    );
+    put('design/approved-screens.json', '{ "screens": [] }\n');
+    git('add', 'design/approved-screens.json');
+    git('commit', '-q', '--no-verify', '-m', 'The lead registers the screens');
+    expect(
+      'CARD-5 a request whose file was committed since, by someone who could, is no longer waiting',
+      truth(!reqs().open.some((r) => r.names.join() === 'design'), JSON.stringify(reqs().open)),
+      0,
+    );
+    // CARD-6: every approval given, newest first, with who gave it.
+    kit('approve', 'design', '--lane', 'web', '--reason', 'screens again', '--via', 'pane');
+    const history = reqs().history;
+    expect(
+      'CARD-6 requests lists every approval given, newest first, with who gave it',
+      truth(
+        history[0]?.name === 'design' &&
+          history[0].lane === 'web' &&
+          history[0].by === 'you, in the pane' &&
+          history.some((h) => h.name === 'dep-lodash' && h.by === 'you, in the pane') &&
+          kit('requests').stdout.includes('Approvals given (newest first):'),
+        JSON.stringify(history.slice(0, 3)),
+      ),
+      0,
+    );
+    rmSync(requestsFile, { force: true });
+    rmSync(join(repo, '.claude/state/approvals-given.jsonl'), { force: true });
     rmSync(join(repo, '.claude/approvals'), { recursive: true, force: true });
   }
 

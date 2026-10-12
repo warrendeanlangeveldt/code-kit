@@ -14,6 +14,55 @@ const LEAD_STEPS = new Set([
   'update',
 ]);
 
+/** The steps that name stories, which an agent already at work on one shouldn't be asked to start again. */
+const STORY_STEPS = new Set(['dispatch', 'review', 'lead', 'design']);
+const AT_WORK = new Set(['pending', 'running', 'waiting']);
+
+/**
+ * LOOP-9: the stories agents are at work on now, by the task each was started with: a lane agent is
+ * started as "ST-12 booking form", a reviewer as "Review web/st-12". `code-kit next` reads only the
+ * branches, so it can't tell a branch still being built, or already under review, from one waiting.
+ */
+export function storiesInFlight(agents) {
+  const ids = new Set();
+  for (const a of agents ?? []) {
+    if (!AT_WORK.has(a.status)) continue;
+    const text = `${a.description ?? ''}`;
+    for (const m of text.matchAll(/\bST-(\d+)\b/gi)) ids.add(`ST-${m[1]}`);
+    for (const m of text.matchAll(/\b[\w-]+\/st-(\d+)\b/gi)) ids.add(`ST-${m[1]}`);
+  }
+  return ids;
+}
+
+/**
+ * LOOP-9: the step from `code-kit next`, without the stories already in flight. A step left with none
+ * gives way to the next one `next` listed; with nothing left, the loop waits, saying for what, until an
+ * agent finishes (which moves the project on).
+ */
+export function withoutInFlight(step, inFlight) {
+  if (!step || !inFlight?.size) return step;
+  const chain = [step, ...(step.then ?? [])].map(({ then: _then, ...s }) => s);
+  const kept = [];
+  const busy = [];
+  for (const s of chain) {
+    if (!STORY_STEPS.has(s.step)) {
+      kept.push(s);
+      continue;
+    }
+    const ids = (s.args ?? '').split(/\s+/).filter(Boolean);
+    const free = ids.filter((id) => !inFlight.has(id.toUpperCase()));
+    busy.push(...ids.filter((id) => inFlight.has(id.toUpperCase())));
+    if (free.length) kept.push({ ...s, args: free.join(' ') });
+  }
+  if (kept.length) return { ...kept[0], ...(kept.length > 1 ? { then: kept.slice(1) } : {}) };
+  const names = [...new Set(busy)];
+  return {
+    step: 'wait',
+    why: `${names.join(', ')} ${names.length === 1 ? 'is' : 'are'} still with ${names.length === 1 ? 'its agent' : 'their agents'}; the loop goes on when one finishes`,
+    inFlight: names,
+  };
+}
+
 /**
  * The prompt for a step from `code-kit next --json` (LOOP-1), or null when it isn't the lead's to
  * take. Every ready story is named: the dispatch skill decides how many lanes go (LOOP-2). A prompt

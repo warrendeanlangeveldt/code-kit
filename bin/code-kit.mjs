@@ -80,6 +80,7 @@ import {
   approvalLifetime,
   currentBranch,
   PANE,
+  approvalHistory,
   approvalsInForce,
   delegatedMark,
   grantApprovals,
@@ -912,7 +913,9 @@ function requests() {
   load();
   const open = openRequests(resolve('.'));
   const granted = approvalsInForce(resolve('.'));
-  if (flag('--json')) return out(JSON.stringify({ open, inForce: granted }, null, 2));
+  // CARD-6: every approval given, newest first.
+  const history = approvalHistory(resolve('.')).slice(0, 100);
+  if (flag('--json')) return out(JSON.stringify({ open, inForce: granted, history }, null, 2));
   out(open.length ? `${open.length} approval request(s) open:` : 'No approval requests open.');
   for (const r of open)
     out(
@@ -922,6 +925,11 @@ function requests() {
   for (const a of granted)
     out(
       `  ${a.name} for ${a.lane ? `the ${a.lane} lane` : 'any agent'}, ${a.minutesLeft} min left: ${a.reason}`,
+    );
+  out(history.length ? `\nApprovals given (newest first):` : '\nNo approvals given yet.');
+  for (const h of history.slice(0, 30))
+    out(
+      `  ${h.at.slice(0, 16).replace('T', ' ')}  ${h.name} for ${h.lane ? `the ${h.lane} lane` : 'any agent'}, by ${h.by}${h.files.length ? ` · ${h.files.length} file${h.files.length === 1 ? '' : 's'}${h.branches.length ? ` on ${h.branches.join(', ')}` : ''}` : ''}: ${h.reason}`,
     );
 }
 

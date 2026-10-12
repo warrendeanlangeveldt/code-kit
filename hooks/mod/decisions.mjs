@@ -2,6 +2,7 @@
 // the person, each with its lineage. The band's "you" lines say what needs them; a decision card says why:
 // what they asked for, the story and requirements it belongs to, what the agent was doing, what was already
 // settled, why the lead couldn't settle this itself, and each option with what happens next.
+import { askWords } from './view.mjs';
 
 /** The kinds of band line that are the person's to decide; the rest are notes. */
 export const DECISION_KINDS = new Set([
@@ -151,7 +152,7 @@ export function decisionCards(lines, context = {}) {
         })),
         doing:
           line.held?.command ??
-          line.request?.what ??
+          (line.request ? askWords(line.request, line.files ?? [line.request.what]) : null) ??
           (line.proposal?.label ? `Next step: ${line.proposal.label}` : null) ??
           (line.intent
             ? `Intent #${line.intent.id}: ${line.intent.about}${line.intent.touches.length ? ` (touches ${line.intent.touches.join(', ')})` : ''}`

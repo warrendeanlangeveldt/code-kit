@@ -48,7 +48,7 @@ node "${CLAUDE_PLUGIN_ROOT}/bin/code-kit.mjs" team claim ST-<n> --lease "<glob>,
 
 The lease is the paths the story will create or change: its lane's folders for this feature, and any contract it changes. A claim someone else holds is refused with who holds it; pick another story or ask them. Stories in a lane another person owns are theirs to dispatch. Making the story's branch also claims it, and each commit on it adds what it changed to the lease; merging it ends the claim.
 
-Start each story with the Agent tool: `subagent_type` is the lane's agent, `isolation: "worktree"`, and run them in the background. Start every story in the batch in the same message so they run in parallel.
+Start each story with the Agent tool: `subagent_type` is the lane's agent, `isolation: "worktree"`, and run them in the background, with a `description` that starts with the story's id ("ST-12 booking form"): the loop reads it to know the story is in flight, and won't ask for it again while the agent works. Start every story in the batch in the same message so they run in parallel.
 
 The brief is the agent's whole context. Write it so the agent needs nothing else:
 

@@ -62,6 +62,8 @@ export const RELAYED = '(given in chat, recorded by the lead)';
 export const PANE = '(approved in the code-kit pane)';
 /** Refusals a person's approval would allow, for the mod's band and `code-kit requests`. */
 export const REQUESTS_FILE = '.claude/state/requests.jsonl';
+/** Every approval given through code-kit, and every one used up, kept for the history (CARD-6). */
+export const GIVEN_FILE = '.claude/state/approvals-given.jsonl';
 
 /** The command the lead runs to record approvals a person gave in chat. */
 /** Marks an approval the lead granted on its own, within `approvals.delegate`; `rule` names the rule. */
@@ -107,11 +109,52 @@ export function approvalHowTo(names, actor, root, allows = 'these edits', config
 export function grantApprovals(root, names, lane, reason, marks = {}) {
   const dir = lane ? join(approvalsDir(root), lane) : approvalsDir(root);
   mkdirSync(dir, { recursive: true });
-  return names.map((name) => {
+  const at = new Date().toISOString();
+  const files = names.map((name) => {
     const file = join(dir, name);
     writeFileSync(file, `${reason.trim()} ${marks[name] ?? RELAYED}\n`);
     return file;
   });
+  noteGiven(
+    root,
+    names.map((name) => ({
+      at,
+      name,
+      ...(lane ? { lane } : {}),
+      reason: `${reason.trim()} ${marks[name] ?? RELAYED}`,
+    })),
+  );
+  return files;
+}
+
+const givenFile = (root) => join(projectWorktrees(root)[0] ?? root, GIVEN_FILE);
+
+function noteGiven(root, entries) {
+  try {
+    const file = givenFile(root);
+    mkdirSync(dirname(file), { recursive: true });
+    appendFileSync(file, entries.map((e) => `${JSON.stringify(e)}\n`).join(''));
+  } catch {
+    // the approval stands; only its history misses it
+  }
+}
+
+/** The approvals given through code-kit (and those used up), oldest first. */
+export function approvalsGiven(root) {
+  try {
+    return readFileSync(givenFile(root), 'utf8')
+      .split('\n')
+      .filter(Boolean)
+      .flatMap((l) => {
+        try {
+          return [JSON.parse(l)];
+        } catch {
+          return [];
+        }
+      });
+  } catch {
+    return [];
+  }
 }
 
 /** `path` with symlinks resolved, even if it doesn't exist yet (macOS /var → /private/var). */
@@ -249,8 +292,21 @@ export function useApproval(root, name, actor) {
   for (const file of [
     ...(actor?.kind === 'lane' ? [join(dir, actor.lane, name)] : []),
     join(dir, name),
-  ])
-    if (inForce(file)) return rmSync(file, { force: true });
+  ]) {
+    const a = inForce(file);
+    if (!a) continue;
+    // Kept in the history, and as the answer to the request it was given for, once its file is gone.
+    noteGiven(root, [
+      {
+        at: a.grantedAt,
+        name,
+        ...(file !== join(dir, name) ? { lane: actor.lane } : {}),
+        reason: a.reason,
+        usedAt: new Date().toISOString(),
+      },
+    ]);
+    return rmSync(file, { force: true });
+  }
 }
 
 const requestsFile = (root) => join(projectWorktrees(root)[0] ?? root, REQUESTS_FILE);
@@ -283,6 +339,9 @@ export function readRequests(root) {
  * never changes the refusal, so any failure here is ignored.
  */
 export function recordRequest(root, actor, names, what, why, now = Date.now()) {
+  // A read-only agent (a reviewer) is never approved to write: what it changed goes back, not to the
+  // person as a request.
+  if (actor?.kind === 'readonly') return;
   try {
     const request = {
       at: new Date(now).toISOString(),
@@ -307,14 +366,159 @@ export function recordRequest(root, actor, names, what, why, now = Date.now()) {
 /** Requests from the last 60 minutes that an approval in force doesn't yet answer, newest first. */
 export function openRequests(root, now = Date.now()) {
   const open = [];
+  const given = approvalsGiven(root);
   for (const r of readRequests(root).reverse()) {
     if (now - Date.parse(r.at) >= APPROVAL_MINUTES * 60_000) continue;
     if (open.some((o) => sameRequest(o, r))) continue;
+    // From before read-only agents stopped asking: only the lead and the lanes are ever approved.
+    if (!r.lane && r.actor !== 'lead session') continue;
     const actor = r.lane ? { kind: 'lane', lane: r.lane } : { kind: 'lead' };
     if (r.names.every((n) => approval(root, n, actor))) continue;
+    // Answered already: approved after it was asked (since expired, or used up by the commit it
+    // allowed), or the file it named was committed since by someone who could.
+    if (r.names.every((n) => grantedSince(root, given, n, r))) continue;
+    if (committedSince(root, r)) continue;
     open.push(r);
   }
   return open;
+}
+
+/** Whether `name` was approved for the request's lane (or for everyone) at or after it was asked. */
+function grantedSince(root, given, name, r) {
+  const asked = Date.parse(r.at);
+  if (
+    given.some(
+      (g) => g.name === name && (!g.lane || g.lane === r.lane) && Date.parse(g.at) >= asked,
+    )
+  )
+    return true;
+  const dir = approvalsDir(root);
+  return [...(r.lane ? [join(dir, r.lane, name)] : []), join(dir, name)].some((file) => {
+    try {
+      return statSync(file).isFile() && statSync(file).mtimeMs >= asked;
+    } catch {
+      return false;
+    }
+  });
+}
+
+/** Whether the file a request named has been committed, on any branch, since it was asked. */
+function committedSince(root, r) {
+  const path = String(r.what);
+  if (/\s/.test(path) || (!path.includes('/') && !path.includes('.'))) return false;
+  try {
+    const out = execFileSync(
+      'git',
+      [
+        '-C',
+        root,
+        'log',
+        '--all',
+        '-1',
+        '--format=%ct',
+        `--since=@${Math.floor(Date.parse(r.at) / 1000)}`,
+        '--',
+        path,
+      ],
+      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] },
+    );
+    return Boolean(out.trim());
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * CARD-6: every approval given, newest first: { at, name, lane, reason, by, files, branches, used,
+ * expired }. From the approvals given through code-kit, the approvals on disk (a person's own `!` echo
+ * included), and the audit log in every worktree, so an approval shows before its branch merges.
+ */
+export function approvalHistory(root, now = Date.now()) {
+  const grants = [];
+  const near = (a, b) => Math.abs(Date.parse(a) - Date.parse(b)) < 2000;
+  const add = (g) => {
+    const found = grants.find(
+      (x) => x.name === g.name && (x.lane ?? null) === (g.lane ?? null) && near(x.at, g.at),
+    );
+    if (found) {
+      if (g.usedAt) found.used = true;
+      return found;
+    }
+    const grant = {
+      at: g.at,
+      name: g.name,
+      lane: g.lane ?? null,
+      reason: g.reason ?? '',
+      files: [],
+      branches: [],
+      used: Boolean(g.usedAt),
+    };
+    grants.push(grant);
+    return grant;
+  };
+  for (const g of approvalsGiven(root)) add(g);
+  const dir = approvalsDir(root);
+  const look = (folder, lane) => {
+    let names = [];
+    try {
+      names = readdirSync(folder);
+    } catch {
+      return;
+    }
+    for (const name of names) {
+      const file = join(folder, name);
+      const st = statSync(file);
+      if (st.isDirectory()) {
+        if (!lane) look(file, name);
+        continue;
+      }
+      add({
+        at: new Date(st.mtimeMs).toISOString(),
+        name,
+        lane,
+        reason: readFileSync(file, 'utf8').trim(),
+      });
+    }
+  };
+  look(dir, null);
+  const seen = new Set();
+  for (const tree of projectWorktrees(root).length ? projectWorktrees(root) : [root]) {
+    let lines = [];
+    try {
+      lines = readFileSync(join(tree, APPROVAL_LOG), 'utf8').split('\n').filter(Boolean);
+    } catch {
+      continue;
+    }
+    for (const line of lines) {
+      if (seen.has(line)) continue;
+      seen.add(line);
+      let e;
+      try {
+        e = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      if (!e.approval || e.approval === 'lead') continue;
+      const grant =
+        grants.find((x) => x.name === e.approval && near(x.at, e.grantedAt ?? e.at)) ??
+        add({ at: e.grantedAt ?? e.at, name: e.approval, reason: e.reason });
+      if (e.file && !grant.files.includes(e.file)) grant.files.push(e.file);
+      if (e.branch && !grant.branches.includes(e.branch)) grant.branches.push(e.branch);
+    }
+  }
+  return grants
+    .map((g) => ({
+      ...g,
+      by: /within the delegated rules/.test(g.reason)
+        ? 'the lead, within your delegated rules'
+        : /given in chat, recorded by the lead/.test(g.reason)
+          ? 'you, in chat'
+          : /in the [\w -]+ pane/.test(g.reason)
+            ? 'you, in the pane'
+            : 'you',
+      expired: g.used || now - Date.parse(g.at) >= approvalMinutes(g.name) * 60_000,
+    }))
+    .sort((a, b) => Date.parse(b.at) - Date.parse(a.at));
 }
 
 /** Approvals in force now: [{ name, lane?, reason, grantedAt, minutesLeft }]. */
@@ -434,6 +638,8 @@ export function writeProblem(actor, rel, root, config) {
   // A package a person approved may change the manifests and lockfiles its install rewrites.
   if (dependencyChange(actor, rel, root, config)) return null;
   const guarded = protectedEntry(rel, config);
+  if (actor.kind === 'readonly' && (guarded || !matchesAny(rel, config.anyActor)))
+    return readonlyProblem(actor, rel);
   // The lead writes protected files without an approval: the person reviews them in the pull request,
   // and every committed change is in the audit log. Anyone else needs a person's approval as well.
   if (guarded && actor.kind !== 'lead' && !approval(root, guarded.approval, actor)) {
@@ -441,11 +647,15 @@ export function writeProblem(actor, rel, root, config) {
     return `${rel} is ${guarded.why} and needs a person's approval. Ask the lead (a person) to run\n${approvalHowTo(guarded.approval, actor, root, undefined, config)}`;
   }
   if (matchesAny(rel, config.anyActor)) return null;
-  if (actor.kind === 'readonly') return `${actor.label} is read-only; it may not write ${rel}.`;
+  if (actor.kind === 'readonly') return readonlyProblem(actor, rel);
   if (!owns(actor, rel, config)) return ownershipProblem(actor, rel, config);
   const specs = actor.kind === 'lane' && config.docs?.specs;
   return (specs && specCheckProblem(rel, root)) || screenProblem(rel, root, config);
 }
+
+/** A read-only agent's write, refused, with how to undo one a command it ran made (a build, a generator). */
+const readonlyProblem = (actor, rel) =>
+  `${actor.label} is read-only; it may not write ${rel}. If a command you ran changed it (a build, a formatter or a code generator), put it back with git restore -- ${rel} (or delete it if it's new), and run such commands only in a throwaway worktree of the branch.`;
 
 function outsideAllowed(actor, rel, root, config) {
   if (actor.kind !== 'lead') return false;

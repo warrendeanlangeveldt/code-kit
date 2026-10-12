@@ -1527,6 +1527,34 @@ test('LOOP-1 and LOOP-2 with the lead idle, the loop dispatches every ready stor
   await ui.unmount();
 });
 
+test('LOOP-9 the loop never asks for a story an agent is still on: it waits, and goes on once the agent finishes', async ($, on) => {
+  const w = project();
+  w.next = { step: 'dispatch', args: 'ST-9', then: [] };
+  const clock = await start($, on, w);
+  await leadTurn($);
+  await settle(clock);
+  expect(w.prompts).toEqual(['Dispatch ST-9: run /code-kit:dispatch ST-9.']);
+  // Dispatched, and ST-4 still being built: next (reading only branches) offers both again.
+  w.agents = [
+    { id: 'a1', type: 'web-engineer', status: 'running', description: 'ST-4 booking form' },
+    { id: 'a2', type: 'core-engineer', status: 'running', description: 'ST-9 pricing' },
+  ];
+  w.next = { step: 'review', args: 'ST-4', then: [{ step: 'dispatch', args: 'ST-9' }] };
+  await leadTurn($, 't-2');
+  await settle(clock);
+  expect(w.prompts).toHaveLength(1);
+  const band = await bandUi($);
+  expect(
+    await band.find({ type: 'Text', text: /waiting: ST-4, ST-9 are still with their agents/ }),
+  ).toBeDefined();
+  await band.unmount();
+  // The web agent finishes: ST-4 is reviewed; ST-9 is still being built, so it isn't dispatched again.
+  w.agents = [{ ...w.agents[0], status: 'completed' }, w.agents[1]];
+  await clock.advance(2000);
+  await settle(clock);
+  expect(w.prompts.slice(1)).toEqual(['Review ST-4: run /code-kit:review ST-4.']);
+});
+
 test('LOOP-1 nothing is submitted mid-turn, or while the person has a draft, or twice for the same step', async ($, on) => {
   const w = project();
   const clock = await start($, on, w);
