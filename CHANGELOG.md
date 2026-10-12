@@ -2,6 +2,15 @@
 
 What changed in each release of code-kit, newest first. Versions follow the plugin manifest and the npm package `@warren-dean/code-kit`. Each release is also on [GitHub Releases](https://github.com/warrendeanlangeveldt/code-kit/releases).
 
+## 0.11.1 (2026-10-12)
+
+The loop and the lead stop talking past each other, and approvals ask only what still needs you.
+
+- **The loop never asks for a story an agent is still on.** `code-kit next` reads only branches, so the loop kept asking the lead to review stories their lane agents were still building, or already being reviewed, and to dispatch stories started a moment ago. It now leaves out every story a running agent's task names ("ST-10 capture pipeline", "Review domain/st-78"), and when nothing's left it waits, saying for what, until an agent finishes.
+- **Approvals are counted as decisions.** "contract for the platform lane: 5 files" is one approval, not five; approving it covers them all.
+- **Only requests that still wait are shown.** A request closes once an approval is given after it, even if that approval has since lapsed or was used up, and once its file has been committed by someone who could. A read-only agent, such as the reviewer running a code generator, is never approved to write: it's told to put the file back, and you aren't asked.
+- **The history of approvals.** `/approvals` and `code-kit requests` list every approval given, newest first: when, what for, which lane, who gave it (you, or the lead within your delegated rules), the reason, and the files and branches it covered, merged or not.
+
 ## 0.11.0 (2026-10-12)
 
 Teams get their own pane and their own setup, and a hosted team provider can stand down to GitHub.
