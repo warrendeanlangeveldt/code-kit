@@ -2,6 +2,14 @@
 
 What changed in each release of code-kit, newest first. Versions follow the plugin manifest and the npm package `@warren-dean/code-kit`. Each release is also on [GitHub Releases](https://github.com/warrendeanlangeveldt/code-kit/releases).
 
+## 0.10.0 (2026-10-12)
+
+An older setup is brought up to date before new work starts, and a security reviewer checks the changes that need one.
+
+- **The gaps stop new work until init fills them.** For a project set up by an older init, `code-kit next` names what it's missing: a design gate for the lanes that build screens, design stories before the screen stories not yet started, a QA lane, and a security reviewer. Work already started goes on through review and merge; nothing new starts. Once nothing is in flight, `next` gives `update`, and the loop has the lead re-run `/code-kit:init`, which shows you the difference first.
+- **An adversarial security reviewer.** spec-design writes a short threat model for each spec (what's sensitive, who might attack it, the trust boundaries) and security requirements stories can cite. init writes a read-only `security-reviewer` agent. `code-kit security` says whether a branch touches sign-in, permissions, outside input, personal data, encryption, payments, secrets or dependencies, and where; when it does, the review runs the security reviewer, which reports only findings with a concrete attack path. A blocker sends the branch back like a failing test.
+- **Setup version 3.** Re-running init records `"setup": 3`.
+
 ## 0.9.1 (2026-10-12)
 
 Team mode, run against a real GitHub repository. It's still a preview.
