@@ -178,6 +178,14 @@ if (runs(cmd, new RegExp(String.raw`^${CODE_KIT}\s+intend\s+(agree|drop|duplicat
   block(
     `Blocked: agreeing or dropping an intent is the tech lead's own decision, from their terminal or the code-kit pane. Tell them what you'd recommend and why, and stop.\nCommand: ${cmd}`,
   );
+// TEAM-13: setting the team up, or taking it out, rewrites the config: the lead's, once the person agrees.
+if (
+  runs(cmd, new RegExp(String.raw`^${CODE_KIT}\s+team\s+init\b.*\s--write\b`)) &&
+  actor.kind !== 'lead'
+)
+  block(
+    `Blocked: the team's setup is the lead's to write, once the person agrees (/code-kit:team-init). Tell the lead what you'd change, and stop.\nCommand: ${cmd}`,
+  );
 // The harness settings are the person's to change, from the pane or their terminal.
 if (runs(cmd, new RegExp(String.raw`^${CODE_KIT}\s+settings\s+set\b`)))
   block(

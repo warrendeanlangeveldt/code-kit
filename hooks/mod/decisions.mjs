@@ -16,6 +16,7 @@ export const DECISION_KINDS = new Set([
   'teamCollision',
   'teamIntent',
   'teamReview',
+  'teamDrift',
 ]);
 
 /** What each answer does, in the person's words. */
@@ -72,6 +73,8 @@ function whyOf(line, check) {
   if (line.kind === 'teamIntent')
     return "You're the tech lead: a change of direction is agreed or dropped by you, and until then everyone builds on what was agreed.";
   if (line.kind === 'teamReview') return "It's in a lane you own, so its review is yours.";
+  if (line.kind === 'teamDrift')
+    return "The team's drift check found your work building on something that has since changed, or heading into someone else's: settle it before it merges.";
   return null;
 }
 

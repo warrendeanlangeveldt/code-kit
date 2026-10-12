@@ -14,7 +14,8 @@ code-kit was built for one person with many agents. In a team, the same reposito
 - Open intents: "I'm changing the auth contract", visible to everyone before any code.
 - The team provider interface, and its GitHub-only implementation: claims and leases as refs in the shared repository, intents as discussions, state read by polling.
 - The hooks refusing a dispatch or an edit that collides with someone else's claim or lease.
-- A Team tab, and team lines in the band that only name what needs you.
+- A Team pane (`/team`), and team lines in the band that only name what needs you.
+- Setting a project up as a team's, or as one developer's again (`/code-kit:team-init`, `code-kit team init`).
 - "Since you last looked": a briefing of what everyone pushed, opened, merged and decided.
 
 ## Out of scope
@@ -80,7 +81,7 @@ When a story is claimed, its lease is the paths the lead says it will change (`t
 
 ### TEAM-5 Intents before code
 
-`code-kit intend "<what and why>" --touches <globs>` opens a discussion in the Intents category (`team.intents`, "Intents" unless set). GitHub doesn't let a tool create a category, so when it's missing the command says how to add it once (the repository's Settings › Discussions), and nothing is raised. The tech lead answers with `code-kit intend agree|drop|duplicate <id> [--reason "…"]`, which comments their words and closes the discussion as resolved, outdated or duplicate; that's their own decision, so the hooks refuse it from any agent, as they do approvals. Open intents are in every teammate's band when they touch what that teammate is working on, and in the Team tab always.
+`code-kit intend "<what and why>" --touches <globs>` opens a discussion in the Intents category (`team.intents`, "Intents" unless set). GitHub doesn't let a tool create a category, so when it's missing the command says how to add it once (the repository's Settings › Discussions), and nothing is raised. The tech lead answers with `code-kit intend agree|drop|duplicate <id> [--reason "…"]`, which comments their words and closes the discussion as resolved, outdated or duplicate; that's their own decision, so the hooks refuse it from any agent, as they do approvals. Open intents are in every teammate's band when they touch what that teammate is working on, and in the Team pane's Intents tab always.
 
 **Acceptance**
 
@@ -114,7 +115,7 @@ With `team.board` (`{ owner, number }`, a GitHub Project), `code-kit team board`
 
 ### TEAM-6 Since you last looked
 
-`code-kit team since` (and the Team tab's top) says, by person and in plain sentences, what was pushed, opened, merged, reviewed, claimed, released and intended since you last read it, from GitHub's repository events and the claims as you last saw them. The first time it covers the last day; reading it marks it read (`--peek` doesn't).
+`code-kit team since` (and the Team pane's Since you looked tab) says, by person and in plain sentences, what was pushed, opened, merged, reviewed, claimed, released and intended since you last read it, from GitHub's repository events and the claims as you last saw them. The first time it covers the last day; reading it marks it read (`--peek` doesn't).
 
 **Acceptance**
 
@@ -122,26 +123,57 @@ With `team.board` (`{ owner, number }`, a GitHub Project), `code-kit team board`
 
 ### TEAM-7 Shown
 
-The Team tab (8, only in a team's project) opens on "since you last looked" (reading it there marks it read), then lists each person, the tech lead first, with the lanes they own, their claims (stale ones marked, with Keep and Release for yours), their pull requests and their intents (with Agree and Drop for the tech lead). The band names only what needs you: your stale claim (Keep, Release), a claim of yours changing the same files as someone else's, an intent touching what you own or lease (for the tech lead, every open intent, with Agree and Drop), and a ready pull request in a lane you own. Each is a decision with its card (DECIDE-2); "the shared repository can't be reached" is a note.
+The team has its own pane, `/team` (only in a team's project; elsewhere `/team` says how to set one up). Its header names the tech lead, who you are and the lanes you own, the counts of claims, intents and pull requests, and what coordinates the team, in the provider's own words: GitHub (claims as refs, intents as discussions), or a hosted provider, live or not and who is signed in to it; when the provider is down, or GitHub is standing in for it, it says so in yellow. Its tabs:
+
+1. **People**: each person, the tech lead first, with the lanes they own, where they're at work and what their agents are doing (with a live provider), drift found on their work, their claims (stale ones marked), pull requests and intents.
+2. **Since you looked**: TEAM-6's briefing, read when the tab opens (which marks it read).
+3. **Claims**: every claim with its holder, since when (stale ones marked) and its lease; Keep and Release on yours, and for the tech lead Release and Reassign (asking the new holder's handle) on anyone's.
+4. **Intents**: each open intent with who raised it, what it touches and its discussion; Agree and Drop for the tech lead.
+5. **Drift**: only when the provider checks for it (the hub does): each branch's findings, worst first.
+6. **Setup**: the team's config as it stands, what GitHub still needs (TEAM-13), and Change the team setup, which asks the lead to run `/code-kit:team-init`.
+
+The band names only what needs you: your stale claim (Keep, Release), a claim of yours changing the same files as someone else's, an intent touching what you own or lease (for the tech lead, every open intent, with Agree and Drop), drift on your work, and a ready pull request in a lane you own. Each is a decision with its card (DECIDE-2), and its Team button opens the pane on the tab it's about. "The shared repository can't be reached" is a note.
 
 **Acceptance**
 
 - Given sam owns web, holds ST-4 stale since Tuesday leasing `apps/web/booking/**`, kim holds ST-9 leasing `apps/web/booking/form.tsx`, kim intends a change touching `apps/web/**`, and kim's #14 on web/st-9 is ready, then sam's band shows each, and Keep runs `team keep ST-4`.
-- Given the same seen by alex, the tech lead, then the band shows kim's intent with Agree, which runs `intend agree 12` as alex.
-- Given the Team tab opened, then it reads since-you-last-looked once, and shows alex as tech lead, sam with web and the stale ST-4 (Release releases it), and kim's pull request and intent.
+- Given the same seen by alex, the tech lead, then the band shows kim's intent with Agree, which runs `intend agree 12` as alex; in the Claims tab, Reassign on ST-9 with "sam" runs `team reassign ST-9 sam`.
+- Given `/team`, then the pane opens on People (alex as tech lead, sam with web and the stale ST-4, kim's pull request and intent); Since you looked reads the briefing once, which marks it read; without a hosted provider there's no Drift tab.
+- Given a project without `team`, then `/team` opens nothing and says to run `/code-kit:team-init`.
 
 ### TEAM-9 Stale claims
 
-A claim is stale when its story's branch has had no push for `team.staleDays` (3 working days unless set) and, with the hub, its holder's sessions haven't worked on it in that time. A stale claim isn't released on its own: its holder sees "Still on ST-7? No push since Tuesday" in the band, with Keep and Release, and the tech lead sees it in the Team tab, where they can release or reassign it. Another developer whose work waits on a stale claim is told who holds it and that it's stale. A claim ends when its story merges, when its holder releases it, or when the tech lead releases or reassigns it. From the command line: `team keep <story>` and `team release <story>` for the holder, `team reassign <story> <handle>` for the tech lead (refused from any agent: it's the tech lead's own decision).
+A claim is stale when its story's branch has had no push for `team.staleDays` (3 working days unless set) and, with the hub, its holder's sessions haven't worked on it in that time. A stale claim isn't released on its own: its holder sees "Still on ST-7? No push since Tuesday" in the band, with Keep and Release, and the tech lead sees it in the Team pane's Claims tab, where they can release or reassign it. Another developer whose work waits on a stale claim is told who holds it and that it's stale. A claim ends when its story merges, when its holder releases it, or when the tech lead releases or reassigns it. From the command line: `team keep <story>` and `team release <story>` for the holder, `team reassign <story> <handle>` for the tech lead (refused from any agent: it's the tech lead's own decision).
 
 **Acceptance**
 
-- Given ST-7 claimed by sam with no push for 4 working days, then sam's band asks Keep or Release, and the tech lead's Team tab shows it stale; when sam keeps it, the clock starts again.
+- Given ST-7 claimed by sam with no push for 4 working days, then sam's band asks Keep or Release, and the tech lead's Team pane shows it stale; when sam keeps it, the clock starts again.
 - Given the tech lead reassigns ST-7 to dev B, then sam's claim ends, dev B holds it with its lease, and both are told.
 
 ### TEAM-8 When the provider is unreachable
 
 Coordination fails open: if GitHub (or the hub) can't be reached, claims and leases aren't checked, the band says so once, and every local rule still holds.
+
+A provider named by a command may give GitHub as its fallback (`team.provider: { command, fallback: "github" }`): each operation it can't reach goes to the GitHub provider instead, so claims and leases are still checked through refs, and the band says the team's provider is down and GitHub is standing in. A live provider (the hub's helper) rewrites `.claude/state/team.json` as events arrive, and the mod refreshes when it changes. When the state carries `sessions` (who is at work where, and what their agents are doing) and `findings` (a drift check's), the Team pane shows them under each person (and the findings in its Drift tab), and a finding on your own work is a line in the band.
+
+**Acceptance**
+
+- Given `provider: { command, fallback: "github" }` and a command that fails, when sam claims ST-40, then the claim is made through GitHub, and the state says it came through GitHub and why.
+- Given the state with sessions and a blocker finding on kim's branch, then kim's band names the drift, and the Team pane shows where each person is at work and the finding.
+
+### TEAM-13 Set up as a team, or as one developer
+
+Not every developer works in a team, so code-kit never assumes one. `/code-kit:init` asks once whether other developers work in the repository with their own sessions, and only on yes runs `/code-kit:team-init`, which can also be run on its own at any time: to set the team up, change it, or take it out. It asks for the tech lead, each lane's owners (or none), when a claim goes stale and the intents' discussion category, shows the team section before anything is written, and writes it only once the person agrees.
+
+`code-kit team init --tech-lead <handle> [--owner <lane>=<handles>]… [--stale-days <n>] [--intents <category>]` shows the section it would write; with `--write` it writes the config (validated like any other change) and says what GitHub still needs: gh signed in on this machine, the shared repository reachable, Discussions on with the intents' category (which GitHub doesn't let a tool create). `team init --off --write` takes `team` and every lane's owners out. Writing is the lead's: the hooks refuse `team init --write` from a lane agent. The GitHub provider's state carries the same list (`setup`) and names itself (`provider`), for the Team pane's header and Setup tab.
+
+**Acceptance**
+
+- Given a project without `team`, when the lead runs `team init --tech-lead alex --owner web=sam,@kim`, then it shows the section and writes nothing; with `--write`, the config has alex as tech lead and sam and kim owning web, `check` passes, and it says GitHub is ready.
+- Given `--owner nope=sam`, then it's refused, naming the lanes there are; given `--stale-days 0`, nothing changes and it says what the value must be.
+- Given `--intents Proposals` and no such category, then init and the team's state both name it as still to set up.
+- Given a lane agent running `team init … --write`, then it's refused; without `--write` it may look.
+- Given `team init --off --write`, then the config has no team and no owners, and `check` reports none.
 
 ## Open questions
 

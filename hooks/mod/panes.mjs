@@ -1,7 +1,6 @@
 // Panes v2 (docs/specs/11-panes.md): the Lanes pane's frame. A counts header, tabs, what needs the
 // person, the tab's body and the keys, as pure functions of what the mod already holds. The Lanes
 // tab's body is view.mjs's lanesPane; the Queue and Usage tabs reuse its sections.
-import { teamTab } from './teamview.mjs';
 import { trailRows as trailRowsDrawn, trailSvg } from './trail.mjs';
 import {
   MAP_LEGEND,
@@ -32,7 +31,6 @@ export const TABS = [
   { id: 'map', label: 'Trail', hotkey: '5' },
   { id: 'queue', label: 'Queue', hotkey: '6' },
   { id: 'usage', label: 'Usage', hotkey: '7' },
-  { id: 'team', label: 'Team', hotkey: '8' },
 ];
 
 /** The pane's own state, kept by the mod between draws. */
@@ -246,8 +244,7 @@ export function lanesFrame(view, els, on) {
     key: 'tabs',
     flexDirection: 'row',
     columnGap: 1,
-    // The Team tab is there only for a team (TEAM-7).
-    children: TABS.filter((t) => t.id !== 'team' || view.team).map((t) =>
+    children: TABS.map((t) =>
       Button({
         key: `tab-${t.id}`,
         label: t.label,
@@ -272,52 +269,48 @@ export function lanesFrame(view, els, on) {
 
   const selected = state.lanes.find((l) => l.name === ui.selected) ?? null;
   const body =
-    ui.tab === 'team'
-      ? teamTab(view.team ?? null, view.teamSince ?? null, els, on)
-      : ui.tab === 'decisions'
-        ? decisionsTab(view.cards ?? [], ui, els, on)
-        : ui.tab === 'journal'
-          ? journalTab(view.journal ?? [], els, view.now)
-          : ui.tab === 'code'
-            ? codeTab(view, els, on)
-            : ui.tab === 'map'
-              ? mapTab(view.status, ui.cell, els, on, view.trail, {
-                  surface: view.surface,
-                  columns: view.columns,
-                })
-              : ui.tab === 'queue'
-                ? queueSection(loop, text, Box)
-                : ui.tab === 'usage'
-                  ? usageSection(view.usage, plan, text, Box)
-                  : [
-                      lanesPane(state, els, view.usage, plan, loop, {
-                        filter: ui.filter,
-                        search: ui.search,
-                        selected: ui.selected,
-                        live: view.live ?? {},
-                        art: view.art ?? null,
-                        detail: selected
-                          ? {
-                              agent: selected.agent ?? null,
-                              owns: view.paths?.[selected.name] ?? [],
-                              stories: laneStories(selected, state),
-                            }
-                          : null,
-                        combined: view.combined ?? null,
-                      }),
-                    ];
+    ui.tab === 'decisions'
+      ? decisionsTab(view.cards ?? [], ui, els, on)
+      : ui.tab === 'journal'
+        ? journalTab(view.journal ?? [], els, view.now)
+        : ui.tab === 'code'
+          ? codeTab(view, els, on)
+          : ui.tab === 'map'
+            ? mapTab(view.status, ui.cell, els, on, view.trail, {
+                surface: view.surface,
+                columns: view.columns,
+              })
+            : ui.tab === 'queue'
+              ? queueSection(loop, text, Box)
+              : ui.tab === 'usage'
+                ? usageSection(view.usage, plan, text, Box)
+                : [
+                    lanesPane(state, els, view.usage, plan, loop, {
+                      filter: ui.filter,
+                      search: ui.search,
+                      selected: ui.selected,
+                      live: view.live ?? {},
+                      art: view.art ?? null,
+                      detail: selected
+                        ? {
+                            agent: selected.agent ?? null,
+                            owns: view.paths?.[selected.name] ?? [],
+                            stories: laneStories(selected, state),
+                          }
+                        : null,
+                      combined: view.combined ?? null,
+                    }),
+                  ];
   const empty =
-    ui.tab === 'team'
-      ? 'This project has no team in its config.'
-      : ui.tab === 'decisions'
-        ? 'Nothing needs you. The lead is handling the build.'
-        : ui.tab === 'journal'
-          ? 'Nothing recorded yet: the journal starts with the brief.'
-          : ui.tab === 'queue'
-            ? 'The merge queue is empty.'
-            : ui.tab === 'usage'
-              ? 'No usage measured yet this session.'
-              : null;
+    ui.tab === 'decisions'
+      ? 'Nothing needs you. The lead is handling the build.'
+      : ui.tab === 'journal'
+        ? 'Nothing recorded yet: the journal starts with the brief.'
+        : ui.tab === 'queue'
+          ? 'The merge queue is empty.'
+          : ui.tab === 'usage'
+            ? 'No usage measured yet this session.'
+            : null;
 
   // VIEW-6: j/k move between lanes; the selected lane's acts; f filters.
   const opening = selected ? storyToOpen(selected, state) : null;
