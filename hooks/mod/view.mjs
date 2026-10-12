@@ -630,6 +630,31 @@ export const APPROVE_ID = 'code-kit-approve';
 export const RESULT_ID = 'code-kit-result';
 
 /** An approval name as a person reads it: a dependency approval by its package. */
+/**
+ * CARD-2: open requests as the decisions they are: one per approval and lane, with every file (or
+ * command) it was asked for, newest first. Approving it covers them all.
+ */
+export function approvalAsks(open) {
+  const asks = new Map();
+  for (const r of open ?? []) {
+    const key = `${[...r.names].sort().join(',')}|${r.lane ?? r.actor}`;
+    const ask = asks.get(key) ?? { request: r, files: [] };
+    if (!ask.files.includes(r.what)) ask.files.push(r.what);
+    asks.set(key, ask);
+  }
+  return [...asks.values()];
+}
+
+/** What an approval decision covers, in a line: "contract for the platform lane: a.ts, b.ts (2 files)". */
+export function askWords(request, files = [request?.what]) {
+  const who = request.lane ? `the ${request.lane} lane` : request.actor;
+  const list =
+    files.length > 4
+      ? `${files.slice(0, 4).join(', ')} and ${files.length - 4} more`
+      : files.join(', ');
+  return `${request.names.map(approvalLabel).join(', ')} for ${who}: ${list}${files.length > 1 ? ` (${files.length} files)` : ''}`;
+}
+
 export function approvalLabel(name) {
   return name.startsWith('dep-') ? name.slice(4).replaceAll('+', '/') : name;
 }
@@ -745,12 +770,14 @@ export function bandLines({
       actions: [{ id: 'go', label: 'Go' }],
     });
   // A held call's request is asked on its own line above, not again here.
-  const open = (requests?.open ?? []).filter((r) => !held.some((h) => sameAsk(h, r)));
-  if (open.length)
+  // CARD-2: counted as decisions, not files: one approval for a lane covers every file it was asked for.
+  const asks = approvalAsks((requests?.open ?? []).filter((r) => !held.some((h) => sameAsk(h, r))));
+  if (asks.length)
     lines.push({
       kind: 'approvals',
-      text: `${plural(open.length, 'approval', 'approvals')} waiting`,
-      request: open[0],
+      text: `${plural(asks.length, 'approval', 'approvals')} waiting`,
+      request: asks[0].request,
+      files: asks[0].files,
       actions: [{ id: 'approve', label: 'Approve…' }],
     });
   // DECIDE-1: reviewing a lane's work is the lead's. Only with the loop off, where the person runs the
@@ -1129,12 +1156,13 @@ export function refusalView(card, expanded, { Box, Text, Button }, { onApprove, 
 export function approvalsText(requests) {
   const open = requests?.open ?? [];
   const inForce = requests?.inForce ?? [];
+  const history = requests?.history ?? [];
+  const asks = approvalAsks(open);
   const lines = [
-    open.length ? `${plural(open.length, 'request', 'requests')} waiting:` : 'No requests waiting.',
-    ...open.map(
-      (r) =>
-        `  ${r.names.map(approvalLabel).join(', ')} for ${r.lane ? `the ${r.lane} lane` : 'any agent'}: ${r.what}`,
-    ),
+    asks.length
+      ? `${plural(asks.length, 'approval', 'approvals')} waiting:`
+      : 'No requests waiting.',
+    ...asks.map((a) => `  ${askWords(a.request, a.files)}`),
     inForce.length
       ? `${plural(inForce.length, 'approval', 'approvals')} in force:`
       : 'No approvals in force.',
@@ -1142,6 +1170,14 @@ export function approvalsText(requests) {
       (a) =>
         `  ${approvalLabel(a.name)} for ${a.lane ? `the ${a.lane} lane` : 'any agent'}, ${a.minutesLeft} min left: ${a.reason}`,
     ),
+    // CARD-6: what was given, newest first, whether or not its branch has merged.
+    history.length ? 'Approvals given, newest first:' : 'No approvals given yet.',
+    ...history
+      .slice(0, 20)
+      .map(
+        (h) =>
+          `  ${new Date(h.at).toLocaleString('en-AU', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}  ${approvalLabel(h.name)} for ${h.lane ? `the ${h.lane} lane` : 'any agent'}, by ${h.by}${h.files.length ? ` (${h.files.length} file${h.files.length === 1 ? '' : 's'})` : ''}: ${h.reason}`,
+      ),
   ];
   return lines.join('\n');
 }

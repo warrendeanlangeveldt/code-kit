@@ -45,7 +45,16 @@ import {
   sendBackPane,
   toolLine,
 } from './panes.mjs';
-import { leadPrompt, nudgeText, restartPrompt, stallDue, stepKey, stepLabel } from './loop.mjs';
+import {
+  leadPrompt,
+  nudgeText,
+  restartPrompt,
+  stallDue,
+  stepKey,
+  stepLabel,
+  storiesInFlight,
+  withoutInFlight,
+} from './loop.mjs';
 import { goalOf, nextText } from './mission.mjs';
 import { contextOf, decisionCards } from './decisions.mjs';
 import { DEFAULT_TEAM_UI, TEAM_ID, teamFrame } from './teamview.mjs';
@@ -790,7 +799,14 @@ export function register(on) {
           return act.submit(prompt, 'restart', story);
         }
         const ran = await $.process.run(['node', cli, 'next', '--json'], { cwd });
-        const step = ran.exitCode === 0 ? parseJson(ran.stdout) : null;
+        // LOOP-9: never a story an agent is already at work on, building or reviewing it.
+        const step =
+          ran.exitCode === 0
+            ? withoutInFlight(
+                parseJson(ran.stdout),
+                storiesInFlight(await $.agent.list().catch(() => [])),
+              )
+            : null;
         // MISSION-1: the band shows what the loop takes next.
         loop.nextStep = step;
         if (!step) {

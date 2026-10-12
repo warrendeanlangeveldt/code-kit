@@ -30,7 +30,10 @@ import {
   planOf,
   tokens,
   planBar,
+  approvalAsks,
+  askWords,
 } from '../hooks/mod/view.mjs';
+import { leadPrompt, storiesInFlight, withoutInFlight } from '../hooks/mod/loop.mjs';
 
 const fixture = JSON.parse(
   readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'fixture.json'), 'utf8'),
@@ -437,6 +440,73 @@ test('the mod: PANE-2 a row per lane, with its story, branch and state, and PANE
   );
 });
 
+test('CARD-2 open requests are counted as decisions: one per approval and lane, with every file it covers', () => {
+  const asks = approvalAsks([
+    {
+      lane: 'platform',
+      actor: 'platform-engineer (platform lane)',
+      names: ['contract'],
+      what: 'a.ts',
+    },
+    {
+      lane: 'platform',
+      actor: 'platform-engineer (platform lane)',
+      names: ['contract'],
+      what: 'b.ts',
+    },
+    { lane: 'domain', actor: 'domain-engineer (domain lane)', names: ['contract'], what: 'c.ts' },
+    {
+      lane: 'platform',
+      actor: 'platform-engineer (platform lane)',
+      names: ['contract'],
+      what: 'a.ts',
+    },
+  ]);
+  assert.equal(asks.length, 2);
+  assert.deepEqual(asks[0].files, ['a.ts', 'b.ts']);
+  assert.equal(
+    askWords(asks[0].request, asks[0].files),
+    'contract for the platform lane: a.ts, b.ts (2 files)',
+  );
+});
+
+test('LOOP-9 the loop leaves out stories an agent is at work on, building or reviewing them', () => {
+  const inFlight = storiesInFlight([
+    { status: 'running', description: 'ST-10 capture pipeline' },
+    { status: 'running', description: 'Review domain/st-78 (ST-78)' },
+    { status: 'waiting', description: 'Security review platform/st-80' },
+    { status: 'completed', description: 'ST-21 school calendars' },
+  ]);
+  assert.deepEqual([...inFlight].sort(), ['ST-10', 'ST-78', 'ST-80']);
+  assert.deepEqual(
+    withoutInFlight(
+      { step: 'review', args: 'ST-10 ST-78 ST-21', then: [{ step: 'dispatch', args: 'ST-30' }] },
+      inFlight,
+    ),
+    { step: 'review', args: 'ST-21', then: [{ step: 'dispatch', args: 'ST-30' }] },
+  );
+  assert.deepEqual(
+    withoutInFlight(
+      { step: 'review', args: 'ST-10', then: [{ step: 'dispatch', args: 'ST-80 ST-31' }] },
+      inFlight,
+    ),
+    { step: 'dispatch', args: 'ST-31' },
+  );
+  const waiting = withoutInFlight({ step: 'review', args: 'ST-10 ST-78' }, inFlight);
+  assert.equal(waiting.step, 'wait');
+  assert.match(waiting.why, /ST-10, ST-78 are still with their agents/);
+  assert.equal(leadPrompt(waiting), null);
+  // A merge isn't a story's start: it goes ahead.
+  assert.deepEqual(withoutInFlight({ step: 'merge', args: 'web/st-4' }, inFlight), {
+    step: 'merge',
+    args: 'web/st-4',
+  });
+  assert.deepEqual(withoutInFlight({ step: 'dispatch', args: 'ST-1' }, new Set()), {
+    step: 'dispatch',
+    args: 'ST-1',
+  });
+});
+
 test('the mod: BAND-2 and BAND-4, the band lines and their hotkeys, and ACT-1 the prefilled reason', () => {
   const check = {
     exists: true,
@@ -457,7 +527,14 @@ test('the mod: BAND-2 and BAND-4, the band lines and their hotkeys, and ACT-1 th
   assert.deepEqual(bandLines({ state: quiet, requests: { open: [] }, stops: [] }), []);
   const lines = bandLines({
     state: projectState(check, status, null, new Set()),
-    requests: { open: [request, request] },
+    // Two files asked for under one approval are one decision; another approval is another.
+    requests: {
+      open: [
+        request,
+        { ...request, what: 'npm install @scope/pkg --save' },
+        { lane: 'web', names: ['contract'], what: 'packages/contracts/a.ts' },
+      ],
+    },
     stops: [{ title: 'Check tests failed' }],
     // The person runs the build: a finished story waits in the band for them (DECIDE-1).
     check: { harness: { autonomy: 'off' } },
@@ -769,7 +846,7 @@ test('USE-1 to USE-4 usage: attribution, the roll-up, outliers and the plan', ()
 });
 
 test('LOOP-1 to LOOP-3 the loop: prompts for steps, and what a quiet agent is due', async () => {
-  const { leadPrompt, stepKey, stepLabel, stallDue } = await import('../hooks/mod/loop.mjs');
+  const { stepKey, stepLabel, stallDue } = await import('../hooks/mod/loop.mjs');
   assert.equal(
     leadPrompt({ step: 'dispatch', args: 'ST-7 ST-9' }),
     'Dispatch ST-7, ST-9: run /code-kit:dispatch ST-7 ST-9.',

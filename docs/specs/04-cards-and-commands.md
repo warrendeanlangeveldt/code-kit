@@ -17,11 +17,30 @@ Where Claude Code draws a tool result that a code-kit hook refused, the mod draw
 
 ### CARD-2 `/approvals`
 
-`/approvals` lists the open requests and the approvals in force, with what each allows and when it lapses, without a model call.
+`/approvals` lists the open requests and the approvals in force, with what each allows and when it lapses, without a model call. Requests are counted as the decisions they are: one per approval and lane, naming every file it covers ("contract for the platform lane: a.ts, b.ts (2 files)"), since one approval covers them all. The band and the decision card count and show them the same way.
 
 **Acceptance**
 
 - Given one open request and one approval in force, when the person types `/approvals`, then both appear, the approval with its minutes left.
+- Given three requests, two for the platform lane's contract approval and one for the domain lane's, then the band says "2 approvals waiting" and the card names both platform files.
+
+### CARD-5 Only requests that still wait
+
+A request is the person's to answer only while it still waits. A read-only agent (a reviewer) is never approved to write, so what it changes (a code generator it ran, say) is refused with how to put it back, and asks nobody. A request is answered once its approval is given after it, even when that approval has since lapsed or was used up by the commit it allowed, and once the file it named has been committed since by someone who could (the lead, say).
+
+**Acceptance**
+
+- Given the reviewer writing a protected file, then it's refused, told to `git restore` it, and no request is open.
+- Given a lane's request, then an approval given for it, then that approval gone, then the request isn't open again.
+- Given a lane's request for a file the lead then commits, then the request isn't open.
+
+### CARD-6 The approvals given
+
+`/approvals` (and `code-kit requests`) ends with every approval given, newest first: when, what for, which lane, who gave it (you, in the pane; you, in chat; or the lead within your delegated rules), its reason, and the files and branches it covered, whether or not those branches have merged. It reads the approvals given through code-kit (kept in `.claude/state/approvals-given.jsonl`), those on disk (a person's own `!` echo included) and the audit log in every worktree.
+
+**Acceptance**
+
+- Given approvals given in the pane and in chat, then `requests --json` lists each in its history, newest first, with who gave it.
 
 ### CARD-3 `/verify-branch`
 
