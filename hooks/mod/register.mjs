@@ -412,6 +412,8 @@ export function register(on) {
           // TRACE-3: the map follows the specs too.
           specs ? await listing(specs) : '',
           await stamp('.claude/state/requests.jsonl'),
+          // TEAM-7: a live provider (the hub's helper) rewrites the team's state as events arrive.
+          await stamp('.claude/state/team.json'),
           await stamp('.claude/state/merge-queue.json'),
           await listing('.claude/approvals'),
           await listing('.claude/state/stop-blocks'),

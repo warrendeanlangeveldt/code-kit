@@ -143,6 +143,13 @@ A claim is stale when its story's branch has had no push for `team.staleDays` (3
 
 Coordination fails open: if GitHub (or the hub) can't be reached, claims and leases aren't checked, the band says so once, and every local rule still holds.
 
+A provider named by a command may give GitHub as its fallback (`team.provider: { command, fallback: "github" }`): each operation it can't reach goes to the GitHub provider instead, so claims and leases are still checked through refs, and the band says the team's provider is down and GitHub is standing in. A live provider (the hub's helper) rewrites `.claude/state/team.json` as events arrive, and the mod refreshes when it changes. When the state carries `sessions` (who is at work where, and what their agents are doing) and `findings` (a drift check's), the Team tab shows them under each person, and a finding on your own work is a line in the band.
+
+**Acceptance**
+
+- Given `provider: { command, fallback: "github" }` and a command that fails, when sam claims ST-40, then the claim is made through GitHub, and the state says it came through GitHub and why.
+- Given the state with sessions and a blocker finding on kim's branch, then kim's band names the drift, and the Team tab shows where each person is at work and the finding.
+
 ## Open questions
 
 | Question                                                     | Owner  | Blocks |

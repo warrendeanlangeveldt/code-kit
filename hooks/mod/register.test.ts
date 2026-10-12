@@ -3047,6 +3047,67 @@ test('TEAM-6 and TEAM-7 the Team tab: since you last looked, then each person wi
   await ui.unmount();
 });
 
+test("with a live provider (the hub), the band says when it fell back to GitHub, and names drift on your work; the Team tab shows who's at work and the drift found", async ($, on) => {
+  const w = project();
+  const at = new Date().toISOString();
+  w.team = {
+    ...teamOf('kim'),
+    fallback: "The code-kit teams hub can't be reached.",
+    sessions: [
+      {
+        login: 'kim',
+        branch: 'web/st-9',
+        agents: [{ type: 'web-engineer', story: 'ST-9', tool: 'Edit' }],
+        seen: at,
+        away: false,
+      },
+      { login: 'sam', branch: 'api/st-4', agents: [], seen: at, away: true },
+    ],
+    findings: [
+      {
+        id: 1,
+        branch: 'web/st-9',
+        by: 'kim',
+        conflictsWith: 'spec docs/specs/02-booking.md',
+        severity: 'blocker',
+        text: 'BOOK-2 now holds prices in cents.',
+        at,
+      },
+      {
+        id: 2,
+        branch: 'api/st-4',
+        by: 'sam',
+        conflictsWith: 'branch web/st-9',
+        severity: 'note',
+        text: 'only a note',
+        at,
+      },
+    ],
+  };
+  (w.check as any).team = { techLead: 'alex' };
+  await start($, on, w);
+  const band = await bandUi($);
+  expect(
+    await band.find({
+      type: 'Text',
+      text: "team: the team's provider can't be reached, so claims are checked through GitHub until it's back",
+    }),
+  ).toBeDefined();
+  expect(
+    await band.find({ type: 'Text', text: 'drift on web/st-9: BOOK-2 now holds prices in cents.' }),
+  ).toBeDefined();
+  expect(await band.find({ type: 'Text', text: /only a note/ })).toBeUndefined();
+  await band.unmount();
+  await lanes($);
+  const ui = await pane($, PANE);
+  await press($, 'tab-team', PANE);
+  expect((await ui.find({ key: 'team-person-kim' }))?.text).toMatch(
+    /at work on web\/st-9: web-engineer on ST-9 \(Edit\)[\s\S]*drift on web\/st-9 \(blocker\): BOOK-2 now holds prices in cents\./,
+  );
+  expect((await ui.find({ key: 'team-person-sam' }))?.text).toMatch(/away \(last seen/);
+  await ui.unmount();
+});
+
 test('TEAM-7 without a team there is no Team tab', async ($, on) => {
   const w = project();
   await start($, on, w);

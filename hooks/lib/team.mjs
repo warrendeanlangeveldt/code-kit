@@ -60,9 +60,16 @@ export function teamProblems(c) {
     if (
       t.provider !== undefined &&
       t.provider !== 'github' &&
-      !(isObj(t.provider) && typeof t.provider.command === 'string' && t.provider.command.trim())
+      !(
+        isObj(t.provider) &&
+        typeof t.provider.command === 'string' &&
+        t.provider.command.trim() &&
+        (t.provider.fallback === undefined || t.provider.fallback === 'github')
+      )
     )
-      p.push('"team.provider" must be "github" or { "command": "<the provider\'s command>" }');
+      p.push(
+        '"team.provider" must be "github" or { "command": "<the provider\'s command>", "fallback"?: "github" }',
+      );
   }
   for (const [name, lane] of Object.entries(isObj(c.lanes) ? c.lanes : {})) {
     if (!isObj(lane) || lane.owners === undefined) continue;
@@ -148,11 +155,44 @@ function claimOf(message) {
   }
 }
 
-/** The provider for this project's team: GitHub's, or the config's command. */
+/**
+ * The provider for this project's team: GitHub's, or the config's command. A command with
+ * `fallback: "github"` (a hosted provider, such as the code-kit teams hub) hands each operation it
+ * can't reach to the GitHub provider, so claims are still checked while it's down (TEAM-8).
+ */
 export function teamProvider(root, team) {
-  return team.provider === 'github'
-    ? githubProvider(root, team)
-    : commandProvider(root, team, team.provider.command);
+  if (team.provider === 'github') return githubProvider(root, team);
+  const command = commandProvider(root, team, team.provider.command);
+  if (team.provider.fallback !== 'github') return command;
+  const github = githubProvider(root, team);
+  const down = (r) => Boolean(r?.unreachable) || r?.reachable === false;
+  const either =
+    (op) =>
+    (...args) => {
+      const r = command[op](...args);
+      if (!down(r) && r !== null) return r;
+      const g = github[op](...args);
+      // The state says it came through GitHub, and why, for the band.
+      return op === 'state' && g
+        ? { ...g, fallback: r?.why ?? "The team provider can't be reached." }
+        : g;
+    };
+  return {
+    ...Object.fromEntries(
+      [
+        'whoami',
+        'claim',
+        'release',
+        'state',
+        'intend',
+        'settle',
+        'reassign',
+        'intent',
+        'since',
+      ].map((op) => [op, either(op)]),
+    ),
+    forget: () => (command.forget(), github.forget()),
+  };
 }
 
 function githubProvider(root, team) {

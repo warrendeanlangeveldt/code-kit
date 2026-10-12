@@ -1968,6 +1968,52 @@ else process.exit(2);
       truth(sam('team', 'release', 'ST-3').stderr.includes('The team provider')),
       0,
     );
+    // TEAM-8: a hosted provider with GitHub as its fallback: while it's down, claims go through GitHub.
+    execFileSync('git', ['-C', a, 'remote', 'set-url', 'origin', origin]);
+    writeFileSync(join(root, 'down.mjs'), 'process.exit(7);\n');
+    writeFileSync(
+      join(a, '.claude/code-kit.json'),
+      JSON.stringify({
+        ...JSON.parse(fixture),
+        team: {
+          techLead: 'alex',
+          provider: { command: `node "${join(root, 'down.mjs')}"`, fallback: 'github' },
+        },
+      }),
+    );
+    const viaGitHub = sam('team', 'claim', 'ST-40', '--lease', 'apps/office/**');
+    expect(
+      'TEAM-8 with the provider down and GitHub its fallback, a claim is made through GitHub',
+      truth(viaGitHub.status === 0, viaGitHub.stdout + viaGitHub.stderr),
+      0,
+    );
+    const fellBack = JSON.parse(sam('team', '--json', '--fresh').stdout || '{}');
+    expect(
+      'and the state says it came through GitHub, and why',
+      truth(
+        fellBack.reachable === true &&
+          fellBack.claims?.some((c) => c.story === 'ST-40' && c.by === 'sam') &&
+          /The team provider/.test(fellBack.fallback ?? ''),
+        JSON.stringify(fellBack),
+      ),
+      0,
+    );
+    expect('a provider with GitHub as its fallback is a valid config', sam('check'), 0);
+    writeFileSync(
+      join(a, '.claude/code-kit.json'),
+      JSON.stringify({
+        ...JSON.parse(fixture),
+        team: { techLead: 'alex', provider: { command: 'x', fallback: 'gitlab' } },
+      }),
+    );
+    expect(
+      'a fallback other than github is refused',
+      sam('check'),
+      1,
+      '"team.provider" must be "github" or { "command"',
+    );
+    sam('team', 'release', 'ST-40');
+    writeFileSync(join(a, '.claude/code-kit.json'), config);
   }
 
   // --- ONB-7: the security review, for the changes that need it ----------------------------------

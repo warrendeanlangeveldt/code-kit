@@ -38,6 +38,12 @@ export function teamLines(team, lanes = {}) {
       text: "team: the shared repository can't be reached, so claims aren't checked",
       actions: [],
     });
+  else if (team.fallback)
+    lines.push({
+      kind: 'teamDown',
+      text: "team: the team's provider can't be reached, so claims are checked through GitHub until it's back",
+      actions: [],
+    });
   const me = team.me;
   if (!me) return lines;
   const mine = team.claims.filter((c) => c.by === me);
@@ -83,6 +89,20 @@ export function teamLines(team, lanes = {}) {
         : [{ id: 'team', label: 'Team' }],
     });
   }
+  // A provider's drift check (the hub's): findings on this person's branches or claimed stories.
+  const myBranches = new Set([
+    ...team.pulls.filter((p) => p.by === me).map((p) => p.branch),
+    ...(team.sessions ?? []).filter((s) => s.login === me).map((s) => s.branch),
+  ]);
+  for (const f of (team.findings ?? []).filter(
+    (x) => x.severity !== 'note' && (x.by === me || myBranches.has(x.branch)),
+  ))
+    lines.push({
+      kind: 'teamDrift',
+      text: `drift on ${f.branch}: ${f.text}`,
+      finding: f,
+      actions: [{ id: 'team', label: 'Team' }],
+    });
   for (const p of team.pulls.filter((x) => x.by !== me && !x.draft)) {
     const lane = laneOfBranch(p.branch);
     if (lane && team.owners?.[lane]?.includes(me))
@@ -104,6 +124,7 @@ export function peopleOf(team) {
     ...team.claims.map((c) => c.by),
     ...team.intents.map((i) => i.by),
     ...team.pulls.map((p) => p.by),
+    ...(team.sessions ?? []).map((s) => s.login),
     team.me,
   ].filter(Boolean);
   return [...new Set(named)];
@@ -157,12 +178,39 @@ export function teamTab(team, since, { Box, Text, Button }, on) {
     const claims = team.claims.filter((c) => c.by === who);
     const pulls = team.pulls.filter((p) => p.by === who);
     const intents = team.intents.filter((i) => i.by === who);
+    // A live provider's presence: where each of their sessions is, and what its agents are doing.
+    const sessions = (team.sessions ?? []).filter((x) => x.login === who);
+    const findings = (team.findings ?? []).filter((f) => f.by === who);
     const role = [
       who === team.techLead ? 'tech lead' : null,
       who === team.me ? 'you' : null,
       lanes.length ? `owns ${lanes.join(', ')}` : null,
     ].filter(Boolean);
     const items = [
+      ...sessions.map((x, n) =>
+        Box({
+          key: `team-session-${who}-${n}`,
+          children: [
+            text(
+              x.away
+                ? `  away (last seen ${new Date(x.seen).toLocaleTimeString('en-AU', { hour: '2-digit', minute: '2-digit' })})`
+                : `  at work on ${x.branch ?? 'no branch'}${x.agents.length ? `: ${x.agents.map((a) => `${a.type ?? 'an agent'}${a.story ? ` on ${a.story}` : ''}${a.tool ? ` (${a.tool})` : ''}`).join(', ')}` : ''}`,
+              { wrap: 'truncate-end', ...(x.away ? { dimColor: true } : { color: 'green' }) },
+            ),
+          ],
+        }),
+      ),
+      ...findings.map((f) =>
+        Box({
+          key: `team-finding-${f.id}`,
+          children: [
+            text(`  drift on ${f.branch} (${f.severity}): ${f.text}`, {
+              wrap: 'wrap',
+              color: f.severity === 'blocker' ? 'red' : 'yellow',
+            }),
+          ],
+        }),
+      ),
       ...claims.map((c) =>
         Box({
           key: `team-claim-${c.story}`,
