@@ -48,6 +48,7 @@ import {
 import { leadPrompt, nudgeText, restartPrompt, stallDue, stepKey, stepLabel } from './loop.mjs';
 import { goalOf, nextText } from './mission.mjs';
 import { contextOf, decisionCards } from './decisions.mjs';
+import { DEFAULT_TEAM_UI, TEAM_ID, teamFrame } from './teamview.mjs';
 import { glowOf, mapStoryOf, touchOf } from './codemap.mjs';
 import { harnessSettings } from '../lib/harness.mjs';
 import {
@@ -67,7 +68,8 @@ let reviewTurn = null; // 'next' until the lead's review turn starts, then its i
 let approving = null; // the open Approve… confirmation: { request, reason, error }
 let result = null; // what the last merge reported
 let notice = null; // why the person's last act failed
-let teamSince = null; // TEAM-6: since you last looked, as read when the Team tab opened
+let teamSince = null; // TEAM-6: since you last looked, as read when the Team pane's tab opened
+let teamUi = { ...DEFAULT_TEAM_UI }; // TEAM-7: the Team pane's own state
 let boardSynced = -Infinity; // TEAM-12: when the board was last synced
 let projectRead = -Infinity; // MAP-5: when the whole project's map was last read
 const BOARD_EVERY_MS = 10 * 60000;
@@ -176,6 +178,14 @@ export function register(on) {
         immediate: true,
       })
       .catch(unavailable('harness'));
+    await $.command
+      .register({
+        name: 'team',
+        description:
+          "code-kit's team: who's at work on what, claims, intents, drift and the team's setup",
+        immediate: true,
+      })
+      .catch(unavailable('team'));
     rateLimits = (await $.session.usage().catch(() => null))?.rateLimits ?? [];
     const cli = `${$.plugin.root}/bin/code-kit.mjs`;
     const cwd = e.cwd ?? (await $.session.cwd());
@@ -267,8 +277,8 @@ export function register(on) {
           }
         }
         if (paneUi.tab === 'map') trailData = (await json('trail')) ?? trailData;
-        // TEAM-6: since you last looked, read once each time the Team tab opens, which marks it read.
-        if (paneUi.tab === 'team' && model.check?.team && !teamSince)
+        // TEAM-6: since you last looked, read once each time its tab opens, which marks it read.
+        if (teamUi.tab === 'activity' && model.check?.team && !teamSince)
           teamSince = (await json('team', 'since')) ?? { people: {} };
         // JOURNAL-1, DECIDE-2: the lineage, for the Journal tab and the decisions' cards.
         const deciding = held.size > 0 || (model.requests?.open ?? []).length > 0;
@@ -580,6 +590,22 @@ export function register(on) {
         await act.reload();
       },
       keepClaim: (line) => act.teamAct(['team', 'keep', line.claim.story], 'Keeping the claim'),
+      // TEAM-9: the tech lead hands a claim, with its lease, to someone else.
+      reassignTo: async (story, handle) => {
+        const to = handle.trim().replace(/^@/, '');
+        if (!to) return;
+        teamUi = { ...teamUi, reassign: null, handle: '' };
+        await act.teamAct(['team', 'reassign', story, to], `Reassigning ${story}`);
+      },
+      // TEAM-13: the team's setup is changed through its init, by the lead, with the person.
+      teamSetup: async () => {
+        await $.prompt
+          .submit({ text: "Run /code-kit:team-init: I want to change this project's team setup." })
+          .catch((err) => {
+            notice = `Couldn't ask the lead: ${err?.message ?? err}`;
+          });
+        $.ui.invalidate('ui.render');
+      },
       releaseClaim: (line) =>
         act.teamAct(['team', 'release', line.claim.story], 'Releasing the claim'),
       // TEAM-10: agreed, the lead records it where agents read it, through a pull request.
@@ -601,11 +627,43 @@ export function register(on) {
           ['intend', 'drop', String(line.intent.id), '--reason', 'dropped in the code-kit pane'],
           'Dropping the intent',
         ),
-      // TEAM-7: the Team tab, opened from the band.
-      team: async () => {
-        paneUi = { ...paneUi, tab: 'team', story: null };
-        if (!(await $.ui.panes()).some((p) => p.id === PANE_ID))
-          await $.ui.open({ id: PANE_ID, title: 'Lanes', focus: true, closeOnEscape: true });
+      // TEAM-7: the Team pane, opened from the band (on what the line is about) or /team (which closes
+      // it when it's open).
+      team: async (line, { toggle = false } = {}) => {
+        const open = (await $.ui.panes()).some((p) => p.id === TEAM_ID);
+        if (open && toggle) {
+          await $.ui.close({ id: TEAM_ID });
+          return {};
+        }
+        if (toggle || !model.state) await act.reload();
+        if (model.state?.kind === 'none') return { text: NOT_CODE_KIT };
+        if (!model.check?.team)
+          return {
+            text: "This project isn't set up as a team: one developer, no claims or owners. To share it with a team, run /code-kit:team-init.",
+          };
+        const tab =
+          line?.kind === 'teamIntent'
+            ? 'intents'
+            : line?.kind === 'teamDrift'
+              ? 'drift'
+              : ['teamStale', 'teamCollision'].includes(line?.kind)
+                ? 'claims'
+                : line
+                  ? 'people'
+                  : teamUi.tab;
+        teamUi = { ...teamUi, tab };
+        // Opening it reads since-you-last-looked again, which marks it read.
+        if (tab !== 'activity' || !open) teamSince = null;
+        if (!open) {
+          const placed = await $.ui.open({
+            id: TEAM_ID,
+            title: 'Team',
+            focus: true,
+            closeOnEscape: true,
+          });
+          if (!placed?.isPlaced && placed?.reason)
+            return { text: `The Team pane is waiting: ${placed.reason}` };
+        }
         await act.readMaps();
         $.ui.invalidate('ui.render');
         return {};
@@ -1091,7 +1149,7 @@ export function register(on) {
         await act.stalls();
         await act.animate();
         const now = await act.fingerprint();
-        const paneOpen = (await $.ui.panes()).some((p) => p.id === PANE_ID);
+        const paneOpen = (await $.ui.panes()).some((p) => [PANE_ID, TEAM_ID].includes(p.id));
         quiet += 1;
         if (now === seen && quiet < (paneOpen ? 5 : 30)) return;
         quiet = 0;
@@ -1115,6 +1173,9 @@ export function register(on) {
     text: `code-kit is still starting; try /${name} again in a moment.`,
   });
   on('command.run', { command: 'lanes' }, async ($, e) => (act ? act.lanes() : starting('lanes')));
+  on('command.run', { command: 'team' }, async ($, e) =>
+    act ? act.team(null, { toggle: true }) : starting('team'),
+  );
   on('command.run', { command: 'harness' }, async ($, e) =>
     act ? act.harness() : starting('harness'),
   );
@@ -1541,8 +1602,6 @@ export function register(on) {
         needs: linesNow(now).filter((l) => !l.mission),
         cards: cardsNow(now),
         journal: journalNow(),
-        team: model.team ?? null,
-        teamSince,
         now,
         live: liveNow(now),
         held: [...held.values()],
@@ -1569,7 +1628,6 @@ export function register(on) {
       $.ui.resolve(e),
       {
         onTab: (tab) => {
-          if (tab !== 'team') teamSince = null;
           paneUi = { ...paneUi, tab };
           $.ui.invalidate('ui.render');
           act?.readMaps().then(() => $.ui.invalidate('ui.render'));
@@ -1704,6 +1762,38 @@ export function register(on) {
       onConfirm: (reason) => act.confirmSetting(reason),
       onCancel: () => act.cancelSetting(),
     }),
+  );
+
+  // TEAM-7: the Team pane.
+  on('ui.render', { component: 'Pane', requestId: TEAM_ID }, async ($, e) =>
+    teamFrame(
+      {
+        team: model.team ?? null,
+        since: teamSince,
+        config: model.check?.team ? { ...model.check.team, lanes: model.check.lanes ?? {} } : null,
+        ui: teamUi,
+      },
+      $.ui.resolve(e),
+      {
+        onTab: (tab) => {
+          if (tab !== 'activity') teamSince = null;
+          teamUi = { ...teamUi, tab, reassign: null, handle: '' };
+          $.ui.invalidate('ui.render');
+          act?.readMaps().then(() => $.ui.invalidate('ui.render'));
+        },
+        onNeed: (id, line) => act?.[id]?.(line),
+        onReassign: (story) => {
+          teamUi = { ...teamUi, reassign: story, handle: '' };
+          $.ui.invalidate('ui.render');
+        },
+        onHandle: (handle) => {
+          teamUi = { ...teamUi, handle };
+          $.ui.invalidate('ui.render');
+        },
+        onReassignTo: (story, handle) => act?.reassignTo(story, handle),
+        onSetup: () => act?.teamSetup(),
+      },
+    ),
   );
 
   on('ui.render', { component: 'Pane', requestId: RESULT_ID }, async ($, e) =>

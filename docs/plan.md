@@ -337,3 +337,21 @@ Intents move from issues to discussions in the Intents category, through GitHub'
 **Status:** done
 
 `team.board` in the config; `code-kit team board` mirrors stories as draft items with Lane, Claimed by, Stale and State fields through `gh project`, editing only what changed since the last sync; the mod syncs it at most every 10 minutes.
+
+### ST-35 The Team pane
+
+**Lane:** lead
+**Requirements:** TEAM-7
+**Depends on:** ST-30
+**Status:** done
+
+`/team` opens the team's own pane in place of the Lanes pane's Team tab: a header naming the tech lead, you and the provider in its own words, and tabs for People, Since you looked, Claims (Keep, Release, and Reassign for the tech lead), Intents (Agree, Drop), Drift (only with a provider that checks for it) and Setup. The band's Team buttons open it on the tab their line is about.
+
+### ST-36 Team init
+
+**Lane:** lead
+**Requirements:** TEAM-13
+**Depends on:** ST-24
+**Status:** done
+
+`code-kit team init` shows, then (`--write`) writes, the team section and lane owners, and says what GitHub still needs; `--off` makes the project one developer's again. `/code-kit:team-init` asks the person and runs it; `/code-kit:init` offers it only when other developers work in the repository. The GitHub provider's state names itself and lists what's missing.

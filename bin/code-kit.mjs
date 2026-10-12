@@ -120,7 +120,21 @@ const minutesGiven = option('--minutes');
 const answerGiven = option('--answer');
 const leaseGiven = option('--lease');
 const touchesGiven = option('--touches');
-const FLAGS = ['--write', '--no-checks', '--json', '--delegated', '--person', '--fresh', '--peek'];
+const techLeadGiven = option('--tech-lead');
+const staleDaysGiven = option('--stale-days');
+const intentsGiven = option('--intents');
+const ownersGiven = [];
+for (let o = option('--owner'); o !== undefined; o = option('--owner')) ownersGiven.push(o);
+const FLAGS = [
+  '--write',
+  '--no-checks',
+  '--json',
+  '--delegated',
+  '--person',
+  '--fresh',
+  '--peek',
+  '--off',
+];
 const flag = (name) => args.includes(name);
 const writeBaseline = flag('--write');
 const [command, ...rest] = args.filter((a) => !FLAGS.includes(a));
@@ -1310,6 +1324,7 @@ function ago(iso) {
  */
 function teamCommand() {
   const { raw } = load();
+  if (rest[0] === 'init') return teamInit(raw);
   const team = teamOf(raw);
   if (!team)
     die(
@@ -1431,7 +1446,7 @@ function teamCommand() {
   }
   if (sub !== undefined)
     die(
-      'code-kit team [--json] [--fresh] | team since [--json] [--peek] | team claim|keep|release <story> | team reassign <story> <handle>',
+      'code-kit team [--json] [--fresh] | team init … | team since [--json] [--peek] | team claim|keep|release <story> | team reassign <story> <handle>',
     );
   const state = provider.state({ fresh: flag('--fresh') });
   if (flag('--json')) return out(JSON.stringify(state, null, 2));
@@ -1460,6 +1475,78 @@ function teamCommand() {
   if (state.pulls.length) out('Open pull requests:');
   for (const p of state.pulls)
     out(`  #${p.number} ${p.title} (${p.by}, ${p.branch}${p.draft ? ', draft' : ''})`);
+}
+
+/**
+ * TEAM-13: `team init` sets the project up as a team's, or (`--off`) as one developer's again. Without
+ * `--write` it shows the team section it would write; with it, it writes the config and says what the
+ * team still needs on GitHub (gh signed in, origin reachable, the intents' discussion category).
+ */
+function teamInit(raw) {
+  const usage =
+    'code-kit team init --tech-lead <GitHub handle> [--owner <lane>=<handle>,<handle>]… [--stale-days <n>] [--intents <category>] [--write] [--json] | team init --off [--write]';
+  const changed = structuredClone(raw);
+  if (flag('--off')) {
+    delete changed.team;
+    for (const lane of Object.values(changed.lanes ?? {})) delete lane.owners;
+  } else {
+    const techLead = techLeadGiven ?? raw.team?.techLead;
+    if (!techLead) die(usage);
+    changed.team = { ...(raw.team ?? {}), techLead };
+    if (staleDaysGiven !== undefined) changed.team.staleDays = Number(staleDaysGiven);
+    if (intentsGiven !== undefined) changed.team.intents = intentsGiven;
+    for (const given of ownersGiven) {
+      const [lane, people = ''] = given.split('=');
+      if (!changed.lanes?.[lane])
+        die(
+          `There's no lane "${lane}" in the config. The lanes are: ${Object.keys(changed.lanes ?? {}).join(', ') || 'none'}.`,
+        );
+      const handles = people
+        .split(',')
+        .map((h) => h.trim().replace(/^@/, ''))
+        .filter(Boolean);
+      if (handles.length) changed.lanes[lane].owners = handles;
+      else delete changed.lanes[lane].owners;
+    }
+  }
+  const problems = validate(changed);
+  if (problems.length) die(`Nothing changed: ${problems.join('; ')}`);
+  const team = teamOf(changed);
+  const section = team
+    ? {
+        team: changed.team,
+        owners: team.owners,
+      }
+    : null;
+  if (!flag('--write')) {
+    if (flag('--json')) return out(JSON.stringify({ written: false, ...section }, null, 2));
+    if (!team)
+      return out(
+        'This would take the team out of the config: one developer, no claims or owners. Run again with --write to do it.',
+      );
+    out(JSON.stringify({ team: changed.team }, null, 2));
+    for (const [lane, owners] of Object.entries(team.owners))
+      out(`lanes.${lane}.owners: ${owners.join(', ')}`);
+    return out('Nothing is written yet: run again with --write.');
+  }
+  writeFileSync(resolve(file), `${JSON.stringify(changed, null, 2)}\n`);
+  if (!team)
+    return out(
+      `Took the team out of ${file}: claims, owners and intents no longer apply. Commit it on a branch.`,
+    );
+  // What GitHub says now: the provider's own look at the repository.
+  const state = teamProvider(resolve('.'), team).state({ fresh: true });
+  const setup = state.setup ?? [];
+  if (flag('--json'))
+    return out(JSON.stringify({ written: true, ...section, me: state.me ?? null, setup }, null, 2));
+  out(
+    `Wrote the team to ${file}: ${team.techLead} is the tech lead; a claim is stale after ${team.staleDays} working day${team.staleDays === 1 ? '' : 's'} without a push; intents go in "${team.intents}".`,
+  );
+  for (const [lane, owners] of Object.entries(team.owners))
+    out(`Lane ${lane}: ${owners.join(', ')}`);
+  out(setup.length ? 'Still to set up:' : 'GitHub is ready for the team.');
+  for (const s of setup) out(`  ${s}`);
+  out(`Commit ${file} on a branch; each teammate then needs code-kit and gh signed in.`);
 }
 
 /**
@@ -1586,6 +1673,7 @@ function usage() {
       '              | map <story>|project [--json] | trail [--json] | journal [--json]\n' +
       '              | story <id> [--json] | timeline [--json]\n' +
       '              | team [--json] [--fresh] | team since [--json] [--peek]\n' +
+      '              | team init --tech-lead <handle> [--owner <lane>=<handles>] [--write] | team init --off [--write]\n' +
       '              | team claim <story> [--lease globs] | team keep|release <story>\n' +
       '              | team reassign <story> <handle> | team codeowners [--write] | team board\n' +
       '              | intend "<what and why>" [--touches globs] | intend agree|drop|duplicate <id> [--reason "…"] | intend record <id>',

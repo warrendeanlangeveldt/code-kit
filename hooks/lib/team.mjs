@@ -442,11 +442,26 @@ function githubProvider(root, team) {
           'number,title,author,headRefName,isDraft,updatedAt,url',
         ]) ?? 'null',
       );
+      const who = me();
       const state = {
         at: new Date().toISOString(),
         reachable: Boolean(claims),
         github: Boolean(intents && pulls),
-        me: me(),
+        me: who,
+        // What coordinates the team, for the Team pane: GitHub itself, through refs and discussions.
+        provider: {
+          name: 'GitHub',
+          live: false,
+          detail: `claims are refs on origin, intents are discussions in "${team.intents}"`,
+        },
+        // TEAM-13: what the team still needs set up for its claims and intents to work.
+        setup: [
+          ...(who ? [] : ["gh isn't signed in on this machine: run gh auth login."]),
+          ...(claims ? [] : ["The shared repository (origin) can't be reached."]),
+          ...(found && !found.category
+            ? [noCategory(found).replace(/, then raise the intent again\.$/, '.')]
+            : []),
+        ],
         techLead: team.techLead,
         owners: team.owners,
         staleDays: team.staleDays,

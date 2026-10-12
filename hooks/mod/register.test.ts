@@ -8,6 +8,7 @@ const PANE = 'code-kit-lanes';
 const APPROVE = 'code-kit-approve';
 const RESULT = 'code-kit-result';
 const SETTINGS = 'code-kit-settings';
+const TEAM = 'code-kit-team';
 
 /** A project as the stubs report it; tests change it to move the world on. */
 function project() {
@@ -200,7 +201,7 @@ function stub(on: any, w: World) {
       w.acts.push([...argv.slice(2)]);
       return ran(0, JSON.stringify(w.teamSince));
     }
-    if (sub === 'team' && ['keep', 'release', 'board'].includes(argv[3])) {
+    if (sub === 'team' && ['keep', 'release', 'board', 'reassign'].includes(argv[3])) {
       w.acts.push([...argv.slice(2)]);
       return ran(0, '');
     }
@@ -430,6 +431,7 @@ const bandUi = ($: any) =>
 const press = ($: any, key: string, requestId?: string) =>
   $.ui.press({ plugin: 'code-kit', key, ...(requestId ? { requestId } : {}) });
 const lanes = ($: any) => $.command.run({ command: 'lanes', args: '' });
+const teamCmd = ($: any) => $.command.run({ command: 'team', args: '' });
 const dayjs = {
   at: '2026-10-06T00:00:00.000Z',
   actor: 'web-engineer',
@@ -3017,7 +3019,32 @@ test("TEAM-8 when the shared repository can't be reached the band says so as a n
   await band.unmount();
 });
 
-test('TEAM-6 and TEAM-7 the Team tab: since you last looked, then each person with their lanes, claims, pulls and intents', async ($, on) => {
+test('TEAM-7 /team opens the Team pane on its people: each with their lanes, claims, pulls and intents; /team again closes it', async ($, on) => {
+  const w = project();
+  w.team = teamOf('sam');
+  (w.check as any).team = { techLead: 'alex' };
+  await start($, on, w);
+  await teamCmd($);
+  expect(w.opened).toEqual([TEAM]);
+  const ui = await pane($, TEAM);
+  expect((await ui.find({ key: 'team-header' }))?.text).toMatch(
+    /tech lead alex[\s\S]*you are sam · own web[\s\S]*2 claimed · 1 intent open · 1 pull request/,
+  );
+  expect((await ui.find({ key: 'team-person-alex' }))?.text).toMatch(/alex · tech lead/);
+  expect((await ui.find({ key: 'team-person-sam' }))?.text).toMatch(
+    /sam · you · owns web[\s\S]*ST-4 · stale since Tuesday/,
+  );
+  expect((await ui.find({ key: 'team-person-kim' }))?.text).toMatch(
+    /#14 Booking list \(web\/st-9\)[\s\S]*intends: Split the booking form/,
+  );
+  // GitHub's own provider has no drift checks, so no Drift tab.
+  expect(await ui.find({ key: 'team-tab-drift' })).toBeUndefined();
+  await ui.unmount();
+  await teamCmd($);
+  expect(w.closed).toEqual([TEAM]);
+});
+
+test('TEAM-6 since you last looked is read when its tab opens, which marks it read, and again each time it opens', async ($, on) => {
   const w = project();
   w.team = teamOf('sam');
   w.teamSince = {
@@ -3027,23 +3054,177 @@ test('TEAM-6 and TEAM-7 the Team tab: since you last looked, then each person wi
   };
   (w.check as any).team = { techLead: 'alex' };
   await start($, on, w);
-  await lanes($);
-  const ui = await pane($, PANE);
-  expect((await ui.find({ key: 'tab-team' }))?.props.hotkey).toBe('8');
-  await press($, 'tab-team', PANE);
+  await teamCmd($);
+  const ui = await pane($, TEAM);
+  const reads = () => w.acts.filter((a) => a[0] === 'team' && a[1] === 'since').length;
+  expect(reads()).toBe(0);
+  expect((await ui.find({ key: 'team-tab-activity' }))?.props.hotkey).toBe('2');
+  await press($, 'team-tab-activity', TEAM);
   expect(w.acts).toContainEqual(['team', 'since', '--json']);
   expect((await ui.find({ key: 'team-since' }))?.text).toMatch(
-    /kim: pushed 2 commits to web\/st-9/,
+    /kim[\s\S]*pushed 2 commits to web\/st-9/,
   );
-  expect((await ui.find({ key: 'team-person-alex' }))?.text).toMatch(/alex · tech lead/);
-  expect((await ui.find({ key: 'team-person-sam' }))?.text).toMatch(
-    /sam · you · owns web[\s\S]*ST-4 · stale since Tuesday/,
+  await press($, 'team-tab-people', TEAM);
+  await press($, 'team-tab-activity', TEAM);
+  expect(reads()).toBe(2);
+  await ui.unmount();
+});
+
+test("TEAM-9 the Claims tab: Keep and Release on yours, and nothing on others'", async ($, on) => {
+  const w = project();
+  w.team = teamOf('sam');
+  (w.check as any).team = { techLead: 'alex' };
+  await start($, on, w);
+  await teamCmd($);
+  const ui = await pane($, TEAM);
+  await press($, 'team-tab-claims', TEAM);
+  expect((await ui.find({ key: 'team-claims-ST-4' }))?.text).toMatch(
+    /ST-4[\s\S]*sam \(you\)[\s\S]*stale since Tuesday[\s\S]*leases apps\/web\/booking\/\*\*/,
   );
-  expect((await ui.find({ key: 'team-person-kim' }))?.text).toMatch(
-    /#14 Booking list \(web\/st-9\)[\s\S]*intends: Split the booking form/,
-  );
-  await press($, 'team-release-ST-4', PANE);
+  expect(await ui.find({ key: 'team-release-ST-9' })).toBeUndefined();
+  expect(await ui.find({ key: 'team-reassign-ST-4' })).toBeUndefined();
+  await press($, 'team-keep-ST-4', TEAM);
+  expect(w.acts).toContainEqual(['team', 'keep', 'ST-4']);
+  await press($, 'team-release-ST-4', TEAM);
   expect(w.acts).toContainEqual(['team', 'release', 'ST-4']);
+  await ui.unmount();
+});
+
+test("TEAM-9 the tech lead releases or reassigns anyone's claim from the Claims tab", async ($, on) => {
+  const w = project();
+  w.team = teamOf('alex');
+  (w.check as any).team = { techLead: 'alex' };
+  await start($, on, w);
+  await teamCmd($);
+  const ui = await pane($, TEAM);
+  await press($, 'team-tab-claims', TEAM);
+  await press($, 'team-release-ST-9', TEAM);
+  expect(w.acts).toContainEqual(['team', 'release', 'ST-9']);
+  expect(await ui.find({ key: 'team-reassign-to-ST-9' })).toBeUndefined();
+  await press($, 'team-reassign-ST-9', TEAM);
+  expect(await ui.find({ key: 'team-reassign-to-ST-9' })).toBeDefined();
+  await $.ui.input({ plugin: 'code-kit', key: 'team-reassign-to-ST-9', text: '@sam' });
+  expect(w.acts).toContainEqual(['team', 'reassign', 'ST-9', 'sam']);
+  expect(await ui.find({ key: 'team-reassign-to-ST-9' })).toBeUndefined();
+  await ui.unmount();
+});
+
+test('TEAM-5 the Intents tab lists the open intents, with Agree and Drop for the tech lead', async ($, on) => {
+  const w = project();
+  w.team = teamOf('alex');
+  (w.check as any).team = { techLead: 'alex' };
+  await start($, on, w);
+  await teamCmd($);
+  const ui = await pane($, TEAM);
+  await press($, 'team-tab-intents', TEAM);
+  expect((await ui.find({ key: 'team-intents-12' }))?.text).toMatch(
+    /#12[\s\S]*Split the booking form[\s\S]*kim[\s\S]*touches apps\/web\/\*\*/,
+  );
+  await press($, 'team-drop-12', TEAM);
+  expect(w.acts).toContainEqual([
+    'intend',
+    'drop',
+    '12',
+    '--reason',
+    'dropped in the code-kit pane',
+  ]);
+  await ui.unmount();
+});
+
+test('TEAM-5 a developer sees the intents without Agree or Drop', async ($, on) => {
+  const w = project();
+  w.team = teamOf('sam');
+  (w.check as any).team = { techLead: 'alex' };
+  await start($, on, w);
+  await teamCmd($);
+  const ui = await pane($, TEAM);
+  await press($, 'team-tab-intents', TEAM);
+  expect(await ui.find({ key: 'team-intents-12' })).toBeDefined();
+  expect(await ui.find({ key: 'team-agree-12' })).toBeUndefined();
+  await ui.unmount();
+});
+
+test("TEAM-13 the Setup tab shows the team's config and what's still missing, and asks the lead to change it", async ($, on) => {
+  const w = project();
+  w.team = {
+    ...teamOf('sam'),
+    provider: {
+      name: 'GitHub',
+      live: false,
+      detail: 'claims are refs on origin, intents are discussions in "Intents"',
+    },
+    setup: [
+      'Discussions are off for this repository. Turn them on in its Settings › Features, add a "Intents" category.',
+    ],
+  };
+  (w.check as any).team = {
+    techLead: 'alex',
+    staleDays: 3,
+    intents: 'Intents',
+    provider: 'github',
+    owners: { web: ['sam'] },
+  };
+  await start($, on, w);
+  await teamCmd($);
+  const ui = await pane($, TEAM);
+  expect((await ui.find({ key: 'team-provider' }))?.text).toBe(
+    'Through GitHub: claims are refs on origin, intents are discussions in "Intents"',
+  );
+  expect((await ui.find({ key: 'team-setup-count' }))?.text).toBe(
+    '1 thing to set up: see Setup (6).',
+  );
+  await press($, 'team-tab-setup', TEAM);
+  expect((await ui.find({ key: 'team-config' }))?.text).toMatch(
+    /Tech lead\s+alex[\s\S]*Provider\s+GitHub[\s\S]*Lane web\s+sam[\s\S]*Unowned lanes\s+api, core/,
+  );
+  expect((await ui.find({ key: 'team-todo' }))?.text).toMatch(/Discussions are off/);
+  await press($, 'team-setup', TEAM);
+  expect(w.prompts.at(-1)).toMatch(/\/code-kit:team-init/);
+  await ui.unmount();
+});
+
+test('TEAM-13 without a team, /team says how to set one up, and opens nothing', async ($, on) => {
+  const w = project();
+  await start($, on, w);
+  const said = await teamCmd($);
+  expect(said.text).toMatch(/isn't set up as a team[\s\S]*\/code-kit:team-init/);
+  expect(w.opened).toEqual([]);
+});
+
+test('TEAM-7 the Lanes pane has no Team tab: the team has its own pane', async ($, on) => {
+  const w = project();
+  w.team = teamOf('sam');
+  (w.check as any).team = { techLead: 'alex' };
+  await start($, on, w);
+  await lanes($);
+  const ui = await pane($, PANE);
+  expect(await ui.find({ key: 'tab-team' })).toBeUndefined();
+  await ui.unmount();
+});
+
+test('a live provider says so in the Team pane, by its own name, and has a Drift tab', async ($, on) => {
+  const w = project();
+  w.team = {
+    ...teamOf('kim'),
+    provider: {
+      name: 'the code-kit teams hub',
+      live: true,
+      account: 'kim',
+      detail: 'claims, leases and intents as they happen',
+    },
+    findings: [],
+  };
+  (w.check as any).team = { techLead: 'alex' };
+  await start($, on, w);
+  await teamCmd($);
+  const ui = await pane($, TEAM);
+  expect((await ui.find({ key: 'team-provider' }))?.text).toBe(
+    'Through the code-kit teams hub · live · signed in as kim: claims, leases and intents as they happen',
+  );
+  await press($, 'team-tab-drift', TEAM);
+  expect(
+    await ui.find({ type: 'Text', text: 'No drift found on the branches at work.' }),
+  ).toBeDefined();
   await ui.unmount();
 });
 
@@ -3097,23 +3278,21 @@ test("with a live provider (the hub), the band says when it fell back to GitHub,
     await band.find({ type: 'Text', text: 'drift on web/st-9: BOOK-2 now holds prices in cents.' }),
   ).toBeDefined();
   expect(await band.find({ type: 'Text', text: /only a note/ })).toBeUndefined();
-  await band.unmount();
-  await lanes($);
-  const ui = await pane($, PANE);
-  await press($, 'tab-team', PANE);
+  // The drift line's Team button (the second: the collision's comes first) opens the Team pane on the drift.
+  await press($, 'band-team-2', 'above-prompt');
+  expect(w.opened).toEqual([TEAM]);
+  const ui = await pane($, TEAM);
+  expect((await ui.find({ key: 'team-provider' }))?.text).toMatch(
+    /can't be reached \(The code-kit teams hub can't be reached\.\): claims are checked through GitHub/,
+  );
+  expect((await ui.find({ key: 'team-drift-web/st-9' }))?.text).toMatch(
+    /web\/st-9 · kim[\s\S]*blocker · spec docs\/specs\/02-booking\.md: BOOK-2 now holds prices in cents\./,
+  );
+  await press($, 'team-tab-people', TEAM);
   expect((await ui.find({ key: 'team-person-kim' }))?.text).toMatch(
     /at work on web\/st-9: web-engineer on ST-9 \(Edit\)[\s\S]*drift on web\/st-9 \(blocker\): BOOK-2 now holds prices in cents\./,
   );
   expect((await ui.find({ key: 'team-person-sam' }))?.text).toMatch(/away \(last seen/);
-  await ui.unmount();
-});
-
-test('TEAM-7 without a team there is no Team tab', async ($, on) => {
-  const w = project();
-  await start($, on, w);
-  await lanes($);
-  const ui = await pane($, PANE);
-  expect(await ui.find({ key: 'tab-team' })).toBeUndefined();
   await ui.unmount();
 });
 

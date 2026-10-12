@@ -2014,6 +2014,107 @@ else process.exit(2);
     );
     sam('team', 'release', 'ST-40');
     writeFileSync(join(a, '.claude/code-kit.json'), config);
+
+    // --- TEAM-13: a project becomes a team's through team init, and one developer's again ----------
+    const solo = join(root, 'solo');
+    execFileSync('git', ['clone', '-q', origin, solo], { stdio: 'ignore' });
+    mkdirSync(join(solo, '.claude'), { recursive: true });
+    writeFileSync(join(solo, '.claude/code-kit.json'), fixture);
+    const me = as(solo, 'alex');
+    const soloConfig = () => JSON.parse(readFileSync(join(solo, '.claude/code-kit.json'), 'utf8'));
+    const shown = me('team', 'init', '--tech-lead', 'alex', '--owner', 'web=sam,@kim');
+    expect(
+      'TEAM-13 team init shows the team section it would write, and writes nothing',
+      truth(
+        shown.status === 0 &&
+          shown.stdout.includes('"techLead": "alex"') &&
+          shown.stdout.includes('lanes.web.owners: sam, kim') &&
+          shown.stdout.includes('Nothing is written yet') &&
+          soloConfig().team === undefined,
+        shown.stdout + shown.stderr,
+      ),
+      0,
+    );
+    const written = me('team', 'init', '--tech-lead', 'alex', '--owner', 'web=sam,@kim', '--write');
+    expect(
+      'with --write it writes the team and the owners, and says GitHub is ready',
+      truth(
+        written.status === 0 &&
+          soloConfig().team?.techLead === 'alex' &&
+          soloConfig().lanes.web.owners.join() === 'sam,kim' &&
+          written.stdout.includes('Wrote the team') &&
+          written.stdout.includes('Lane web: sam, kim') &&
+          written.stdout.includes('GitHub is ready for the team.'),
+        written.stdout + written.stderr,
+      ),
+      0,
+    );
+    expect('and the config it wrote is valid', me('check'), 0);
+    expect(
+      "a lane that isn't in the config is refused, naming the lanes there are",
+      me('team', 'init', '--owner', 'nope=sam'),
+      1,
+      'There\'s no lane "nope" in the config. The lanes are: ',
+    );
+    expect(
+      'a bad value changes nothing, and says what it must be',
+      me('team', 'init', '--stale-days', '0', '--write'),
+      1,
+      'Nothing changed: "team.staleDays" must be a whole number',
+    );
+    const missing = me('team', 'init', '--intents', 'Proposals', '--write');
+    const missingState = JSON.parse(me('team', '--json', '--fresh').stdout || '{}');
+    expect(
+      'an intents category the repository lacks is named as still to set up, by init and by the state',
+      truth(
+        missing.stdout.includes('Still to set up:') &&
+          missing.stdout.includes('no "Proposals" discussion category') &&
+          missingState.setup?.some((x) => x.includes('"Proposals"')) &&
+          missingState.provider?.name === 'GitHub',
+        missing.stdout + JSON.stringify(missingState.setup),
+      ),
+      0,
+    );
+    const lane = (command, agent) =>
+      spawnSync('node', [join(hooks, 'guard-bash.mjs')], {
+        input: JSON.stringify({
+          cwd: solo,
+          tool_input: { command },
+          ...(agent ? { agent_type: agent } : {}),
+        }),
+        env: {
+          ...process.env,
+          CLAUDE_PROJECT_DIR: solo,
+          PATH: `${bin}:${process.env.PATH}`,
+          GH_LOGIN: 'alex',
+          GH_STORE: store,
+        },
+        encoding: 'utf8',
+      });
+    expect(
+      "a lane agent can't write the team's setup",
+      lane(`node "${kitCli}" team init --tech-lead kim --write`, 'web-engineer'),
+      2,
+      "the team's setup is the lead's to write",
+    );
+    expect(
+      'but may look at what init would write',
+      lane(`node "${kitCli}" team init --tech-lead kim`, 'web-engineer'),
+      0,
+    );
+    expect('and the lead writes it', lane(`node "${kitCli}" team init --tech-lead kim --write`), 0);
+    const off = me('team', 'init', '--off', '--write');
+    expect(
+      'team init --off takes the team and every owner out: one developer again',
+      truth(
+        off.status === 0 &&
+          soloConfig().team === undefined &&
+          soloConfig().lanes.web.owners === undefined &&
+          JSON.parse(me('check', '--json').stdout || '{}').team === null,
+        off.stdout + off.stderr,
+      ),
+      0,
+    );
   }
 
   // --- ONB-7: the security review, for the changes that need it ----------------------------------

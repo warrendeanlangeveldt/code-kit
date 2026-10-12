@@ -856,10 +856,22 @@ export function band(lines, { Box, Text, Button }, onAction) {
   };
   const LIVE = { quiet: 'yellow', stalled: 'red' };
   const LABEL = 8;
+  // Two lines can share a kind or an action (two drift findings, each with Team): the second and later
+  // get a number, so every row and button keeps its own key.
+  const counter = () => {
+    const seen = new Map();
+    return (key) => {
+      const n = (seen.get(key) ?? 0) + 1;
+      seen.set(key, n);
+      return n === 1 ? key : `${key}-${n}`;
+    };
+  };
+  const uniqueButton = counter();
+  const uniqueRow = counter();
   const buttons = (line) =>
     line.actions.map((a) =>
       Button({
-        key: `band-${a.id}`,
+        key: uniqueButton(`band-${a.id}`),
         label: a.hotkey ? `${a.hotkey} ${a.label}` : a.label,
         hotkey: a.hotkey,
         onPress: () => onAction(a.id, line),
@@ -900,7 +912,7 @@ export function band(lines, { Box, Text, Button }, onAction) {
     const label = line.mission ? line.label : note ? 'note' : saidYou ? '' : 'you';
     if (!line.mission && !note) saidYou = true;
     return Box({
-      key: `band-${line.kind}`,
+      key: uniqueRow(`band-${line.kind}`),
       flexDirection: 'row',
       columnGap: 1,
       children: [
