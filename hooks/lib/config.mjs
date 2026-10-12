@@ -143,10 +143,11 @@ const isRegExp = (v) => {
 
 /**
  * ONB-5: the version of init's setup. 2 adds project skills with the lane agents, the design gate for
- * lanes with screens, a QA lane for end-to-end tests, and companions set up before coding (spec 17). A
- * project set up before (no `setup`, or a lower one) is told what re-running init adds.
+ * lanes with screens, a QA lane for end-to-end tests, and companions set up before coding; 3 adds the
+ * security reviewer (ONB-7, spec 17). A project set up before (no `setup`, or a lower one) is told what
+ * re-running init adds.
  */
-export const SETUP_VERSION = 2;
+export const SETUP_VERSION = 3;
 
 /** Every problem with a parsed config, as readable sentences; empty when it is valid. */
 export function validate(c) {

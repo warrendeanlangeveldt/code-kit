@@ -20,7 +20,8 @@ export const DESIGN = 'design';
 const TEST =
   /(^|\/)(tests?|__tests__|e2e)\/|\.(test|spec)\.[^/]+$|_test\.(go|py)$|(^|\/)test_[^/]+\.py$/;
 
-const markdownFiles = (root, path) => {
+/** The markdown files at `path`: the file itself, or every one under the folder, sorted. */
+export const markdownFiles = (root, path) => {
   const full = join(root, path);
   if (!existsSync(full)) return [];
   if (statSync(full).isFile()) return path.endsWith('.md') ? [path] : [];

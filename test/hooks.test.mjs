@@ -1970,6 +1970,117 @@ else process.exit(2);
     );
   }
 
+  // --- ONB-7: the security review, for the changes that need it ----------------------------------
+  {
+    const sr = newRepo();
+    cleanups.push(sr.dir);
+    const srKit = (...args) =>
+      spawnSync('node', [kitCli, ...args], { cwd: sr.dir, encoding: 'utf8' });
+    const securityOf = (branch) =>
+      JSON.parse(srKit('security', '--branch', branch, '--json').stdout || '{}');
+    mkdirSync(join(sr.dir, 'docs/spec'), { recursive: true });
+    writeFileSync(
+      join(sr.dir, 'docs/spec/01-orders.md'),
+      '# 01. Orders\n\n## Requirements\n\n### ORD-1 Place an order\n\nx\n\n## Threat model\n\n- **Sensitive:** delivery addresses\n\n## Security requirements\n\n### ORD-2 A customer sees only their own orders\n\nx\n\n## Quality targets\n\nx\n',
+    );
+    writeFileSync(
+      join(sr.dir, 'docs/spec/plan.md'),
+      '# Plan\n\n### ST-2 Order list\n\n**Lane:** backend\n**Requirements:** ORD-2\n**Status:** todo\n\n### ST-3 Order styles\n\n**Lane:** web\n**Requirements:** ORD-1\n**Status:** todo\n\n### ST-4 Sign in\n\n**Lane:** backend\n**Requirements:** ORD-1\n**Status:** todo\n\n### ST-5 Dates\n\n**Lane:** web\n**Requirements:** ORD-1\n**Status:** todo\n',
+    );
+    sr.git('add', '-A');
+    sr.git('commit', '-q', '-m', 'spec');
+    const branchWith = (branch, files) => {
+      sr.git('checkout', '-q', '-b', branch);
+      for (const [path, text] of Object.entries(files)) {
+        mkdirSync(join(sr.dir, dirname(path)), { recursive: true });
+        writeFileSync(join(sr.dir, path), text);
+      }
+      sr.git('add', '-A');
+      sr.git('commit', '-q', '-m', branch);
+      sr.git('checkout', '-q', 'main');
+    };
+    branchWith('backend/st-4', {
+      'supabase/functions/auth/login.ts':
+        'export const handler = (req) => {\n  const { email, password } = req.body;\n  return email;\n};\n',
+    });
+    branchWith('web/st-5', { 'package.json': '{ "dependencies": { "dayjs": "1.11.0" } }\n' });
+    branchWith('backend/st-2', {
+      'workers/orders/list.ts': 'export const list = (rows) => rows;\n',
+    });
+    branchWith('web/st-3', {
+      'apps/office/app/orders.css': '.orders { color: red; }\n',
+      'apps/office/app/orders.test.ts': "test('ORD-1', () => login(req.body));\n",
+    });
+    const signIn = srKit('security', '--branch', 'backend/st-4');
+    expect(
+      'ONB-7 a branch adding a sign-in handler that reads the request needs the security review, and says where',
+      truth(
+        signIn.status === 0 &&
+          signIn.stdout.includes('ST-4 on backend/st-4 needs the security review') &&
+          signIn.stdout.includes('sign-in or sessions (supabase/functions/auth/login.ts') &&
+          signIn.stdout.includes('input from outside') &&
+          signIn.stdout.includes('supabase/functions/auth/login.ts:2'),
+        signIn.stdout + signIn.stderr,
+      ),
+      0,
+    );
+    expect(
+      'and with no security-reviewer agent it says to re-run init to add it',
+      truth(signIn.stdout.includes('Re-run /code-kit:init to add it'), signIn.stdout),
+      0,
+    );
+    const deps = securityOf('web/st-5');
+    expect(
+      'ONB-7 a branch changing package.json needs it for its dependencies',
+      truth(
+        deps.needed && deps.reasons.some((r) => r.kind === 'dependencies'),
+        JSON.stringify(deps),
+      ),
+      0,
+    );
+    const cited = securityOf('backend/st-2');
+    expect(
+      'ONB-7 a story citing a security requirement needs it, naming the requirement, though its code alone would not',
+      truth(
+        cited.needed &&
+          cited.reasons.length === 1 &&
+          cited.reasons[0].kind === 'requirements' &&
+          cited.reasons[0].where.join() === 'ORD-2',
+        JSON.stringify(cited),
+      ),
+      0,
+    );
+    const styles = srKit('security', '--branch', 'web/st-3');
+    expect(
+      'ONB-7 a stylesheet and a test need no security review',
+      truth(
+        styles.status === 0 && styles.stdout.includes('needs no security review'),
+        styles.stdout,
+      ),
+      0,
+    );
+    mkdirSync(join(sr.dir, '.claude/agents'), { recursive: true });
+    writeFileSync(
+      join(sr.dir, '.claude/agents/security-reviewer.md'),
+      readFileSync(join(here, '..', 'templates/security-reviewer.md'), 'utf8'),
+    );
+    expect(
+      'with the agent in place, it says to run it on the diff',
+      truth(
+        srKit('security', '--branch', 'backend/st-4').stdout.includes(
+          'Run the security-reviewer agent on the diff (git diff main...backend/st-4)',
+        ),
+      ),
+      0,
+    );
+    expect(
+      'a branch that does not exist is refused, saying so',
+      srKit('security', '--branch', 'web/st-9'),
+      1,
+      '--branch web/st-9 is not a known branch',
+    );
+  }
+
   // --- ONB-1 to ONB-3: onboarding in the right order -----------------------------------------------
   {
     const o = newRepo();
@@ -2058,16 +2169,83 @@ else process.exit(2);
     // ONB-5: a setup older than init's tells the person what re-running it adds.
     const older = (n) =>
       nextOf().attention?.some((x) => x.startsWith("This project's code-kit setup predates"));
+    const { setup: _, ...unversioned } = JSON.parse(wanting);
+    writeFileSync(join(o.dir, '.claude/code-kit.json'), JSON.stringify(unversioned));
+    // ONB-7: with the design gate and the QA lane in place, the security reviewer is still missing.
+    const securityGap = nextOf();
     expect(
-      'ONB-5 a project set up before setup 2 is told to re-run init, and why',
-      truth(older()),
+      'ONB-7 an older setup without the security reviewer gets the update step, naming it',
+      truth(
+        securityGap.step === 'update' &&
+          securityGap.why.includes('a security reviewer (.claude/agents/security-reviewer.md)') &&
+          !securityGap.why.includes('design gate'),
+        JSON.stringify(securityGap),
+      ),
       0,
     );
     writeFileSync(
+      join(o.dir, '.claude/agents/security-reviewer.md'),
+      readFileSync(join(here, '..', 'templates/security-reviewer.md'), 'utf8'),
+    );
+    o.git('add', '.claude/agents/security-reviewer.md');
+    o.git('commit', '-q', '-m', 'security reviewer');
+    expect(
+      'ONB-5 a project set up before setup 3 is told to re-run init, and why',
+      truth(older() && nextOf().step !== 'update'),
+      0,
+    );
+    // ONB-6: what an older setup is missing, named, and nothing new starts until init adds it.
+    const { designGate: __, ...ungated } = unversioned;
+    const { qa: ___, ...noQa } = unversioned.lanes;
+    writeFileSync(
       join(o.dir, '.claude/code-kit.json'),
-      JSON.stringify({ ...JSON.parse(wanting), setup: 2 }),
+      JSON.stringify({
+        ...ungated,
+        lanes: noQa,
+        shell: {
+          ...ungated.shell,
+          restricted: ungated.shell.restricted.map((r) => ({ ...r, lanes: ['data'] })),
+        },
+      }),
+    );
+    writeFileSync(
+      join(o.dir, 'docs/spec/plan.md'),
+      readFileSync(join(o.dir, 'docs/spec/plan.md'), 'utf8').replace('**Depends on:** ST-1\n', ''),
+    );
+    const update = nextOf();
+    expect(
+      'ONB-6 an older setup missing the design gate, design stories and a QA lane gets the update step, naming each',
+      truth(
+        update.step === 'update' &&
+          update.why.includes('a design gate for mobile and web') &&
+          update.why.includes('ST-2 is planned with no design') &&
+          update.why.includes('a QA lane') &&
+          update.attention.some((a) => a.includes('ST-1, ST-2, ST-3 wait until /code-kit:init')),
+        JSON.stringify(update),
+      ),
+      0,
+    );
+    o.git('checkout', '-q', '-b', 'backend/st-3');
+    writeFileSync(join(o.dir, 'store.txt'), 'x\n');
+    o.git('add', 'store.txt');
+    o.git('commit', '-q', '-m', 'ST-3 start');
+    o.git('checkout', '-q', '-');
+    const inFlight = nextOf();
+    expect(
+      'and work already started goes on to its review, with nothing new dispatched after it',
+      truth(
+        inFlight.step === 'review' && inFlight.args === 'ST-3' && !inFlight.then.length,
+        JSON.stringify(inFlight),
+      ),
+      0,
+    );
+    o.git('branch', '-q', '-D', 'backend/st-3');
+    writeFileSync(
+      join(o.dir, '.claude/code-kit.json'),
+      JSON.stringify({ ...JSON.parse(wanting), setup: 3 }),
     );
     expect('one set up by the current init is not', truth(!older()), 0);
+    expect('and its build goes on', truth(nextOf().step !== 'update'), 0);
     writeFileSync(
       join(o.dir, '.claude/code-kit.json'),
       JSON.stringify({ ...JSON.parse(wanting), setup: 9 }),
@@ -2076,7 +2254,7 @@ else process.exit(2);
       'a setup newer than this code-kit is refused',
       oKit('check'),
       1,
-      '"setup" must be a whole number from 1 to 2',
+      '"setup" must be a whole number from 1 to 3',
     );
     writeFileSync(join(o.dir, '.claude/code-kit.json'), wanting);
     // MAP-5: the whole project's code, by folder, for when no story is at work.

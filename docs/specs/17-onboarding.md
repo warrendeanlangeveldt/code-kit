@@ -1,7 +1,7 @@
 # 17. Onboarding in the right order
 
 **Status:** specified
-**Outcome:** From an idea to the first line of code, everything the build relies on is in place first: each lane agent comes with the skills it works by, every screen is designed and approved before it's built, and a companion tool the person has installed is set up before the coding loop starts.
+**Outcome:** From an idea to the first line of code, everything the build relies on is in place first: each lane agent comes with the skills it works by, every screen is designed and approved before it's built, every sensitive change is reviewed by an adversary, and a companion tool the person has installed is set up before the coding loop starts.
 **Actors:** the person; the lead (spec-design, init, design, next and the loop); lane agents
 **Depends on:** 05-lead-loop, 13-combined
 
@@ -42,12 +42,35 @@ Each lane writes and runs the unit tests for its own code. When the product has 
 
 ### ONB-5 An older setup is told what it's missing
 
-The config records the version of init's setup (`"setup": 2`). A project set up before (no `setup`, or a lower one) gets a line under `next`'s attention naming what re-running init adds: project skills with each lane agent, designs approved before screens are built, a QA lane, and companions set up before coding. Re-running init adds whichever are missing, shows the difference first, and sets `setup` to 2.
+The config records the version of init's setup (`"setup": 3`). A project set up before (no `setup`, or a lower one) gets a line under `next`'s attention naming what re-running init adds: project skills with each lane agent, designs approved before screens are built, a QA lane, a security reviewer, and companions set up before coding. Re-running init adds whichever are missing, shows the difference first, and sets `setup` to 3.
 
 **Acceptance**
 
-- Given a config without `setup`, then `next` says the setup predates what init now sets up, and to re-run `/code-kit:init`; given `"setup": 2`, it doesn't.
-- Given `"setup": 9`, then the config is invalid, saying it must be from 1 to 2.
+- Given a config without `setup`, then `next` says the setup predates what init now sets up, and to re-run `/code-kit:init`; given `"setup": 3`, it doesn't.
+- Given `"setup": 9`, then the config is invalid, saying it must be from 1 to 3.
+
+### ONB-6 The gaps stop new work until init fills them
+
+For a setup older than init's, `code-kit next` works out what it's missing from the config, the plan and the code, and names it. A lane owns screens when its name or agent says so (web, mobile, desktop, admin) or it holds screen files (`.tsx`, `.jsx`, `.vue`, `.svelte`, `.swift`, `.dart`, outside tests). When a lane owns screens, the setup may be missing three things: the design gate; design stories before the screen stories not yet started; and a QA lane. Work already started goes on, through review and the merge queue. No new story is dispatched, designed or built by the lead until init has added what's missing. Once nothing is in flight, `next` gives `update`, and the loop prompts the lead to re-run `/code-kit:init`, which shows the person the difference first.
+
+**Acceptance**
+
+- Given a config without `setup`, no design gate, no QA lane, and a ready web story with no design story before it, then `next` gives `update`, naming the design gate for mobile and web, the story planned with no design, and the QA lane, and says the ready stories wait until init has added them.
+- Given the same and a story on its branch, then that story is reviewed, and nothing new is dispatched after it.
+- Given `"setup": 3`, then `next` doesn't give `update`.
+
+### ONB-7 An adversary reviews every sensitive change
+
+Security is a reviewer, not a lane: it owns no paths and checks everyone's work. spec-design gives each area's spec a short threat model (what in it is sensitive, such as personal data, children's data, credentials or money; who might attack it; and where its trust boundaries are) and security requirements, numbered like any other requirement under `## Security requirements`, which stories cite. init writes a read-only `security-reviewer` agent beside the lane agents, in the same approval, whenever the product handles sign-in, personal data, payments, input from outside or secrets; it can be left out only for a product with none of them, such as a static site or a local tool with no accounts. The agent has no lane and no paths, and only reads: Read, Grep, Glob, and Bash for commands that change nothing (`git diff`, `git log`, the project's audit commands). It attacks the change as an adversary would, against the spec's threat model, and grades each finding blocker, concern (should fix) or nit (a note), with where, the attack and the fix; a finding without a concrete attack path isn't reported. `code-kit security` says whether a branch's changes need it, and why: sign-in, permissions, input from outside, personal data, encryption, payments, secrets, queries or commands built from strings, new dependencies, or a security requirement the story cites; tests and docs don't count. The review of such a story runs the security reviewer on the branch's diff with the story's specs and threat model, and a blocker fails the review like a failing test: the branch goes back to its lane with the finding. A setup older than 3 is missing the security reviewer until init adds it.
+
+**Acceptance**
+
+- Given a branch that adds a sign-in handler reading `req.body`, then `code-kit security` says it needs the security review, naming sign-in and input from outside with the file, and to run the security-reviewer agent.
+- Given a branch that changes `package.json`, then it needs the security review for its dependencies.
+- Given a story citing a requirement from its spec's `## Security requirements`, then its branch needs the security review, naming that requirement, even when the code alone wouldn't.
+- Given a branch that changes only a stylesheet and a test, then `code-kit security` says it needs none.
+- Given a branch that needs it and no `.claude/agents/security-reviewer.md`, then `code-kit security` says to re-run `/code-kit:init` to add the agent.
+- Given a config older than 3 with no `.claude/agents/security-reviewer.md`, then `next` gives `update`, naming the security reviewer, even when no lane owns screens.
 
 ## Open questions
 

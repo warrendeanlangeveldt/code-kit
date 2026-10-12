@@ -42,6 +42,24 @@
 
 …
 
+## Threat model
+
+{{Short and concrete, for this area only. Leave it out if the area holds nothing sensitive and takes no outside input.}}
+
+- **Sensitive:** {{what here is worth stealing or breaking: personal data, children's data, credentials, money; and where it's kept}}
+- **Attackers:** {{who might try: a signed-out visitor, another customer, a staff member with the wrong role, a compromised integration}}
+- **Trust boundaries:** {{where outside input enters and who is trusted on each side: the routes, webhooks, uploads, third-party callbacks}}
+
+## Security requirements
+
+### {{AREA}}-{{n}} {{what must hold, for example "A customer sees only their own bookings"}}
+
+{{The rule, stated so a review can check it, and the attack it stops.}}
+
+**Acceptance**
+
+- Given {{an attacker and what they hold}}, when {{the attack}}, then {{what they get instead}}.
+
 ## Quality targets
 
 {{Only the ones that change how this area is built: scale, response times, privacy, accessibility, audit.}}

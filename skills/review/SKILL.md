@@ -1,6 +1,6 @@
 ---
 name: review
-description: The lead's review of a lane's finished branch before it merges. Runs code-kit verify on the branch, checks the work against its story's requirements and acceptance criteria, the spec-check report, the approval log and the tests, and ends with merge or send back. Use when a lane agent or person finishes a story, when the person asks to review a branch or pull request, or runs /code-kit:review [branch, story ID or PR number].
+description: The lead's review of a lane's finished branch before it merges. Runs code-kit verify on the branch, checks the work against its story's requirements and acceptance criteria, the spec-check report, the approval log and the tests, runs the security reviewer on sensitive changes, and ends with merge or send back. Use when a lane agent or person finishes a story, when the person asks to review a branch or pull request, or runs /code-kit:review [branch, story ID or PR number].
 ---
 
 # Review a lane's branch
@@ -47,12 +47,27 @@ Read the story, every requirement it cites, and the full diff (`git diff <base>.
 - **Only the story:** changes beyond the story (refactors elsewhere, other stories' requirements, new dependencies) are called out. They may be fine, but they're the person's call.
 - **Contracts respected:** the code uses the contracts as written. A lane that needed a contract change should have asked, not worked around it.
 
-## 4. Verdict
+## 4. The security review
 
-Report the table, `verify`'s result and one of:
+Ask whether the change needs it:
+
+```bash
+node "${CLAUDE_PLUGIN_ROOT}/bin/code-kit.mjs" security --base <base> --branch <branch>
+```
+
+It does when the diff touches sign-in, permissions, input from outside, personal data, encryption, payments, secrets, or queries and commands built from strings, adds dependencies, or the story cites a security requirement; it says which, and where. When it does:
+
+- Run the `security-reviewer` agent (Agent tool, `subagent_type` `security-reviewer`) with the branch, the base, the story, its requirements, the spec files it touches (their `## Threat model` and `## Security requirements`) and the reasons `security` gave. It reads only, and ends with the same findings block as code-kit's reviewer: each finding graded blocker, concern or nit, with where, the attack and the fix.
+- **A blocker fails the review**, like a failing test: the branch goes back to its lane with the finding (where, the attack, the fix). Concerns are yours to weigh: send back the ones the threat model says matter, and put the rest in the report. Nits go in the report.
+- No `security-reviewer` agent in the project: `security` says so. Review the diff yourself against the same list in `${CLAUDE_PLUGIN_ROOT}/templates/security-reviewer.md`, and tell the person that re-running `/code-kit:init` adds the agent.
+- A background reviewer can't start agents: it lists the security review as due, as a concern with the reasons, and the lead runs it.
+
+## 5. Verdict
+
+Report the table, `verify`'s result, the security review's findings (or that none was needed) and one of:
 
 - **Files any agent may write** (`anyActor`, such as a lockfile or recorded decisions) have no owning lane, but they have a reviewer: `trace <file>` names it (the lead unless the config names a lane). Review those changes as that reviewer would, or ask that lane's agent.
-- **Merge.** Everything passes. Put the branch in the merge queue, set the story's `**Status:**` to `done` in the plan, and commit:
+- **Merge.** Everything passes, and the security review found no blocker. Put the branch in the merge queue, set the story's `**Status:**` to `done` in the plan, and commit:
 
   ```bash
   node "${CLAUDE_PLUGIN_ROOT}/bin/code-kit.mjs" queue add <branch>

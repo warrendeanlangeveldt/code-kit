@@ -9,6 +9,8 @@ import { buildStatus, readStories, DESIGN, LEAD } from './plan.mjs';
 import { pendingSetup } from './adapters/index.mjs';
 import { CONFIG_FILE, SETUP_VERSION } from './config.mjs';
 import { readQueue, waiting } from './queue.mjs';
+import { laneOf } from './rules.mjs';
+import { SECURITY_AGENT_FILE } from './security.mjs';
 
 export const DRAFT_FILE = '.claude/code-kit.draft.json';
 export const BRIEF_STATES = ['framed', 'explored', 'scoped', 'specified', 'planned', 'ready'];
@@ -149,11 +151,17 @@ export function nextStep(root, base) {
   }
   const [setup] = pendingSetup(raw, root);
   if (setup) return result('setup', setup.why, { args: setup.skill });
-  // ONB-5: a project set up before setup did all of this is told what re-running init adds.
-  if ((raw?.setup ?? 1) < SETUP_VERSION)
+  // ONB-5: a project set up before setup did all of this is told what re-running init adds; when
+  // ONB-6 finds what it's missing, no new story starts until init has added it.
+  const older = (raw?.setup ?? 1) < SETUP_VERSION;
+  const gaps = older ? setupGaps(config, readStories(root, plan), files) : [];
+  if (older && !gaps.length)
     attention.push(
-      "This project's code-kit setup predates what init now sets up: project skills with each lane agent, designs approved before screens are built, a QA lane for end-to-end tests, and companion tools set up before coding. Re-run /code-kit:init to add what's missing; it keeps everything that's still right and shows you the difference first.",
+      "This project's code-kit setup predates what init now sets up: project skills with each lane agent, designs approved before screens are built, a QA lane for end-to-end tests, a security reviewer that checks each sensitive change as an attacker would, and companion tools set up before coding. Re-run /code-kit:init to add what's missing; it keeps everything that's still right and shows you the difference first.",
     );
+  const missingWords = gaps.length
+    ? `This project's setup is missing what init now sets up: ${gaps.join('; ')}.`
+    : '';
   // ONB-1: a lane agent naming a skill that doesn't exist works without the recipe it was given.
   for (const missing of missingSkills(root)) attention.push(missing);
 
@@ -194,6 +202,16 @@ export function nextStep(root, base) {
   // ONB-2: design stories, designed with the person before any screen that depends on them is built.
   const forDesign = readyStories.filter((s) => buildable(s) && s.lane === DESIGN).map((s) => s.id);
   const unbuildable = readyStories.filter((s) => !buildable(s)).map((s) => s.id);
+  // ONB-6: work already started finishes; nothing new starts until init has filled the gaps.
+  const held = gaps.length
+    ? [...ready, ...forDesign, ...forLead].sort((a, b) => a.slice(3) - b.slice(3))
+    : [];
+  if (held.length) {
+    ready.length = forDesign.length = forLead.length = 0;
+    attention.push(
+      `${missingWords} ${held.join(', ')} ${held.length === 1 ? 'waits' : 'wait'} until /code-kit:init has added it.`,
+    );
+  }
   if (unbuildable.length)
     attention.push(
       `${unbuildable.join(', ')} can't be dispatched until the plan's gaps are fixed.`,
@@ -262,6 +280,12 @@ export function nextStep(root, base) {
       `${forLead.join(', ')} ${forLead.length === 1 ? 'is' : 'are'} the lead's own: build ${forLead.length === 1 ? 'it' : 'them'} on ${forLead.map((id) => `lead/${id.toLowerCase()}`).join(', ')}, then review like any branch.`,
       { args: forLead.join(' ') },
     );
+  // ONB-6: with nothing in flight, the setup is brought up to date before the next story.
+  if (gaps.length && !building.length && !queued.length)
+    return result(
+      'update',
+      `${missingWords} Re-run /code-kit:init before the next story: it shows the person the difference before anything changes.`,
+    );
   if (building.length)
     return result(
       'wait',
@@ -292,6 +316,66 @@ export function nextStep(root, base) {
     'done',
     `All ${status.stories.length} stories are done; spec-design plans the next milestone or feature.`,
   );
+}
+
+const SCREEN_LANE = /(^|-)(web|mobile|frontend|front-end|ui|desktop|ios|android|admin|portal)(-|$)/;
+const SCREEN_FILE = /\.(tsx|jsx|vue|svelte|swift|dart)$/;
+const TEST_FILE = /(^|\/)(__tests__|e2e|tests?)\/|\.(test|spec|stories)\.\w+$/;
+const QA_LANE = /(^|-)(qa|e2e|tests?)(-|$)/;
+
+/**
+ * ONB-6: what a setup older than init's is missing, in words, from the config, the plan and the code.
+ * A lane owns screens when its name or agent says so (web, mobile, desktop…) or it holds screen
+ * files. It's missing the design gate, design stories before the screen stories not yet started, and a
+ * QA lane for the end-to-end suites; and, with or without screens, the security reviewer (ONB-7), when
+ * its agent file isn't among the tracked files.
+ */
+export function setupGaps(config, stories, files = []) {
+  const gaps = screenGaps(config, stories, files);
+  if (!files.includes(SECURITY_AGENT_FILE))
+    gaps.push(
+      `a security reviewer (${SECURITY_AGENT_FILE}) that checks each change touching sign-in, permissions, personal data, payments, secrets or dependencies as an attacker would`,
+    );
+  return gaps;
+}
+
+/** ONB-6: the gaps of a setup whose lanes own screens: the design gate, design stories, a QA lane. */
+function screenGaps(config, stories, files) {
+  const lanes = Object.entries(config.lanes);
+  const holdsScreens = new Set(
+    files.filter((f) => SCREEN_FILE.test(f) && !TEST_FILE.test(f)).map((f) => laneOf(f, config)),
+  );
+  const screens = lanes
+    .filter(
+      ([name, l]) => SCREEN_LANE.test(name) || SCREEN_LANE.test(l.agent) || holdsScreens.has(name),
+    )
+    .map(([name]) => name);
+  if (!screens.length) return [];
+  const gaps = [];
+  const list = (names) => names.join(', ').replace(/, ([^,]*)$/, ' and $1');
+  if (!config.designGate)
+    gaps.push(
+      `a design gate for ${list(screens)}, so screens are built only from approved designs`,
+    );
+  // A screen story not yet started, with no design story among everything it depends on.
+  const byId = new Map(stories.map((s) => [s.id, s]));
+  const designed = (s, seen = new Set()) =>
+    s.dependsOn.some((d) => {
+      if (seen.has(d)) return false;
+      seen.add(d);
+      const dep = byId.get(d);
+      return dep && (dep.lane === DESIGN || designed(dep, seen));
+    });
+  const undesigned = stories
+    .filter((s) => screens.includes(s.lane) && ['todo', 'ready'].includes(s.status) && !designed(s))
+    .map((s) => s.id);
+  if (undesigned.length)
+    gaps.push(
+      `design stories before the screens: ${list(undesigned)} ${undesigned.length === 1 ? 'is' : 'are'} planned with no design to build from`,
+    );
+  if (!lanes.some(([name, l]) => QA_LANE.test(name) || QA_LANE.test(l.agent)))
+    gaps.push('a QA lane with a test-engineer for the end-to-end tests of the journeys');
+  return gaps;
 }
 
 /** The code-kit skills every agent may name without a project copy. */
