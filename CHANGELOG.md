@@ -2,6 +2,15 @@
 
 What changed in each release of code-kit, newest first. Versions follow the plugin manifest and the npm package `@warren-dean/code-kit`. Each release is also on [GitHub Releases](https://github.com/warrendeanlangeveldt/code-kit/releases).
 
+## 0.11.0 (2026-10-12)
+
+Teams get their own pane and their own setup, and a hosted team provider can stand down to GitHub.
+
+- **`/team` opens the Team pane.** It replaces the Lanes pane's Team tab. Its header names the tech lead, you, and what coordinates the team (GitHub, or a hosted provider, and whether it's live). Its tabs: People (who's at work on what), Since you looked, Claims (Keep and Release on yours; Release and Reassign for the tech lead), Intents (Agree and Drop for the tech lead), Drift (with a provider that checks for it) and Setup (the team's config and what GitHub still needs). A Team button in the band opens it on the tab its line is about.
+- **Set up a team only when there is one.** `/code-kit:team-init` asks for the tech lead, each lane's owners, when a claim goes stale and where intents go, shows the team section, and writes it once you agree; it also changes a team or takes it out. `/code-kit:init` asks once whether other developers work in the repository and runs it only if they do. Behind it, `code-kit team init` (`--write` to write, `--off` for one developer again) says what GitHub still needs: gh signed in, the repository reachable, and the intents' discussion category. A lane agent can't write it.
+- **A hosted provider can fall back to GitHub.** With `team.provider: { command, fallback: "github" }`, whatever the provider can't reach goes through GitHub's claim refs instead, and the band says GitHub is standing in. A live provider's state refreshes the band and the pane as it changes, and its presence and drift findings show in the pane, with drift on your own work in the band.
+- **Two band lines with the same button no longer clash.** Each button and row keeps its own key.
+
 ## 0.10.0 (2026-10-12)
 
 An older setup is brought up to date before new work starts, and a security reviewer checks the changes that need one.
