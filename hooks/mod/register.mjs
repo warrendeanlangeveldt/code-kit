@@ -1200,7 +1200,8 @@ export function register(on) {
         if (animation) return;
         animation = $.clock.every(400, async () => {
           frame = (frame + 1) % 2;
-          const at = await $.clock.now();
+          const at = await $.clock.now().catch(() => null);
+          if (at === null) return;
           const still = artNow(at, liveNow(at));
           for (const name of Object.keys(still.poses).filter((n) => still.poses[n] === 'working'))
             await $.ui
@@ -1365,6 +1366,9 @@ export function register(on) {
         seen = await act.fingerprint();
         // Between turns, a change (a lane finished, a branch moved) can make a step due.
         if (now !== seen || quiet === 0) await act.step('tick');
+      } catch (err) {
+        // A tick cut short (the session ending mid-read, a CLI run aborted) is tried again on the next.
+        $.ui.log(`code-kit: refreshing the project failed: ${err?.message ?? err}`, { to: 'debug' });
       } finally {
         busy = false;
       }
