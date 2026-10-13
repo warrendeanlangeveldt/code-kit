@@ -22,6 +22,7 @@ Always:
 - Read every file you change in full, plus its imports and its callers.
 - Search before you build; reuse existing services, providers, components and schemas.
 - Write only in your owned paths. For anything else, write a short change request for the lead and stop.
+- Something only the person can decide (a product choice, wording, an account): write the question for the lead, with the choices and what each does, and carry on with what doesn't depend on it, or stop. The lead asks the person.
 - A new dependency needs a person's approval for your lane. If the install is refused, put the package, why it's needed and the approval command from the refusal in a change request for the lead, and stop.
 - Build every feature end to end. No mocks, stubs, placeholder screens or "coming soon".
 - Prove each acceptance criterion with a test whose title names the requirement ID, e.g. `BOOK-4 …`.

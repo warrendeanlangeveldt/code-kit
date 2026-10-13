@@ -77,6 +77,8 @@ const approves = runs(cmd, new RegExp(String.raw`^${CODE_KIT}\s+approve\b`));
 const delegatedMerge = runs(cmd, new RegExp(String.raw`^${CODE_KIT}\s+(?:queue\s+)?merge\b`));
 const queues = runs(cmd, new RegExp(String.raw`^${CODE_KIT}\s+queue\s+(?:add|drop)\b`));
 const rulesOntoBase = runs(cmd, new RegExp(String.raw`^${CODE_KIT}\s+queue\s+rules\b`));
+const asks = runs(cmd, new RegExp(String.raw`^${CODE_KIT}\s+ask\b\s+(?!--json\b)\S`));
+const dropsRequests = runs(cmd, new RegExp(String.raw`^${CODE_KIT}\s+requests\s+drop\b`));
 const commits = runs(cmd, new RegExp(String.raw`^${GIT}commit\b`));
 if (error) {
   if (commits) block(`Blocked: ${error}\nFix the config before committing.`);
@@ -162,6 +164,21 @@ if (approves && actor.kind !== 'lead')
 if ((delegatedMerge && /\s--person\b/.test(cmd)) || (approves && /\s--via\b/.test(cmd)))
   block(
     `Blocked: merging or approving as the person is the person's own act, from the code-kit pane or their terminal. Ask them, and stop.\nCommand: ${cmd}`,
+  );
+// ASK-2, CARD-7: answering as the person, or dismissing their request, is theirs, from the pane.
+if ((asks || dropsRequests) && /\s--via\b/.test(cmd))
+  block(
+    `Blocked: answering a question or dismissing a request in the person's name is their own act, from the code-kit pane or their terminal. Ask them, and stop.\nCommand: ${cmd}`,
+  );
+// ASK-1: questions for the person, and taking back requests, go through the lead.
+if ((asks || dropsRequests) && actor.kind !== 'lead')
+  block(
+    `Blocked: only the lead asks the person a question or drops an approval request. Write the question for the lead (what you need decided, the options and what each does), and stop.\nCommand: ${cmd}`,
+  );
+// REPORT-3: sending a report to code-kit's GitHub, under the person's account, or discarding it, is theirs.
+if (runs(cmd, new RegExp(String.raw`^${CODE_KIT}\s+report\s+(send|discard)\b`)))
+  block(
+    `Blocked: sending a bug report to code-kit's GitHub, or discarding it, is the person's own act, from the code-kit pane or their terminal. Tell them it's drafted, and carry on.\nCommand: ${cmd}`,
   );
 // Pausing and resuming the lead loop is the person's, from the band or their terminal.
 if (runs(cmd, new RegExp(String.raw`^${CODE_KIT}\s+loop\s+(pause|resume)\b`)))

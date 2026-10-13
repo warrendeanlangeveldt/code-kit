@@ -21,6 +21,7 @@
 | `stall.maxRestarts`         | integer | 2            |                                                                                                                          |
 | `agents.reviewer`           | object  | off          | `{ on, model }`; model an alias (`haiku`, `sonnet`, `opus`) or an id; without one, the session's model                   |
 | `background.pauseAtPercent` | number  | 80           | Of the plan's 5-hour use (08)                                                                                            |
+| `report.on`                 | boolean | `false`      | Agents may draft bug reports for code-kit, which the person sends or discards (15, REPORT-1)                             |
 
 Context Graph's agents have their own `[harness]` section in `.ctx/config.toml`, specified there.
 

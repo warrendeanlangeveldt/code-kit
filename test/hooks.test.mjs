@@ -798,9 +798,325 @@ try {
       ),
       0,
     );
+    // CARD-7: a request waits until it's answered or dropped, not 60 minutes.
     rmSync(requestsFile, { force: true });
     rmSync(join(repo, '.claude/state/approvals-given.jsonl'), { force: true });
     rmSync(join(repo, '.claude/approvals'), { recursive: true, force: true });
+    bash(addLodash, 'web-engineer');
+    const twoHoursAgo = new Date(Date.now() - 2 * 3600000).toISOString();
+    writeFileSync(
+      requestsFile,
+      readFileSync(requestsFile, 'utf8').replace(/"at":"[^"]+"/, `"at":"${twoHoursAgo}"`),
+    );
+    expect(
+      'CARD-7 a request nobody answered still waits two hours on',
+      truth(
+        reqs().open.some((r) => r.names.join() === 'dep-lodash'),
+        JSON.stringify(reqs().open),
+      ),
+      0,
+    );
+    expect(
+      "CARD-7 a lane can't drop a request",
+      bash(`node "${kitCli}" requests drop 1`, 'web-engineer'),
+      2,
+      'only the lead',
+    );
+    expect(
+      "CARD-7 nor can the lead dismiss one in the person's name",
+      bash(`node "${kitCli}" requests drop 1 --via pane`),
+      2,
+      "the person's",
+    );
+    expect(
+      'CARD-7 the lead drops one nobody needs',
+      bash(`node "${kitCli}" requests drop 1 --reason "went with dayjs"`),
+      0,
+    );
+    const dropped = kit('requests', 'drop', '1', '--reason', 'went with dayjs');
+    expect(
+      'and it stops waiting',
+      truth(
+        dropped.status === 0 && dropped.stdout.includes('Dropped 1 request') && !reqs().open.length,
+        dropped.stdout + dropped.stderr,
+      ),
+      0,
+    );
+    bash(addLodash, 'web-engineer');
+    expect(
+      'CARD-7 refused again later, it asks again',
+      truth(reqs().open.length === 1, JSON.stringify(reqs().open)),
+      0,
+    );
+    rmSync(requestsFile, { force: true });
+    rmSync(join(repo, '.claude/state/approvals-given.jsonl'), { force: true });
+    rmSync(join(repo, '.claude/approvals'), { recursive: true, force: true });
+  }
+
+  // --- questions for the person (ASK-1 to ASK-4) --------------------------------------------------
+  {
+    const q = newRepo();
+    cleanups.push(q.dir);
+    const qKit = (...args) =>
+      spawnSync('node', [kitCli, ...args], { cwd: q.dir, encoding: 'utf8' });
+    const qBash = (command, agent) =>
+      spawnSync('node', [join(hooks, 'guard-bash.mjs')], {
+        input: JSON.stringify({
+          cwd: q.dir,
+          tool_input: { command },
+          ...(agent ? { agent_type: agent } : {}),
+        }),
+        env: { ...process.env, CLAUDE_PROJECT_DIR: q.dir },
+        encoding: 'utf8',
+      });
+    mkdirSync(join(q.dir, 'docs/spec'), { recursive: true });
+    writeFileSync(
+      join(q.dir, 'docs/spec/01-weather.md'),
+      '# 01. Weather\n\n### WX-1 Forecast\n\nx\n',
+    );
+    writeFileSync(
+      join(q.dir, 'docs/spec/plan.md'),
+      '# Plan\n\n## M1\n\n### ST-1 Forecast\n\n**Lane:** web\n**Requirements:** WX-1\n**Status:** todo\n\n### ST-2 Alerts\n\n**Lane:** web\n**Requirements:** WX-1\n**Depends on:** ST-1\n**Status:** todo\n',
+    );
+    writeFileSync(
+      join(q.dir, 'docs/brief.md'),
+      '# Brief\n\n**Status:** ready\n\n## Open questions\n\n| Question | Owner |\n| --- | --- |\n| Accounts: AWS and hosting | you |\n| The product domain | you |\n',
+    );
+    q.git('add', '-A');
+    q.git('commit', '-q', '-m', 'plan');
+    expect(
+      "ASK-1 a lane can't ask the person: it goes through the lead",
+      qBash(`node "${kitCli}" ask "Which provider?"`, 'web-engineer'),
+      2,
+      'only the lead asks',
+    );
+    expect('ASK-1 the lead may', qBash(`node "${kitCli}" ask "Which provider?"`), 0);
+    const asked = qKit(
+      'ask',
+      'Which weather provider?',
+      '--story',
+      'ST-1',
+      '--blocks',
+      '--option',
+      'Bureau of Meteorology: free, Australian data',
+      '--option',
+      'Commercial',
+    );
+    expect(
+      'ASK-1 the lead asks, with options; it waits for the person',
+      truth(
+        asked.status === 0 &&
+          asked.stdout.startsWith('Asked Q-1.') &&
+          asked.stdout.includes('ST-1 waits on it'),
+        asked.stdout + asked.stderr,
+      ),
+      0,
+    );
+    const listed = JSON.parse(qKit('ask', '--json').stdout);
+    expect(
+      'with what each option does',
+      truth(
+        listed[0].options[0].label === 'Bureau of Meteorology' &&
+          listed[0].options[0].effect === 'free, Australian data' &&
+          listed[0].state === 'open',
+        JSON.stringify(listed),
+      ),
+      0,
+    );
+    expect(
+      'ASK-1 the same question again is asked once',
+      truth(
+        qKit('ask', 'Which weather provider?', '--story', 'ST-1').stdout.startsWith(
+          'Q-1 is already open',
+        ),
+      ),
+      0,
+    );
+    const waiting = JSON.parse(qKit('status', '--json').stdout).stories;
+    expect(
+      'ASK-3 its story waits on the person, and what depends on it is blocked',
+      truth(
+        waiting[0].state === 'waiting on you' &&
+          waiting[0].waitingFor.id === 'Q-1' &&
+          waiting[1].state === 'blocked',
+        JSON.stringify(waiting.map((s) => [s.id, s.state])),
+      ),
+      0,
+    );
+    const nextWait = JSON.parse(qKit('next', '--json').stdout);
+    expect(
+      'ASK-3 next dispatches nothing, and says it waits on the person',
+      truth(
+        nextWait.step === 'wait' &&
+          nextWait.why.startsWith('ST-1 waits on the person (Q-1)') &&
+          nextWait.attention.some((a) =>
+            a.startsWith('ST-1 waits on the person: Which weather provider?'),
+          ),
+        JSON.stringify(nextWait),
+      ),
+      0,
+    );
+    expect(
+      "ASK-4 next lists the brief's open questions for the person's Decisions tab",
+      truth(
+        nextWait.brief.map((b) => b.question).join('|') ===
+          'Accounts: AWS and hosting|The product domain' &&
+          nextWait.brief[0].path === 'docs/brief.md',
+        JSON.stringify(nextWait.brief),
+      ),
+      0,
+    );
+    expect(
+      "ASK-2 no agent answers in the person's name",
+      qBash(`node "${kitCli}" ask answer Q-1 "Commercial" --via pane`),
+      2,
+      'their own act',
+    );
+    const answered = qKit('ask', 'answer', 'Q-1', 'Bureau', 'of', 'Meteorology');
+    expect(
+      'ASK-2 the lead records what the person said in chat, marked as such',
+      truth(
+        answered.status === 0 &&
+          answered.stdout.includes('(given in chat, recorded by the lead)') &&
+          JSON.parse(qKit('ask', '--json').stdout)[0].answer.via === 'chat',
+        answered.stdout,
+      ),
+      0,
+    );
+    expect(
+      'ASK-3 answered, its story is ready again',
+      truth(JSON.parse(qKit('status', '--json').stdout).stories[0].state === 'ready'),
+      0,
+    );
+    expect(
+      "ASK-2 an answered question can't be answered again",
+      qKit('ask', 'answer', 'Q-1', 'Commercial'),
+      1,
+      'answered already',
+    );
+    qKit('ask', 'May sessions show your city?');
+    expect('ASK-1 withdrawing says why', qKit('ask', 'withdraw', 'Q-2'), 1, '--reason');
+    expect(
+      'ASK-1 the lead withdraws one settled another way',
+      truth(
+        qKit('ask', 'withdraw', 'Q-2', '--reason', 'the brief says suburbs only').status === 0 &&
+          !JSON.parse(qKit('ask', '--json').stdout).some((x) => x.state === 'open'),
+      ),
+      0,
+    );
+  }
+
+  // --- bug reports for code-kit (REPORT-1 to REPORT-3) --------------------------------------------
+  {
+    const r = newRepo();
+    cleanups.push(r.dir);
+    const fakeBin = mkdtempSync(join(tmpdir(), 'code-kit-gh-'));
+    cleanups.push(fakeBin);
+    const ghLog = join(fakeBin, 'calls.log');
+    // A stand-in for gh: signed in, an issue already filed once `filed` exists.
+    writeFileSync(
+      join(fakeBin, 'gh'),
+      `#!/bin/sh\necho "$@" >> "${ghLog}"\ncase "$1 $2" in\n  "auth status") exit 0 ;;\n  "issue list") if [ -f "${fakeBin}/filed" ]; then echo '[{"number":9,"url":"https://github.com/o/code-kit/issues/9"}]'; else echo '[]'; fi ;;\n  "issue create") touch "${fakeBin}/filed"; echo "https://github.com/o/code-kit/issues/9" ;;\n  "issue comment") echo ok ;;\nesac\n`,
+    );
+    chmodSync(join(fakeBin, 'gh'), 0o755);
+    const rKit = (args, path = `${fakeBin}:${process.env.PATH}`) =>
+      spawnSync(process.execPath, [kitCli, ...args], {
+        cwd: r.dir,
+        encoding: 'utf8',
+        env: { ...process.env, PATH: path },
+      });
+    expect(
+      'REPORT-1 with reporting off, an agent is told to tell the person instead',
+      rKit(['report', 'Refused a lane its own file', '--what', 'x']),
+      1,
+      'is off',
+    );
+    writeFileSync(
+      join(r.dir, '.claude/code-kit.json'),
+      JSON.stringify({ ...JSON.parse(fixture), harness: { report: { on: true } } }),
+    );
+    const drafted = rKit([
+      'report',
+      'Refused a lane its own file',
+      '--what',
+      `guard-paths refused ${r.dir}/apps/office/a.ts for the web lane; mail sam@example.com`,
+      '--rule',
+      'lanes',
+    ]);
+    const draft = JSON.parse(rKit(['report', '--json']).stdout)[0];
+    expect(
+      "REPORT-2 the draft keeps code-kit's facts and leaves out the project's paths and email addresses",
+      truth(
+        drafted.status === 0 &&
+          draft.state === 'draft' &&
+          draft.body.includes('<project>/apps/office/a.ts') &&
+          !draft.body.includes(r.dir) &&
+          draft.body.includes('<email>') &&
+          !draft.body.includes('sam@example.com') &&
+          draft.body.includes('**code-kit:** ') &&
+          draft.body.includes(draft.fingerprint),
+        draft?.body,
+      ),
+      0,
+    );
+    expect(
+      "REPORT-3 no agent sends a report: it goes under the person's account",
+      spawnSync('node', [join(hooks, 'guard-bash.mjs')], {
+        input: JSON.stringify({
+          cwd: r.dir,
+          tool_input: { command: `node "${kitCli}" report send R-1` },
+        }),
+        env: { ...process.env, CLAUDE_PROJECT_DIR: r.dir },
+        encoding: 'utf8',
+      }),
+      2,
+      "the person's own act",
+    );
+    const noGh = rKit(['report', 'send', 'R-1'], '/usr/bin:/bin');
+    expect(
+      'REPORT-3 without gh nothing is sent, and the person gets the link to file it',
+      truth(
+        noGh.status === 1 &&
+          noGh.stderr.includes('/issues/new?title=Refused%20a%20lane') &&
+          JSON.parse(rKit(['report', '--json']).stdout)[0].state === 'draft',
+        noGh.stderr,
+      ),
+      0,
+    );
+    const sent = rKit(['report', 'send', 'R-1']);
+    expect(
+      "REPORT-3 sent, it files an issue on code-kit's repository",
+      truth(
+        sent.status === 0 &&
+          sent.stdout.includes('Filed https://github.com/o/code-kit/issues/9') &&
+          readFileSync(ghLog, 'utf8').includes(
+            'issue create --repo warrendeanlangeveldt/code-kit --title Refused a lane its own file',
+          ),
+        sent.stdout + sent.stderr,
+      ),
+      0,
+    );
+    rKit(['report', 'Refused a lane its own file', '--what', 'again', '--rule', 'lanes']);
+    const again = rKit(['report', 'send', 'R-2']);
+    expect(
+      'REPORT-3 the same bug filed already gets a comment, not a second issue',
+      truth(
+        again.status === 0 &&
+          again.stdout.startsWith('Someone had filed it already') &&
+          readFileSync(ghLog, 'utf8').includes('issue comment 9'),
+        again.stdout + again.stderr,
+      ),
+      0,
+    );
+    rKit(['report', 'Another', '--what', 'x']);
+    expect(
+      'REPORT-3 the person discards one',
+      truth(
+        rKit(['report', 'discard', 'R-3']).status === 0 &&
+          !JSON.parse(rKit(['report', '--json']).stdout).some((x) => x.state === 'draft'),
+      ),
+      0,
+    );
   }
 
   // --- approve takes a package's name for its dependency approval ---------------------------------

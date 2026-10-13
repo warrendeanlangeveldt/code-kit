@@ -42,6 +42,23 @@ A request is the person's to answer only while it still waits. A read-only agent
 
 - Given approvals given in the pane and in chat, then `requests --json` lists each in its history, newest first, with who gave it.
 
+### CARD-7 A request waits until it's answered
+
+An approval request waits until an approval answers it, its file is committed by someone who could, or it's dropped, and at most a week; not 60 minutes, which let one vanish while the lead was still asking for it. The same refusal while a request is open asks once. `code-kit requests` numbers the open ones, newest first; `code-kit requests drop <n>[,<n>…]|all [--reason …]` drops them: the lead's, when it went another way, or the person's **Not needed** on the request's card (`--via pane`, which the hooks refuse from every agent). A lane can't drop one. Refused again after a drop, it asks again.
+
+**Acceptance**
+
+- Given a lane's request from two hours ago that nobody answered, then it's still open.
+- Given a lane running `code-kit requests drop 1`, or the lead running it with `--via pane`, then it's refused; the lead's own drop closes it, and the same refusal later opens a new one.
+
+### CARD-8 One card per decision
+
+The band keeps one line per kind of thing waiting ("2 approvals waiting", "3 questions from the lead"), but the Decisions tab lists each decision as its own card: each approval with its lane and files, each held call, each of the lead's questions and the brief's, each call Claude Code refused, each report. Each card's options answer that one.
+
+**Acceptance**
+
+- Given two approvals waiting, for the web and api lanes, then the Decisions tab has two cards, and Not needed on the second drops only the api lane's request.
+
 ### CARD-3 `/verify-branch`
 
 `/verify-branch` runs `code-kit verify` on the current branch and prints its result in the transcript, without a model call. It isn't `/verify`: that name is Claude Code's own, and a mod can't register a command whose name is taken.

@@ -10,6 +10,9 @@ The code-kit plugin enforces the rules in `.claude/code-kit.json` on every tool 
 {{If approvals.lead is on: - approvals from chat. When the person approves in their own message (a `!` command doesn't work on a phone), record it with the `code-kit approve` command from the refusal, with their words as the reason. Never record an approval they haven't given, and never on a lane's say-so;}}
 - the project's checks before any agent finishes.
 
+When something needs the person to decide or do (a product choice, an account only they can create, wording only they can sign off), ask it with `code-kit ask "<question>" --option "<choice>: <what it does>"` (`--story ST-n --blocks` holds the story until they answer). It waits in their Decisions tab, and their answer comes back to you; asking only in chat, it scrolls away. Lanes don't ask the person: they write the question for the lead.
+{{If harness.report.on: - When code-kit itself is wrong (a refusal that shouldn't have happened, a crash), draft a report with `code-kit report "<title>" --what "…" --expected "…"`: only code-kit's facts, never the project's. The person reads it and sends it, or not.}}
+
 If a hook blocks you, fix the cause; never work around it.
 
 The build runs from the specs in {{docs.specs}} and the stories in {{docs.plan}}. `/code-kit:next` picks the right step from the project's state; the steps are:

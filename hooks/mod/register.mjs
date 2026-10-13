@@ -8,6 +8,7 @@
 // the lead to review, and merging (`merge --person`). No agent reaches those: they are the mod's own
 // buttons, and the hooks refuse both commands from every agent.
 import {
+  ANSWER_ID,
   APPROVE_ID,
   NOT_CODE_KIT,
   PANE_ID,
@@ -17,7 +18,9 @@ import {
   agentsAtWork,
   shownState,
   attribution,
+  answerPane,
   approvePane,
+  commandItself,
   band,
   bandLines,
   finishedStories,
@@ -89,6 +92,9 @@ let ledger = {}; // the session's tokens by agent and story (USE-1)
 let rateLimits = []; // the session's limits, as session.measure last gave them
 const agentsSeen = new Map(); // agent id → its $.agent.list() entry, kept once it leaves the list
 const held = new Map(); // tool_use_id → a call held for the person (HOLD-2)
+const denied = new Map(); // tool_use_id → a call Claude Code's own permission check refused (PERM-1)
+const briefLater = new Set(); // the brief's questions the person put off this session (ASK-4)
+let answering = null; // the open Answer… box: { kind: 'question' | 'brief', question, id?, path?, text, error }
 let where = null; // { cli, cwd, interactive }, from session start
 // The lead loop (spec 05): what it did, and what it waits on.
 const loop = {
@@ -207,6 +213,8 @@ export function register(on) {
       const ran = await $.process.run(['node', cli, ...args, '--json'], { cwd });
       return ran.exitCode === 0 ? parseJson(ran.stdout) : null;
     };
+    // What a CLI run said, in a line: why it refused, for a notice.
+    const firstLine = (ran) => (ran.stderr || ran.stdout).trim().split('\n')[0];
     // A session starts with the loop running: a pause recorded by an earlier one no longer holds.
     if ((await json('loop').catch(() => null))?.paused)
       await $.process.run(['node', cli, 'loop', 'resume'], { cwd }).catch(() => {});
@@ -246,6 +254,13 @@ export function register(on) {
             : [];
         // TEAM-7: the team's claims, intents and pull requests, where the project is a team's.
         const team = valid && check.team ? await json('team') : null;
+        // ASK-2: the lead's questions waiting for the person; REPORT-3: bug reports waiting to be sent.
+        const questions = valid
+          ? ((await json('ask')) ?? []).filter((q) => q.state === 'open')
+          : [];
+        const reports = valid
+          ? ((await json('report')) ?? []).filter((r) => r.state === 'draft')
+          : [];
         // TEAM-12: the plan mirrored onto the team's Project board, at most every 10 minutes, in the
         // background: a slow GitHub never holds up the band.
         const at = await $.clock.now();
@@ -265,6 +280,10 @@ export function register(on) {
           adapters,
           check,
           team,
+          questions,
+          reports,
+          // ASK-4: the brief's open questions, less those put off this session.
+          brief: (nextStep?.brief ?? []).filter((b) => !briefLater.has(b.question)),
           base: status?.base ?? null,
         };
         if (model.state.kind === 'ok') await act.registerReviewer();
@@ -473,6 +492,8 @@ export function register(on) {
         $.ui.invalidate('ui.render');
         return {};
       },
+      // ASK-2, ASK-4, REPORT-3: a question's Answer… or a report's Read it opens its card.
+      openDecision: (line) => act.decide(line),
       // ACT-1: the confirmation, prefilled from the request.
       approve: async (line) => {
         approving = {
@@ -519,6 +540,124 @@ export function register(on) {
         approving = null;
         notice = null;
         await $.ui.close({ id: APPROVE_ID });
+        await act.reload();
+      },
+      // CARD-7: a request nobody needs any more stops waiting; nothing is approved.
+      dropRequest: async (line) => {
+        const open = model.requests?.open ?? [];
+        const same = (r) =>
+          [...r.names].sort().join() === [...line.request.names].sort().join() &&
+          (r.lane ?? r.actor) === (line.request.lane ?? line.request.actor);
+        const numbers = open.flatMap((r, i) => (same(r) ? [i + 1] : []));
+        if (!numbers.length) return;
+        const ran = await $.process.run(
+          ['node', cli, 'requests', 'drop', numbers.join(','), '--via', 'pane'],
+          { cwd },
+        );
+        notice = ran.exitCode === 0 ? null : `Nothing was dropped: ${firstLine(ran)}`;
+        await act.reload();
+      },
+      // ASK-2: the lead's option, pressed: the answer is recorded and sent to the lead.
+      answerWith: (line) => act.sendAnswer({ kind: 'question', ...line.question }, line.choice),
+      // ASK-2, ASK-4: Answer… opens a box for the person's own words.
+      answer: async (line) => {
+        answering = { kind: 'question', ...line.question, text: '', error: null };
+        await $.ui.open({ id: ANSWER_ID, title: 'Answer', focus: true, closeOnEscape: true });
+        $.ui.invalidate('ui.render');
+      },
+      answerBrief: async (line) => {
+        answering = { kind: 'brief', ...line.brief, text: '', error: null };
+        await $.ui.open({ id: ANSWER_ID, title: 'Answer', focus: true, closeOnEscape: true });
+        $.ui.invalidate('ui.render');
+      },
+      laterBrief: (line) => {
+        briefLater.add(line.brief.question);
+        model = {
+          ...model,
+          brief: (model.brief ?? []).filter((b) => b.question !== line.brief.question),
+        };
+        $.ui.invalidate('ui.render');
+      },
+      confirmAnswer: async (text) => {
+        if (!answering) return;
+        if (!text.trim()) {
+          answering = { ...answering, error: 'Type your answer: the lead builds on it.' };
+          $.ui.invalidate('ui.render');
+          return;
+        }
+        const done = await act.sendAnswer(answering, text.trim());
+        if (done) {
+          answering = null;
+          await $.ui.close({ id: ANSWER_ID });
+        }
+      },
+      cancelAnswer: async () => {
+        answering = null;
+        await $.ui.close({ id: ANSWER_ID });
+      },
+      // The answer recorded (a question's, in code-kit) and told to the lead, which carries on with it.
+      sendAnswer: async (q, text) => {
+        if (q.kind === 'question') {
+          const ran = await $.process.run(
+            ['node', cli, 'ask', 'answer', q.id, text, '--via', 'pane'],
+            { cwd },
+          );
+          if (ran.exitCode !== 0) {
+            notice = `Your answer wasn't recorded: ${firstLine(ran)}`;
+            if (answering) answering = { ...answering, error: notice };
+            $.ui.invalidate('ui.render');
+            return false;
+          }
+        }
+        notice = null;
+        const said = /[.!?]$/.test(text) ? text : `${text}.`;
+        await $.prompt.submit({
+          text:
+            q.kind === 'question'
+              ? `The person answered ${q.id} (${q.question}): ${said}${q.blocks ? ` ${q.story} no longer waits on them.` : ''} Carry on with it.`
+              : `The person answered an open question in ${q.path}, "${q.question}": ${said} Record it in the brief's decision log, take it out of the open questions, and carry on with it.`,
+        });
+        if (q.kind === 'brief') {
+          briefLater.add(q.question);
+          model = { ...model, brief: (model.brief ?? []).filter((b) => b.question !== q.question) };
+        }
+        await act.reload();
+        return true;
+      },
+      // PERM-1: a call Claude Code refused, which only the person can run or allow.
+      runDenied: async (line) => {
+        await $.prompt.fill({ text: `! ${line.denial.command}`, mode: 'replace' }).catch(() => {});
+      },
+      deniedDone: async (line) => {
+        denied.delete(line.denial.id);
+        $.ui.invalidate('ui.render');
+        await $.prompt.submit({
+          text: `The person ran it themselves, or allowed it: ${line.denial.command ?? line.denial.what} (Claude Code had refused it for ${line.denial.who}). Check it worked, and carry on.`,
+        });
+      },
+      deniedNo: async (line) => {
+        denied.delete(line.denial.id);
+        $.ui.invalidate('ui.render');
+        await $.prompt.submit({
+          text: `The person won't run ${line.denial.command ?? line.denial.what} now (Claude Code refused it for ${line.denial.who}). Don't try to get around it: carry on with other work, and if a story can't go on without it, ask with code-kit ask --blocks.`,
+        });
+      },
+      // REPORT-3: the person sends a drafted report to code-kit's GitHub, or discards it.
+      sendReport: async (line) => {
+        const ran = await $.process.run(['node', cli, 'report', 'send', line.report.id], {
+          cwd,
+          timeoutMs: 120000,
+        });
+        result = {
+          ok: ran.exitCode === 0,
+          title: ran.exitCode === 0 ? 'Report sent' : 'Report not sent',
+          text: `${ran.stdout}${ran.stderr}`.trim(),
+        };
+        await $.ui.open({ id: RESULT_ID, title: 'Report', focus: true, closeOnEscape: true });
+        await act.reload();
+      },
+      discardReport: async (line) => {
+        await $.process.run(['node', cli, 'report', 'discard', line.report.id], { cwd });
         await act.reload();
       },
       // HOLD-2: Approve opens ACT-1's confirmation for the held call; Refuse lets the refusal through.
@@ -1205,6 +1344,35 @@ export function register(on) {
   // CARD-1: the text a code-kit hook refused a call with, kept for the call's result to draw as a card.
   // HOLD-1 to HOLD-6: a refusal a person's approval would allow is held while the band asks. The hooks
   // stay the judge: the call is run again once the approval is written, and refused as before otherwise.
+  // PERM-1: Claude Code's own permission check refused a call (auto mode, a deny rule): code-kit can't
+  // approve past it, so it waits in the band for the person, who can run it themselves or allow it.
+  on('classic.PermissionDenied', async ($, e, next) => {
+    const res = await next(e);
+    const input = e.tool_input && typeof e.tool_input === 'object' ? e.tool_input : {};
+    const command =
+      e.tool_name === 'Bash' && typeof input.command === 'string' ? input.command : null;
+    const path = input.file_path ?? input.notebook_path ?? null;
+    const lane = e.agent_id ? activity.get(e.agent_id)?.lane : null;
+    denied.set(e.tool_use_id ?? `${e.tool_name}-${denied.size}`, {
+      id: e.tool_use_id ?? `${e.tool_name}-${denied.size}`,
+      who: lane ? `the ${lane} lane` : (e.agent_type ?? (e.agent_id ? 'an agent' : 'the lead')),
+      tool: e.tool_name,
+      command,
+      what: command
+        ? `\`${commandItself(command)}\``
+        : path
+          ? `${e.tool_name} on ${path}`
+          : e.tool_name,
+      reason:
+        typeof e.reason === 'string'
+          ? e.reason.trim().replace(/\s+/g, ' ').slice(0, 200) || null
+          : null,
+      at: await $.clock.now(),
+    });
+    $.ui.invalidate('ui.render');
+    return res;
+  });
+
   on('tool.call', async ($, e, next) => {
     // LOOP-3: a lane agent's tool call is activity; while it runs, the agent isn't quiet.
     const calledAt = await $.clock.now();
@@ -1583,7 +1751,7 @@ export function register(on) {
     const lines = linesNowRaw(now);
     const cards = cardsNow(now, lines);
     return lines.map((l) => {
-      const card = cards.find((c) => c.line === l);
+      const card = cards.find((c) => c.source === l);
       return card ? { ...l, context: contextOf(card) } : l;
     });
   };
@@ -1601,6 +1769,7 @@ export function register(on) {
       nextStep: loop.nextStep,
       combined: combinedNow(),
       team: model.team ?? null,
+      denied: [...denied.values()],
     });
 
   on('ui.render', { component: 'Pane', requestId: PANE_ID }, async ($, e) => {
@@ -1765,6 +1934,19 @@ export function register(on) {
       },
       onSubmit: (value) => act.confirmApproval(value),
       onCancel: () => act.cancelApproval(),
+    });
+  });
+
+  // ASK-2, ASK-4: the person's answer, in their own words.
+  on('ui.render', { component: 'Pane', requestId: ANSWER_ID }, async ($, e) => {
+    if (!answering) return resultPane(null, $.ui.resolve(e));
+    return answerPane(answering, $.ui.resolve(e), {
+      onInput: (value) => {
+        answering = { ...answering, text: value };
+        $.ui.invalidate('ui.render');
+      },
+      onSubmit: (value) => act.confirmAnswer(value),
+      onCancel: () => act.cancelAnswer(),
     });
   });
 

@@ -39,6 +39,7 @@ export function readyFrom(next) {
  *   building   a branch for the story and, if it has commits, the lane's agent still at work on it;
  *   in review  commits on the branch (status's `review`) and the agent no longer at work;
  *   sent back  a review sent the branch back, and the lane hasn't committed its fix yet;
+ *   waiting on you  the lane's story waits on the person's answer (ASK-3);
  *   blocked    the lane's next story waits on another;
  *   idle       none of these.
  * `status` can't tell a finished branch from one still being built, so the agent at work decides.
@@ -46,7 +47,11 @@ export function readyFrom(next) {
 function laneRow(name, agent, stories, atWork) {
   const own = stories.filter((s) => s.lane === name);
   const active = Boolean(agent && atWork.has(agent));
-  const story = own.find((s) => ['in progress', 'review', 'sent back'].includes(s.state));
+  const story = own.find((s) =>
+    ['in progress', 'review', 'sent back', 'waiting on you'].includes(s.state),
+  );
+  if (story?.state === 'waiting on you')
+    return { name, agent, active, story, branch: story.branch, state: 'waiting on you' };
   if (story?.state === 'sent back')
     return { name, agent, active, story, branch: story.branch, state: 'sent back' };
   if (story) {
@@ -107,6 +112,7 @@ export const STATE_COLOR = {
   orchestrating: 'yellow',
   'in review': 'yellow',
   'sent back': 'magenta',
+  'waiting on you': 'cyan',
   blocked: 'red',
   idle: undefined,
 };
@@ -357,6 +363,7 @@ const CARD_STATE = {
   review: { label: 'in review', color: 'yellow' },
   'in progress': { label: 'building', color: 'blue' },
   'sent back': { label: 'sent back', color: 'magenta' },
+  'waiting on you': { label: 'waiting on you', color: 'cyan' },
   blocked: { label: 'blocked', color: 'red' },
   ready: { label: 'ready', color: 'green' },
   todo: { label: 'to do', color: 'gray' },
@@ -715,6 +722,10 @@ export function bandLines({
   nextStep = null,
   combined = null,
   team = null,
+  questions = [],
+  brief = [],
+  denied = [],
+  reports = [],
 }) {
   const lines = [];
   // MISSION-1: the goal, now, next and the agents at work, above what needs the person.
@@ -725,15 +736,36 @@ export function bandLines({
   if (!state || state.kind !== 'ok') return lines;
   // HOLD-2: calls held for the person, oldest first, with the time left on the oldest.
   if (held.length) {
-    const [call] = [...held].sort((a, b) => a.since - b.since);
+    const calls = [...held].sort((a, b) => a.since - b.since);
+    const [call] = calls;
     const left = timeLeft(call.since + call.minutes * 60000 - now);
     lines.push({
       kind: 'held',
       text: `${held.length > 1 ? `${held.length} calls held: ` : ''}${call.who} wants to ${heldVerb(call)} · ${left}`,
       held: call,
+      // CARD-8: each held call is its own decision in the Decisions tab.
+      calls: calls.map((c) => ({
+        held: c,
+        text: `${c.who} wants to ${heldVerb(c)} · ${timeLeft(c.since + c.minutes * 60000 - now)}`,
+      })),
       actions: [
         { id: 'approveHeld', label: 'Approve' },
         { id: 'refuseHeld', label: 'Refuse' },
+      ],
+    });
+  }
+  // PERM-1: Claude Code's own permission check refused a call only the person can let through.
+  if (denied.length) {
+    const [d] = denied;
+    lines.push({
+      kind: 'denied',
+      text: `${denied.length > 1 ? `${denied.length} calls refused by Claude Code: ` : 'Claude Code refused '}${d.who}'s ${d.what}`,
+      denial: d,
+      denials: denied,
+      actions: [
+        ...(d.command ? [{ id: 'runDenied', label: 'Put it in the prompt' }] : []),
+        { id: 'deniedDone', label: 'Done it' },
+        { id: 'deniedNo', label: 'Not now' },
       ],
     });
   }
@@ -778,7 +810,27 @@ export function bandLines({
       text: `${plural(asks.length, 'approval', 'approvals')} waiting`,
       request: asks[0].request,
       files: asks[0].files,
+      // CARD-8: each approval is its own decision in the Decisions tab.
+      asks,
       actions: [{ id: 'approve', label: 'Approve…' }],
+    });
+  // ASK-2: what the lead asked the person and couldn't settle itself.
+  if (questions.length)
+    lines.push({
+      kind: 'question',
+      text: `${questions.length > 1 ? `${questions.length} questions from the lead: ` : 'The lead asks: '}${questions[0].question}`,
+      question: questions[0],
+      questions,
+      actions: [{ id: 'openDecision', label: 'Answer…' }],
+    });
+  // ASK-4: the brief's open questions, the person's to answer.
+  if (brief.length)
+    lines.push({
+      kind: 'brief',
+      text: `${plural(brief.length, 'open question', 'open questions')} in your brief: ${brief[0].question}`,
+      brief: brief[0],
+      briefs: brief,
+      actions: [{ id: 'openDecision', label: 'Answer…' }],
     });
   // DECIDE-1: reviewing a lane's work is the lead's. Only with the loop off, where the person runs the
   // build themselves, does a finished story wait in the band for their Review or Merge; otherwise the
@@ -839,6 +891,18 @@ export function bandLines({
     });
   // TEAM-7, TEAM-9: what of the team needs this person.
   lines.push(...teamLines(team, check?.lanes ?? {}));
+  // REPORT-3: a bug report for code-kit an agent drafted, for the person to read and send, or not.
+  if (reports.length)
+    lines.push({
+      kind: 'report',
+      text: `${reports.length > 1 ? `${reports.length} bug reports for code-kit to send: ` : 'A bug report for code-kit to send: '}${reports[0].title}`,
+      report: reports[0],
+      reports,
+      actions: [
+        { id: 'openDecision', label: 'Read it' },
+        { id: 'discardReport', label: 'Discard' },
+      ],
+    });
   // LOOP-7: the milestone is done; LOOP-6: the loop's own state, with Pause or Resume.
   if (loop?.state === 'done')
     lines.push({
@@ -880,6 +944,10 @@ export function band(lines, { Box, Text, Button }, onAction) {
     usage: 'yellow',
     paused: 'yellow',
     facts: 'yellow',
+    question: 'cyan',
+    brief: 'cyan',
+    denied: 'red',
+    report: 'magenta',
   };
   const LIVE = { quiet: 'yellow', stalled: 'red' };
   const LABEL = 8;
@@ -1019,6 +1087,50 @@ export function approvePane(
         children: [
           Button({ key: 'approve-confirm', label: 'Approve', onPress: () => onSubmit(reason) }),
           Button({ key: 'approve-cancel', label: 'Cancel', onPress: onCancel }),
+        ],
+      }),
+    ],
+  });
+}
+
+export const ANSWER_ID = 'code-kit-answer';
+
+/** ASK-2, ASK-4: the person's answer to the lead's question, or to one in their brief, typed. */
+export function answerPane(
+  answering,
+  { Box, Text, Input, Button },
+  { onInput, onSubmit, onCancel },
+) {
+  const { kind, question, text, error } = answering;
+  return Box({
+    flexDirection: 'column',
+    rowGap: 1,
+    children: [
+      Text({ bold: true, children: [question] }),
+      Text({
+        dimColor: true,
+        children: [
+          kind === 'brief'
+            ? `An open question in ${answering.path}. The lead records your answer in the brief's decisions and builds on it.`
+            : `${answering.id}, from the lead${answering.story ? `, for ${answering.story}` : ''}. Your answer is recorded and sent to the lead.`,
+        ],
+      }),
+      Input({
+        key: 'answer-text',
+        label: 'Answer',
+        value: text,
+        submitLabel: 'Answer',
+        autoFocus: true,
+        onInput,
+        onSubmit,
+      }),
+      ...(error ? [Text({ color: 'red', children: [error] })] : []),
+      Box({
+        flexDirection: 'row',
+        columnGap: 2,
+        children: [
+          Button({ key: 'answer-confirm', label: 'Answer', onPress: () => onSubmit(text) }),
+          Button({ key: 'answer-cancel', label: 'Cancel', onPress: onCancel }),
         ],
       }),
     ],

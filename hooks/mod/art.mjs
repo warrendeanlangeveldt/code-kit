@@ -107,7 +107,7 @@ export function spriteSvg(pose, tint, { lead = false } = {}) {
 
 /**
  * A lane's pose (VIEW-3): stalled when flagged or quiet past the restart time, waiting while a call
- * of its is held or its request is open, working while its agent is at work, quiet when it has
+ * of its is held, its request is open or its story waits on the person's answer, working while its agent is at work, quiet when it has
  * gone quiet, done once its branch is finished, idle otherwise.
  */
 export function poseOf(
@@ -115,7 +115,7 @@ export function poseOf(
   { live = null, waiting = false, flagged = false, shown = lane.state } = {},
 ) {
   if (flagged || live?.level === 'stalled') return 'stalled';
-  if (waiting) return 'waiting';
+  if (waiting || shown === 'waiting on you') return 'waiting';
   if (live?.level === 'quiet') return 'quiet';
   if (lane.active) return 'working';
   if (['in review', 'queued'].includes(shown)) return 'done';

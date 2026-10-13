@@ -42,7 +42,7 @@ While the loop is on (autonomous or propose), a lane's finished work never waits
 
 ### DECIDE-2 Each decision with its lineage
 
-Each band line that needs the person (a held call, an approval waiting, a stalled agent, the loop's first or repeated step, a merge only they may make, a review with the loop off) says which story it's for: "for ST-4 Booking form (BOOK-1)". As a card it carries:
+Each band line that needs the person (a held call, an approval waiting, a stalled agent, the loop's first or repeated step, a merge only they may make, a review with the loop off, the lead's questions and the brief's, a call Claude Code refused, a report to send) says which story it's for: "for ST-4 Booking form (BOOK-1)". As a card it carries:
 
 - **You asked for**: the brief's request and the milestone being built;
 - **Story** and **Requirements**: the story, its branch, and each requirement with its title;
@@ -65,6 +65,69 @@ Usage, the plan's pause, finish checks and "all done" are notes: labelled "note"
 **Acceptance**
 
 - Given a held call, when the person presses `d` then Refuse on the card, then the call is refused and the band no longer offers Why.
+
+### ASK-1 The lead asks through code-kit
+
+What the lead can't settle itself and only the person can (a product choice, an account or key only they can create, wording or a design only they can sign off, whether something stays private) is asked with `code-kit ask "<question>" [--story ST-n] [--blocks] [--why "…"] [--option "Label: what it does"]…`, so it waits in their Decisions tab instead of scrolling away in the chat. The same open question is asked once. Only the lead asks: a lane writes the question for the lead. `code-kit ask` lists them; `ask withdraw <id> --reason …` takes back one settled another way. They're kept in `.claude/state/questions.jsonl` in the main checkout.
+
+**Acceptance**
+
+- Given a lane running `code-kit ask`, then it's refused, told to write the question for the lead.
+- Given the lead asking "Which weather provider?" with two options, each with what it does, then `ask --json` lists it open with both.
+
+### ASK-2 The person answers
+
+The band says "The lead asks: …" (or how many), with Answer…, which opens the question as a card: why it's theirs, its story, and each of the lead's options with what it does, plus Something else… for their own words. An option, or their words, is recorded (`ask answer <id> … --via pane`, which the hooks refuse from every agent) and sent to the lead as a prompt: "The person answered Q-1 (…): …. Carry on with it." When the person answers in chat, the lead records it with `ask answer <id> "<their words>"`, marked as given in chat. An answered question can't be answered again.
+
+**Acceptance**
+
+- Given Q-1 with the option Bureau of Meteorology, when the person presses it, then the answer is recorded with `--via pane` and the lead is prompted with it.
+- Given a question without options, when the person types their answer, then it's recorded and sent the same way; an empty answer isn't.
+
+### ASK-3 Waiting on you
+
+A question asked with `--blocks` holds its story: `code-kit status` reads it `waiting on you` (with the question), the stories that depend on it are blocked, and `next` neither dispatches nor reviews it; with nothing else to do it says the build waits on the person and on which question, and `attention` names it. The Lanes pane shows the lane `waiting on you`, its character waiting. Answered, the story carries on where it was.
+
+**Acceptance**
+
+- Given ST-1 with a blocking question and ST-2 depending on it, then ST-1 is `waiting on you`, ST-2 is `blocked`, and `next` gives `wait`; once answered, ST-1 is `ready` again.
+
+### ASK-4 The brief's open questions
+
+The brief's open questions (its `## Open questions` table) are the person's decisions too: `next --json` lists them as `brief`, the band says how many, and each is a card with Answer… (sent to the lead, which records it in the brief's decision log and takes it out of the open questions) and Later (it waits until the next session).
+
+**Acceptance**
+
+- Given a brief with two open questions, then the band says "2 open questions in your brief", Later puts the first off, and answering the second prompts the lead to record it in the brief.
+
+### PERM-1 What Claude Code itself refused
+
+A call Claude Code's own permission check refuses (its auto mode, a deny rule), which code-kit can't approve past, waits in the band for the person: "Claude Code refused the lead's `pnpm db:generate`", with Put it in the prompt (a shell command goes in the prompt after `!`, for them to run), Done it (the lead is told they ran it or allowed it) and Not now (the lead is told to carry on with other work and not get round it). The card says what Claude Code said.
+
+**Acceptance**
+
+- Given Claude Code refusing the lead's `pnpm db:generate && pnpm db:migrate`, then the band names it; Put it in the prompt fills `! pnpm db:generate && pnpm db:migrate`; Done it prompts the lead and clears it.
+
+### REPORT-1 Agents draft reports for code-kit
+
+With `harness.report.on` (off unless the person turns it on, in init or `/harness`), an agent that code-kit got in the way of (a refusal that shouldn't have happened, a crash, a pane showing the wrong thing) drafts a report: `code-kit report "<title>" --what … [--expected …] [--command …] [--refusal …] [--rule …]`. The same bug still waiting is drafted once. With it off, the agent is told to tell the person instead.
+
+### REPORT-2 Only code-kit's facts
+
+A draft holds code-kit's own facts: what happened, what was expected, the command and what code-kit said, the rule, code-kit's version, Node's and the system's, and a fingerprint. Every checkout's folder (as written and as the system resolves it) becomes `<project>`, the home folder `~`, and email addresses `<email>`, and each part is cut short. The person reads the exact text before anything is sent.
+
+**Acceptance**
+
+- Given a report naming a file in the project and an email address, then the draft has `<project>/…` and `<email>`, and neither the folder nor the address.
+
+### REPORT-3 The person sends it, or not
+
+A draft waits in the band ("A bug report for code-kit to send: …") and as a card showing its full text, with Send and Discard. Send (`code-kit report send <id>`, which the hooks refuse from every agent) files it with the person's own `gh` on code-kit's repository; one already filed with the same fingerprint gets a comment instead of a second issue. Without `gh` signed in, nothing is sent and they get the new-issue link with the draft filled in.
+
+**Acceptance**
+
+- Given no `gh`, then nothing is sent, the draft stays, and the link is given.
+- Given `gh`, then the first send creates an issue on code-kit's repository, and the same bug sent again comments on it.
 
 ### JOURNAL-1 The build's lineage
 

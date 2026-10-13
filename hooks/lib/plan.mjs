@@ -7,6 +7,7 @@
 import { execFileSync } from 'node:child_process';
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
+import { waitingStories } from './questions.mjs';
 import { sentBack } from './reviews.mjs';
 
 export const REQUIREMENT = /\b(?!ST-)([A-Z][A-Z0-9]*-\d+)\b/g;
@@ -138,7 +139,8 @@ function worktrees(root) {
  * `base` is in review; one level with it is in progress, or done once the plan had it in review.
  * A branch still at the commit a review sent back is `sent back`, waiting for its lane's fix.
  * Without a branch, the plan's status stands. A story is `blocked` while a story it depends on
- * isn't done, whatever its branch holds; a todo story whose dependencies are done is `ready`.
+ * isn't done, whatever its branch holds; a todo story whose dependencies are done is `ready`. A story
+ * with an open question for the person that holds it (`code-kit ask --blocks`) is `waiting on you`.
  */
 export function storyStates(root, stories, base) {
   const trees = worktrees(root);
@@ -165,10 +167,16 @@ export function storyStates(root, stories, base) {
     };
   });
   const done = new Set(states.filter((s) => s.state === 'done').map((s) => s.id));
+  // ASK-3: a story whose question for the person is open waits on them, whatever its branch holds.
+  const asked = waitingStories(root);
   for (const s of states) {
     if (s.state === 'done') continue;
     s.waitingOn = s.dependsOn.filter((d) => !done.has(d));
-    if (s.waitingOn.length) s.state = 'blocked';
+    s.waitingFor = asked.has(s.id)
+      ? { id: asked.get(s.id).id, question: asked.get(s.id).question }
+      : null;
+    if (s.waitingFor) s.state = 'waiting on you';
+    else if (s.waitingOn.length) s.state = 'blocked';
     else if (s.state === 'todo') s.state = 'ready';
   }
   return states;
@@ -216,7 +224,11 @@ export function buildStatus(root, config, base, files) {
     let state = 'no story';
     if (r.removed) state = 'removed';
     else if (covering.length && covering.every((s) => s.state === 'done')) state = 'done';
-    else if (covering.some((s) => ['in progress', 'review', 'sent back', 'done'].includes(s.state)))
+    else if (
+      covering.some((s) =>
+        ['in progress', 'review', 'sent back', 'waiting on you', 'done'].includes(s.state),
+      )
+    )
       state = 'in progress';
     else if (covering.length) state = 'todo';
     return { ...r, state, stories: covering.map((s) => s.id), tests: tested[r.id] ?? [] };
@@ -224,7 +236,7 @@ export function buildStatus(root, config, base, files) {
   const drift = stories
     .filter(
       (s) =>
-        !['ready', 'blocked'].includes(s.state) &&
+        !['ready', 'blocked', 'waiting on you'].includes(s.state) &&
         s.state !== s.status &&
         !(s.state === 'sent back' && s.status === 'in progress'),
     )

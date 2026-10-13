@@ -18,6 +18,10 @@ export const DECISION_KINDS = new Set([
   'teamIntent',
   'teamReview',
   'teamDrift',
+  'question',
+  'brief',
+  'denied',
+  'report',
 ]);
 
 /** What each answer does, in the person's words. */
@@ -41,7 +45,96 @@ const EFFECT = {
     'The issue closes as agreed, with your words; then put it in the specs or decisions so every agent builds on it.',
   dropIntent: 'The issue closes as dropped, and the team carries on as agreed before.',
   team: 'Opens the Team tab: who is building what, and what changed since you last looked.',
+  openDecision: 'Opens it here, with what each answer does.',
+  dropRequest: "Nobody needs it any more: it stops waiting, and nothing's approved.",
+  answer: 'Type your answer; the lead is told it and carries on.',
+  answerBrief: "Type your answer; the lead records it in the brief's decisions and builds on it.",
+  laterBrief: 'It waits; it comes back next session.',
+  runDenied:
+    'Puts it in your prompt after !, so you run it yourself; press Enter to run it, then Done it.',
+  deniedDone: 'The lead is told you ran it, or allowed it, and carries on.',
+  deniedNo: "The lead is told you won't run it now, and carries on with other work.",
+  sendReport:
+    "Files it on code-kit's GitHub under your account (a comment instead, if it's filed already).",
+  discardReport: "It's not sent, and goes.",
 };
+
+/**
+ * CARD-8: one card per decision. A band line can stand for several (approvals waiting, held calls, the
+ * lead's questions, the brief's, Claude Code's refusals, reports); each becomes its own line here, with
+ * the decision it's about, so each card's options answer that one.
+ */
+function eachDecision(line) {
+  if (line.kind === 'approvals' && line.asks?.length > 1)
+    return line.asks.map((a) => ({
+      ...line,
+      text: `Approve ${askWords(a.request, a.files)}`,
+      request: a.request,
+      files: a.files,
+    }));
+  if (line.kind === 'approvals')
+    return [{ ...line, text: `Approve ${askWords(line.request, line.files)}` }];
+  if (line.kind === 'held' && line.calls?.length > 1)
+    return line.calls.map((c) => ({ ...line, text: c.text, held: c.held }));
+  if (line.kind === 'question')
+    return (line.questions ?? [line.question]).map((q) => ({
+      ...line,
+      text: q.question,
+      question: q,
+    }));
+  if (line.kind === 'brief')
+    return (line.briefs ?? [line.brief]).map((b) => ({
+      ...line,
+      text: `From your brief: ${b.question}`,
+      brief: b,
+    }));
+  if (line.kind === 'denied')
+    return (line.denials ?? [line.denial]).map((d) => ({
+      ...line,
+      text: `Claude Code refused ${d.who}'s ${d.what}`,
+      denial: d,
+      actions: [
+        ...(d.command ? [{ id: 'runDenied', label: 'Put it in the prompt' }] : []),
+        { id: 'deniedDone', label: 'Done it' },
+        { id: 'deniedNo', label: 'Not now' },
+      ],
+    }));
+  if (line.kind === 'report')
+    return (line.reports ?? [line.report]).map((r) => ({ ...line, text: r.title, report: r }));
+  return [line];
+}
+
+/** A card's options: the line's own actions, or, for the kinds a card answers differently, its own. */
+function optionsOf(line) {
+  if (line.kind === 'approvals')
+    return [
+      { id: 'approve', label: 'Approve…' },
+      { id: 'dropRequest', label: 'Not needed' },
+    ];
+  // ASK-2: each of the lead's options answers it at once; any answer can be typed instead.
+  if (line.kind === 'question')
+    return [
+      ...line.question.options.map((o, i) => ({
+        id: `answerWith-${i}`,
+        act: 'answerWith',
+        label: o.label,
+        effect: o.effect,
+        line: { ...line, choice: o.label },
+      })),
+      { id: 'answer', label: line.question.options.length ? 'Something else…' : 'Answer…' },
+    ];
+  if (line.kind === 'brief')
+    return [
+      { id: 'answerBrief', label: 'Answer…' },
+      { id: 'laterBrief', label: 'Later' },
+    ];
+  if (line.kind === 'report')
+    return [
+      { id: 'sendReport', label: 'Send' },
+      { id: 'discardReport', label: 'Discard' },
+    ];
+  return line.actions;
+}
 
 /** Why a line needs the person, when the line itself doesn't say. */
 function whyOf(line, check) {
@@ -76,6 +169,17 @@ function whyOf(line, check) {
   if (line.kind === 'teamReview') return "It's in a lane you own, so its review is yours.";
   if (line.kind === 'teamDrift')
     return "The team's drift check found your work building on something that has since changed, or heading into someone else's: settle it before it merges.";
+  if (line.kind === 'question')
+    return (
+      line.question.why ??
+      "The lead can't settle this itself: it's yours to decide, and the lead builds on your answer."
+    );
+  if (line.kind === 'brief')
+    return `It's an open question in ${line.brief.path}: what gets built depends on your answer.`;
+  if (line.kind === 'denied')
+    return `Claude Code's own permission check refused it${line.denial.reason ? ` (${line.denial.reason})` : ''}, which code-kit can't approve past: only you can run it or allow it.`;
+  if (line.kind === 'report')
+    return "code-kit got in an agent's way. It's sent under your GitHub account to a public repository, so read what it says first.";
   return null;
 }
 
@@ -103,6 +207,7 @@ export function limitsWhy(outside) {
 function storyOf(line, state) {
   const stories = state?.stories ?? [];
   const lane = line.held?.lane ?? line.request?.lane ?? line.stall?.lane ?? null;
+  if (line.question?.story) return stories.find((s) => s.id === line.question.story) ?? null;
   if (line.story) return stories.find((s) => s.id === line.story.id) ?? line.story;
   if (line.stall?.story) return stories.find((s) => s.id === line.stall.story) ?? null;
   if (line.branch) return stories.find((s) => s.branch === line.branch) ?? null;
@@ -124,7 +229,8 @@ export function decisionCards(lines, context = {}) {
   const titles = new Map((status?.requirements ?? []).map((r) => [r.id, r.title]));
   return lines
     .filter((l) => DECISION_KINDS.has(l.kind) && !l.mission)
-    .map((line, i) => {
+    .flatMap((source) => eachDecision(source).map((line) => ({ source, line })))
+    .map(({ source, line }, i) => {
       const story = storyOf(line, state);
       const lane = line.held?.lane ?? line.request?.lane ?? line.stall?.lane ?? story?.lane ?? null;
       const settled = [
@@ -141,6 +247,8 @@ export function decisionCards(lines, context = {}) {
         id: `${line.kind}-${i}`,
         kind: line.kind,
         line,
+        // The band line it came from: one line can stand for several decisions (CARD-8).
+        source,
         title: line.text,
         asked: [request, goal].filter(Boolean).join(' · ') || null,
         story: story
@@ -157,10 +265,16 @@ export function decisionCards(lines, context = {}) {
           (line.intent
             ? `Intent #${line.intent.id}: ${line.intent.about}${line.intent.touches.length ? ` (touches ${line.intent.touches.join(', ')})` : ''}`
             : null) ??
-          (line.pull ? `Pull request #${line.pull.number} on ${line.pull.branch}` : null),
+          (line.pull ? `Pull request #${line.pull.number} on ${line.pull.branch}` : null) ??
+          (line.question?.blocks ? `${line.question.story} waits on your answer.` : null) ??
+          (line.denial ? (line.denial.command ?? line.denial.what) : null) ??
+          (line.report ? line.report.body : null),
         settled,
         why: whyOf(line, check),
-        options: line.actions.map((a) => ({ ...a, effect: EFFECT[a.id] ?? null })),
+        options: optionsOf(line).map((a) => ({
+          ...a,
+          effect: a.effect ?? EFFECT[a.act ?? a.id] ?? null,
+        })),
       };
     });
 }

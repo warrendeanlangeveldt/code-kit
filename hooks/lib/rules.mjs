@@ -35,6 +35,8 @@ import { globToRegExp, matchesAny } from './glob.mjs';
 export const APPROVAL_LOG = '.claude/approval-log.jsonl';
 export const APPROVALS_DIR = '.claude/approvals';
 export const APPROVAL_MINUTES = 60;
+// CARD-7: a request waits until it's answered or dropped, and at most a week, so a forgotten one doesn't linger.
+export const REQUEST_DAYS = 7;
 // A dependency approval lasts until the lane commits the install it allows (the story may resume
 // hours later), and at most a week, so a forgotten one doesn't linger.
 export const DEPENDENCY_APPROVAL_DAYS = 7;
@@ -315,8 +317,8 @@ const sameRequest = (a, b) =>
   a.what === b.what &&
   [...a.names].sort().join() === [...b.names].sort().join();
 
-/** Every request recorded, oldest first; unreadable lines are skipped. */
-export function readRequests(root) {
+/** Every line of the requests file: the requests, and the drops (`{ drop: true, of }`). */
+function requestRecords(root) {
   try {
     return readFileSync(requestsFile(root), 'utf8')
       .split('\n')
@@ -333,10 +335,40 @@ export function readRequests(root) {
   }
 }
 
+/** Every request recorded, oldest first; unreadable lines are skipped. */
+export const readRequests = (root) => requestRecords(root).filter((r) => !r.drop);
+
+/** CARD-7: whether a request was dropped (the person dismissed it, or the lead said it's no longer needed). */
+const droppedIn = (drops, r) => drops.some((d) => d.of === r.at && sameRequest(d, r));
+
+/**
+ * CARD-7: drops open requests: `which` is a request's number in `openRequests`' order (1 is the
+ * newest), or 'all'. By the person (`by: 'person'`, from the pane) or the lead, once nobody needs it.
+ */
+export function dropRequests(root, which, { by, reason = null }, now = Date.now()) {
+  const open = openRequests(root, now);
+  const picked = which === 'all' ? open : [open[Number(which) - 1]].filter(Boolean);
+  if (!picked.length)
+    return {
+      ok: false,
+      why: open.length
+        ? `There's no open request ${which}: there are ${open.length} (code-kit requests lists them, newest first).`
+        : 'No approval requests are open.',
+    };
+  const file = requestsFile(root);
+  mkdirSync(dirname(file), { recursive: true });
+  for (const r of picked)
+    appendFileSync(
+      file,
+      `${JSON.stringify({ drop: true, of: r.at, actor: r.actor, names: r.names, what: r.what, by, reason, at: new Date(now).toISOString() })}\n`,
+    );
+  return { ok: true, dropped: picked };
+}
+
 /**
  * Records that `actor` was refused something the approvals `names` would allow, once: the same
- * actor, names and command or file within the approval lifetime count as one request. Recording
- * never changes the refusal, so any failure here is ignored.
+ * actor, names and command or file while one is still open count as one request. Recording never
+ * changes the refusal, so any failure here is ignored.
  */
 export function recordRequest(root, actor, names, what, why, now = Date.now()) {
   // A read-only agent (a reviewer) is never approved to write: what it changed goes back, not to the
@@ -351,10 +383,7 @@ export function recordRequest(root, actor, names, what, why, now = Date.now()) {
       what: String(what).slice(0, 200),
       why: String(why).slice(0, 300),
     };
-    const fresh = readRequests(root).filter(
-      (r) => now - Date.parse(r.at) < APPROVAL_MINUTES * 60_000,
-    );
-    if (fresh.some((r) => sameRequest(r, request))) return;
+    if (openRequests(root, now).some((r) => sameRequest(r, request))) return;
     const file = requestsFile(root);
     mkdirSync(dirname(file), { recursive: true });
     appendFileSync(file, `${JSON.stringify(request)}\n`);
@@ -363,13 +392,21 @@ export function recordRequest(root, actor, names, what, why, now = Date.now()) {
   }
 }
 
-/** Requests from the last 60 minutes that an approval in force doesn't yet answer, newest first. */
+/**
+ * CARD-7: requests nobody has answered yet, newest first: each waits until an approval answers it, its
+ * file is committed by someone who could, or it's dropped, and at most REQUEST_DAYS.
+ */
 export function openRequests(root, now = Date.now()) {
   const open = [];
   const given = approvalsGiven(root);
+  const drops = requestRecords(root).filter((r) => r.drop);
+  // The newest of the same request speaks for it: an older copy doesn't come back once that's dropped.
+  const seen = [];
   for (const r of readRequests(root).reverse()) {
-    if (now - Date.parse(r.at) >= APPROVAL_MINUTES * 60_000) continue;
-    if (open.some((o) => sameRequest(o, r))) continue;
+    if (now - Date.parse(r.at) >= REQUEST_DAYS * 24 * 60 * 60_000) continue;
+    if (seen.some((o) => sameRequest(o, r))) continue;
+    seen.push(r);
+    if (droppedIn(drops, r)) continue;
     // From before read-only agents stopped asking: only the lead and the lanes are ever approved.
     if (!r.lane && r.actor !== 'lead session') continue;
     const actor = r.lane ? { kind: 'lane', lane: r.lane } : { kind: 'lead' };

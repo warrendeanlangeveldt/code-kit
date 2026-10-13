@@ -20,6 +20,13 @@
 //   merge <branch> --delegated|--person [--into branch]  merge a branch that passes verify: the lead
 //                                    (approvals.delegate.merge) or the person (the code-kit pane)
 //   requests [--json]                 open approval requests and approvals in force
+//   requests drop <n>|all [--reason …] [--via pane]   drop requests nobody needs answered any more
+//   ask "<question>" [--story ST-n] [--blocks] [--why …] [--option "Label: what it does"]...
+//                                    the lead asks the person what it can't settle; ask [--json] lists them
+//   ask answer <id> "<answer>" [--via pane] | ask withdraw <id> --reason …
+//   report "<title>" --what … [--expected …] [--command …] [--refusal …] [--rule …]
+//                                    with harness.report.on, an agent drafts a bug report for code-kit
+//   report [--json] | report send|discard <id>   the person sends a draft to code-kit's GitHub, or not
 //   stops [--session id] [--json]     finish checks that refused an agent's last stop, still failing
 //   sent-back <branch> [--reason …]   records that a review sent the branch back at its current commit
 //   settings [--json] | settings set <key> <value> --reason … [--via pane]
@@ -51,6 +58,13 @@ import { diffConfigs, ownershipMoves } from '../hooks/lib/diff.mjs';
 import { CODE, importsOf, layerOf, layerProblems, targetOf } from '../hooks/lib/layers.mjs';
 import { ADAPTERS, activeAdapters, adapterFacts } from '../hooks/lib/adapters/index.mjs';
 import { nextStep } from '../hooks/lib/next.mjs';
+import { discardReport, draftReport, readReports, sendReport } from '../hooks/lib/report.mjs';
+import {
+  answerQuestion,
+  askQuestion,
+  readQuestions,
+  withdrawQuestion,
+} from '../hooks/lib/questions.mjs';
 import { traceFile } from '../hooks/lib/trace.mjs';
 import { buildStatus, specCheckRows } from '../hooks/lib/plan.mjs';
 import { recordSentBack } from '../hooks/lib/reviews.mjs';
@@ -84,6 +98,7 @@ import {
   approvalsInForce,
   delegatedMark,
   grantApprovals,
+  dropRequests,
   openRequests,
   ownerOf,
   reviewerOf,
@@ -126,6 +141,15 @@ const staleDaysGiven = option('--stale-days');
 const intentsGiven = option('--intents');
 const ownersGiven = [];
 for (let o = option('--owner'); o !== undefined; o = option('--owner')) ownersGiven.push(o);
+const storyGiven = option('--story');
+const whyGiven = option('--why');
+const whatGiven = option('--what');
+const expectedGiven = option('--expected');
+const commandGiven = option('--command');
+const refusalGiven = option('--refusal');
+const ruleGiven = option('--rule');
+const optionsGiven = [];
+for (let o = option('--option'); o !== undefined; o = option('--option')) optionsGiven.push(o);
 const FLAGS = [
   '--write',
   '--no-checks',
@@ -135,6 +159,7 @@ const FLAGS = [
   '--fresh',
   '--peek',
   '--off',
+  '--blocks',
 ];
 const flag = (name) => args.includes(name);
 const writeBaseline = flag('--write');
@@ -911,16 +936,30 @@ function story(id) {
 // Open approval requests and the approvals in force, for the person and the mod's band.
 function requests() {
   load();
+  // CARD-7: a request nobody needs answered any more is dropped: the person's Dismiss, or the lead.
+  if (rest[0] === 'drop') {
+    if (!rest[1])
+      die('code-kit requests drop <n>|all [--reason "…"]: n as `code-kit requests` numbers them.');
+    const r = dropRequests(resolve('.'), rest[1], {
+      by: via === 'pane' ? 'person' : 'lead',
+      reason: reason ?? null,
+    });
+    if (!r.ok) die(r.why);
+    return out(
+      `Dropped ${r.dropped.length} request${r.dropped.length === 1 ? '' : 's'}: ${r.dropped.map((d) => `${d.names.join(', ')} for ${d.lane ? `the ${d.lane} lane` : d.actor}`).join('; ')}.`,
+    );
+  }
   const open = openRequests(resolve('.'));
   const granted = approvalsInForce(resolve('.'));
   // CARD-6: every approval given, newest first.
   const history = approvalHistory(resolve('.')).slice(0, 100);
   if (flag('--json')) return out(JSON.stringify({ open, inForce: granted, history }, null, 2));
   out(open.length ? `${open.length} approval request(s) open:` : 'No approval requests open.');
-  for (const r of open)
+  open.forEach((r, i) =>
     out(
-      `  ${r.names.join(', ')} for ${r.lane ? `the ${r.lane} lane` : r.actor}: ${r.what}  (${r.why})`,
-    );
+      `  ${i + 1}. ${r.names.join(', ')} for ${r.lane ? `the ${r.lane} lane` : r.actor}: ${r.what}  (${r.why}; asked ${r.at.slice(0, 16).replace('T', ' ')})`,
+    ),
+  );
   out(granted.length ? `\n${granted.length} approval(s) in force:` : '\nNo approvals in force.');
   for (const a of granted)
     out(
@@ -1614,6 +1653,121 @@ function intendCommand() {
 }
 
 /**
+ * ASK-1 to ASK-3: questions for the person. `ask "<question>"` records one (the lead's: the hooks refuse
+ * it from lanes), waiting in the Decisions tab; `--blocks` holds its story until it's answered. `ask`
+ * lists them; `ask answer` records the answer (the person's from the pane with --via pane, which the
+ * hooks refuse from agents; otherwise the lead recording what the person said in chat); `ask withdraw`
+ * takes one back once it no longer needs the person.
+ */
+function askCommand() {
+  const root = resolve('.');
+  const [sub, id, ...words] = rest;
+  if (sub === 'answer') {
+    const r = answerQuestion(root, id, {
+      answer: words.join(' '),
+      by: via === 'pane' ? 'person' : 'lead',
+      via: via === 'pane' ? 'pane' : 'chat',
+    });
+    if (!r.ok) die(r.why);
+    return out(
+      `Recorded the answer to ${id}${via === 'pane' ? '' : ' (given in chat, recorded by the lead)'}: ${r.question.answer.text}${r.question.blocks ? ` ${r.question.story} no longer waits on the person.` : ''}`,
+    );
+  }
+  if (sub === 'withdraw') {
+    if (!reason?.trim()) die('Say why it no longer needs the person, with --reason "…".');
+    const r = withdrawQuestion(root, id, reason);
+    if (!r.ok) die(r.why);
+    return out(`Withdrew ${id}: ${reason.trim()}`);
+  }
+  const all = readQuestions(root);
+  if (!rest.length) {
+    if (flag('--json')) return out(JSON.stringify(all, null, 2));
+    const open = all.filter((q) => q.state === 'open');
+    out(
+      open.length
+        ? `${open.length} question(s) wait for the person:`
+        : 'No questions wait for the person.',
+    );
+    for (const q of open)
+      out(
+        `  ${q.id}${q.story ? ` (${q.story}${q.blocks ? ', which waits on it' : ''})` : ''}: ${q.question}${q.options.length ? `  [${q.options.map((o) => o.label).join(' / ')}]` : ''}`,
+      );
+    const answered = all.filter((q) => q.state === 'answered').slice(-10);
+    if (answered.length) out('\nAnswered lately:');
+    for (const q of answered) out(`  ${q.id}: ${q.question} → ${q.answer.text}`);
+    return;
+  }
+  const question = rest.join(' ').trim();
+  if (flag('--blocks') && !storyGiven) die('--blocks holds a story: name it with --story ST-n.');
+  const r = askQuestion(root, {
+    by: 'lead',
+    question,
+    why: whyGiven ?? null,
+    story: storyGiven ?? null,
+    blocks: flag('--blocks'),
+    options: optionsGiven,
+  });
+  out(
+    r.existed
+      ? `${r.question.id} is already open: ${r.question.question}`
+      : `Asked ${r.question.id}. It waits in the person's Decisions tab${r.question.blocks ? `, and ${r.question.story} waits on it` : ''}; their answer is sent to you as a prompt. Carry on with other work meanwhile.`,
+  );
+}
+
+/**
+ * REPORT-1 to REPORT-3: bug reports for code-kit itself. An agent drafts one (with harness.report.on);
+ * the person reads it and sends or discards it, from the pane or their terminal: the hooks refuse
+ * `report send` and `report discard` from every agent.
+ */
+function reportCommand() {
+  const root = resolve('.');
+  const [sub, id] = rest;
+  if (sub === 'send') {
+    const r = sendReport(root, id);
+    if (!r.ok) die(`${r.why}${r.link ? `\nOpen this to file it yourself: ${r.link}` : ''}`);
+    return out(
+      r.comment ? `Someone had filed it already; added it there: ${r.url}` : `Filed ${r.url}`,
+    );
+  }
+  if (sub === 'discard') {
+    const r = discardReport(root, id);
+    if (!r.ok) die(r.why);
+    return out(`Discarded ${id}.`);
+  }
+  if (!rest.length) {
+    const all = readReports(root);
+    if (flag('--json')) return out(JSON.stringify(all, null, 2));
+    const drafts = all.filter((r) => r.state === 'draft');
+    out(
+      drafts.length
+        ? `${drafts.length} report(s) wait for the person to send or discard:`
+        : 'No reports waiting.',
+    );
+    for (const r of drafts) out(`  ${r.id}: ${r.title}`);
+    return;
+  }
+  const { config } = load();
+  if (!config.harness.report.on)
+    die(
+      "Reporting code-kit's bugs is off (harness.report.on). Tell the person what went wrong instead: what you ran, what code-kit said, and what you expected.",
+    );
+  const r = draftReport(root, {
+    title: rest.join(' '),
+    what: whatGiven,
+    expected: expectedGiven,
+    command: commandGiven,
+    refusal: refusalGiven,
+    rule: ruleGiven,
+  });
+  if (!r.ok) die(r.why);
+  out(
+    r.existed
+      ? `${r.report.id} already reports this; it waits for the person.`
+      : `Drafted ${r.report.id}. The person reads it in the Decisions tab and sends it to code-kit's GitHub, or discards it. Carry on: work around it if you can, and say so.`,
+  );
+}
+
+/**
  * The lead loop's pause (LOOP-6): `loop` says whether the person paused it; `loop pause|resume`, the
  * person's act from the code-kit band, records it, so other tools' background work pauses with it.
  */
@@ -1647,6 +1801,8 @@ const commands = {
   queue,
   team: teamCommand,
   intend: intendCommand,
+  ask: askCommand,
+  report: reportCommand,
   story: () => (rest.length === 1 ? story(rest[0]) : usage()),
   map: () => (rest.length === 1 ? mapCommand(rest[0]) : usage()),
   trail: trailCommand,
@@ -1672,7 +1828,11 @@ function usage() {
       '              | security [--base ref] [--branch name] [--json]\n' +
       '              | next [--base ref] [--json] | adapters | trace <path>... [--json]\n' +
       '              | approve <name>... --reason "…" [--lane name]   [--config file]\n' +
-      '              | merge <branch> --delegated|--person [--into branch] | requests [--json]\n' +
+      '              | merge <branch> --delegated|--person [--into branch] | requests [--json] | requests drop <n>|all\n' +
+      '              | ask "<question>" [--story ST-n] [--blocks] [--why "…"] [--option "Label: effect"]... | ask [--json]\n' +
+      '              | ask answer <id> "<answer>" | ask withdraw <id> --reason "…"\n' +
+      '              | report "<title>" --what "…" [--expected …] [--command …] [--refusal …] [--rule …]\n' +
+      '              | report [--json] | report send|discard <id>\n' +
       '              | stops [--session id] [--json] | sent-back <branch> [--reason "…"]\n' +
       '              | settings [--json] | settings set <key> <value> --reason "…" [--via pane]\n' +
       '              | hold <id> [--minutes N] | hold <id> --answer approved|refused\n' +
