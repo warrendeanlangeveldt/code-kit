@@ -613,17 +613,24 @@ export function register(on) {
           }
         }
         notice = null;
-        const said = /[.!?]$/.test(text) ? text : `${text}.`;
-        await $.prompt.submit({
-          text:
-            q.kind === 'question'
-              ? `The person answered ${q.id} (${q.question}): ${said}${q.blocks ? ` ${q.story} no longer waits on them.` : ''} Carry on with it.`
-              : `The person answered an open question in ${q.path}, "${q.question}": ${said} Record it in the brief's decision log, take it out of the open questions, and carry on with it.`,
-        });
+        // Answered, the decision goes at once; the lead hears it as a turn of its own once it's idle, which
+        // can be long after (so the prompt isn't waited on).
         if (q.kind === 'brief') {
           briefLater.add(q.question);
           model = { ...model, brief: (model.brief ?? []).filter((b) => b.question !== q.question) };
         }
+        if (q.kind === 'question')
+          model = { ...model, questions: (model.questions ?? []).filter((x) => x.id !== q.id) };
+        $.ui.invalidate('ui.render');
+        const said = /[.!?]$/.test(text) ? text : `${text}.`;
+        $.prompt
+          .submit({
+            text:
+              q.kind === 'question'
+                ? `The person answered ${q.id} (${q.question}): ${said}${q.blocks ? ` ${q.story} no longer waits on them.` : ''} Carry on with it.`
+                : `The person answered an open question in ${q.path}, "${q.question}": ${said} Record it in the brief's decision log, take it out of the open questions, and carry on with it.`,
+          })
+          .catch(() => {});
         await act.reload();
         return true;
       },
@@ -634,16 +641,20 @@ export function register(on) {
       deniedDone: async (line) => {
         denied.delete(line.denial.id);
         $.ui.invalidate('ui.render');
-        await $.prompt.submit({
-          text: `The person ran it themselves, or allowed it: ${line.denial.command ?? line.denial.what} (Claude Code had refused it for ${line.denial.who}). Check it worked, and carry on.`,
-        });
+        $.prompt
+          .submit({
+            text: `The person ran it themselves, or allowed it: ${line.denial.command ?? line.denial.what} (Claude Code had refused it for ${line.denial.who}). Check it worked, and carry on.`,
+          })
+          .catch(() => {});
       },
       deniedNo: async (line) => {
         denied.delete(line.denial.id);
         $.ui.invalidate('ui.render');
-        await $.prompt.submit({
-          text: `The person won't run ${line.denial.command ?? line.denial.what} now (Claude Code refused it for ${line.denial.who}). Don't try to get around it: carry on with other work, and if a story can't go on without it, ask with code-kit ask --blocks.`,
-        });
+        $.prompt
+          .submit({
+            text: `The person won't run ${line.denial.command ?? line.denial.what} now (Claude Code refused it for ${line.denial.who}). Don't try to get around it: carry on with other work, and if a story can't go on without it, ask with code-kit ask --blocks.`,
+          })
+          .catch(() => {});
       },
       // REPORT-3: the person sends a drafted report to code-kit's GitHub, or discards it.
       sendReport: async (line) => {

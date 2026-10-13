@@ -160,6 +160,7 @@ function project() {
     questions: [] as any[], // `code-kit ask --json`
     reports: [] as any[], // `code-kit report --json`
     fills: [] as string[], // what the mod put in the prompt
+    leadBusy: false, // prompts are queued behind the lead's turn, and never resolve in the test
     sideAsks: [] as any[], // side calls: { fork } or { model }, with their prompt
     sideReply: { isAnswered: true, text: 'dayjs formats the booking dates.', usage: null } as any,
     holdWaits: false, // false: the hold ends at once, as if timed out (tests about cards, not hold)
@@ -392,6 +393,8 @@ function stub(on: any, w: World) {
   );
   on('prompt.submit', ($: any, e: any) => {
     w.prompts.push(e.text);
+    // A busy lead: the prompt is queued, and its turn doesn't end while the test looks.
+    if (w.leadBusy) return new Promise(() => {});
     return { text: e.text };
   });
   // $.ui.ask is the AskUserQuestion dialog: the person picks a label.
@@ -1536,6 +1539,33 @@ test("ASK-4 the brief's open questions are the person's decisions: answered to t
   const after = await bandUi($);
   expect(await after.find({ type: 'Text', text: /in your brief/ })).toBeUndefined();
   await after.unmount();
+});
+
+test('ASK-2 and ASK-4 an answer closes its decision at once, though the lead hears it only when its turn ends', async ($, on) => {
+  const w = project();
+  w.leadBusy = true;
+  w.questions = [question({ options: [] })];
+  w.next = { ...w.next, brief: [{ question: 'The product domain', path: 'docs/brief.md' }] };
+  await start($, on, w);
+  const band = await bandUi($);
+  await press($, 'band-openDecision');
+  await band.unmount();
+  const ui = await pane($, PANE);
+  await press($, 'decide-answer', PANE);
+  let box = await pane($, 'code-kit-answer');
+  await $.ui.input({ plugin: 'code-kit', key: 'answer-text', text: 'The Bureau' });
+  await box.unmount();
+  expect(w.closed).toContain('code-kit-answer');
+  expect(await ui.find({ type: 'Text', text: /Which weather provider/ })).toBeUndefined();
+  await press($, 'decide-answerBrief', PANE);
+  box = await pane($, 'code-kit-answer');
+  await $.ui.input({ plugin: 'code-kit', key: 'answer-text', text: 'myaila.com.au' });
+  await box.unmount();
+  expect(w.prompts).toHaveLength(2);
+  expect(
+    await ui.find({ type: 'Text', text: 'Nothing needs you. The lead is handling the build.' }),
+  ).toBeDefined();
+  await ui.unmount();
 });
 
 test("PERM-1 a call Claude Code's own permission check refused waits for the person, who runs it or says not now", async ($, on) => {
