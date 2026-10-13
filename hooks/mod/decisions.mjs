@@ -2,7 +2,7 @@
 // the person, each with its lineage. The band's "you" lines say what needs them; a decision card says why:
 // what they asked for, the story and requirements it belongs to, what the agent was doing, what was already
 // settled, why the lead couldn't settle this itself, and each option with what happens next.
-import { askWords } from './view.mjs';
+import { approvalLabel, askWords, commandItself } from './view.mjs';
 
 /** The kinds of band line that are the person's to decide; the rest are notes. */
 export const DECISION_KINDS = new Set([
@@ -136,6 +136,70 @@ function optionsOf(line) {
   return line.actions;
 }
 
+/** A kind of decision as its card's tag says it. */
+const TAG = {
+  held: 'held call',
+  approvals: 'approval',
+  stalled: 'stalled',
+  proposal: 'next step',
+  queue: 'merge',
+  review: 'review',
+  notice: 'notice',
+  question: 'question',
+  brief: 'your brief',
+  denied: 'refused',
+  report: 'bug report',
+};
+
+/** At most `n` characters on one line, cut with an ellipsis. */
+const clip = (text, n) => {
+  const one = String(text ?? '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return one.length > n ? `${one.slice(0, n - 1)}…` : one;
+};
+
+/** Names as a person reads them, at most three, then how many more. */
+const someNames = (names) => {
+  const shown = names.slice(0, 3).map(approvalLabel).join(', ');
+  return names.length > 3 ? `${shown} and ${names.length - 3} more` : shown;
+};
+
+/**
+ * CARD-9: a decision's headline and the line under it, short enough for a card in a list:
+ * { tag, headline, sub }.
+ */
+function headlineOf(line, story) {
+  const forStory = story ? ` · ${story.id}` : '';
+  if (line.kind === 'approvals') {
+    const who = line.request.lane ? `the ${line.request.lane} lane` : line.request.actor;
+    return {
+      headline: `Approve ${someNames(line.request.names)}`,
+      sub: `for ${who}${forStory} · ${clip(commandItself(line.files?.[0] ?? line.request.what), 70)}`,
+    };
+  }
+  if (line.kind === 'held')
+    return {
+      headline: `${line.held.who} wants to ${line.text.replace(/^.*? wants to /, '').replace(/ · \d+:\d+$/, '')}`,
+      sub: `held${forStory} · ${line.text.match(/\d+:\d+$/)?.[0] ?? ''} left`,
+    };
+  if (line.kind === 'question')
+    return {
+      headline: line.question.question,
+      sub: `from the lead${forStory}${line.question.blocks ? ', which waits on it' : ''}`,
+    };
+  if (line.kind === 'brief')
+    return { headline: line.brief.question, sub: `open in ${line.brief.path}` };
+  if (line.kind === 'denied')
+    return {
+      headline: `Claude Code refused ${line.denial.who}'s call`,
+      sub: clip(line.denial.command ?? line.denial.what, 80),
+    };
+  if (line.kind === 'report')
+    return { headline: line.report.title, sub: "drafted by an agent, for code-kit's GitHub" };
+  return { headline: line.text, sub: story ? `${story.id} ${story.title ?? ''}` : '' };
+}
+
 /** Why a line needs the person, when the line itself doesn't say. */
 function whyOf(line, check) {
   if (line.kind === 'held') {
@@ -243,9 +307,13 @@ export function decisionCards(lines, context = {}) {
               `${a.name} is approved${a.lane ? ` for the ${a.lane} lane` : ''}${a.reason ? `: ${a.reason}` : ''}`,
           ),
       ].slice(-5);
+      const { headline, sub } = headlineOf(line, story);
       return {
         id: `${line.kind}-${i}`,
         kind: line.kind,
+        tag: TAG[line.kind] ?? 'decision',
+        headline: clip(headline, 100),
+        sub,
         line,
         // The band line it came from: one line can stand for several decisions (CARD-8).
         source,
@@ -260,14 +328,22 @@ export function decisionCards(lines, context = {}) {
         })),
         doing:
           line.held?.command ??
-          (line.request ? askWords(line.request, line.files ?? [line.request.what]) : null) ??
+          (line.request
+            ? clip(
+                askWords(
+                  line.request,
+                  (line.files ?? [line.request.what]).map((f) => commandItself(f)),
+                ),
+                300,
+              )
+            : null) ??
           (line.proposal?.label ? `Next step: ${line.proposal.label}` : null) ??
           (line.intent
             ? `Intent #${line.intent.id}: ${line.intent.about}${line.intent.touches.length ? ` (touches ${line.intent.touches.join(', ')})` : ''}`
             : null) ??
           (line.pull ? `Pull request #${line.pull.number} on ${line.pull.branch}` : null) ??
           (line.question?.blocks ? `${line.question.story} waits on your answer.` : null) ??
-          (line.denial ? (line.denial.command ?? line.denial.what) : null) ??
+          (line.denial ? clip(line.denial.command ?? line.denial.what, 400) : null) ??
           (line.report ? line.report.body : null),
         settled,
         why: whyOf(line, check),

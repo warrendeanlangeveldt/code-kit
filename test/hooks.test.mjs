@@ -848,6 +848,17 @@ try {
       truth(reqs().open.length === 1, JSON.stringify(reqs().open)),
       0,
     );
+    // CARD-7: a dependency request closes once the package is in a committed manifest.
+    rmSync(requestsFile, { force: true });
+    bash(addLodash, 'web-engineer');
+    put('apps/office/package.json', '{ "dependencies": { "lodash": "^4.17.21" } }\n');
+    git('add', 'apps/office/package.json');
+    git('commit', '-q', '--no-verify', '-m', 'web: lodash, installed by the person');
+    expect(
+      'CARD-7 a package request closes once the package is committed, whoever installed it',
+      truth(!reqs().open.some((r) => r.names.join() === 'dep-lodash'), JSON.stringify(reqs().open)),
+      0,
+    );
     rmSync(requestsFile, { force: true });
     rmSync(join(repo, '.claude/state/approvals-given.jsonl'), { force: true });
     rmSync(join(repo, '.claude/approvals'), { recursive: true, force: true });

@@ -44,7 +44,7 @@ A request is the person's to answer only while it still waits. A read-only agent
 
 ### CARD-7 A request waits until it's answered
 
-An approval request waits until an approval answers it, its file is committed by someone who could, or it's dropped, and at most a week; not 60 minutes, which let one vanish while the lead was still asking for it. The same refusal while a request is open asks once. `code-kit requests` numbers the open ones, newest first; `code-kit requests drop <n>[,<n>…]|all [--reason …]` drops them: the lead's, when it went another way, or the person's **Not needed** on the request's card (`--via pane`, which the hooks refuse from every agent). A lane can't drop one. Refused again after a drop, it asks again.
+An approval request waits until an approval answers it, its file is committed by someone who could (a package request, until the package is in a committed `package.json`, whoever installed it), or it's dropped, and at most a week; not 60 minutes, which let one vanish while the lead was still asking for it. The same refusal while a request is open asks once. `code-kit requests` numbers the open ones, newest first; `code-kit requests drop <n>[,<n>…]|all [--reason …]` drops them: the lead's, when it went another way, or the person's **Not needed** on the request's card (`--via pane`, which the hooks refuse from every agent). A lane can't drop one. Refused again after a drop, it asks again.
 
 **Acceptance**
 
@@ -58,6 +58,14 @@ The band keeps one line per kind of thing waiting ("2 approvals waiting", "3 que
 **Acceptance**
 
 - Given two approvals waiting, for the web and api lanes, then the Decisions tab has two cards, and Not needed on the second drops only the api lane's request.
+
+### CARD-9 Decisions as short cards
+
+The Decisions tab opens on how many decisions need the person and of which kinds ("10 approvals · 2 questions · 12 your brief"), then each as a short card: its kind, a one-line headline ("Approve fastify, jose, drizzle-orm and 4 more") and one line on who or what it's for, with a command cut at its first pipe or chain and never over a line. Five cards show at a time around the selected one, with how many more above and below; **j** and **k** move. The selected one follows in full, with its lineage and options.
+
+**Acceptance**
+
+- Given eight approvals and a question, then the tab says "8 approvals · 1 question", shows five cards with "4 more" below, each approval's command on one line without what follows its pipe, and j moves the selection down the list.
 
 ### CARD-3 `/verify-branch`
 

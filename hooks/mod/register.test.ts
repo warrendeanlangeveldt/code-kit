@@ -1521,13 +1521,10 @@ test("ASK-4 the brief's open questions are the person's decisions: answered to t
   await press($, 'band-openDecision');
   await band.unmount();
   const ui = await pane($, PANE);
-  expect(
-    await ui.find({ type: 'Text', text: 'From your brief: Accounts: AWS, Supabase, Fly' }),
-  ).toBeDefined();
+  expect(await ui.find({ type: 'Text', text: 'Accounts: AWS, Supabase, Fly' })).toBeDefined();
+  expect(await ui.find({ type: 'Text', text: 'open in docs/brief.md' })).toBeDefined();
   await press($, 'decide-laterBrief', PANE);
-  expect(
-    await ui.find({ type: 'Text', text: 'From your brief: The product domain' }),
-  ).toBeDefined();
+  expect(await ui.find({ type: 'Text', text: 'The product domain' })).toBeDefined();
   await press($, 'decide-answerBrief', PANE);
   const box = await pane($, 'code-kit-answer');
   await $.ui.input({ plugin: 'code-kit', key: 'answer-text', text: 'myaila.com.au' });
@@ -1599,6 +1596,45 @@ test('CARD-8 two approvals waiting are two decisions, each approved or dropped o
   await press($, 'decision-pick-1', PANE);
   await press($, 'decide-dropRequest', PANE);
   expect(w.acts).toContainEqual(['requests', 'drop', '2', '--via', 'pane']);
+  await ui.unmount();
+});
+
+test('CARD-9 many decisions read as short cards, a few at a time, with the selected one in full', async ($, on) => {
+  const w = project();
+  w.requests = Array.from({ length: 8 }, (_, i) => ({
+    ...dayjs,
+    at: `2026-10-06T00:0${i}:00.000Z`,
+    names: [`dep-pkg${i}`, 'dep-a', 'dep-b', 'dep-c'],
+    what: `pnpm --filter @app/web add pkg${i} a b c 2>&1 | tail -20 && cat > tsconfig.json <<'EOF'\n{ "x": 1 }\nEOF`,
+  }));
+  w.questions = [question()];
+  await start($, on, w);
+  const band = await bandUi($);
+  await press($, 'band-decide');
+  await band.unmount();
+  const ui = await pane($, PANE);
+  expect((await ui.find({ key: 'decision-kinds' }))?.text).toBe('8 approvals · 1 question');
+  // Five cards at a time, each a headline and a line under it; the command cut at its pipe, on one line.
+  expect(await ui.find({ key: 'decision-item-4' })).toBeDefined();
+  expect(await ui.find({ key: 'decision-item-5' })).toBeUndefined();
+  expect(await ui.find({ type: 'Text', text: '  ↓ 4 more' })).toBeDefined();
+  expect((await ui.find({ key: 'decision-pick-0' }))?.props.label).toBe(
+    'Approve pkg0, a, b and 1 more',
+  );
+  expect(
+    await ui.find({
+      type: 'Text',
+      text: 'for the web lane · ST-4 · pnpm --filter @app/web add pkg0 a b c',
+    }),
+  ).toBeDefined();
+  expect((await ui.findAll({ type: 'Text' })).some((t: any) => /tsconfig|EOF/.test(t.text))).toBe(
+    false,
+  );
+  await press($, 'decision-next', PANE);
+  await press($, 'decision-next', PANE);
+  await press($, 'decision-next', PANE);
+  expect(await ui.find({ type: 'Text', text: /↑ \d+ more/ })).toBeDefined();
+  expect((await ui.findAll({ type: 'Text' })).some((t: any) => t.text === '4 of 9')).toBe(true);
   await ui.unmount();
 });
 
