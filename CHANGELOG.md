@@ -2,6 +2,13 @@
 
 What changed in each release of code-kit, newest first. Versions follow the plugin manifest and the npm package `@warren-dean/code-kit`. Each release is also on [GitHub Releases](https://github.com/warrendeanlangeveldt/code-kit/releases).
 
+## 0.12.2 (2026-10-13)
+
+The Decisions tab is readable, and old package requests stop waiting.
+
+- **Decisions as short cards.** The tab says how many of each kind wait ("10 approvals · 2 questions"), then lists each as a card: its kind, a one-line headline ("Approve fastify, jose, drizzle-orm and 4 more") and who it's for, with commands cut at their first pipe instead of whole scripts. Five show at a time; **j** and **k** move, and the selected one opens in full below.
+- **Package requests close once installed.** A request for a package closes once the package is in a committed `package.json`, whoever installed it, so installs already done no longer wait for you.
+
 ## 0.12.1 (2026-10-13)
 
 Ask about an approval before you give it.
