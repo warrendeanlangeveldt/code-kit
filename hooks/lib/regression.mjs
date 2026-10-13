@@ -284,7 +284,7 @@ export function proveFix({ root, from, base, changed, config, fix }) {
           `regression.prepare (\`${prepare}\`) failed in a fresh checkout, so the fix's tests couldn't run:\n${`${res.stdout ?? ''}${res.stderr ?? ''}`.trim().split('\n').slice(-20).join('\n')}`,
         ];
     }
-    const withFix = runChecks(strict, tests, dir, actor);
+    const { failure: withFix } = runChecks(strict, tests, dir, actor);
     if (withFix)
       return [
         `${what}, but its tests don't pass in a fresh checkout of the branch (${withFix.title.replace(/ Fix it:$/, '')}), so code-kit can't tell whether they fail without it. If they need an install or a build first, set regression.prepare.${withFix.output ? `\n${String(withFix.output).trim().split('\n').slice(-20).join('\n')}` : ''}`,
@@ -294,7 +294,7 @@ export function proveFix({ root, from, base, changed, config, fix }) {
       if (showAt(root, from, f) !== null) git(dir, 'checkout', from, '--', f);
       else rmSync(join(dir, f), { force: true });
     }
-    const without = runChecks(strict, tests, dir, actor);
+    const { failure: without } = runChecks(strict, tests, dir, actor);
     if (!without)
       return [
         `${what}, but its tests (${tests.join(', ')}) also pass without the fix, so they don't prove the bug and it can come back. Write a test that fails on ${base} and passes here.`,

@@ -3174,6 +3174,132 @@ else process.exit(2);
       1,
       'needs --delegated',
     );
+
+    // The queue merges the commit the review passed; a branch that moves on is reviewed again.
+    const tipOf = (b) => q.git('rev-parse', b).trim();
+    q.git('checkout', '-q', '-b', 'web/st-d', 'main');
+    qPut('apps/office/lib/d.ts', 'export const d = 1;\n');
+    q.git('add', '-A');
+    q.git('commit', '-q', '-m', 'web/st-d');
+    q.git('checkout', '-q', 'main');
+    const reviewed = tipOf('web/st-d');
+    expect(
+      'the queue records the commit the review passed',
+      says(qKit('queue', 'add', 'web/st-d'), `at ${reviewed.slice(0, 7)}`),
+      0,
+    );
+    expect(
+      'in its entry',
+      truth(
+        JSON.parse(qKit('queue', '--json').stdout).find((e) => e.state === 'waiting')?.commit ===
+          reviewed,
+      ),
+      0,
+    );
+    q.git('checkout', '-q', 'web/st-d');
+    qPut('apps/office/lib/d.ts', 'export const d = 2;\n');
+    q.git('commit', '-q', '-am', 'after the review');
+    q.git('checkout', '-q', 'main');
+    const moved = qKit('queue', 'merge', '--delegated');
+    expect(
+      'a branch that moved on after its review is not merged',
+      truth(
+        moved.status === 1 &&
+          moved.stderr.includes(
+            `has moved on since its review passed (${reviewed.slice(0, 7)} → ${tipOf('web/st-d').slice(0, 7)})`,
+          ),
+        moved.stdout + moved.stderr,
+      ),
+      0,
+    );
+    expect(
+      'it leaves the queue as moved, not sent back to its lane',
+      truth(
+        JSON.parse(qKit('queue', '--json').stdout).at(-1)?.state === 'moved' &&
+          !readFileSync(join(q.dir, '.claude/state/reviews.jsonl'), 'utf8').includes('web/st-d'),
+      ),
+      0,
+    );
+    expect('and main has none of it', truth(!existsSync(join(q.dir, 'apps/office/lib/d.ts'))), 0);
+    qKit('queue', 'add', 'web/st-d');
+    q.git('checkout', '-q', 'web/st-d');
+    qPut('apps/office/lib/d.ts', 'export const d = 3;\n');
+    q.git('commit', '-q', '-am', 'a second review');
+    q.git('checkout', '-q', 'main');
+    expect(
+      'queued again after another review, it keeps its place at the new commit',
+      says(qKit('queue', 'add', 'web/st-d'), 'keeps its place in the merge queue, now at'),
+      0,
+    );
+    const merged = qKit('queue', 'merge', '--delegated');
+    expect(
+      'and merges at the commit that review passed',
+      says(merged, `at ${tipOf('web/st-d').slice(0, 7)}`),
+      0,
+    );
+    expect(
+      'the merge commit names it',
+      truth(
+        q
+          .git('log', '-1', '--format=%B', 'main')
+          .includes(`at ${tipOf('web/st-d').slice(0, 7)}, the commit the review passed,`),
+      ),
+      0,
+    );
+
+    // A check whose tool isn't installed is skipped, and said to be: a pass never hides it.
+    q.git('checkout', '-q', '-b', 'platform/st-e', 'main');
+    qPut('runbooks/tool/x.md', 'x\n');
+    q.git('add', '-A');
+    q.git('commit', '-q', '-m', 'platform/st-e');
+    const skippedRun = qKit('verify', '--base', 'main');
+    expect(
+      'verify names a check that did not run',
+      truth(
+        skippedRun.status === 0 &&
+          skippedRun.stdout.includes(
+            "Not run, because a tool isn't installed here: missing tool (`no-such-tool-xyz --version` isn't installed)",
+          ) &&
+          skippedRun.stdout.includes('No problems in what ran.'),
+        skippedRun.stdout + skippedRun.stderr,
+      ),
+      0,
+    );
+    expect(
+      'and lists it in its JSON',
+      truth(
+        JSON.parse(qKit('verify', '--base', 'main', '--json').stdout).skipped[0]?.check ===
+          'missing tool',
+      ),
+      0,
+    );
+    q.git('checkout', '-q', 'main');
+    qKit('queue', 'add', 'platform/st-e');
+    expect(
+      'a merge says which checks did not run',
+      says(qKit('queue', 'merge', '--delegated'), 'Not run, because'),
+      0,
+    );
+    expect(
+      'and so does its merge commit',
+      truth(q.git('log', '-1', '--format=%B', 'main').includes('Not run, because')),
+      0,
+    );
+    q.git('checkout', '-q', '-b', 'platform/st-f', 'main');
+    qPut('runbooks/required/x.md', 'x\n');
+    q.git('add', '-A');
+    q.git('commit', '-q', '-m', 'platform/st-f');
+    const required = qKit('verify', '--base', 'main');
+    expect(
+      'a check that requires its tool fails verify instead',
+      truth(
+        required.status === 1 &&
+          required.stdout.includes('`no-such-tool-xyz --version` is not installed'),
+        required.stdout + required.stderr,
+      ),
+      0,
+    );
+    q.git('checkout', '-q', 'main');
   }
 
   // --- approvals reach lanes in their own worktrees ----------------------------------------------

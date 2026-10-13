@@ -106,6 +106,7 @@ import {
 import { DEPENDENCY_APPROVAL, dependencyApproval } from '../hooks/lib/dependencies.mjs';
 import { dependencyRuleProblems, npmFacts, packageOf } from '../hooks/lib/registry.mjs';
 import { heldTo, laneOfBranch, verifyBranch } from '../hooks/lib/verify.mjs';
+import { skippedLine } from '../hooks/lib/checks.mjs';
 import { TESTS_APPROVAL } from '../hooks/lib/regression.mjs';
 
 const out = (s) => process.stdout.write(`${s}\n`);
@@ -525,9 +526,11 @@ function merge(branch) {
 
 /**
  * Verifies `branch`, checks included, and merges it into the base (`--into`, or the first protected
- * branch). Returns { into, message }; throws a MergeStop when nothing was merged.
+ * branch). With `commit`, the commit the lead's review passed, it verifies and merges exactly that
+ * commit, and refuses if the branch has moved on from it. Returns { into, message }; throws a
+ * MergeStop when nothing was merged.
  */
-function mergeOne(branch, config, byPerson) {
+function mergeOne(branch, config, byPerson, commit = null) {
   const refuse = (message) => {
     throw new MergeStop('refused', message);
   };
@@ -586,8 +589,14 @@ function mergeOne(branch, config, byPerson) {
     // temporary worktree, where checks that need an install fail rather than being skipped.
     const verifyIn = checkedOut(branch) ?? worktree(branch, true);
     clean(verifyIn, branch);
+    const tip = g(verifyIn, 'rev-parse', 'HEAD').trim();
+    if (commit && tip !== commit)
+      fail(
+        `Nothing was merged: ${branch} has moved on since its review passed (${commit.slice(0, 7)} → ${tip.slice(0, 7)}). Review it again, then queue it.`,
+        'moved',
+      );
     const lane = laneOfBranch(branch, config);
-    const { changed, found } = verifyBranch({
+    const { changed, found, skipped } = verifyBranch({
       root: verifyIn,
       base: into,
       config,
@@ -613,8 +622,8 @@ function mergeOne(branch, config, byPerson) {
         '-m',
         `Merge ${branch} into ${into}`,
         '-m',
-        `Verified with code-kit verify (${changed.length} file(s)${lane ? `, held to ${heldTo(lane)}` : ''}) and merged ${byPerson ? 'by the person, from the code-kit pane' : 'by the lead within the delegated rules'}.`,
-        branch,
+        `Verified with code-kit verify (${changed.length} file(s)${lane ? `, held to ${heldTo(lane)}` : ''}) at ${tip.slice(0, 7)}${commit ? ', the commit the review passed,' : ''} and merged ${byPerson ? 'by the person, from the code-kit pane' : 'by the lead within the delegated rules'}.${skipped.length ? ` ${notRun(skipped)}` : ''}`,
+        tip,
       );
     } catch (e) {
       try {
@@ -648,7 +657,7 @@ function mergeOne(branch, config, byPerson) {
     }
     return {
       into,
-      message: `Merged ${branch} into ${into}: verify passed on ${changed.length} file(s)${lane ? `, held to ${heldTo(lane)}` : ''}.${removed}`,
+      message: `Merged ${branch} into ${into}: verify passed on ${changed.length} file(s)${lane ? `, held to ${heldTo(lane)}` : ''}, at ${tip.slice(0, 7)}.${skipped.length ? ` ${notRun(skipped)}` : ''}${removed}`,
     };
   } finally {
     cleanup();
@@ -673,16 +682,24 @@ function queue() {
           ? `Took ${branch} out of the merge queue.`
           : `${branch} isn't waiting in the merge queue.`,
       );
+    let commit;
     try {
-      execFileSync('git', ['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`], {
-        stdio: 'ignore',
-      });
+      commit = execFileSync('git', ['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`], {
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'ignore'],
+      }).trim();
     } catch {
       die(`There is no branch ${branch}.`);
     }
-    if (!enqueue(root, branch)) return out(`${branch} is already in the merge queue.`);
+    // The commit the review passed: the queue merges exactly it, and a branch that moves is reviewed again.
+    const added = enqueue(root, branch, commit);
+    if (!added) return out(`${branch} is already in the merge queue, at ${commit.slice(0, 7)}.`);
+    if (added === 'updated')
+      return out(`${branch} keeps its place in the merge queue, now at ${commit.slice(0, 7)}.`);
     const place = waiting(readQueue(root)).length;
-    return out(`Queued ${branch} to merge${place > 1 ? `, ${place - 1} ahead of it` : ', next'}.`);
+    return out(
+      `Queued ${branch} at ${commit.slice(0, 7)} to merge${place > 1 ? `, ${place - 1} ahead of it` : ', next'}.`,
+    );
   }
   if (sub === 'rules') return rulesOntoBase(root, config);
   if (sub === 'merge') {
@@ -691,7 +708,7 @@ function queue() {
     const head = waiting(entries)[0];
     if (!head) return out('The merge queue is empty.');
     try {
-      const { message } = mergeOne(head.branch, config, byPerson);
+      const { message } = mergeOne(head.branch, config, byPerson, head.commit ?? null);
       settle(root, head.branch, 'merged');
       const left = waiting(readQueue(root));
       return out(
@@ -701,6 +718,12 @@ function queue() {
       if (!(e instanceof MergeStop)) throw e;
       // MQ-3: a conflict or a failed verify goes back to the lane; a refusal leaves the queue as it is.
       if (e.kind === 'refused') die(e.message);
+      // A branch that moved after its review leaves the queue for the lead to review it again; it
+      // isn't sent back, since nothing is wrong with it yet.
+      if (e.kind === 'moved') {
+        settle(root, head.branch, 'moved', 'changed after its review');
+        die(`${e.message}\n${head.branch} leaves the queue until then.`);
+      }
       const into = intoName ?? config.branches.protected[0];
       const after = lastMerged(entries);
       const why =
@@ -726,7 +749,11 @@ function queue() {
   const left = waiting(entries);
   if (!left.length) out('The merge queue is empty.');
   else out(`${left.length} waiting to merge, in order:`);
-  left.forEach((e, i) => out(`  ${i + 1}. ${e.branch} (passed review ${e.passed})`));
+  left.forEach((e, i) =>
+    out(
+      `  ${i + 1}. ${e.branch} (passed review ${e.passed}${e.commit ? ` at ${e.commit.slice(0, 7)}` : ''})`,
+    ),
+  );
 }
 
 /**
@@ -1104,7 +1131,7 @@ function verify() {
     }
   }
   const lane = laneOfBranch(branch, config);
-  const { changed, found } = verifyBranch({
+  const { changed, found, skipped } = verifyBranch({
     root: resolve('.'),
     base: from,
     config,
@@ -1118,7 +1145,7 @@ function verify() {
     const count = Object.values(found).reduce((n, list) => n + list.length, 0);
     out(
       JSON.stringify(
-        { base: from, branch, lane, changed: changed.length, found, problems: count },
+        { base: from, branch, lane, changed: changed.length, found, problems: count, skipped },
         null,
         2,
       ),
@@ -1136,9 +1163,14 @@ function verify() {
     out(`\n${title}:`);
     for (const p of found[key]) out(`  ${p.split('\n').join('\n    ')}`);
   }
+  if (skipped.length) out(`\n${notRun(skipped)}`);
   if (count) die(`\n${count} problem(s). Fix them on this branch.`);
-  out('No problems.');
+  out(skipped.length ? 'No problems in what ran.' : 'No problems.');
 }
+
+/** The checks that didn't run, for verify's and a merge's report. */
+const notRun = (skipped) =>
+  `Not run, because a tool isn't installed here: ${skipped.map(skippedLine).join('; ')}. Install it where verify runs, or set "ifMissing": "fail" on the check so a missing tool fails it.`;
 
 /**
  * ONB-7: whether a branch's changes need the security reviewer, and why: sign-in, permissions, outside

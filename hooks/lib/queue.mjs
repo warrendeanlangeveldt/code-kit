@@ -11,7 +11,10 @@ const DONE_KEPT = 20;
 
 const queueFile = (root) => join(projectWorktrees(root)[0] ?? root, QUEUE_FILE);
 
-/** The queue's entries: [{ branch, passed, state, at?, reason? }], waiting ones in merge order. */
+/**
+ * The queue's entries: [{ branch, commit, passed, state, at?, reason? }], waiting ones in merge order.
+ * `commit` is the one the lead's review passed; entries queued before 0.13.0 have none.
+ */
 export function readQueue(root) {
   try {
     const entries = JSON.parse(readFileSync(queueFile(root), 'utf8'));
@@ -35,13 +38,26 @@ function writeQueue(root, entries) {
 /** The branches still to merge, in order (MQ-1). */
 export const waiting = (entries) => entries.filter((e) => ['waiting', 'merging'].includes(e.state));
 
-/** Adds a branch the lead's review passed, at the back; a branch already waiting keeps its place. */
-export function enqueue(root, branch, now = Date.now()) {
+/**
+ * Adds a branch the lead's review passed at `commit`, at the back; a branch already waiting keeps its
+ * place, with the commit its latest review passed.
+ */
+export function enqueue(root, branch, commit, now = Date.now()) {
   const entries = readQueue(root);
-  if (waiting(entries).some((e) => e.branch === branch)) return false;
+  const queued = waiting(entries).find((e) => e.branch === branch);
+  if (queued) {
+    if (queued.commit === commit) return false;
+    writeQueue(
+      root,
+      entries.map((e) =>
+        e === queued ? { ...e, commit, passed: new Date(now).toISOString() } : e,
+      ),
+    );
+    return 'updated';
+  }
   writeQueue(root, [
     ...entries.filter((e) => e.branch !== branch),
-    { branch, passed: new Date(now).toISOString(), state: 'waiting' },
+    { branch, commit, passed: new Date(now).toISOString(), state: 'waiting' },
   ]);
   return true;
 }
@@ -57,7 +73,10 @@ export function dequeue(root, branch) {
   return true;
 }
 
-/** Sets a waiting branch's state: merging, merged, sent back (with why), or waiting again. */
+/**
+ * Sets a waiting branch's state: merging, merged, sent back (with why), moved (it changed after its
+ * review, so it's reviewed again), or waiting again.
+ */
 export function settle(root, branch, state, reason = null, now = Date.now()) {
   const entries = readQueue(root).map((e) =>
     e.branch === branch && ['waiting', 'merging'].includes(e.state)
