@@ -698,6 +698,7 @@ test('SET-1 the harness settings: defaults, validation and typed values', async 
     stall: { nudgeMinutes: 5, restartMinutes: 10, maxRestarts: 2 },
     agents: { reviewer: { on: false, model: null } },
     background: { pauseAtPercent: 80 },
+    report: { on: false },
   });
   assert.equal(
     harnessSettings({ autonomy: 'propose', stall: { nudgeMinutes: 3 } }).stall.nudgeMinutes,

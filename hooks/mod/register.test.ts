@@ -157,6 +157,9 @@ function project() {
     journal: { events: [] as any[] }, // `code-kit journal --json`
     team: null as any, // `code-kit team --json`, for a team's project
     teamSince: { people: {} } as any, // `code-kit team since --json`
+    questions: [] as any[], // `code-kit ask --json`
+    reports: [] as any[], // `code-kit report --json`
+    fills: [] as string[], // what the mod put in the prompt
     holdWaits: false, // false: the hold ends at once, as if timed out (tests about cards, not hold)
     waiting: new Map<string, (answer: string) => void>(),
   };
@@ -186,7 +189,30 @@ function stub(on: any, w: World) {
         }),
       );
     if (sub === 'next') return ran(0, JSON.stringify(w.next));
+    if (sub === 'requests' && argv[3] === 'drop') {
+      w.acts.push([...argv.slice(2)]);
+      const drop = new Set(argv[4].split(',').map(Number));
+      w.requests = w.requests.filter((_, i) => !drop.has(i + 1));
+      return ran(0, 'Dropped.');
+    }
     if (sub === 'requests') return ran(0, JSON.stringify({ open: w.requests, inForce: w.inForce }));
+    if (sub === 'ask' && argv[3] === 'answer') {
+      w.acts.push([...argv.slice(2)]);
+      w.questions = w.questions.map((q) => (q.id === argv[4] ? { ...q, state: 'answered' } : q));
+      return ran(0, 'Recorded.');
+    }
+    if (sub === 'ask') return ran(0, JSON.stringify(w.questions));
+    if (sub === 'report' && ['send', 'discard'].includes(argv[3])) {
+      w.acts.push([...argv.slice(2)]);
+      w.reports = w.reports.map((r) =>
+        r.id === argv[4] ? { ...r, state: argv[3] === 'send' ? 'sent' : 'discarded' } : r,
+      );
+      return ran(
+        0,
+        argv[3] === 'send' ? 'Filed https://github.com/o/code-kit/issues/9' : 'Discarded.',
+      );
+    }
+    if (sub === 'report') return ran(0, JSON.stringify(w.reports));
     if (sub === 'verify')
       return ran(w.verifyExit, w.verifyExit ? '' : w.verifyOut, w.verifyExit ? w.verifyOut : '');
     if (sub === 'stops') return ran(0, JSON.stringify(w.stops));
@@ -321,6 +347,13 @@ function stub(on: any, w: World) {
     return { value: { agent: `code-kit:${e.name}` } };
   });
   on('prompt.read', () => ({ value: { text: w.draft, cursor: w.draft.length } }));
+  // Claude Code's own settings hooks beneath: none answer a permission denial.
+  on('classic.PermissionDenied', () => ({}));
+  on('prompt.fill', ($: any, e: any) => {
+    w.fills.push(e.text);
+    w.draft = e.text;
+    return { isFilled: true };
+  });
   on('session.send', ($: any, e: any) => {
     w.sent.push({ to: e.to, text: e.text });
     return { isDelivered: true };
@@ -513,10 +546,10 @@ test('PANE-4 with nothing changed it reads the project every 10 seconds while th
   const before = w.runs;
   await clock.advance(8000); // four quiet ticks: git only
   expect(w.runs - before).toBe(4);
-  // The fifth reads it all (check, status, next, requests, stops, queue, timeline) between two looks
-  // at git.
+  // The fifth reads it all (check, status, next, requests, stops, queue, timeline, the lead's questions
+  // and the reports waiting) between two looks at git.
   await clock.advance(2000);
-  expect(w.runs - before).toBe(13);
+  expect(w.runs - before).toBe(15);
 });
 
 test('CARD-4 outside a code-kit project, /lanes says so, opens nothing, and there is no band', async ($, on) => {
@@ -1309,6 +1342,254 @@ test('DECIDE-3 notes are labelled note, not you, and need no decision', async ($
   expect(await band.find({ type: 'Text', text: 'you' })).toBeUndefined();
   expect(await band.find({ key: 'band-decide' })).toBeUndefined();
   await band.unmount();
+});
+
+const question = (extra: any = {}) => ({
+  id: 'Q-1',
+  at: '2026-10-12T05:59:00.000Z',
+  by: 'lead',
+  question: 'Which weather provider: the Bureau of Meteorology or a commercial service?',
+  why: null,
+  story: 'ST-4',
+  blocks: true,
+  options: [
+    { label: 'Bureau of Meteorology', effect: 'Free, Australian data; we credit the Bureau.' },
+    { label: 'Commercial', effect: 'A paid key; global coverage.' },
+  ],
+  state: 'open',
+  answer: null,
+  withdrawn: null,
+  ...extra,
+});
+
+test("ASK-2 the lead's question waits in the band and as a card; an option answers it and tells the lead", async ($, on) => {
+  const w = project();
+  w.questions = [
+    question(),
+    question({
+      id: 'Q-2',
+      question: 'May sessions show your city?',
+      story: null,
+      blocks: false,
+      options: [],
+    }),
+  ];
+  await start($, on, w);
+  const band = await bandUi($);
+  expect(
+    await band.find({ type: 'Text', text: /^2 questions from the lead: Which weather provider/ }),
+  ).toBeDefined();
+  await press($, 'band-openDecision');
+  await band.unmount();
+  const ui = await pane($, PANE);
+  // One card per question, not one for both.
+  expect(await ui.find({ key: 'decision-pick-0' })).toBeDefined();
+  expect(await ui.find({ key: 'decision-pick-1' })).toBeDefined();
+  expect(await ui.find({ type: 'Text', text: 'ST-4 waits on your answer.' })).toBeDefined();
+  expect(
+    await ui.find({ type: 'Text', text: 'Free, Australian data; we credit the Bureau.' }),
+  ).toBeDefined();
+  await press($, 'decide-answerWith-0', PANE);
+  expect(w.acts).toContainEqual(['ask', 'answer', 'Q-1', 'Bureau of Meteorology', '--via', 'pane']);
+  expect(w.prompts.at(-1)).toBe(
+    'The person answered Q-1 (Which weather provider: the Bureau of Meteorology or a commercial service?): Bureau of Meteorology. ST-4 no longer waits on them. Carry on with it.',
+  );
+  await ui.unmount();
+});
+
+test("ASK-2 a question with no options, or Something else…, is answered in the person's own words", async ($, on) => {
+  const w = project();
+  w.questions = [
+    question({
+      id: 'Q-2',
+      question: 'May sessions show your city?',
+      story: null,
+      blocks: false,
+      options: [],
+    }),
+  ];
+  await start($, on, w);
+  const band = await bandUi($);
+  await press($, 'band-openDecision');
+  await band.unmount();
+  const ui = await pane($, PANE);
+  await press($, 'decide-answer', PANE);
+  expect(w.opened).toContain('code-kit-answer');
+  const box = await pane($, 'code-kit-answer');
+  await $.ui.input({ plugin: 'code-kit', key: 'answer-text', text: '' });
+  expect(
+    await box.find({ type: 'Text', text: 'Type your answer: the lead builds on it.' }),
+  ).toBeDefined();
+  await $.ui.input({
+    plugin: 'code-kit',
+    key: 'answer-text',
+    text: 'Only the suburb, never the street',
+  });
+  expect(w.acts).toContainEqual([
+    'ask',
+    'answer',
+    'Q-2',
+    'Only the suburb, never the street',
+    '--via',
+    'pane',
+  ]);
+  expect(w.prompts.at(-1)).toBe(
+    'The person answered Q-2 (May sessions show your city?): Only the suburb, never the street. Carry on with it.',
+  );
+  expect(w.closed).toContain('code-kit-answer');
+  await box.unmount();
+  await ui.unmount();
+});
+
+test("ASK-4 the brief's open questions are the person's decisions: answered to the lead, or put off for the session", async ($, on) => {
+  const w = project();
+  w.next = {
+    ...w.next,
+    brief: [
+      { question: 'Accounts: AWS, Supabase, Fly', path: 'docs/brief.md' },
+      { question: 'The product domain', path: 'docs/brief.md' },
+    ],
+  };
+  await start($, on, w);
+  const band = await bandUi($);
+  expect(
+    await band.find({
+      type: 'Text',
+      text: '2 open questions in your brief: Accounts: AWS, Supabase, Fly',
+    }),
+  ).toBeDefined();
+  await press($, 'band-openDecision');
+  await band.unmount();
+  const ui = await pane($, PANE);
+  expect(
+    await ui.find({ type: 'Text', text: 'From your brief: Accounts: AWS, Supabase, Fly' }),
+  ).toBeDefined();
+  await press($, 'decide-laterBrief', PANE);
+  expect(
+    await ui.find({ type: 'Text', text: 'From your brief: The product domain' }),
+  ).toBeDefined();
+  await press($, 'decide-answerBrief', PANE);
+  const box = await pane($, 'code-kit-answer');
+  await $.ui.input({ plugin: 'code-kit', key: 'answer-text', text: 'myaila.com.au' });
+  await box.unmount();
+  expect(w.prompts.at(-1)).toBe(
+    'The person answered an open question in docs/brief.md, "The product domain": myaila.com.au. Record it in the brief\'s decision log, take it out of the open questions, and carry on with it.',
+  );
+  await ui.unmount();
+  const after = await bandUi($);
+  expect(await after.find({ type: 'Text', text: /in your brief/ })).toBeUndefined();
+  await after.unmount();
+});
+
+test("PERM-1 a call Claude Code's own permission check refused waits for the person, who runs it or says not now", async ($, on) => {
+  const w = project();
+  await start($, on, w);
+  await $.classic.PermissionDenied({
+    tool_name: 'Bash',
+    tool_input: { command: 'pnpm db:generate && pnpm db:migrate' },
+    tool_use_id: 'tu-1',
+    reason: 'Permission for this action was denied by the Claude Code auto mode classifier.',
+  });
+  const band = await bandUi($);
+  expect(
+    await band.find({ type: 'Text', text: "Claude Code refused the lead's `pnpm db:generate`" }),
+  ).toBeDefined();
+  await press($, 'band-runDenied');
+  expect(w.fills).toEqual(['! pnpm db:generate && pnpm db:migrate']);
+  await press($, 'band-decide');
+  await band.unmount();
+  const ui = await pane($, PANE);
+  expect(
+    await ui.find({
+      type: 'Text',
+      text: /^Claude Code's own permission check refused it \(Permission for this action/,
+    }),
+  ).toBeDefined();
+  await press($, 'decide-deniedDone', PANE);
+  expect(w.prompts.at(-1)).toMatch(
+    /^The person ran it themselves, or allowed it: pnpm db:generate && pnpm db:migrate/,
+  );
+  await ui.unmount();
+  const after = await bandUi($);
+  expect(await after.find({ type: 'Text', text: /Claude Code refused/ })).toBeUndefined();
+  await after.unmount();
+});
+
+test('CARD-8 two approvals waiting are two decisions, each approved or dropped on its own', async ($, on) => {
+  const w = project();
+  w.requests = [
+    dayjs,
+    {
+      ...dayjs,
+      at: '2026-10-06T00:05:00.000Z',
+      actor: 'api-engineer',
+      lane: 'api',
+      names: ['dep-zod'],
+      what: 'npm install zod',
+    },
+  ];
+  await start($, on, w);
+  const band = await bandUi($);
+  expect(await band.find({ type: 'Text', text: '2 approvals waiting' })).toBeDefined();
+  await press($, 'band-decide');
+  await band.unmount();
+  const ui = await pane($, PANE);
+  expect(await ui.find({ key: 'decision-pick-0' })).toBeDefined();
+  expect(await ui.find({ key: 'decision-pick-1' })).toBeDefined();
+  await press($, 'decision-pick-1', PANE);
+  await press($, 'decide-dropRequest', PANE);
+  expect(w.acts).toContainEqual(['requests', 'drop', '2', '--via', 'pane']);
+  await ui.unmount();
+});
+
+test('REPORT-3 a bug report an agent drafted waits for the person, who reads it and sends it, or discards it', async ($, on) => {
+  const w = project();
+  w.reports = [
+    {
+      id: 'R-1',
+      at: '2026-10-13T00:00:00Z',
+      by: 'lead',
+      title: 'Decisions tab misses a held call',
+      fingerprint: 'ck-1',
+      body: '**What happened:** the card never showed',
+      state: 'draft',
+      sent: null,
+    },
+  ];
+  await start($, on, w);
+  const band = await bandUi($);
+  expect(
+    await band.find({
+      type: 'Text',
+      text: 'A bug report for code-kit to send: Decisions tab misses a held call',
+    }),
+  ).toBeDefined();
+  await press($, 'band-openDecision');
+  await band.unmount();
+  const ui = await pane($, PANE);
+  expect(
+    await ui.find({ type: 'Text', text: '**What happened:** the card never showed' }),
+  ).toBeDefined();
+  await press($, 'decide-sendReport', PANE);
+  expect(w.acts).toContainEqual(['report', 'send', 'R-1']);
+  expect(w.opened).toContain('code-kit-result');
+  await ui.unmount();
+});
+
+test('ASK-3 a lane whose story waits on the person reads waiting on you', async ($, on) => {
+  const w = project();
+  w.stories = w.stories.map((s: any) =>
+    s.id === 'ST-4'
+      ? { ...s, state: 'waiting on you', waitingFor: { id: 'Q-1', question: 'x' } }
+      : s,
+  );
+  await start($, on, w);
+  await lanes($);
+  const ui = await pane($, PANE);
+  expect((await ui.findAll({ type: 'Text' })).some((t: any) => /waiting on you/.test(t.text))).toBe(
+    true,
+  );
+  await ui.unmount();
 });
 
 test('JOURNAL-1 the Journal tab tells the lineage, from the request to now, with the loop and your choices in it', async ($, on) => {

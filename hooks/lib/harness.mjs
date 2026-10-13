@@ -57,6 +57,12 @@ export const SETTINGS = {
       Number.isFinite(v) && v > 0 && v <= 100 ? null : 'must be a percentage from 1 to 100',
     about: "The plan's 5-hour use at which background agents pause",
   },
+  'report.on': {
+    default: false,
+    problem: (v) => (typeof v === 'boolean' ? null : 'must be true or false'),
+    about:
+      "Agents draft a bug report for code-kit's GitHub when code-kit itself gets in their way; you read each one and send it, or not",
+  },
 };
 
 const get = (obj, key) =>

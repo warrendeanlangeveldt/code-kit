@@ -56,18 +56,21 @@ const hasMarkdown = (dir) => {
 };
 
 /**
- * { step, why, args, then, attention }. `step` is a skill (spec-design, init, check, dispatch,
+ * { step, why, args, then, attention, brief }. `brief`: the brief's open questions (ASK-4). `step` is a skill (spec-design, init, check, dispatch,
  * review), `merge` (the head of the merge queue, where the lead merges), `wait` (lanes are
  * building) or `done`. `base(config)` resolves the branch lanes merge into.
  */
 export function nextStep(root, base) {
   const attention = [];
+  // ASK-4: the brief's open questions, for the person's Decisions tab.
+  let briefQuestions = [];
   const result = (step, why, extra = {}) => ({
     step,
     why,
     args: '',
     then: [],
     attention,
+    brief: briefQuestions,
     ...extra,
   });
   const isRepo = git(root, 'rev-parse', '--is-inside-work-tree') === 'true';
@@ -82,8 +85,10 @@ export function nextStep(root, base) {
       `The config is invalid, so nothing but the config can be written: ${error.split('\n')[0]}`,
     );
   const brief = readBrief(root, config);
-  if (brief?.openQuestions.length)
+  if (brief?.openQuestions.length) {
     attention.push(`${brief.openQuestions.length} open question(s) in ${brief.path}.`);
+    briefQuestions = brief.openQuestions.map((question) => ({ question, path: brief.path }));
+  }
 
   if (!config) {
     if (existsSync(join(root, DRAFT_FILE)))
@@ -187,6 +192,12 @@ export function nextStep(root, base) {
   const [review, building, blocked, fixes] = ['review', 'in progress', 'blocked', 'sent back'].map(
     ids,
   );
+  // ASK-3: a story whose question is open waits on the person; nothing dispatches or reviews it.
+  const waitingOnPerson = status.stories.filter((s) => s.state === 'waiting on you');
+  for (const s of waitingOnPerson)
+    attention.push(
+      `${s.id} waits on the person: ${s.waitingFor.question} (${s.waitingFor.id}, in their Decisions tab).`,
+    );
   // A ready story with a gap (unknown lane, a requirement no spec defines) waits for the plan's fix.
   const defined = new Set(status.requirements.map((r) => r.id));
   const buildable = (s) =>
@@ -301,6 +312,12 @@ export function nextStep(root, base) {
     return result(
       'spec-design',
       `${unbuildable.join(', ')} ${unbuildable.length === 1 ? 'is' : 'are'} next, but the plan has gaps to fix first.`,
+    );
+  // ASK-3: what's left waits on the person's answers, directly or through a dependency.
+  if (waitingOnPerson.length)
+    return result(
+      'wait',
+      `${waitingOnPerson.map((s) => `${s.id} waits on the person (${s.waitingFor.id})`).join('; ')}${blocked.length ? `; ${blocked.join(', ')} ${blocked.length === 1 ? 'waits' : 'wait'} on ${waitingOnPerson.length === 1 ? 'it' : 'them'}` : ''}. Carry on with anything else; their answer is sent to you.`,
     );
   if (blocked.length)
     return result(

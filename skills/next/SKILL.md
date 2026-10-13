@@ -56,4 +56,18 @@ After a step finishes, run `next --json` again and carry on with the new step, w
 - the step is `wait` or `done`;
 - the same step comes back twice in a row with nothing changed. Report what's stuck instead of looping.
 
+**Ask the person through code-kit, not only in chat.** Anything you can't settle yourself and the person has to decide or do (a product choice, an account or key only they can create, wording or a design only they can sign off, whether to keep something private) goes to their Decisions tab, where it waits until they answer instead of scrolling away:
+
+```
+node "${CLAUDE_PLUGIN_ROOT}/bin/code-kit.mjs" ask "<the question, in a sentence>" [--story ST-n --blocks] [--why "<why you can't settle it>"] --option "<choice>: <what it does>" --option "…"
+```
+
+- `--blocks` holds the story until they answer: `next` stops dispatching or reviewing it, and the stories that depend on it wait too. Carry on with anything else meanwhile.
+- Their answer comes back to you as a prompt ("The person answered Q-3 …"). If they answer in chat instead, record it: `code-kit ask answer Q-3 "<their words>"`. A question that stops mattering is withdrawn: `code-kit ask withdraw Q-3 --reason "…"`.
+- `attention` names the stories waiting on the person, and `brief` lists the brief's open questions, which they see in the same tab; when they answer one, record it in the brief's decision log and take it out of the open questions.
+- When Claude Code itself refuses a command you need (its permission check, not a code-kit hook), the person sees it in the band with the command: say what it's for, and don't try another way round it.
+- An approval request nobody needs any more (you went another way) is dropped: `code-kit requests drop <n> --reason "…"`, so it stops waiting for them.
+
+**When code-kit itself is wrong** (a refusal that shouldn't have happened, a crash, a pane showing the wrong thing) and the config has `harness.report.on`, draft a report for code-kit's maintainers: `code-kit report "<what went wrong, in a few words>" --what "<what happened>" --expected "<what should have>" --command "<what you ran>" --refusal "<what code-kit said>"`. Only code-kit's own facts go in it, never the project's code or data. The person reads it and sends it, or not. Then work around it if you can.
+
 When you stop, end with one line saying what happens next and who does it, e.g. "Next: you approve the draft config, then I dispatch ST-1 to ST-4."
