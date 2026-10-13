@@ -1257,10 +1257,15 @@ export function codeTab(view, { Box, Text, Button, Svg }, on) {
   return [picker, drawing, legend, detail, keys];
 }
 
+/** CARD-9: how many decision cards the list shows at once, around the selected one. */
+const CARDS_SHOWN = 5;
+
 /**
- * DECIDE-3: the Decisions tab: each decision that needs the person, the selected one as a card with its
- * lineage (what they asked for, the story and requirements, what was happening, what's settled, why it
- * needs them) and its options, each saying what it does. `on`: onDecision(i), onNeed(id, line).
+ * DECIDE-3, CARD-9: the Decisions tab: how many decisions need the person, by kind; then each as a short
+ * card (its kind, a one-line headline, and who or what it's for), a few at a time around the selected
+ * one, with j and k to move; then the selected one in full, with its lineage (what they asked for, the
+ * story and requirements, what was happening, what's settled, why it needs them) and its options, each
+ * saying what it does. `on`: onDecision(i), onNeed(id, line).
  */
 export function decisionsTab(cards, ui, { Box, Text, Button }, on) {
   const text = (value, style = {}) => Text({ ...style, children: [value] });
@@ -1277,27 +1282,82 @@ export function decisionsTab(cards, ui, { Box, Text, Button }, on) {
         text(value, { wrap: 'wrap', ...style }),
       ],
     });
+  const kinds = new Map();
+  for (const c of cards) kinds.set(c.tag, (kinds.get(c.tag) ?? 0) + 1);
+  const from = Math.max(0, Math.min(at - Math.floor(CARDS_SHOWN / 2), cards.length - CARDS_SHOWN));
+  const shown = cards.slice(from, from + CARDS_SHOWN);
   const list = Box({
     key: 'decision-list',
     flexDirection: 'column',
-    children: cards.map((c, i) =>
-      Button({
-        key: `decision-pick-${i}`,
-        label: `${i === at ? '›' : ' '} ${c.title}`,
-        plain: true,
-        onPress: () => on.onDecision(i),
+    children: [
+      ...(from > 0 ? [text(`  ↑ ${from} more`, { key: 'decision-above', dimColor: true })] : []),
+      ...shown.map((c, n) => {
+        const i = from + n;
+        return Box({
+          key: `decision-item-${i}`,
+          flexDirection: 'column',
+          borderStyle: 'round',
+          borderColor: i === at ? 'yellow' : 'gray',
+          paddingX: 1,
+          children: [
+            Box({
+              flexDirection: 'row',
+              columnGap: 1,
+              children: [
+                text(c.tag.toUpperCase(), { color: i === at ? 'yellow' : 'cyan', bold: true }),
+                Button({
+                  key: `decision-pick-${i}`,
+                  label: c.headline,
+                  plain: true,
+                  onPress: () => on.onDecision(i),
+                }),
+              ],
+            }),
+            ...(c.sub ? [text(c.sub, { dimColor: true, wrap: 'truncate-end' })] : []),
+          ],
+        });
       }),
-    ),
+      ...(from + CARDS_SHOWN < cards.length
+        ? [
+            text(`  ↓ ${cards.length - from - CARDS_SHOWN} more`, {
+              key: 'decision-below',
+              dimColor: true,
+            }),
+          ]
+        : []),
+    ],
+  });
+  const keys = Box({
+    key: 'decision-keys',
+    flexDirection: 'row',
+    columnGap: 2,
+    children: [
+      Button({
+        key: 'decision-next',
+        label: 'Next',
+        hotkey: 'j',
+        plain: true,
+        onPress: () => on.onDecision(Math.min(at + 1, cards.length - 1)),
+      }),
+      Button({
+        key: 'decision-prev',
+        label: 'Previous',
+        hotkey: 'k',
+        plain: true,
+        onPress: () => on.onDecision(Math.max(at - 1, 0)),
+      }),
+      text(`${at + 1} of ${cards.length}`, { dimColor: true }),
+    ],
   });
   const detail = Box({
     key: 'decision-card',
     flexDirection: 'column',
-    borderStyle: 'round',
+    borderStyle: 'double',
     borderColor: 'yellow',
     paddingX: 1,
     rowGap: 0,
     children: [
-      text(card.title, { bold: true }),
+      text(card.headline, { bold: true, wrap: 'wrap' }),
       ...(card.asked ? [row('You asked for', card.asked)] : []),
       ...(card.story
         ? [
@@ -1353,7 +1413,18 @@ export function decisionsTab(cards, ui, { Box, Text, Button }, on) {
       `${cards.length} decision${cards.length === 1 ? '' : 's'} need${cards.length === 1 ? 's' : ''} you. Everything else is the lead's.`,
       { bold: true },
     ),
-    ...(cards.length > 1 ? [list] : []),
+    Box({
+      key: 'decision-kinds',
+      children: [
+        text(
+          [...kinds]
+            .map(([tag, n]) => `${n} ${tag}${n === 1 || tag.endsWith('brief') ? '' : 's'}`)
+            .join(' · '),
+          { dimColor: true },
+        ),
+      ],
+    }),
+    ...(cards.length > 1 ? [list, keys] : []),
     detail,
   ];
 }

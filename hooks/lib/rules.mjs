@@ -415,6 +415,7 @@ export function openRequests(root, now = Date.now()) {
     // allowed), or the file it named was committed since by someone who could.
     if (r.names.every((n) => grantedSince(root, given, n, r))) continue;
     if (committedSince(root, r)) continue;
+    if (installedSince(root, r)) continue;
     open.push(r);
   }
   return open;
@@ -433,6 +434,39 @@ function grantedSince(root, given, name, r) {
   return [...(r.lane ? [join(dir, r.lane, name)] : []), join(dir, name)].some((file) => {
     try {
       return statSync(file).isFile() && statSync(file).mtimeMs >= asked;
+    } catch {
+      return false;
+    }
+  });
+}
+
+/**
+ * CARD-7: whether every package a dependency request named has since been added to a committed
+ * manifest, on any branch: the install happened (approved, or run by the person themselves), so it no
+ * longer waits.
+ */
+function installedSince(root, r) {
+  if (!r.names.length || !r.names.every((n) => n.startsWith(DEPENDENCY_APPROVAL))) return false;
+  return r.names.every((name) => {
+    const pkg = name.slice(DEPENDENCY_APPROVAL.length).replaceAll('+', '/');
+    try {
+      const out = execFileSync(
+        'git',
+        [
+          '-C',
+          root,
+          'log',
+          '--all',
+          '-1',
+          '--format=%ct',
+          `--since=@${Math.floor(Date.parse(r.at) / 1000)}`,
+          `-S"${pkg}"`,
+          '--',
+          ':(glob)**/package.json',
+        ],
+        { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] },
+      );
+      return Boolean(out.trim());
     } catch {
       return false;
     }
