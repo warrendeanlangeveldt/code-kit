@@ -51,17 +51,17 @@ Found by running code-kit on a codebase under continuous development. Agents fix
 
 ### Config
 
-| Key                  | Default                                                                                             | What it is                                                                                                                                 |
-| -------------------- | --------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
-| `docs.features`      | `docs/features.md`                                                                                  | The feature map                                                                                                                            |
-| `tests[]`            | `**/*.test.*`, `**/*.spec.*`, `**/__tests__/**`, `**/test/**`, `**/tests/**`, `e2e/**`, `**/e2e/**` | Which files are tests                                                                                                                      |
-| `regression.prepare` | none                                                                                                | Run once in a temporary worktree before its checks, such as `npm ci`                                                                       |
-| `app.start`          | none                                                                                                | Starts the app. It's given `PORT`, a free port, and `app.env`                                                                              |
-| `app.url`            | `http://localhost:{port}`                                                                           | Where the app answers once it's up. Only `localhost`, `127.0.0.1`, `[::1]` or a `.localhost` or `.test` name is accepted                   |
-| `app.seed`           | none                                                                                                | Puts the scenarios' starting data in place, run before each feature                                                                        |
-| `app.env`            | `{}`                                                                                                | Environment for `start` and `seed`: a throwaway database, test keys. Values that look like live or production keys make the config invalid |
-| `app.readySeconds`   | 90                                                                                                  | How long the app has to answer at `app.url`                                                                                                |
-| `harness.redMinutes` | 60                                                                                                  | How long main may be red before the band puts **Revert** first                                                                             |
+| Key                  | Default                                                                                                          | What it is                                                                                                                                 |
+| -------------------- | ---------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| `docs.features`      | `docs/features.md`                                                                                               | The feature map                                                                                                                            |
+| `tests[]`            | The usual conventions: `*.test.*`, `*.spec.*`, `__tests__/`, `test/`, `tests/`, `e2e/`, `*_test.go`, `test_*.py` | Which files are tests                                                                                                                      |
+| `regression.prepare` | none                                                                                                             | Run in the temporary worktree before a fix's tests, such as `npm ci`. Without it, the checkout's installs are linked in                    |
+| `app.start`          | none                                                                                                             | Starts the app. It's given `PORT`, a free port, and `app.env`                                                                              |
+| `app.url`            | `http://localhost:{port}`                                                                                        | Where the app answers once it's up. Only `localhost`, `127.0.0.1`, `[::1]` or a `.localhost` or `.test` name is accepted                   |
+| `app.seed`           | none                                                                                                             | Puts the scenarios' starting data in place, run before each feature                                                                        |
+| `app.env`            | `{}`                                                                                                             | Environment for `start` and `seed`: a throwaway database, test keys. Values that look like live or production keys make the config invalid |
+| `app.readySeconds`   | 90                                                                                                               | How long the app has to answer at `app.url`                                                                                                |
+| `harness.redMinutes` | 60                                                                                                               | How long main may be red before the band puts **Revert** first                                                                             |
 
 ### State
 
@@ -73,7 +73,7 @@ Found by running code-kit on a codebase under continuous development. Agents fix
 
 ### REG-1 A fix proves its bug
 
-A story that fixes something says so in the plan, with an optional fifth line: `**Fixes:** <what was broken, and where it was seen>`. A branch named `<lane>/fix-…` counts too. `verify` on such a branch takes the test files it added or changed. It runs them against the branch's code with every change outside the tests taken back to the base. This happens in a temporary worktree, after `regression.prepare`, using the checks whose `files` match those tests. The tests must fail there and pass on the branch.
+A story that fixes something says so in the plan, with an optional fifth line: `**Fixes:** <what was broken, and where it was seen>`. A branch named `<lane>/fix-…` counts too. `verify` on such a branch takes the test files it added or changed. It runs them against the branch's code with every change outside the tests taken back to the base. This happens in a temporary worktree, using the checks whose `files` match those tests, with a missing tool counted as a failure. The checkout's installs (`node_modules`, `.venv`, `venv`, wherever git ignores them) are linked into the worktree, and `regression.prepare` runs there first when it's set. The tests must pass in that worktree as the branch has them, and fail once the fix is taken back. A test that doesn't pass in a fresh checkout, or one no check runs, is a problem that says so. `verify --no-checks` still proves a fix, because CI's own steps don't do this; the story drill-down, which runs no checks, doesn't.
 
 The failure on the base must be the bug showing, not the test being unable to run. If a user can hit the bug, a test can hit it through the code that's already there, and that test fails on an assertion. A test that fails only because it can't compile, or can't find what it calls, proves only that the fix added something. `verify` recognises that kind of failure from the test runner's output ("Cannot find module", "is not a function", "does not provide an export named", TypeScript's missing-name errors, and others an adapter adds). If that's the only kind of failure, `verify` asks for a test that goes through the existing entry point. When it can't tell what kind of failure it was, the failure counts, and the review report says so.
 
@@ -94,14 +94,19 @@ A fix that adds or changes no test, or whose tests also pass without the fix, ha
 - a deleted test file;
 - an added skip or focus marker (`.skip(`, `.only(`, `.todo(`, `xit(`, `xdescribe(`, `test.fixme(`, `@pytest.mark.skip`, `t.Skip(`, `@Disabled`, and others an adapter adds);
 - fewer test cases in a file than on the base;
-- fewer assertions in a test that still exists;
+- fewer assertions in a file whose cases are all still there;
 - a changed snapshot (`__snapshots__/**`, `*.snap`).
 
-Each is a problem under `tests` unless the approval log records the person's `tests` approval for that file on this branch. The lead can't delegate it, and an agent can't give it. The Decisions tab shows each one as a `tests` decision, with the lines removed, the story, and the agent's reason, if it gave one. **Allow** records the approval, and **Send back** returns the branch with the finding. A test moved or renamed with the same cases isn't flagged.
+The commit hook refuses a commit that weakens a test, by a lane or the lead, unless the person's `tests` approval is in force: "<file> is a weakened test (it adds a skip or focus marker (…)); committing it needs a person's approval in force". The refusal is recorded as a request and held in the band like any other approval a person can give, so it waits in the Decisions tab as "Approve a weakened test", with what was weakened. **Approve** writes the approval and the held commit runs. The commit logs each weakened file in the approval log, with the reason and what was weakened, and uses the approval up. The lead can't delegate it, and `code-kit approve tests --delegated` is refused.
+
+`verify` then judges the branch as a whole, including commits made outside Claude Code: each weakening is a problem under `tests` unless the branch's approval log records the person's `tests` approval for that file. A test moved or renamed with the same cases isn't flagged, and neither is a case renamed in place.
 
 **Acceptance**
 
-- Given a branch that adds `it.skip(` to `src/booking.test.ts`, then `verify` names the file and the skipped test, and says a weakened test needs the person's `tests` approval.
+- Given a lane committing `it.skip(` in `src/booking.test.ts`, then the commit is refused, held for the person with the `tests` approval, and listed as an open request; the lead is refused the same way.
+- Given the person's `tests` approval for that lane, then the commit goes through, logged with the reason and what was weakened, and the approval is used up.
+- Given a branch that cut a test case outside Claude Code, then `verify` names the file and the case gone, and says a weakened test needs the person's `tests` approval.
+- Given a branch that rewrites `__snapshots__/a.snap`, then `verify` says it rewrites a snapshot.
 - Given the same, with the person's `tests` approval logged for that file, then `verify` passes it.
 - Given a branch that moves `src/a.test.ts` to `src/a/a.test.ts` with the same cases, then nothing is flagged.
 - Given `code-kit approve tests --delegated`, then it's refused: weakening a test is the person's to allow.

@@ -1,7 +1,7 @@
 // Requirements and stories, read from the project's docs. Specs (docs.specs) hold requirements as
 // headings `### BOOK-4 Short name` (`(removed)` at the end drops one); the plan (docs.plan) holds
 // stories as `### ST-12 Title` followed by `**Lane:**`, `**Requirements:**`, `**Depends on:**` and
-// `**Status:**` lines. A lane builds a story on the branch `<lane>/st-12`. The lane `lead` marks the
+// `**Status:**` lines, and for a fix, `**Fixes:**`. A lane builds a story on the branch `<lane>/st-12`. The lane `lead` marks the
 // lead's own stories (contracts, foundations, spikes), which the lead builds rather than dispatches;
 // `**Requirements:** none` marks a story that delivers no requirement, such as a spike.
 import { execFileSync } from 'node:child_process';
@@ -52,7 +52,7 @@ const field = (lines, name) =>
     .trim() ?? '';
 
 /**
- * Every story in the plan: [{ id, title, lane, requirements, dependsOn, status, milestone }]. A story's
+ * Every story in the plan: [{ id, title, lane, requirements, dependsOn, status, fixes, milestone }]. A story's
  * milestone is the `## ` heading above it ("Milestone 5: Your own key"), or null.
  */
 export function readStories(root, planPath) {
@@ -75,6 +75,8 @@ export function readStories(root, planPath) {
         lane: field(body, 'Lane'),
         requirements: [...field(body, 'Requirements').matchAll(REQUIREMENT)].map((r) => r[1]),
         noRequirements: /^none\b/i.test(field(body, 'Requirements')),
+        // REG-1: what a fix story fixes, or null.
+        fixes: field(body, 'Fixes') || null,
         dependsOn: [...field(body, 'Depends on').matchAll(/\bST-\d+\b/g)].map((r) => r[0]),
         status: STATES.includes(status) ? status : 'todo',
         milestone,

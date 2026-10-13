@@ -10,6 +10,7 @@ import { CONFIG_FILE } from './config.mjs';
 import { isDependencyFile } from './dependencies.mjs';
 import { matchesAny } from './glob.mjs';
 import { layerProblems } from './layers.mjs';
+import { TESTS_APPROVAL, branchWeakenings, fixOf, proveFix } from './regression.mjs';
 import {
   APPROVAL_LOG,
   SECRETS,
@@ -152,17 +153,45 @@ function historySecrets(root, from, changed) {
   return problems;
 }
 
+/** The branch checked out at `root`, or null when HEAD is detached. */
+function currentBranchOf(root) {
+  try {
+    const name = git(root, 'rev-parse', '--abbrev-ref', 'HEAD').trim();
+    return name === 'HEAD' ? null : name;
+  } catch {
+    return null;
+  }
+}
+
 /**
- * Every problem with the branch, grouped: { ownership, protected, layers, baseline, design, checks }.
- * `lane` holds the branch to that lane's paths; `checks: false` leaves the project's checks to CI's
- * own steps.
+ * Every problem with the branch, grouped: { ownership, protected, layers, baseline, design, tests,
+ * regression, checks }. `lane` holds the branch to that lane's paths; `checks: false` leaves the
+ * project's checks to CI's own steps. `fixes` runs a fix's tests without the fix (REG-1; with the
+ * checks unless said); `branch` names the branch when the checkout is detached.
  */
-export function verifyBranch({ root, base, config, lane = null, checks = true }) {
+export function verifyBranch({
+  root,
+  base,
+  config,
+  lane = null,
+  checks = true,
+  fixes = checks,
+  branch = null,
+}) {
   // Where the branch left the base: the base may have moved on since (new log entries, a smaller baseline).
   const from = git(root, 'merge-base', base, 'HEAD').trim();
   const changed = branchChanges(root, base);
   const present = changed.filter((f) => existsSync(join(root, f)));
-  const found = { ownership: [], protected: [], layers: [], baseline: [], design: [], checks: [] };
+  const found = {
+    ownership: [],
+    protected: [],
+    layers: [],
+    baseline: [],
+    design: [],
+    tests: [],
+    regression: [],
+    checks: [],
+  };
   const { entries, problems: logProblems } = logEntries(root, from);
   found.protected.push(...logProblems);
   const logged = new Map(entries.map((e) => [e.file, e]));
@@ -234,6 +263,19 @@ export function verifyBranch({ root, base, config, lane = null, checks = true })
         if (!(before[f] ?? []).includes(p))
           found.baseline.push(`${BASELINE_FILE} gained ${p}; it only shrinks.`);
   }
+
+  // REG-2: a test weakened on the branch needs the person's `tests` approval, logged by the commit.
+  for (const w of branchWeakenings(root, from, config)) {
+    const approved = entries.some((e) => e.file === w.file && e.approval === TESTS_APPROVAL);
+    if (!approved)
+      found.tests.push(
+        `${w.file} ${w.reasons.join(', and ')}. A weakened test can hide a regression, so it needs the person's tests approval, which the commit records in ${APPROVAL_LOG}. Restore the test and fix the code, or ask the person.`,
+      );
+  }
+
+  // REG-1: a fix's tests fail without it, as the bug.
+  const fix = fixes ? fixOf(root, branch ?? currentBranchOf(root), config) : null;
+  if (fix) found.regression.push(...proveFix({ root, from, base, changed, config, fix }));
 
   if (checks) {
     const actor = lane

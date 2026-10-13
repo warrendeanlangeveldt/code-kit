@@ -4730,6 +4730,275 @@ else process.exit(1);
     ),
     0,
   );
+  // --- regression: fixes prove their bug, tests aren't weakened (REG-1, REG-2) ---------------------
+  {
+    const g = newRepo();
+    cleanups.push(g.dir);
+    const gConfig = (extra = {}) =>
+      writeFileSync(
+        join(g.dir, '.claude/code-kit.json'),
+        JSON.stringify({
+          ...JSON.parse(fixture),
+          checks: [
+            {
+              name: 'office tests',
+              files: ['apps/office/**'],
+              run: ['node --test apps/office/*.test.mjs'],
+            },
+          ],
+          ...extra,
+        }),
+      );
+    gConfig();
+    const gPut = (rel, body = '') => {
+      mkdirSync(dirname(join(g.dir, rel)), { recursive: true });
+      writeFileSync(join(g.dir, rel), body);
+    };
+    const gCommit = (m) => {
+      g.git('add', '-A');
+      g.git('commit', '-q', '-m', m);
+    };
+    const gCli = (...args) =>
+      spawnSync(process.execPath, [kitCli, ...args], { cwd: g.dir, encoding: 'utf8' });
+    const gVerify = () => gCli('verify', '--base', 'main');
+    const gBash = (command, agent) =>
+      spawnSync('node', [join(hooks, 'guard-bash.mjs')], {
+        input: JSON.stringify({ cwd: g.dir, tool_input: { command }, ...as(agent) }),
+        env: { ...process.env, CLAUDE_PROJECT_DIR: g.dir },
+        encoding: 'utf8',
+      });
+    const said = (res) => res.stdout + res.stderr;
+    const plan = (fixes) =>
+      `# Plan\n\n### ST-1 Stop double booking\n\n**Lane:** web\n**Requirements:** none\n**Depends on:** none\n**Status:** in progress\n${fixes ? `**Fixes:** ${fixes}\n` : ''}\n### ST-2 Tidy booking\n\n**Lane:** web\n**Requirements:** none\n**Depends on:** none\n**Status:** in progress\n**Fixes:** taken slots offered\n\n### ST-3 Rename\n\n**Lane:** web\n**Requirements:** none\n**Depends on:** none\n**Status:** in progress\n`;
+    const twoCases = `import { test } from 'node:test';\nimport assert from 'node:assert';\nimport { free } from './booking.mjs';\ntest('lists slots', () => { assert.equal(free([]).length, 0); assert.ok(true); });\ntest('keeps order', () => { assert.deepEqual(free([]), []); });\n`;
+    gPut('design/approved-screens.json', JSON.stringify({ screens: [] }));
+    gPut('docs/spec/plan.md', plan('two people could book the same slot'));
+    // The bug: taken slots are offered as free.
+    gPut('apps/office/booking.mjs', 'export const free = (slots) => slots;\n');
+    gPut('apps/office/old.test.mjs', twoCases);
+    gCommit('base');
+
+    // REG-1: a fix whose test fails without it, on an assertion.
+    g.git('checkout', '-q', '-b', 'web/st-1');
+    gPut(
+      'apps/office/booking.mjs',
+      'export const free = (slots) => slots.filter((s) => !s.taken);\n',
+    );
+    gPut(
+      'apps/office/booking.test.mjs',
+      `import { test } from 'node:test';\nimport assert from 'node:assert';\nimport { free } from './booking.mjs';\ntest('a taken slot is not free', () => { assert.deepEqual(free([{ taken: true }]), []); });\n`,
+    );
+    gCommit('ST-1 fix double booking');
+    let res = gVerify();
+    expect(
+      'REG-1 a fix whose test fails without it passes verify',
+      truth(res.status === 0 && !said(res).includes('Fixes and their tests'), said(res)),
+      0,
+    );
+
+    // REG-1: a fix whose test passes without it doesn't prove the bug.
+    g.git('checkout', '-q', 'main');
+    g.git('checkout', '-q', '-b', 'web/st-2');
+    gPut(
+      'apps/office/booking.mjs',
+      'export const free = (slots) => slots.filter((s) => !s.taken);\n',
+    );
+    gPut(
+      'apps/office/tidy.test.mjs',
+      `import { test } from 'node:test';\nimport assert from 'node:assert';\nimport { free } from './booking.mjs';\ntest('no slots, none free', () => { assert.deepEqual(free([]), []); });\n`,
+    );
+    gCommit('ST-2 tidy');
+    res = gVerify();
+    expect(
+      "REG-1 a fix whose tests also pass without it fails verify: they don't prove the bug",
+      truth(
+        res.status === 1 &&
+          said(res).includes('Fixes and their tests') &&
+          said(res).includes('also pass without the fix') &&
+          said(res).includes('apps/office/tidy.test.mjs'),
+        said(res),
+      ),
+      0,
+    );
+
+    // REG-1: a test that fails without the fix only because it calls what the fix adds.
+    g.git('checkout', '-q', 'main');
+    g.git('checkout', '-q', '-b', 'web/fix-cancel');
+    gPut(
+      'apps/office/booking.mjs',
+      'export const free = (slots) => slots;\nexport const cancel = (slot) => ({ ...slot, taken: false });\n',
+    );
+    gPut(
+      'apps/office/cancel.test.mjs',
+      `import { test } from 'node:test';\nimport assert from 'node:assert';\nimport { cancel } from './booking.mjs';\ntest('a cancelled slot is free', () => { assert.equal(cancel({ taken: true }).taken, false); });\n`,
+    );
+    gCommit('fix cancel');
+    res = gVerify();
+    expect(
+      'REG-1 a test failing without the fix only because it calls what the fix adds proves nothing',
+      truth(
+        res.status === 1 && said(res).includes('only because they call what the fix adds'),
+        said(res),
+      ),
+      0,
+    );
+
+    // REG-1: a fix with no test.
+    g.git('checkout', '-q', 'main');
+    g.git('checkout', '-q', '-b', 'web/fix-typo');
+    gPut('apps/office/booking.mjs', 'export const free = (slots) => slots; // offered\n');
+    gCommit('fix typo');
+    res = gVerify();
+    expect(
+      'REG-1 a fix that adds no test fails verify',
+      truth(res.status === 1 && said(res).includes('adds or changes no test'), said(res)),
+      0,
+    );
+    expect(
+      "REG-1 CI's --no-checks still proves a fix",
+      truth(
+        gCli('verify', '--base', 'main', '--no-checks').stdout.includes('adds or changes no test'),
+      ),
+      0,
+    );
+
+    // REG-1: a story that isn't a fix isn't asked to prove one.
+    g.git('checkout', '-q', 'main');
+    g.git('checkout', '-q', '-b', 'web/st-3');
+    gPut('apps/office/booking.mjs', 'export const free = (slots) => slots; // renamed nothing\n');
+    gCommit('ST-3 rename');
+    res = gVerify();
+    expect(
+      "REG-1 a story with no Fixes line on a branch not named fix-… isn't checked as a fix",
+      truth(res.status === 0, said(res)),
+      0,
+    );
+
+    // REG-2: the commit hook refuses a weakened test, as a request the person can approve.
+    g.git('checkout', '-q', 'main');
+    g.git('checkout', '-q', '-b', 'web/st-4');
+    gPut(
+      'apps/office/old.test.mjs',
+      twoCases.replace("test('keeps order'", "test.skip('keeps order'"),
+    );
+    res = gBash('git add -A && git commit -m skip', 'web-engineer');
+    expect(
+      'REG-2 a lane committing a skipped test is refused',
+      truth(
+        res.status === 2 &&
+          res.stderr.includes('apps/office/old.test.mjs is a weakened test') &&
+          res.stderr.includes('adds a skip or focus marker'),
+        res.stderr,
+      ),
+      0,
+    );
+    const held = holdable(res.stderr);
+    expect(
+      'REG-2 the refusal is held for the person with the tests approval',
+      truth(held?.kind === 'approval' && held.names.join() === 'tests', JSON.stringify(held)),
+      0,
+    );
+    const asked = JSON.parse(gCli('requests', '--json').stdout).open;
+    expect(
+      'REG-2 and it waits in the Decisions tab as a request',
+      truth(
+        asked.some((r) => r.names.includes('tests') && r.what === 'apps/office/old.test.mjs'),
+        JSON.stringify(asked),
+      ),
+      0,
+    );
+    expect(
+      'REG-2 the lead is refused too: only the person allows it',
+      gBash('git add -A && git commit -m skip'),
+      2,
+      'is a weakened test',
+    );
+    gConfig({ approvals: { delegate: { protected: ['design'] } } });
+    expect(
+      'REG-2 the lead may not approve it within delegated rules',
+      gCli('approve', 'tests', '--delegated', '--reason', 'flaky'),
+      1,
+      "weakening a test is the person's to allow",
+    );
+    gConfig();
+    gPut('.claude/approvals/web/tests', 'The keeps-order test is wrong until ST-9');
+    res = gBash('git add -A && git commit -m skip', 'web-engineer');
+    const logged = readFileSync(join(g.dir, '.claude/approval-log.jsonl'), 'utf8')
+      .split('\n')
+      .filter(Boolean)
+      .map((l) => JSON.parse(l));
+    expect(
+      "REG-2 with the person's approval it may, logged with what it weakened, and the approval is used up",
+      truth(
+        res.status === 0 &&
+          logged.some(
+            (e) =>
+              e.approval === 'tests' &&
+              e.file === 'apps/office/old.test.mjs' &&
+              e.reason.startsWith('The keeps-order test is wrong') &&
+              e.weakened?.[0]?.includes('skip'),
+          ) &&
+          !existsSync(join(g.dir, '.claude/approvals/web/tests')),
+        res.stderr + JSON.stringify(logged),
+      ),
+      0,
+    );
+    g.git('commit', '-q', '-m', 'ST-4 skip with approval');
+    res = gVerify();
+    expect(
+      'REG-2 verify accepts a weakened test the log shows the person approved',
+      truth(!said(res).includes('Weakened tests'), said(res)),
+      0,
+    );
+
+    // REG-2: verify catches what was weakened outside Claude Code.
+    g.git('checkout', '-q', 'main');
+    g.git('checkout', '-q', '-b', 'web/st-5');
+    gPut(
+      'apps/office/old.test.mjs',
+      twoCases.replace(/test\('keeps order'.*\n/, '').replace('assert.ok(true); ', ''),
+    );
+    gPut('apps/office/__snapshots__/old.snap', 'changed\n');
+    gCommit('ST-5 cut a test');
+    res = gVerify();
+    expect(
+      'REG-2 verify names a test cut down outside the hooks',
+      truth(
+        res.status === 1 &&
+          said(res).includes('Weakened tests') &&
+          said(res).includes(
+            'apps/office/old.test.mjs has 1 fewer test case ("keeps order" gone)',
+          ) &&
+          said(res).includes("needs the person's tests approval"),
+        said(res),
+      ),
+      0,
+    );
+    g.git('checkout', '-q', 'main');
+    gPut('apps/office/__snapshots__/old.snap', 'first\n');
+    gCommit('a snapshot');
+    g.git('checkout', '-q', '-b', 'web/st-6');
+    gPut('apps/office/__snapshots__/old.snap', 'rewritten\n');
+    gCommit('ST-6 update snapshot');
+    expect(
+      'REG-2 a rewritten snapshot needs the approval too',
+      truth(said(gVerify()).includes('apps/office/__snapshots__/old.snap rewrites a snapshot')),
+      0,
+    );
+
+    // REG-2: a test moved with the same cases isn't weakened.
+    g.git('checkout', '-q', 'main');
+    g.git('checkout', '-q', '-b', 'web/st-7');
+    g.git('mv', 'apps/office/old.test.mjs', 'apps/office/sub.test.mjs');
+    res = gBash('git commit -m move', 'web-engineer');
+    expect('REG-2 a test moved with the same cases is not flagged', res, 0);
+    g.git('commit', '-q', '-m', 'ST-7 move');
+    expect(
+      'REG-2 nor does verify flag the move',
+      truth(!said(gVerify()).includes('Weakened tests')),
+      0,
+    );
+  }
 } finally {
   for (const d of cleanups) rmSync(d, { recursive: true, force: true });
 }

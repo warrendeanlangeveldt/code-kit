@@ -93,6 +93,8 @@ export function withDefaults(c) {
     shell: { block: c.shell?.block ?? [], restricted: c.shell?.restricted ?? [] },
     postEdit: c.postEdit ?? [],
     checks: c.checks ?? [],
+    tests: c.tests ?? [],
+    regression: { prepare: c.regression?.prepare ?? null },
     branches: { protected: c.branches?.protected ?? ['main', 'master'] },
     approvals: { lead: c.approvals?.lead === true, delegate: delegateRules(c.approvals?.delegate) },
     harness: harnessSettings(c.harness),
@@ -211,6 +213,12 @@ export function validate(c) {
     need(e.exclude === undefined || isList(e.exclude), `${at}.exclude must be a list of globs`);
   });
   each('checks', (e, at) => validateCheck(e, at, lanes, need));
+  need(c.tests === undefined || isList(c.tests), '"tests" must be a list of globs: the test files');
+  need(
+    c.regression === undefined ||
+      (isObj(c.regression) && (c.regression.prepare === undefined || isStr(c.regression.prepare))),
+    '"regression" must be { prepare?: a command run in a fresh checkout before a fix\'s tests }',
+  );
   const known = ADAPTERS.map((a) => a.name);
   need(
     c.adapters === undefined ||

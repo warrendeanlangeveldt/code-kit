@@ -61,6 +61,7 @@ Requirements (read each one in full, with its acceptance criteria):
 - …
 
 What to build: <the story's description, and anything the lead decided that the spec doesn't say>
+Fixes: <for a fix story, what was broken and where it was seen; write the test that fails because of it first>
 Contracts to use: <paths of the schemas, events or tables this story relies on>
 Out of scope: <what neighbouring stories or other lanes will do>
 

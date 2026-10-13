@@ -15,6 +15,7 @@ import { CONFIG_FILE } from './lib/config.mjs';
 import { laneOfBranch, storyOfBranch, teamOf, teamProvider, whoami } from './lib/team.mjs';
 import { matchesAny } from './lib/glob.mjs';
 import { noteBefore } from './lane-audit.mjs';
+import { TESTS_APPROVAL, commitWeakenings } from './lib/regression.mjs';
 import {
   APPROVAL_LOG,
   actorFor,
@@ -451,6 +452,40 @@ function recordApprovals() {
         reason: 'Lead change; reviewed in the pull request',
         grantedAt: null,
       });
+  }
+  // REG-2: a commit that weakens a test waits for the person's `tests` approval, which nobody else can
+  // give; it's recorded in the log, so verify accepts the branch, and used up by this commit.
+  const weakened = commitWeakenings(
+    root,
+    files.filter((f) => !arrivesWithMerge(root, f, { staged: true })),
+    config,
+  );
+  if (weakened.length) {
+    const granted = approval(root, TESTS_APPROVAL, actor);
+    const said = (w) => `it ${w.reasons.join(', and ')}`;
+    if (!granted) {
+      const [w, ...more] = weakened;
+      recordRequest(root, actor, TESTS_APPROVAL, w.file, `A weakened test: ${said(w)}.`);
+      const personOnly = { ...config, approvals: { ...config.approvals, delegate: null } };
+      block(
+        `Blocked: ${w.file} is a weakened test (${said(w)}); committing it needs a person's approval in force.
+` +
+          (more.length
+            ? `Also weakened: ${more.map((x) => `${x.file} (${said(x)})`).join('; ')}.
+`
+            : '') +
+          `A weakened test can hide a regression. Fix the code so the test passes as it was. If the test itself is wrong, ask the person: neither the lead nor a lane can approve it. They run
+${approvalHowTo(TESTS_APPROVAL, actor, root, 'weakening tests in one commit', personOnly)}`,
+      );
+    }
+    for (const w of weakened)
+      record(w.file, {
+        approval: TESTS_APPROVAL,
+        reason: granted.reason,
+        grantedAt: granted.grantedAt,
+        weakened: w.reasons,
+      });
+    useApproval(root, TESTS_APPROVAL, actor);
   }
   // A dependency approval is used up by the commit that adds its package to a manifest or lockfile.
   const manifests = files.filter((f) => isDependencyFile(f));

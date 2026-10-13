@@ -29,6 +29,8 @@ node "${CLAUDE_PLUGIN_ROOT}/bin/code-kit.mjs" verify --base <base>
 - new layer violations, and a baseline that grew;
 - screens without an approved design;
 - committed secrets;
+- tests weakened (deleted, skipped or focused, cut down, or a snapshot rewritten) without the person's `tests` approval in the log;
+- for a fix (its story has `**Fixes:**`, or the branch is `<lane>/fix-…`), that its tests fail without the fix, as the bug, and pass with it;
 - the project's checks for the changed files.
 
 Any problem it reports means the branch goes back. Don't fix a lane's code yourself; the lead doesn't write lane paths.

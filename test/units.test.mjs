@@ -1640,3 +1640,118 @@ test('ONB-7 an older setup is missing the security reviewer, with or without scr
   );
   assert.deepEqual(setupGaps(config, [], ['.claude/agents/security-reviewer.md']), []);
 });
+
+test('REG-2 what weakens a test: a skip or focus marker, fewer cases, fewer assertions', async () => {
+  const { weakenings, testShape } = await import('../hooks/lib/regression.mjs');
+  const base = "it('a', () => { expect(1).toBe(1); expect(2).toBe(2); });\nit('b', () => {});\n";
+  assert.deepEqual(testShape(base).cases, ['a', 'b']);
+  assert.deepEqual(weakenings(base, base), []);
+  assert.match(weakenings(base, base.replace("it('b'", "it.only('b'"))[0], /^adds a skip or focus/);
+  assert.deepEqual(
+    weakenings(base, "it('a', () => { expect(1).toBe(1); expect(2).toBe(2); });\n"),
+    ['has 1 fewer test case ("b" gone)'],
+  );
+  assert.deepEqual(weakenings(base, base.replace(' expect(2).toBe(2);', '')), [
+    'has 1 fewer assertion (2 → 1)',
+  ]);
+  // A renamed case isn't fewer, and Python, Go and pytest markers count too.
+  assert.deepEqual(weakenings(base, base.replace("'b'", "'b, renamed'")), []);
+  assert.equal(testShape('def test_x():\n    assert 1\n').cases[0], 'test_x');
+  assert.equal(testShape('func TestX(t *testing.T) {}\n').cases[0], 'TestX');
+  assert.match(
+    weakenings(
+      'def test_x():\n    assert 1\n',
+      '@pytest.mark.skip\ndef test_x():\n    assert 1\n',
+    )[0],
+    /skip/,
+  );
+});
+
+test('REG-2 a deleted test is weakened unless its cases moved; a rewritten snapshot needs the approval', async () => {
+  const { weakenedTests } = await import('../hooks/lib/regression.mjs');
+  const files = { 'a.test.ts': "it('x', () => {});\nit('y', () => {});\n" };
+  const now = { 'b/a.test.ts': files['a.test.ts'], 's/__snapshots__/a.snap': 'new' };
+  const before = (f) => ({ ...files, 's/__snapshots__/a.snap': 'old' })[f] ?? null;
+  const after = (f) => now[f] ?? null;
+  assert.deepEqual(
+    weakenedTests(
+      [
+        { status: 'D', file: 'a.test.ts' },
+        { status: 'A', file: 'b/a.test.ts' },
+      ],
+      before,
+      after,
+      {},
+    ),
+    [],
+  );
+  assert.deepEqual(weakenedTests([{ status: 'D', file: 'a.test.ts' }], before, after, {}), [
+    { file: 'a.test.ts', reasons: ['deletes the test file (2 cases)'] },
+  ]);
+  assert.deepEqual(
+    weakenedTests([{ status: 'M', file: 's/__snapshots__/a.snap' }], before, after, {}),
+    [{ file: 's/__snapshots__/a.snap', reasons: ['rewrites a snapshot'] }],
+  );
+  // The config's `tests` globs say what a test is.
+  assert.deepEqual(
+    weakenedTests([{ status: 'D', file: 'a.test.ts' }], before, after, { tests: ['spec/**'] }),
+    [],
+  );
+});
+
+test('REG-1 a failure that only says the test cannot reach what the fix adds proves nothing', async () => {
+  const { onlyUnreachable } = await import('../hooks/lib/regression.mjs');
+  assert.equal(
+    onlyUnreachable(
+      "SyntaxError: The requested module './booking.mjs' does not provide an export named 'cancel'",
+    ),
+    true,
+  );
+  assert.equal(onlyUnreachable('TypeError: booking.cancelSlot is not a function'), true);
+  assert.equal(
+    onlyUnreachable('AssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal'),
+    false,
+  );
+  // Both kinds: a real assertion failed too, so it counts.
+  assert.equal(
+    onlyUnreachable('x is not a function\nAssertionError: Expected values to be equal'),
+    false,
+  );
+});
+
+test('REG-1 the plan says what a story fixes', async () => {
+  const { readStories } = await import('../hooks/lib/plan.mjs');
+  const dir = mkdtempSync(join(tmpdir(), 'code-kit-plan-'));
+  try {
+    writeFileSync(
+      join(dir, 'plan.md'),
+      '### ST-1 Stop double booking\n\n**Lane:** web\n**Requirements:** none\n**Depends on:** none\n**Status:** todo\n**Fixes:** two people could book one slot\n\n### ST-2 Other\n\n**Lane:** web\n**Status:** todo\n',
+    );
+    const [one, two] = readStories(dir, 'plan.md');
+    assert.equal(one.fixes, 'two people could book one slot');
+    assert.equal(two.fixes, null);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('REG-1 and REG-2 config: tests and regression.prepare', () => {
+  const base = { ...fixture };
+  assert.deepEqual(
+    validate({ ...base, tests: ['spec/**'], regression: { prepare: 'npm ci' } }),
+    [],
+  );
+  assert.ok(validate({ ...base, tests: 'spec/**' }).some((p) => p.startsWith('"tests"')));
+  assert.ok(
+    validate({ ...base, regression: { prepare: 1 } }).some((p) => p.startsWith('"regression"')),
+  );
+  const d = withDefaults(base);
+  assert.deepEqual([d.tests, d.regression], [[], { prepare: null }]);
+});
+
+test('REG-2 the pane asks for a weakened test in words', () => {
+  assert.equal(
+    prefilledReason({ names: ['tests'], lane: 'web', what: 'apps/office/old.test.mjs' }),
+    'Approve a weakened test for the web lane: apps/office/old.test.mjs',
+  );
+});

@@ -663,6 +663,8 @@ export function askWords(request, files = [request?.what]) {
 }
 
 export function approvalLabel(name) {
+  // REG-2: the person's approval to weaken a test.
+  if (name === 'tests') return 'a weakened test';
   return name.startsWith('dep-') ? name.slice(4).replaceAll('+', '/') : name;
 }
 

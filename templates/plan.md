@@ -1,6 +1,6 @@
 # Plan
 
-`code-kit status` reads this file. Keep each story's heading and its four `**…:**` lines in this form. Use `**Lane:** lead` for the lead's own stories (contracts, foundations, spikes), `**Lane:** qa` for a journey's end-to-end test story (it depends on the screen and service stories the journey goes through), `**Lane:** design` for a design story (an area's screens, designed with the person before any of them is built; the stories building them depend on it), and `**Requirements:** none` for a story that delivers no requirement.
+`code-kit status` reads this file. Keep each story's heading and its four `**…:**` lines in this form. Use `**Lane:** lead` for the lead's own stories (contracts, foundations, spikes), `**Lane:** qa` for a journey's end-to-end test story (it depends on the screen and service stories the journey goes through), `**Lane:** design` for a design story (an area's screens, designed with the person before any of them is built; the stories building them depend on it), and `**Requirements:** none` for a story that delivers no requirement. A story that fixes a bug adds a fifth line, `**Fixes:** <what was broken, and where it was seen>`: `code-kit verify` then requires a test that fails without the fix and passes with it.
 
 ## Lanes
 
