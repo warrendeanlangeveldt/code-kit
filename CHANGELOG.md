@@ -2,6 +2,17 @@
 
 What changed in each release of code-kit, newest first. Versions follow the plugin manifest and the npm package `@warren-dean/code-kit`. Each release is also on [GitHub Releases](https://github.com/warrendeanlangeveldt/code-kit/releases).
 
+## 0.12.0 (2026-10-13)
+
+What only you can decide reaches you, and waits until you answer.
+
+- **Questions from the lead.** What the lead can't settle itself (a product choice, an account only you can create, wording only you can sign off) is asked with `code-kit ask`, and waits in the Decisions tab with the lead's options and what each does. Your answer, a press or your own words, is sent to the lead. A question can hold its story, which reads "waiting on you": nothing dispatches or reviews it, and the stories that depend on it wait, until you answer.
+- **Your brief's open questions** are decisions too, each with **Answer…** (the lead records it in the brief) and **Later**.
+- **What Claude Code itself refused.** A call Claude Code's own permission check refused, which code-kit can't approve past, waits in the band with **Put it in the prompt** (the command after `!`, for you to run), **Done it** and **Not now**.
+- **Approval requests wait until answered.** They no longer vanish after 60 minutes; one nobody needs is dropped with **Not needed**, or by the lead with `code-kit requests drop`.
+- **A card for each decision.** Two approvals waiting are two cards in the Decisions tab, each answered on its own.
+- **Bug reports for code-kit.** With `harness.report.on` (off unless you turn it on; init asks), an agent that code-kit got in the way of drafts a report with only code-kit's own facts, your project's folders and email addresses taken out. You read it and send it to code-kit's GitHub with your own `gh` (a comment, if it's filed already), or get the link to file it, or discard it.
+
 ## 0.11.1 (2026-10-12)
 
 The loop and the lead stop talking past each other, and approvals ask only what still needs you.
