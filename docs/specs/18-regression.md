@@ -61,6 +61,7 @@ Found by running code-kit on a codebase under continuous development. Agents fix
 | `app.seed`           | none                                                                                                | Puts the scenarios' starting data in place, run before each feature                                                                        |
 | `app.env`            | `{}`                                                                                                | Environment for `start` and `seed`: a throwaway database, test keys. Values that look like live or production keys make the config invalid |
 | `app.readySeconds`   | 90                                                                                                  | How long the app has to answer at `app.url`                                                                                                |
+| `harness.redMinutes` | 60                                                                                                  | How long main may be red before the band puts **Revert** first                                                                             |
 
 ### State
 
@@ -72,12 +73,17 @@ Found by running code-kit on a codebase under continuous development. Agents fix
 
 ### REG-1 A fix proves its bug
 
-A story that fixes something says so in the plan, with an optional fifth line: `**Fixes:** <what was broken, and where it was seen>`. A branch named `<lane>/fix-…` counts too. `verify` on such a branch takes the test files it added or changed. It runs them against the branch's code with every change outside the tests taken back to the base. This happens in a temporary worktree, after `regression.prepare`, using the checks whose `files` match those tests. The tests must fail there and pass on the branch. A fix that adds or changes no test, or whose tests also pass without the fix, has a problem under `regression`: its tests don't prove the bug, so it can come back. The review sends it back like a failing test. A test story the QA lane is given to lock in a failure (QA-3) is held to the same rule.
+A story that fixes something says so in the plan, with an optional fifth line: `**Fixes:** <what was broken, and where it was seen>`. A branch named `<lane>/fix-…` counts too. `verify` on such a branch takes the test files it added or changed. It runs them against the branch's code with every change outside the tests taken back to the base. This happens in a temporary worktree, after `regression.prepare`, using the checks whose `files` match those tests. The tests must fail there and pass on the branch.
+
+The failure on the base must be the bug showing, not the test being unable to run. If a user can hit the bug, a test can hit it through the code that's already there, and that test fails on an assertion. A test that fails only because it can't compile, or can't find what it calls, proves only that the fix added something. `verify` recognises that kind of failure from the test runner's output ("Cannot find module", "is not a function", "does not provide an export named", TypeScript's missing-name errors, and others an adapter adds). If that's the only kind of failure, `verify` asks for a test that goes through the existing entry point. When it can't tell what kind of failure it was, the failure counts, and the review report says so.
+
+A fix that adds or changes no test, or whose tests also pass without the fix, has a problem under `regression`: its tests don't prove the bug, so it can come back. The review sends it back like a failing test. A test story the QA lane is given to lock in a failure (QA-3) is held to the same rule.
 
 **Acceptance**
 
 - Given a plan story with `**Fixes:** double booking`, whose branch changes `src/booking.ts` and adds `src/booking.test.ts`, and that test fails with the base's `src/booking.ts`, then `verify` reports no regression problem.
 - Given the same, but the test passes with the base's `src/booking.ts`, then `verify` says the fix's tests pass without the fix, so they don't prove the bug, and names the test file.
+- Given a fix branch whose new test fails on the base only with `booking.cancelSlot is not a function`, a function the fix adds, then `verify` says the test fails without the fix only because it calls what the fix adds, and asks for a test through the existing entry point.
 - Given a fix branch that changes no test file, then `verify` says the fix comes with no test that proves it.
 - Given a story with no `**Fixes:**` line on a branch not named `fix-…`, then `verify` doesn't run the fix check.
 
@@ -112,7 +118,12 @@ A check runs when a file it matches changed, and also when a file it matches imp
 
 ### REG-4 Main stays green
 
-`code-kit health [--json]` runs every check on the base's head in full, not only for changed files. It also runs the QA lane's scripted suites, and it records the result in `.claude/state/health.json`. When the base's head has no health record, after a merge or when the loop starts, `next` gives `health`, and the loop prompts the lead to run it.
+`code-kit health [--scripted] [--json]` runs every check on the base's head in full, not only for changed files. It also runs the QA lane's scripted suites, and check mode's walks of every feature (QA-2). It records the result in `.claude/state/health.json`. `--scripted` leaves the walks out, because they need an agent.
+
+Health runs in two places:
+
+- **The loop:** when the base's head has no health record, after a merge or when the loop starts, `next` gives `health`, and the loop prompts the lead to run it, walks included.
+- **CI:** init writes a workflow step that runs `code-kit health --scripted` on every push to the base. This covers merges made outside Claude Code: a pull request merged on GitHub, or a hotfix pushed directly. When `gh` is available, `next` reads CI's result for the base's head, and a failing run counts as red, like a red health record.
 
 When the base is red:
 
@@ -120,7 +131,15 @@ When the base is red:
 - Work in flight carries on through review, but merges wait, except for a branch whose story fixes the failure.
 - The band reads "main is red since web/st-12 merged: booking tests fail". It names the merges since the last green run, from the journal, with **Why**.
 
-The lead plans a fix story in the lane that owns the failing code. That story is held to REG-1. If the person would rather undo the merge, that's their act: **Revert** in the band runs `code-kit revert <merge>`, which the lead may do only with the person's approval. When the next health run passes, the hold lifts.
+Main is fixed forward by default: the lead plans a fix story in the lane that owns the failing code at once, with no approval needed. That story is held to REG-1.
+
+Undoing the merge is the person's choice:
+
+- **Revert** shows in the band only for a merge that reverts cleanly. It runs `code-kit revert <merge>`, which the lead may run only with the person's approval.
+- A reverted story goes back to its lane with the failure, so the work isn't lost. It comes back as a fix held to REG-1.
+- When main has been red for `harness.redMinutes` (60 unless set) and the fix hasn't turned it green, the band reads "main has been red for 60 minutes" and puts **Revert** first. Parallel lanes don't wait behind one slow fix.
+
+When the next health run passes, the hold lifts.
 
 **Acceptance**
 
@@ -128,6 +147,9 @@ The lead plans a fix story in the lane that owns the failing code. That story is
 - Given a red health record for the base's head and a ready story, then `next` gives `fix-main`, naming the failing check and the merges since the last green run, and doesn't dispatch the story.
 - Given the same and a branch at the head of the merge queue that doesn't fix it, then its merge waits, saying main is red.
 - Given a later green record, then `next` dispatches the ready story.
+- Given a green health record but CI failing `code-kit health --scripted` on the base's head, then `next` gives `fix-main`, naming CI's run.
+- Given main red for 61 minutes with `harness.redMinutes` unset, and the merge that turned it red reverting cleanly, then the band says main has been red for 60 minutes, with **Revert** first.
+- Given the lead running `code-kit revert` without the person's approval, then it's refused: undoing a merge is the person's choice.
 
 ### FEAT-1 The feature map
 
@@ -269,8 +291,5 @@ Re-running init drafts them, shows the person the difference, and sets `setup` t
 
 ## Open questions
 
-| Question                                                                                                                                                        | Owner         | Blocks |
-| --------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------- | ------ |
-| Does a fix's test that fails on the base only because it can't compile there (it calls a function the fix adds) prove the bug, or must it fail on an assertion? | Product owner | REG-1  |
-| Should `health` also run in CI on every push to main, from a workflow init writes, or only in the loop?                                                         | Product owner | REG-4  |
-| Should **Revert** be in the band at all, or should a red main always be fixed forward?                                                                          | Product owner | REG-4  |
+| Question | Owner | Blocks |
+| -------- | ----- | ------ |
