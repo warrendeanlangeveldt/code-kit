@@ -25,6 +25,15 @@ The person keeps the reason or types their own, and confirms or cancels. Confirm
 - Given an open request for `dep-dayjs` for the web lane, when the person confirms with the prefilled reason, then `.claude/approvals/web/dep-dayjs` holds that reason and the pane mark, and the web lane's next `npm install dayjs` runs.
 - Given the confirmation, when the person cancels, then nothing is written.
 
+### ACT-5 Ask about it, in the pane
+
+A request can be vague. The Approve pane has **Ask about it**: the person's question is answered right there, by a side call over the lead's own conversation (it shares the prompt cache, and nothing is added to the conversation or acted on), with code-kit's facts about the request: what was asked for and for whom, what was refused and why, its story, and the limits it missed. Follow-ups carry the aside so far. Before the lead has replied there's no conversation to fork, so it answers from those facts alone, with Sonnet. Nothing is approved until the person confirms.
+
+**Acceptance**
+
+- Given the web lane's dayjs request, when the person asks "Why does the booking form need this?", then the answer shows in the pane, the lead gets no prompt, and nothing is approved; a follow-up's call carries the first question and answer.
+- Given a session whose lead hasn't replied yet, then the question is answered from code-kit's facts.
+
 ### ACT-2 Only the person
 
 The pane's approvals happen only on the person's press. Nothing an agent does can trigger one: no tool, command or message from an agent reaches the mod's approve action.

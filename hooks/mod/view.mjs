@@ -1057,10 +1057,11 @@ const NOTE_KINDS = new Set(['usage', 'paused', 'finish', 'done', 'teamDown']);
 /** The Approve… confirmation (ACT-1): what it grants, to whom, for how long, and the reason. */
 export function approvePane(
   approving,
-  { Box, Text, Input, Button },
-  { onInput, onSubmit, onCancel },
+  { Box, Text, Input, Button, Markdown },
+  { onInput, onSubmit, onCancel, onAskInput, onAsk },
 ) {
   const { request, reason, error } = approving;
+  const aside = approving.aside ?? { thread: [], draft: '' };
   return Box({
     flexDirection: 'column',
     rowGap: 1,
@@ -1071,6 +1072,30 @@ export function approvePane(
           `For ${request.lane ? `the ${request.lane} lane` : 'any agent'}, ${request.names.every((n) => n.startsWith('dep-')) ? 'until the install is committed (at most 7 days)' : 'for 60 minutes'}. Asked for: ${request.what}`,
         ],
       }),
+      // ACT-5: an aside about this approval, answered here and never in the lead's conversation.
+      ...aside.thread.flatMap((turn, i) => [
+        Text({ key: `aside-q-${i}`, color: 'cyan', children: [`You: ${turn.question}`] }),
+        turn.pending
+          ? Text({ key: `aside-a-${i}`, dimColor: true, children: ['Asking…'] })
+          : turn.error
+            ? Text({ key: `aside-a-${i}`, color: 'red', children: [turn.error] })
+            : Markdown
+              ? Markdown({ key: `aside-a-${i}`, text: turn.answer })
+              : Text({ key: `aside-a-${i}`, children: [turn.answer] }),
+      ]),
+      ...(onAsk
+        ? [
+            Input({
+              key: 'approve-ask',
+              label: 'Ask about it',
+              value: aside.draft,
+              placeholder: 'What is it for, and what does approving it let happen?',
+              submitLabel: 'Ask',
+              onInput: onAskInput,
+              onSubmit: onAsk,
+            }),
+          ]
+        : []),
       Input({
         key: 'approve-reason',
         label: 'Reason',
@@ -1091,6 +1116,44 @@ export function approvePane(
       }),
     ],
   });
+}
+
+/**
+ * ACT-5: the side call's prompt for a question about an approval: what code-kit knows of the request (the
+ * names, the lane, what was refused and why, its story, the limits it missed), the aside so far, and the
+ * question. It answers in the pane, never in the conversation, and acts on nothing.
+ */
+export function approvalAsidePrompt({
+  request,
+  story = null,
+  outside = null,
+  thread = [],
+  question,
+}) {
+  return [
+    "The person is deciding whether to approve something code-kit stopped, and asks you about it in code-kit's approval pane. Answer in a few short sentences, in plain words: what it is, why it's needed for the work, what approving it lets happen, and anything risky about it. Use what you know from this conversation and the facts below. If you don't know, say so; don't guess. This answer goes to that pane, not into the conversation: don't act on it, and don't change your plans because of it.",
+    '',
+    'The approval:',
+    `- approvals asked for: ${request.names.join(', ')}`,
+    `- for: ${request.lane ? `the ${request.lane} lane` : (request.actor ?? 'an agent')}`,
+    `- what was refused: ${request.what}`,
+    ...(request.why ? [`- why code-kit refused it: ${request.why}`] : []),
+    ...(story
+      ? [
+          `- story: ${story.id} ${story.title ?? ''}${story.requirements?.length ? ` (${story.requirements.join(', ')})` : ''}`,
+        ]
+      : []),
+    ...(outside ? [`- outside the limits the person set for the lead: ${outside}`] : []),
+    ...(thread.length
+      ? [
+          '',
+          'Asked so far:',
+          ...thread.flatMap((t) => [`Q: ${t.question}`, `A: ${t.answer ?? t.error ?? ''}`]),
+        ]
+      : []),
+    '',
+    `Question: ${question}`,
+  ].join('\n');
 }
 
 export const ANSWER_ID = 'code-kit-answer';

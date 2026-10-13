@@ -160,6 +160,8 @@ function project() {
     questions: [] as any[], // `code-kit ask --json`
     reports: [] as any[], // `code-kit report --json`
     fills: [] as string[], // what the mod put in the prompt
+    sideAsks: [] as any[], // side calls: { fork } or { model }, with their prompt
+    sideReply: { isAnswered: true, text: 'dayjs formats the booking dates.', usage: null } as any,
     holdWaits: false, // false: the hold ends at once, as if timed out (tests about cards, not hold)
     waiting: new Map<string, (answer: string) => void>(),
   };
@@ -347,6 +349,14 @@ function stub(on: any, w: World) {
     return { value: { agent: `code-kit:${e.name}` } };
   });
   on('prompt.read', () => ({ value: { text: w.draft, cursor: w.draft.length } }));
+  on('model.fork', ($: any, e: any) => {
+    w.sideAsks.push({ fork: true, prompt: e.prompt });
+    return { value: w.sideReply };
+  });
+  on('model.complete', ($: any, e: any) => {
+    w.sideAsks.push({ model: e.model, prompt: e.prompt });
+    return { value: { isAnswered: true, text: 'From the facts alone.', usage: null } };
+  });
   // Claude Code's own settings hooks beneath: none answer a permission denial.
   on('classic.PermissionDenied', () => ({}));
   on('prompt.fill', ($: any, e: any) => {
@@ -640,6 +650,56 @@ test('ACT-1 the person may type their own reason, and an empty one is not accept
     text: 'dates on the booking form',
   });
   expect(w.acts[0]).toContain('dates on the booking form');
+  await confirm.unmount();
+  await ui.unmount();
+});
+
+test("ACT-5 the person asks about an approval in its pane; the answer stays there, out of the lead's conversation", async ($, on) => {
+  const w = project();
+  w.requests = [dayjs];
+  await start($, on, w);
+  const ui = await bandUi($);
+  await press($, 'band-approve');
+  const confirm = await pane($, APPROVE);
+  await $.ui.input({
+    plugin: 'code-kit',
+    key: 'approve-ask',
+    text: 'Why does the booking form need this?',
+  });
+  expect(w.sideAsks).toHaveLength(1);
+  expect(w.sideAsks[0].fork).toBe(true);
+  expect(w.sideAsks[0].prompt).toMatch(/approvals asked for: dep-dayjs/);
+  expect(w.sideAsks[0].prompt).toMatch(/for: the web lane/);
+  expect(w.sideAsks[0].prompt).toMatch(/story: ST-4 Booking form/);
+  expect(w.sideAsks[0].prompt).toMatch(/Question: Why does the booking form need this\?$/);
+  expect(
+    await confirm.find({ type: 'Text', text: 'You: Why does the booking form need this?' }),
+  ).toBeDefined();
+  expect(JSON.stringify(await confirm.find({ key: 'aside-a-0' }))).toMatch(
+    /dayjs formats the booking dates/,
+  );
+  // A follow-up carries the aside so far; nothing went to the lead, and nothing was approved.
+  await $.ui.input({ plugin: 'code-kit', key: 'approve-ask', text: 'Is it maintained?' });
+  expect(w.sideAsks[1].prompt).toMatch(
+    /Q: Why does the booking form need this\?\nA: dayjs formats the booking dates\./,
+  );
+  expect(w.prompts).toEqual([]);
+  expect(w.acts).toEqual([]);
+  await confirm.unmount();
+  await ui.unmount();
+});
+
+test('ACT-5 before the lead has replied there is nothing to fork: it answers from the facts alone', async ($, on) => {
+  const w = project();
+  w.requests = [dayjs];
+  w.sideReply = { isAnswered: false, reason: 'nothing-to-fork' };
+  await start($, on, w);
+  const ui = await bandUi($);
+  await press($, 'band-approve');
+  const confirm = await pane($, APPROVE);
+  await $.ui.input({ plugin: 'code-kit', key: 'approve-ask', text: 'What is it?' });
+  expect(w.sideAsks.map((a) => a.model ?? 'fork')).toEqual(['fork', 'sonnet']);
+  expect(JSON.stringify(await confirm.find({ key: 'aside-a-0' }))).toMatch(/From the facts alone/);
   await confirm.unmount();
   await ui.unmount();
 });

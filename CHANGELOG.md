@@ -2,6 +2,12 @@
 
 What changed in each release of code-kit, newest first. Versions follow the plugin manifest and the npm package `@warren-dean/code-kit`. Each release is also on [GitHub Releases](https://github.com/warrendeanlangeveldt/code-kit/releases).
 
+## 0.12.1 (2026-10-13)
+
+Ask about an approval before you give it.
+
+- **Ask about it, in the Approve pane.** When a request isn't clear, ask what it's for right there. The answer comes from a side call over the lead's conversation and what code-kit knows of the request (what was asked for and for whom, why it was refused, its story, the limits it missed), and it stays in the pane: nothing is added to the lead's session. Follow-ups carry on the conversation. Before the lead has replied, it answers from code-kit's facts alone. Nothing is approved until you press Approve.
+
 ## 0.12.0 (2026-10-13)
 
 What only you can decide reaches you, and waits until you answer.

@@ -19,6 +19,7 @@ import {
   shownState,
   attribution,
   answerPane,
+  approvalAsidePrompt,
   approvePane,
   commandItself,
   band,
@@ -59,7 +60,7 @@ import {
   withoutInFlight,
 } from './loop.mjs';
 import { goalOf, nextText } from './mission.mjs';
-import { contextOf, decisionCards } from './decisions.mjs';
+import { contextOf, decisionCards, limitsWhy } from './decisions.mjs';
 import { DEFAULT_TEAM_UI, TEAM_ID, teamFrame } from './teamview.mjs';
 import { glowOf, mapStoryOf, touchOf } from './codemap.mjs';
 import { harnessSettings } from '../lib/harness.mjs';
@@ -501,6 +502,8 @@ export function register(on) {
           reason: prefilledReason(line.request),
           error: null,
           heldId: line.heldId ?? null,
+          outside: line.outside ?? null,
+          aside: { thread: [], draft: '' },
         };
         await $.ui.open({ id: APPROVE_ID, title: 'Approve', focus: true, closeOnEscape: true });
         $.ui.invalidate('ui.render');
@@ -663,9 +666,58 @@ export function register(on) {
       // HOLD-2: Approve opens ACT-1's confirmation for the held call; Refuse lets the refusal through.
       approveHeld: (line) =>
         act.approve({
-          request: { names: line.held.names, lane: line.held.lane, what: line.held.what },
+          request: {
+            names: line.held.names,
+            lane: line.held.lane,
+            what: line.held.what,
+            why: line.held.refusal ?? null,
+          },
           heldId: line.held.id,
+          outside: line.held.outside ?? null,
         }),
+      // ACT-5: a question about the approval, answered in its pane by a side call over the lead's own
+      // conversation (it shares the prompt cache, and nothing is added to the conversation); before the
+      // lead's first reply, from code-kit's facts alone.
+      askApproval: async (question) => {
+        const q = question.trim();
+        if (!approving || !q) return;
+        const asked = approving;
+        const thread = asked.aside.thread;
+        const turn = { question: q, pending: true };
+        approving = { ...asked, aside: { thread: [...thread, turn], draft: '' } };
+        $.ui.invalidate('ui.render');
+        const row = (model.state?.lanes ?? []).find((l) => l.name === asked.request.lane);
+        const prompt = approvalAsidePrompt({
+          request: asked.request,
+          story: row?.story ?? null,
+          outside: limitsWhy(asked.outside) ?? null,
+          thread,
+          question: q,
+        });
+        let reply = await $.model
+          .fork({ prompt })
+          .catch((err) => ({ isAnswered: false, reason: String(err?.message ?? err) }));
+        if (!reply.isAnswered && reply.reason === 'nothing-to-fork')
+          reply = await $.model
+            .complete({ model: 'sonnet', prompt, maxTokens: 800 })
+            .catch((err) => ({ isAnswered: false, reason: String(err?.message ?? err) }));
+        // Answered for this approval only: a pane closed or moved on meanwhile keeps what it has.
+        if (!approving || approving.request !== asked.request) return;
+        const done = reply.isAnswered
+          ? { question: q, answer: reply.text }
+          : {
+              question: q,
+              error: `No answer: ${reply.reason}${reply.status ? ` (${reply.status})` : ''}`,
+            };
+        approving = {
+          ...approving,
+          aside: {
+            ...approving.aside,
+            thread: approving.aside.thread.map((t) => (t === turn ? done : t)),
+          },
+        };
+        $.ui.invalidate('ui.render');
+      },
       refuseHeld: async (line) => {
         await answerHeld(line.held.id, 'refused');
       },
@@ -1934,6 +1986,11 @@ export function register(on) {
       },
       onSubmit: (value) => act.confirmApproval(value),
       onCancel: () => act.cancelApproval(),
+      onAskInput: (value) => {
+        approving = { ...approving, aside: { ...approving.aside, draft: value } };
+        $.ui.invalidate('ui.render');
+      },
+      onAsk: (value) => act.askApproval(value),
     });
   });
 
