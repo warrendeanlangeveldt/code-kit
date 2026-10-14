@@ -2,6 +2,17 @@
 
 What changed in each release of code-kit, newest first. Versions follow the plugin manifest and the npm package `@warren-dean/code-kit`. Each release is also on [GitHub Releases](https://github.com/warrendeanlangeveldt/code-kit/releases).
 
+## 0.13.0 (2026-10-14)
+
+A fix proves its bug, tests can't be weakened without you, and a passing `verify` says exactly what it covered.
+
+- **A fix proves its bug.** A plan story with a `**Fixes:**` line, or a branch named `<lane>/fix-…`, must come with a test that fails without the fix and passes with it. `verify` runs the fix's tests in a fresh checkout with the fix taken out. A test that fails there only because it calls something the fix adds proves nothing, and `verify` asks for one that goes through the existing code. `regression.prepare` sets what that checkout runs first, such as `npm ci`.
+- **Tests aren't weakened without you.** A commit that deletes a test, adds a skip or focus marker, removes cases or assertions, or rewrites a snapshot is refused and held in the band for your `tests` approval. The lead can't give it, and `verify` flags any weakening the approval log doesn't show you approved. A test that's only moved or renamed isn't flagged. `tests` in the config names the test files when the usual conventions don't.
+- **Checks that didn't run are named.** A check whose tool isn't installed is listed under "Not run" by `verify` (and as `skipped` in its JSON), and a merge names it in its output and its merge commit. `ifMissing: "fail"` still fails it instead.
+- **The merge queue merges the commit its review passed.** `queue add` records the reviewed commit, and `queue merge` verifies and merges exactly that commit. A branch that moves on after its review leaves the queue for the lead to review again.
+- **An answer closes its decision at once.** Answering one of the lead's questions, or one in your brief, closes its card straight away. A question's card asks it plainly, with who decides and what it holds up, and the answer box has **Ask about it**. Brief questions owned by the lead alone no longer wait for you.
+- **Clearer documentation.** The README says what a passing `verify` proves and where its limits are, and SECURITY.md lists the features that use the network: delegated dependency approvals, teams, and bug reports you send.
+
 ## 0.12.2 (2026-10-13)
 
 The Decisions tab is readable, and old package requests stop waiting.
