@@ -1357,7 +1357,17 @@ export function decisionsTab(cards, ui, { Box, Text, Button }, on) {
     paddingX: 1,
     rowGap: 0,
     children: [
-      text(card.headline, { bold: true, wrap: 'wrap' }),
+      text(
+        card.kind === 'brief'
+          ? 'An open question in your brief'
+          : card.kind === 'question'
+            ? 'A question from the lead'
+            : card.headline,
+        { bold: true, wrap: 'wrap' },
+      ),
+      ...(card.details ?? []).map((d) =>
+        row(d.label, d.value, d.label === 'Question' ? { bold: true } : {}),
+      ),
       ...(card.asked ? [row('You asked for', card.asked)] : []),
       ...(card.story
         ? [

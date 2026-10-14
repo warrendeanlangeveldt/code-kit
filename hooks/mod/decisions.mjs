@@ -189,7 +189,10 @@ function headlineOf(line, story) {
       sub: `from the lead${forStory}${line.question.blocks ? ', which waits on it' : ''}`,
     };
   if (line.kind === 'brief')
-    return { headline: line.brief.question, sub: `open in ${line.brief.path}` };
+    return {
+      headline: line.brief.question,
+      sub: `open in ${line.brief.path}${line.brief.blocks ? ` · holds up ${line.brief.blocks}` : ''}`,
+    };
   if (line.kind === 'denied')
     return {
       headline: `Claude Code refused ${line.denial.who}'s call`,
@@ -239,7 +242,7 @@ function whyOf(line, check) {
       "The lead can't settle this itself: it's yours to decide, and the lead builds on your answer."
     );
   if (line.kind === 'brief')
-    return `It's an open question in ${line.brief.path}: what gets built depends on your answer.`;
+    return `It's an open question in ${line.brief.path}, left for you: what gets built depends on your answer. Not sure what it means? Ask about it when you answer.`;
   if (line.kind === 'denied')
     return `Claude Code's own permission check refused it${line.denial.reason ? ` (${line.denial.reason})` : ''}, which code-kit can't approve past: only you can run it or allow it.`;
   if (line.kind === 'report')
@@ -297,9 +300,11 @@ export function decisionCards(lines, context = {}) {
     .map(({ source, line }, i) => {
       const story = storyOf(line, state);
       const lane = line.held?.lane ?? line.request?.lane ?? line.stall?.lane ?? story?.lane ?? null;
+      // Approvals in force bear on an approval or a held call, not on a question about the product.
+      const aboutApprovals = ['held', 'approvals', 'stalled'].includes(line.kind);
       const settled = [
         ...journal.filter((e) => story && e.story === story.id).map((e) => e.text),
-        ...inForce
+        ...(aboutApprovals ? inForce : [])
           .filter((a) => !lane || !a.lane || a.lane === lane)
           .slice(0, 3)
           .map(
@@ -318,7 +323,22 @@ export function decisionCards(lines, context = {}) {
         // The band line it came from: one line can stand for several decisions (CARD-8).
         source,
         title: line.text,
-        asked: [request, goal].filter(Boolean).join(' · ') || null,
+        // CARD-9: what they asked for in a line (the brief's title, not its whole problem).
+        asked:
+          [request && clip(firstSentence(request), 140), goal].filter(Boolean).join(' · ') || null,
+        // The question itself, and the brief's own columns for it (who decides, what it holds up).
+        details: [
+          ...(line.kind === 'brief'
+            ? [
+                { label: 'Question', value: line.brief.question },
+                ...(line.brief.owner ? [{ label: 'Who decides', value: line.brief.owner }] : []),
+                ...(line.brief.blocks ? [{ label: 'Holds up', value: line.brief.blocks }] : []),
+              ]
+            : []),
+          ...(line.kind === 'question'
+            ? [{ label: 'Question', value: line.question.question }]
+            : []),
+        ],
         story: story
           ? { id: story.id, title: story.title ?? '', branch: story.branch ?? null }
           : null,

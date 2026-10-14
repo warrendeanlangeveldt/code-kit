@@ -160,6 +160,7 @@ function project() {
     questions: [] as any[], // `code-kit ask --json`
     reports: [] as any[], // `code-kit report --json`
     fills: [] as string[], // what the mod put in the prompt
+    leadBusy: false, // prompts are queued behind the lead's turn, and never resolve in the test
     sideAsks: [] as any[], // side calls: { fork } or { model }, with their prompt
     sideReply: { isAnswered: true, text: 'dayjs formats the booking dates.', usage: null } as any,
     holdWaits: false, // false: the hold ends at once, as if timed out (tests about cards, not hold)
@@ -392,6 +393,8 @@ function stub(on: any, w: World) {
   );
   on('prompt.submit', ($: any, e: any) => {
     w.prompts.push(e.text);
+    // A busy lead: the prompt is queued, and its turn doesn't end while the test looks.
+    if (w.leadBusy) return new Promise(() => {});
     return { text: e.text };
   });
   // $.ui.ask is the AskUserQuestion dialog: the person picks a label.
@@ -663,7 +666,7 @@ test("ACT-5 the person asks about an approval in its pane; the answer stays ther
   const confirm = await pane($, APPROVE);
   await $.ui.input({
     plugin: 'code-kit',
-    key: 'approve-ask',
+    key: 'ask-about',
     text: 'Why does the booking form need this?',
   });
   expect(w.sideAsks).toHaveLength(1);
@@ -679,7 +682,7 @@ test("ACT-5 the person asks about an approval in its pane; the answer stays ther
     /dayjs formats the booking dates/,
   );
   // A follow-up carries the aside so far; nothing went to the lead, and nothing was approved.
-  await $.ui.input({ plugin: 'code-kit', key: 'approve-ask', text: 'Is it maintained?' });
+  await $.ui.input({ plugin: 'code-kit', key: 'ask-about', text: 'Is it maintained?' });
   expect(w.sideAsks[1].prompt).toMatch(
     /Q: Why does the booking form need this\?\nA: dayjs formats the booking dates\./,
   );
@@ -697,7 +700,7 @@ test('ACT-5 before the lead has replied there is nothing to fork: it answers fro
   const ui = await bandUi($);
   await press($, 'band-approve');
   const confirm = await pane($, APPROVE);
-  await $.ui.input({ plugin: 'code-kit', key: 'approve-ask', text: 'What is it?' });
+  await $.ui.input({ plugin: 'code-kit', key: 'ask-about', text: 'What is it?' });
   expect(w.sideAsks.map((a) => a.model ?? 'fork')).toEqual(['fork', 'sonnet']);
   expect(JSON.stringify(await confirm.find({ key: 'aside-a-0' }))).toMatch(/From the facts alone/);
   await confirm.unmount();
@@ -1536,6 +1539,92 @@ test("ASK-4 the brief's open questions are the person's decisions: answered to t
   const after = await bandUi($);
   expect(await after.find({ type: 'Text', text: /in your brief/ })).toBeUndefined();
   await after.unmount();
+});
+
+test("ASK-5 a brief's question shows as a question, with who decides and what it holds up, and can be asked about before answering", async ($, on) => {
+  const w = project();
+  w.next = {
+    ...w.next,
+    brief: [
+      {
+        question: 'Product domain (for the inbound email address and the privacy policy URL).',
+        owner: 'Product owner',
+        blocks: 'CAP-1 (M2)',
+        path: 'docs/brief.md',
+      },
+    ],
+  };
+  w.requests = [];
+  w.inForce = [{ name: 'dep-rrule', lane: 'domain', reason: 'rrule', minutesLeft: 50 }];
+  w.journal = {
+    events: [
+      {
+        at: 1,
+        kind: 'request',
+        text: 'You asked for “My Aila”: a household’s default parent carries the mental load. Things get missed.',
+      },
+    ],
+  };
+  await start($, on, w);
+  const band = await bandUi($);
+  await press($, 'band-openDecision');
+  await band.unmount();
+  const ui = await pane($, PANE);
+  expect(await ui.find({ type: 'Text', text: 'An open question in your brief' })).toBeDefined();
+  expect(
+    await ui.find({
+      type: 'Text',
+      text: 'Product domain (for the inbound email address and the privacy policy URL).',
+    }),
+  ).toBeDefined();
+  expect(await ui.find({ type: 'Text', text: 'Product owner' })).toBeDefined();
+  expect(await ui.find({ type: 'Text', text: 'CAP-1 (M2)' })).toBeDefined();
+  // What they asked for in a line, and no approvals that have nothing to do with it.
+  expect(
+    await ui.find({
+      type: 'Text',
+      text: '“My Aila”: a household’s default parent carries the mental load.',
+    }),
+  ).toBeDefined();
+  expect(await ui.find({ type: 'Text', text: /dep-rrule/ })).toBeUndefined();
+  await press($, 'decide-answerBrief', PANE);
+  const box = await pane($, 'code-kit-answer');
+  await $.ui.input({ plugin: 'code-kit', key: 'ask-about', text: 'What is this for?' });
+  expect(w.sideAsks[0].prompt).toMatch(/An open question in docs\/brief\.md:\n- Product domain/);
+  expect(w.sideAsks[0].prompt).toMatch(/what it holds up: CAP-1 \(M2\)/);
+  expect(JSON.stringify(await box.find({ key: 'aside-a-0' }))).toMatch(
+    /dayjs formats the booking dates/,
+  );
+  expect(w.prompts).toEqual([]);
+  await box.unmount();
+  await ui.unmount();
+});
+
+test('ASK-2 and ASK-4 an answer closes its decision at once, though the lead hears it only when its turn ends', async ($, on) => {
+  const w = project();
+  w.leadBusy = true;
+  w.questions = [question({ options: [] })];
+  w.next = { ...w.next, brief: [{ question: 'The product domain', path: 'docs/brief.md' }] };
+  await start($, on, w);
+  const band = await bandUi($);
+  await press($, 'band-openDecision');
+  await band.unmount();
+  const ui = await pane($, PANE);
+  await press($, 'decide-answer', PANE);
+  let box = await pane($, 'code-kit-answer');
+  await $.ui.input({ plugin: 'code-kit', key: 'answer-text', text: 'The Bureau' });
+  await box.unmount();
+  expect(w.closed).toContain('code-kit-answer');
+  expect(await ui.find({ type: 'Text', text: /Which weather provider/ })).toBeUndefined();
+  await press($, 'decide-answerBrief', PANE);
+  box = await pane($, 'code-kit-answer');
+  await $.ui.input({ plugin: 'code-kit', key: 'answer-text', text: 'myaila.com.au' });
+  await box.unmount();
+  expect(w.prompts).toHaveLength(2);
+  expect(
+    await ui.find({ type: 'Text', text: 'Nothing needs you. The lead is handling the build.' }),
+  ).toBeDefined();
+  await ui.unmount();
 });
 
 test("PERM-1 a call Claude Code's own permission check refused waits for the person, who runs it or says not now", async ($, on) => {
