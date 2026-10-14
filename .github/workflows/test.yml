@@ -1,0 +1,26 @@
+# code-kit's own tests on every pull request and every push to main: the unit tests, every hook end to
+# end in throwaway git repositories, the mod's tests through Claude Code, and the formatting.
+name: test
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node: [22, 24]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      # The hook tests make commits and merges in throwaway repositories.
+      - run: git config --global user.name "code-kit CI" && git config --global user.email "ci@code-kit.invalid" && git config --global init.defaultBranch main
+      # The mod's tests run with `claude plugin test`; without Claude Code, test/mod.mjs skips them.
+      - run: npm install --global @anthropic-ai/claude-code
+      - run: npm test
+      - run: npx --yes prettier@3.9.10 --check .

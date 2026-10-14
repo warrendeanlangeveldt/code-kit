@@ -82,7 +82,7 @@ const layers = changed
 if (layers.length)
   fail('Imports break the layer rules (.claude/code-kit.json › layers):', layers.join('\n'));
 
-const failure = runChecks(config, changed, root, actor);
+const { failure } = runChecks(config, changed, root, actor);
 if (failure) fail(failure.title, failure.output);
 
 // A lane hands back committed work on its own branch; the lead reviews and merges it.

@@ -75,7 +75,7 @@ export function leadPrompt(step, { cli = 'code-kit' } = {}) {
   // MQ-2: the head of the merge queue, where the lead merges within the delegated rules.
   if (step.step === 'merge')
     return ids.length
-      ? `Merge ${ids[0]}, next in the merge queue: run node "${cli}" queue merge --delegated. It verifies the branch against the base as it is now, and sends it back to its lane if it conflicts or fails.`
+      ? `Merge ${ids[0]}, next in the merge queue: run node "${cli}" queue merge --delegated. It verifies the branch against the base as it is now, and sends it back to its lane if it conflicts or fails; a branch that moved after its review leaves the queue for you to review again.`
       : null;
   // SETUP-2: the base has no rules yet; the lead puts the approved ones there, then merges as usual.
   if (step.step === 'rules')

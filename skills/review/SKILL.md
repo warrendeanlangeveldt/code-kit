@@ -75,7 +75,7 @@ Report the table, `verify`'s result, the security review's findings (or that non
   node "${CLAUDE_PLUGIN_ROOT}/bin/code-kit.mjs" queue add <branch>
   ```
 
-  Branches merge from the queue one at a time, in the order their reviews passed, each verified against the base as it is then. Where `approvals.delegate.merge` is on and the harness's autonomy is `autonomous`, you merge the head: `code-kit queue merge --delegated` (code-kit's loop asks you when it's its turn). Otherwise the person merges it, with Merge in the code-kit band or `code-kit queue merge --person`. A head that no longer merges cleanly, or fails verify against the moved base, is sent back to its lane on its own; dispatch the fix as for any send-back. When the branch is merged, remove its worktree.
+  Branches merge from the queue one at a time, in the order their reviews passed, each verified against the base as it is then. Where `approvals.delegate.merge` is on and the harness's autonomy is `autonomous`, you merge the head: `code-kit queue merge --delegated` (code-kit's loop asks you when it's its turn). Otherwise the person merges it, with Merge in the code-kit band or `code-kit queue merge --person`. The queue records the commit your review passed and merges exactly that commit. A branch that moves on after your review leaves the queue: review it again, then queue it again. A head that no longer merges cleanly, or fails verify against the moved base, is sent back to its lane on its own; dispatch the fix as for any send-back. When the branch is merged, remove its worktree.
 
 - **Send back.** List each problem, where it is, and what "fixed" looks like. Record the send-back, so `status` and `next` read the branch as waiting for its fix rather than finished:
 

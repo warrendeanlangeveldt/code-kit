@@ -15,8 +15,12 @@ function directories(check, files, root) {
   return [...new Set(dirs)].map((d) => join(root, d)).filter((d) => existsSync(d));
 }
 
-/** The first failure as { title, output }, or null. `actor` decides `owners`; the lead always may. */
-function runCheck(check, files, root, actor) {
+/**
+ * The first failure as { title, output }, or null. `actor` decides `owners`; the lead always may. A
+ * command that isn't installed skips the rest of the check, unless `ifMissing` is "fail", and is
+ * added to `skipped` as { check, command, where }, so a pass never hides a check that didn't run.
+ */
+function runCheck(check, files, root, actor, skipped) {
   if (check.owners && !(actor.kind === 'lead' || check.owners.includes(actor.lane))) {
     return {
       title: `The ${actor.label} changed ${check.name} files it does not own:`,
@@ -37,6 +41,7 @@ function runCheck(check, files, root, actor) {
           return {
             title: `${check.name}: \`${command}\` is not installed${where}. Install it so the check can run.`,
           };
+        skipped.push({ check: check.name, command, where: where.replace(/^ in /, '') || null });
         return null; // not installed yet (fresh clone): the check can't run
       }
       if (res.error || res.status === null)
@@ -53,15 +58,23 @@ function runCheck(check, files, root, actor) {
   return null;
 }
 
-/** Runs every check whose files changed, in order; the first failure, or null when all pass. */
+/**
+ * Runs every check whose files changed, in order: { failure, skipped }, where `failure` is the first
+ * failure or null, and `skipped` lists the checks that couldn't run because a tool isn't installed.
+ */
 export function runChecks(config, changed, root, actor) {
+  const skipped = [];
   for (const check of config.checks) {
     const files = changed.filter(
       (f) => matchesAny(f, check.files) && !matchesAny(f, check.exclude),
     );
     if (!files.length) continue;
-    const failure = runCheck(check, files, root, actor);
-    if (failure) return failure;
+    const failure = runCheck(check, files, root, actor, skipped);
+    if (failure) return { failure, skipped };
   }
-  return null;
+  return { failure: null, skipped };
 }
+
+/** A skipped check in a sentence: "typecheck (`tsc` isn't installed in apps/web)". */
+export const skippedLine = (s) =>
+  `${s.check} (\`${s.command}\` isn't installed${s.where ? ` in ${s.where}` : ''})`;

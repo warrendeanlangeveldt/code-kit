@@ -164,9 +164,10 @@ function currentBranchOf(root) {
 }
 
 /**
- * Every problem with the branch, grouped: { ownership, protected, layers, baseline, design, tests,
- * regression, checks }. `lane` holds the branch to that lane's paths; `checks: false` leaves the
- * project's checks to CI's own steps. `fixes` runs a fix's tests without the fix (REG-1; with the
+ * The files changed, every problem with the branch, grouped as { ownership, protected, layers,
+ * baseline, design, tests, regression, checks }, and the checks `skipped` because a tool isn't
+ * installed. `lane` holds the branch to that lane's paths; `checks: false` leaves the project's
+ * checks to CI's own steps. `fixes` runs a fix's tests without the fix (REG-1; with the
  * checks unless said); `branch` names the branch when the checkout is detached.
  */
 export function verifyBranch({
@@ -277,11 +278,14 @@ export function verifyBranch({
   const fix = fixes ? fixOf(root, branch ?? currentBranchOf(root), config) : null;
   if (fix) found.regression.push(...proveFix({ root, from, base, changed, config, fix }));
 
+  let skipped = [];
   if (checks) {
     const actor = lane
       ? { kind: 'lane', lane, label: `${lane} lane branch` }
       : { kind: 'lead', label: 'lead' };
-    const failure = runChecks(config, changed, root, actor);
+    const ran = runChecks(config, changed, root, actor);
+    skipped = ran.skipped;
+    const { failure } = ran;
     if (failure)
       found.checks.push(
         `${failure.title}\n${String(failure.output ?? '')
@@ -290,5 +294,5 @@ export function verifyBranch({
           .join('\n')}`.trim(),
       );
   }
-  return { changed, found };
+  return { changed, found, skipped };
 }
