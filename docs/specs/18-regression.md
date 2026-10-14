@@ -14,14 +14,14 @@ Found by running code-kit on a codebase under continuous development. Agents fix
 - Main kept green, with new work stopped while it isn't (REG-4).
 - A feature map, the lineage from a change up to the features it could affect, and a Features tab (FEAT-1 to FEAT-3).
 - The QA lane's check mode: the affected features walked in a real browser, through an adapter (QA-1 to QA-4).
-- Scenario suites: requirement-level scenarios in the project's own format and runner, written by the QA lane, run against wherever the person says, gating merges when the target runs the branch, and never weakened without the person (SCN-1 to SCN-7).
+- Scenario suites: requirement-level scenarios in the project's own format and runner, written by the QA lane, run against wherever the person says, gating merges when the target runs the branch, and never weakened without the person (SCN-1 to SCN-7); and, for a project without a suite, a spec for building one (SCN-8).
 - An older setup told what's new (REG-5).
 
 ## Out of scope
 
 - Visual diffs of screenshots, and performance or load testing.
 - Check mode running the app anywhere but a local, throwaway environment. It never touches a shared or production system.
-- A scenario runner. code-kit runs the project's runner through a contract (SCN-1); the format, the runner, its identities and its credentials are the project's.
+- Shipping a scenario runner. code-kit runs the project's runner through a contract (SCN-1), and gives a project without one a spec to build it (SCN-8); the format, the runner, its identities and its credentials are the project's.
 - Choosing where scenarios run. The targets are the person's, in the config, a kit file every change to which they approve.
 - Hosted browsers. The browser runs on the machine the lane runs on.
 
@@ -417,6 +417,26 @@ A regression at the gate or after deploy starts the QA lane's `qa-check` agent (
 - Given BOOK-3.my-bookings regressing on web/st-12, then the send-back carries `qa-check`'s explanation naming the changed files it points to.
 - Given `qa-check` writing a scenario file, then it's refused: check mode only reads.
 
+### SCN-8 A project without a suite is given a spec for one
+
+A project whose specs have requirements, but whose config has no `scenarios`, has nothing to run them with. Before the first "Scenarios for <spec>" story, `next` gives `scenario-runner`: spec-design writes `docs/specs/NN-scenario-runner.md` from `templates/scenario-runner.md`, with the person, in the project's own stack. It's then planned and built like any spec, by the QA lane.
+
+The template fixes what code-kit relies on, and leaves the rest to the project:
+
+- **Fixed: the contract.** `list` and `run` print the JSON of SCN-1. `run` reads the ids on stdin and the target from `CODE_KIT_TARGET_URL`.
+- **Fixed: the safety rules.** Credentials only come from the environment or CI's secrets, never from the repository or a scenario file. Every scenario carries one safety tag, and only side-effect-free ones (reads, and writes the run cleans up) run unless a run opts in to the others, such as real email, payments or model calls. A target outside the config's hosts is refused. Cleanup always runs, even after a failure, and deletes only what the run created, pinned to a value captured in that run. An offline mode, which `list` uses, reads and checks every scenario with no network.
+- **Fixed: the outcomes.** Each scenario passes, fails, errors (it couldn't set up or clean up) or is skipped with a reason, and each failure names its step and what was expected and seen.
+- **The project's: everything else.** The scenario format, the language and test framework, what scenarios call (an HTTP API, a browser, a command line), and how test identities and data are set up. Questions for each of these are in the template, for spec-design to ask.
+
+The runner's engine is a protected path (approval `tests`) in the config init drafts, since every scenario depends on it; the scenario files stay the QA lane's. Its own tests run as an ordinary check. The runner spec's last story writes `scenarios` into the config, so the contract is in place once it merges, and SCN-1 to SCN-7 apply from then.
+
+**Acceptance**
+
+- Given a ready spec and no `scenarios` in the config, then `next` gives `scenario-runner` before any "Scenarios for <spec>" story.
+- Given spec-design run for it, then it writes a runner spec from the template, asking the format, the stack, what the scenarios call and how identities are set up, with the contract and safety rules as requirements.
+- Given the runner's last story merged, then the config has `scenarios`, `list` reads, and `next` dispatches "Scenarios for <spec>".
+- Given a project with `scenarios` already set, then `next` never gives `scenario-runner`.
+
 ### REG-5 An older setup is told what's new
 
 The setup version goes to 4. A project on an older setup gets ONB-5's attention line naming what re-running init adds:
@@ -439,7 +459,7 @@ Re-running init drafts them, shows the person the difference, and sets `setup` t
 1. REG-1 and REG-2: the most return for the least, and with no new setup.
 2. FEAT-1 and FEAT-2: the feature map and `impact`.
 3. REG-3: checks that reach importers.
-4. SCN-1, SCN-3 and SCN-6: the contract, the verdicts and the weakening rules, which work with a suite run anywhere.
+4. SCN-1, SCN-3, SCN-6 and SCN-8: the contract, the verdicts, the weakening rules, and the spec for a project with no suite to build one.
 5. SCN-5 with REG-4: scenarios after deploy and main kept green. A project whose only target is a shared staging is fully served from here.
 6. SCN-2, SCN-4 and SCN-7: the QA lane writing them first, the gate for a branch target, and the explanation.
 7. QA-1 to QA-4, then FEAT-3.
