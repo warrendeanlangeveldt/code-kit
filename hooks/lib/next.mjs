@@ -26,7 +26,10 @@ const git = (root, ...args) => {
   }
 };
 
-/** The spec-design brief: { path, status, openQuestions: [question, ...] }, or null. */
+/**
+ * The spec-design brief: { path, status, openQuestions: [question, ...], open: [{ question, owner,
+ * blocks }] }, or null. `open` reads the table's Owner and Blocks columns where it has them.
+ */
 export function readBrief(root, config) {
   const specs = config?.docs?.specs;
   const candidates = [specs && `${posix.dirname(specs)}/brief.md`, 'docs/brief.md'].filter(Boolean);
@@ -39,12 +42,27 @@ export function readBrief(root, config) {
   const start = lines.findIndex((l) => /^##\s+Open questions/i.test(l));
   const section = start < 0 ? [] : lines.slice(start + 1);
   const end = section.findIndex((l) => /^##\s/.test(l));
-  const openQuestions = section
-    .slice(0, end < 0 ? undefined : end)
-    .filter((l) => /^\|/.test(l) && !/^\|\s*-/.test(l) && !/^\|\s*Question\s*\|/i.test(l))
-    .map((l) => l.split('|')[1].trim())
-    .filter((q) => q && !q.startsWith('{{'));
-  return { path, status: status ?? null, openQuestions };
+  const rows = section.slice(0, end < 0 ? undefined : end).filter((l) => /^\|/.test(l));
+  const cells = (l) =>
+    l
+      .split('|')
+      .slice(1, -1)
+      .map((c) => c.trim());
+  const header = rows.find((l) => /^\|\s*Question\s*\|/i.test(l));
+  const columns = header ? cells(header).map((c) => c.toLowerCase()) : ['question'];
+  const at = (name) => columns.findIndex((c) => c.startsWith(name));
+  const open = rows
+    .filter((l) => l !== header && !/^\|\s*-/.test(l))
+    .map((l) => {
+      const c = cells(l);
+      return {
+        question: c[0] ?? '',
+        owner: at('owner') > 0 ? c[at('owner')] || null : null,
+        blocks: at('block') > 0 ? c[at('block')] || null : null,
+      };
+    })
+    .filter((q) => q.question && !q.question.startsWith('{{'));
+  return { path, status: status ?? null, openQuestions: open.map((q) => q.question), open };
 }
 
 const hasMarkdown = (dir) => {
@@ -87,7 +105,15 @@ export function nextStep(root, base) {
   const brief = readBrief(root, config);
   if (brief?.openQuestions.length) {
     attention.push(`${brief.openQuestions.length} open question(s) in ${brief.path}.`);
-    briefQuestions = brief.openQuestions.map((question) => ({ question, path: brief.path }));
+    // A question the brief gives to the lead alone (Owner: Lead) is the lead's to settle, not the person's.
+    briefQuestions = brief.open
+      .filter(
+        (q) =>
+          !q.owner ||
+          !/\blead\b/i.test(q.owner) ||
+          /owner|person|you|product|client/i.test(q.owner),
+      )
+      .map((q) => ({ ...q, path: brief.path }));
   }
 
   if (!config) {

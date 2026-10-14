@@ -100,6 +100,15 @@ The brief's open questions (its `## Open questions` table) are the person's deci
 
 - Given a brief with two open questions, then the band says "2 open questions in your brief", Later puts the first off, and answering the second prompts the lead to record it in the brief.
 
+### ASK-5 Ask about it before answering
+
+A question can be terse ("Product domain (for the inbound email address…)"). Its card says what it is plainly: "An open question in your brief" or "A question from the lead", then the question itself, and for the brief's, who decides and what it holds up, from the brief table's Owner and Blocks columns. A question the brief leaves to the lead alone (Owner: Lead) isn't the person's, and doesn't show. What they asked for is the brief's first sentence, and approvals in force show only on approvals and held calls. The answer box has **Ask about it**, as the Approve pane does (ACT-5): answered there by a side call over the lead's conversation with the question's facts, never added to it.
+
+**Acceptance**
+
+- Given the brief's "Product domain" question, owned by the product owner and holding up CAP-1, then its card shows the question, Product owner and CAP-1 (M2), and no unrelated approval; asking "What is this for?" in the answer box answers there, and the lead gets no prompt.
+- Given a brief question owned by Lead, then `next --json` doesn't list it.
+
 ### PERM-1 What Claude Code itself refused
 
 A call Claude Code's own permission check refuses (its auto mode, a deny rule), which code-kit can't approve past, waits in the band for the person: "Claude Code refused the lead's `pnpm db:generate`", with Put it in the prompt (a shell command goes in the prompt after `!`, for them to run), Done it (the lead is told they ran it or allowed it) and Not now (the lead is told to carry on with other work and not get round it). The card says what Claude Code said.

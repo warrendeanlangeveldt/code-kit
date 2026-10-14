@@ -1075,29 +1075,12 @@ export function approvePane(
         ],
       }),
       // ACT-5: an aside about this approval, answered here and never in the lead's conversation.
-      ...aside.thread.flatMap((turn, i) => [
-        Text({ key: `aside-q-${i}`, color: 'cyan', children: [`You: ${turn.question}`] }),
-        turn.pending
-          ? Text({ key: `aside-a-${i}`, dimColor: true, children: ['Asking…'] })
-          : turn.error
-            ? Text({ key: `aside-a-${i}`, color: 'red', children: [turn.error] })
-            : Markdown
-              ? Markdown({ key: `aside-a-${i}`, text: turn.answer })
-              : Text({ key: `aside-a-${i}`, children: [turn.answer] }),
-      ]),
-      ...(onAsk
-        ? [
-            Input({
-              key: 'approve-ask',
-              label: 'Ask about it',
-              value: aside.draft,
-              placeholder: 'What is it for, and what does approving it let happen?',
-              submitLabel: 'Ask',
-              onInput: onAskInput,
-              onSubmit: onAsk,
-            }),
-          ]
-        : []),
+      ...asideNodes(
+        aside,
+        { Text, Input, Markdown },
+        { onAskInput, onAsk },
+        'What is it for, and what does approving it let happen?',
+      ),
       Input({
         key: 'approve-reason',
         label: 'Reason',
@@ -1118,6 +1101,69 @@ export function approvePane(
       }),
     ],
   });
+}
+
+/**
+ * ACT-5: an aside in a pane: each question asked and its answer (or that it's being asked, or why there
+ * is none), then the box to ask the next.
+ */
+function asideNodes(aside, { Text, Input, Markdown }, { onAskInput, onAsk }, placeholder) {
+  return [
+    ...aside.thread.flatMap((turn, i) => [
+      Text({ key: `aside-q-${i}`, color: 'cyan', children: [`You: ${turn.question}`] }),
+      turn.pending
+        ? Text({ key: `aside-a-${i}`, dimColor: true, children: ['Asking…'] })
+        : turn.error
+          ? Text({ key: `aside-a-${i}`, color: 'red', children: [turn.error] })
+          : Markdown
+            ? Markdown({ key: `aside-a-${i}`, text: turn.answer })
+            : Text({ key: `aside-a-${i}`, children: [turn.answer] }),
+    ]),
+    ...(onAsk
+      ? [
+          Input({
+            key: 'ask-about',
+            label: 'Ask about it',
+            value: aside.draft,
+            placeholder,
+            submitLabel: 'Ask',
+            onInput: onAskInput,
+            onSubmit: onAsk,
+          }),
+        ]
+      : []),
+  ];
+}
+
+/**
+ * ASK-5: the side call's prompt for a question about one of the person's decisions (a question from the
+ * lead, or one open in their brief): what code-kit knows of it, the aside so far, and their question.
+ */
+export function questionAsidePrompt({ q, thread = [], question }) {
+  return [
+    "The person is deciding how to answer a question in code-kit's Decisions pane, and asks you about it first. Answer in a few short sentences, in plain words: what the question means, why it matters for the build, what the choices are and what each leads to, and what you'd recommend if you know enough to. Use what you know from this conversation, the project's docs you've read, and the facts below. If you don't know, say so; don't guess. This answer goes to that pane, not into the conversation: don't act on it.",
+    '',
+    q.kind === 'brief' ? `An open question in ${q.path}:` : `A question the lead asked (${q.id}):`,
+    `- ${q.question}`,
+    ...(q.owner ? [`- who decides: ${q.owner}`] : []),
+    ...(q.kind === 'brief' && q.blocks ? [`- what it holds up: ${q.blocks}`] : []),
+    ...(q.story ? [`- story: ${q.story}`] : []),
+    ...(q.why ? [`- why the lead can't settle it: ${q.why}`] : []),
+    ...(q.options?.length
+      ? [
+          `- the lead's options: ${q.options.map((o) => `${o.label}${o.effect ? ` (${o.effect})` : ''}`).join('; ')}`,
+        ]
+      : []),
+    ...(thread.length
+      ? [
+          '',
+          'Asked so far:',
+          ...thread.flatMap((t) => [`Q: ${t.question}`, `A: ${t.answer ?? t.error ?? ''}`]),
+        ]
+      : []),
+    '',
+    `Question: ${question}`,
+  ].join('\n');
 }
 
 /**
@@ -1163,10 +1209,11 @@ export const ANSWER_ID = 'code-kit-answer';
 /** ASK-2, ASK-4: the person's answer to the lead's question, or to one in their brief, typed. */
 export function answerPane(
   answering,
-  { Box, Text, Input, Button },
-  { onInput, onSubmit, onCancel },
+  { Box, Text, Input, Button, Markdown },
+  { onInput, onSubmit, onCancel, onAskInput, onAsk },
 ) {
   const { kind, question, text, error } = answering;
+  const aside = answering.aside ?? { thread: [], draft: '' };
   return Box({
     flexDirection: 'column',
     rowGap: 1,
@@ -1180,6 +1227,28 @@ export function answerPane(
             : `${answering.id}, from the lead${answering.story ? `, for ${answering.story}` : ''}. Your answer is recorded and sent to the lead.`,
         ],
       }),
+      ...(kind === 'brief' && (answering.owner || answering.blocks)
+        ? [
+            Text({
+              dimColor: true,
+              children: [
+                [
+                  answering.owner && `Who decides: ${answering.owner}`,
+                  answering.blocks && `Holds up: ${answering.blocks}`,
+                ]
+                  .filter(Boolean)
+                  .join(' · '),
+              ],
+            }),
+          ]
+        : []),
+      // ASK-5: not sure what it means? Ask, here, before answering.
+      ...asideNodes(
+        aside,
+        { Text, Input, Markdown },
+        { onAskInput, onAsk },
+        'What does it mean, and what would you suggest?',
+      ),
       Input({
         key: 'answer-text',
         label: 'Answer',

@@ -891,7 +891,7 @@ try {
     );
     writeFileSync(
       join(q.dir, 'docs/brief.md'),
-      '# Brief\n\n**Status:** ready\n\n## Open questions\n\n| Question | Owner |\n| --- | --- |\n| Accounts: AWS and hosting | you |\n| The product domain | you |\n',
+      '# Brief\n\n**Status:** ready\n\n## Open questions\n\n| Question | Owner |\n| --- | --- |\n| Accounts: AWS and hosting | you |\n| The product domain | you |\n| Which index for search | Lead |\n',
     );
     q.git('add', '-A');
     q.git('commit', '-q', '-m', 'plan');
@@ -968,11 +968,12 @@ try {
       0,
     );
     expect(
-      "ASK-4 next lists the brief's open questions for the person's Decisions tab",
+      "ASK-4 next lists the brief's open questions for the person's Decisions tab, with who decides, leaving out the lead's own",
       truth(
         nextWait.brief.map((b) => b.question).join('|') ===
           'Accounts: AWS and hosting|The product domain' &&
-          nextWait.brief[0].path === 'docs/brief.md',
+          nextWait.brief[0].path === 'docs/brief.md' &&
+          nextWait.brief[0].owner === 'you',
         JSON.stringify(nextWait.brief),
       ),
       0,

@@ -21,6 +21,7 @@ import {
   answerPane,
   approvalAsidePrompt,
   approvePane,
+  questionAsidePrompt,
   commandItself,
   band,
   bandLines,
@@ -564,12 +565,24 @@ export function register(on) {
       answerWith: (line) => act.sendAnswer({ kind: 'question', ...line.question }, line.choice),
       // ASK-2, ASK-4: Answer… opens a box for the person's own words.
       answer: async (line) => {
-        answering = { kind: 'question', ...line.question, text: '', error: null };
+        answering = {
+          kind: 'question',
+          ...line.question,
+          text: '',
+          error: null,
+          aside: { thread: [], draft: '' },
+        };
         await $.ui.open({ id: ANSWER_ID, title: 'Answer', focus: true, closeOnEscape: true });
         $.ui.invalidate('ui.render');
       },
       answerBrief: async (line) => {
-        answering = { kind: 'brief', ...line.brief, text: '', error: null };
+        answering = {
+          kind: 'brief',
+          ...line.brief,
+          text: '',
+          error: null,
+          aside: { thread: [], draft: '' },
+        };
         await $.ui.open({ id: ANSWER_ID, title: 'Answer', focus: true, closeOnEscape: true });
         $.ui.invalidate('ui.render');
       },
@@ -613,17 +626,24 @@ export function register(on) {
           }
         }
         notice = null;
-        const said = /[.!?]$/.test(text) ? text : `${text}.`;
-        await $.prompt.submit({
-          text:
-            q.kind === 'question'
-              ? `The person answered ${q.id} (${q.question}): ${said}${q.blocks ? ` ${q.story} no longer waits on them.` : ''} Carry on with it.`
-              : `The person answered an open question in ${q.path}, "${q.question}": ${said} Record it in the brief's decision log, take it out of the open questions, and carry on with it.`,
-        });
+        // Answered, the decision goes at once; the lead hears it as a turn of its own once it's idle, which
+        // can be long after (so the prompt isn't waited on).
         if (q.kind === 'brief') {
           briefLater.add(q.question);
           model = { ...model, brief: (model.brief ?? []).filter((b) => b.question !== q.question) };
         }
+        if (q.kind === 'question')
+          model = { ...model, questions: (model.questions ?? []).filter((x) => x.id !== q.id) };
+        $.ui.invalidate('ui.render');
+        const said = /[.!?]$/.test(text) ? text : `${text}.`;
+        $.prompt
+          .submit({
+            text:
+              q.kind === 'question'
+                ? `The person answered ${q.id} (${q.question}): ${said}${q.blocks ? ` ${q.story} no longer waits on them.` : ''} Carry on with it.`
+                : `The person answered an open question in ${q.path}, "${q.question}": ${said} Record it in the brief's decision log, take it out of the open questions, and carry on with it.`,
+          })
+          .catch(() => {});
         await act.reload();
         return true;
       },
@@ -634,16 +654,20 @@ export function register(on) {
       deniedDone: async (line) => {
         denied.delete(line.denial.id);
         $.ui.invalidate('ui.render');
-        await $.prompt.submit({
-          text: `The person ran it themselves, or allowed it: ${line.denial.command ?? line.denial.what} (Claude Code had refused it for ${line.denial.who}). Check it worked, and carry on.`,
-        });
+        $.prompt
+          .submit({
+            text: `The person ran it themselves, or allowed it: ${line.denial.command ?? line.denial.what} (Claude Code had refused it for ${line.denial.who}). Check it worked, and carry on.`,
+          })
+          .catch(() => {});
       },
       deniedNo: async (line) => {
         denied.delete(line.denial.id);
         $.ui.invalidate('ui.render');
-        await $.prompt.submit({
-          text: `The person won't run ${line.denial.command ?? line.denial.what} now (Claude Code refused it for ${line.denial.who}). Don't try to get around it: carry on with other work, and if a story can't go on without it, ask with code-kit ask --blocks.`,
-        });
+        $.prompt
+          .submit({
+            text: `The person won't run ${line.denial.command ?? line.denial.what} now (Claude Code refused it for ${line.denial.who}). Don't try to get around it: carry on with other work, and if a story can't go on without it, ask with code-kit ask --blocks.`,
+          })
+          .catch(() => {});
       },
       // REPORT-3: the person sends a drafted report to code-kit's GitHub, or discards it.
       sendReport: async (line) => {
@@ -675,6 +699,40 @@ export function register(on) {
           heldId: line.held.id,
           outside: line.held.outside ?? null,
         }),
+      // ACT-5: a side call over the lead's own conversation (it shares the prompt cache, and nothing is
+      // added to the conversation); before the lead's first reply, from the prompt's facts alone.
+      sideCall: async (prompt) => {
+        const failed = (err) => ({ isAnswered: false, reason: String(err?.message ?? err) });
+        const reply = await $.model.fork({ prompt }).catch(failed);
+        if (reply.isAnswered || reply.reason !== 'nothing-to-fork') return reply;
+        return $.model.complete({ model: 'sonnet', prompt, maxTokens: 800 }).catch(failed);
+      },
+      // ASK-5: a question about a question, asked in the answer box before answering.
+      askAnswer: async (question) => {
+        const q = question.trim();
+        if (!answering || !q) return;
+        const asked = answering;
+        const turn = { question: q, pending: true };
+        const thread = asked.aside.thread;
+        answering = { ...asked, aside: { thread: [...thread, turn], draft: '' } };
+        $.ui.invalidate('ui.render');
+        const reply = await act.sideCall(questionAsidePrompt({ q: asked, thread, question: q }));
+        if (!answering || answering.question !== asked.question) return;
+        const done = reply.isAnswered
+          ? { question: q, answer: reply.text }
+          : {
+              question: q,
+              error: `No answer: ${reply.reason}${reply.status ? ` (${reply.status})` : ''}`,
+            };
+        answering = {
+          ...answering,
+          aside: {
+            ...answering.aside,
+            thread: answering.aside.thread.map((t) => (t === turn ? done : t)),
+          },
+        };
+        $.ui.invalidate('ui.render');
+      },
       // ACT-5: a question about the approval, answered in its pane by a side call over the lead's own
       // conversation (it shares the prompt cache, and nothing is added to the conversation); before the
       // lead's first reply, from code-kit's facts alone.
@@ -694,13 +752,7 @@ export function register(on) {
           thread,
           question: q,
         });
-        let reply = await $.model
-          .fork({ prompt })
-          .catch((err) => ({ isAnswered: false, reason: String(err?.message ?? err) }));
-        if (!reply.isAnswered && reply.reason === 'nothing-to-fork')
-          reply = await $.model
-            .complete({ model: 'sonnet', prompt, maxTokens: 800 })
-            .catch((err) => ({ isAnswered: false, reason: String(err?.message ?? err) }));
+        const reply = await act.sideCall(prompt);
         // Answered for this approval only: a pane closed or moved on meanwhile keeps what it has.
         if (!approving || approving.request !== asked.request) return;
         const done = reply.isAnswered
@@ -2004,6 +2056,11 @@ export function register(on) {
       },
       onSubmit: (value) => act.confirmAnswer(value),
       onCancel: () => act.cancelAnswer(),
+      onAskInput: (value) => {
+        answering = { ...answering, aside: { ...answering.aside, draft: value } };
+        $.ui.invalidate('ui.render');
+      },
+      onAsk: (value) => act.askAnswer(value),
     });
   });
 
