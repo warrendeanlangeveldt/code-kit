@@ -1,6 +1,6 @@
 ## Enforced, not advised
 
-The code-kit plugin enforces the rules in `.claude/code-kit.json` on every tool call:
+The code-kit plugin enforces the rules in `.claude/code-kit.json` on every file edit, shell command and finish:
 
 - who writes where (the lead delegates lane work to the lane agents in `.claude/agents/`);
 - the layer rules ({{layer names, in order}});

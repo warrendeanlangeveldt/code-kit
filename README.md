@@ -7,9 +7,9 @@
 
 # code-kit
 
-A Claude Code plugin that keeps AI coding agents inside a project's engineering rules. You write the rules once, per project, in `.claude/code-kit.json`. The plugin's hooks enforce them on every tool call, for the main session and every subagent. A rule Claude would otherwise only be _asked_ to follow becomes one the hooks refuse to let it break. The same rules run in CI for every pull request.
+A Claude Code plugin that keeps AI coding agents inside a project's engineering rules. You write the rules once, per project, in `.claude/code-kit.json`. The plugin's hooks check them on every file edit, shell command and finish, for the main session and every subagent. A rule Claude would otherwise only be _asked_ to follow becomes one a hook refuses to let it break, or, for shell commands, reports straight after for the agent to undo. `code-kit verify` runs the same rules on a branch, in review and in CI.
 
-It also carries the work from idea to merged code: spec an idea into requirements, hand stories to lanes, review each branch against its requirements, and track the build against the spec.
+It has two parts. The core is the rules and their checks: who may write where, layers, protected files with an audit log, approvals, and proof before finishing. On top of it sits an optional workflow that carries work from idea to merged code: spec an idea into requirements, hand stories to lanes, review each branch against its requirements, and track the build against the spec. You can use the core without the workflow.
 
 **Pairs with [Context Graph](https://github.com/warrendeanlangeveldt/context-graph).** code-kit decides who may change what, and what has to be proved. Context Graph gives each agent the why behind a file before it edits it: the file's card, its rules and the decisions made on it, kept in git. Each detects the other: Context Graph's cards and slices then carry the file's spec requirement and layer rule. Install both for agents that stay in their lane and know why the code is the way it is.
 
@@ -46,16 +46,16 @@ Rules in `CLAUDE.md` and agent prompts are advice. Over a long session, or acros
 - an agent declares "done" with failing type checks, or with work nobody committed;
 - someone force-pushes, commits to `main`, adds a dependency, or runs a deploy nobody asked for.
 
-code-kit stops each of these at the moment it would happen. The hook refuses the tool call and tells the agent why and what to do instead. The rules live in one reviewed file, not in every prompt, so they hold for every agent and every session.
+code-kit catches each of these, most at the moment it would happen: the hook refuses the edit or command and tells the agent why and what to do instead. A file a shell command writes is caught straight after the command, and the agent is told to revert it. The rules live in one reviewed file, not in every prompt, so they hold for every agent and every session. They are guard rails for agents, not a sandbox: see [What a pass means, and the limits](#what-a-pass-means-and-the-limits).
 
 ## What it enforces
 
-- **Lanes:** each lane agent writes only its own paths. The main session (the lead) writes contracts, specs and config, and delegates the rest. Any other subagent is read-only.
-- **Layers:** each layer depends only on the layers it lists, and never on packages it's denied. This is checked before every write (a write that would add a violation is refused, so a layer is never broken on disk), after it, and again before finishing, for JavaScript and TypeScript imports. In brownfield code, existing violations can be recorded in a baseline so only new ones block.
+- **Lanes:** each lane agent writes only its own paths. The main session (the lead) writes contracts, specs and config, and delegates the rest. Any other subagent is read-only. An edit outside those paths is refused before it happens; a file a shell command writes outside them is reported straight after, for the agent to revert, and the finish check refuses to finish until it's gone.
+- **Layers:** each layer depends only on the layers it lists, and never on packages it's denied, for JavaScript and TypeScript imports. An edit that would add a violation is refused before it's written; the rules are checked again after each edit and before finishing, which is what catches a file a shell command wrote. In brownfield code, existing violations can be recorded in a baseline so only new ones block. Imports are found by pattern, not by parsing: see [the limits](#what-a-pass-means-and-the-limits).
 - **Protected paths and the approval log:** every committed change to the kit, registers or contracts is appended to `.claude/approval-log.jsonl`, in the same commit. Only the lead writes these paths without a person's approval, and the person reviews them in the pull request.
-- **Spec-check before code:** when the project has specs, a lane can't write code on a branch until the spec-check report for that branch exists.
+- **Spec-check before code:** when the project has specs, a lane can't write code on a branch until it has saved a spec-check report for that branch. The hook checks that the report exists; review checks what it says.
 - **Designs before screens** (optional): a screen file can't be written until the design register lists it.
-- **Shell rules:**
+- **Shell rules**, matched against the command's text before it runs:
   - no force-push, pushing to or committing on protected branches, `--no-verify`, destructive deletes, or piping downloads into a shell;
   - no new dependency without a person's approval, for that package and that lane; the approval also covers the manifest and lockfile changes the install makes;
   - no forged approvals;
@@ -72,14 +72,33 @@ code-kit stops each of these at the moment it would happen. The hook refuses the
   - a `<lane>/…` branch stays in that lane's paths, apart from manifest and lockfile changes logged under a dependency approval;
   - every protected change is in the approval log, and the log is append-only;
   - no new layer violations, and the baseline doesn't grow;
-  - no screens without an approved design, and no secrets anywhere in the branch's history, including ones committed and deleted again;
+  - no screens without an approved design;
+  - no secret files (`.env`, `secrets/`, keys and keystores) anywhere in the branch's history, including ones committed and deleted again, and, where gitleaks is installed, no secrets in any commit's content;
   - no test weakened (deleted, skipped or focused, cut down, or its snapshot rewritten) without the person's `tests` approval in the log;
   - a fix (a plan story with `**Fixes:**`, or a `<lane>/fix-…` branch) comes with a test that fails without it, as the bug, and passes with it;
   - the project's checks pass.
 
 A project without `.claude/code-kit.json` isn't governed at all. An invalid config fails closed: nothing but the config itself can be written until it's fixed.
 
-The hooks are guard rails, not a sandbox ([SECURITY.md](SECURITY.md)): they refuse the actions they recognise. Two limits are deliberate. The finish check stops blocking once it has reported the same problem three times without progress, and says so, for the lead to take up. A check whose tool isn't installed is skipped unless it sets `ifMissing: "fail"`.
+## What a pass means, and the limits
+
+When `verify` passes on a branch, you can conclude:
+
+- every file the branch changed is one its lane may write, or is logged under an approval;
+- every protected change is in the approval log, and the log was only appended to;
+- no import found adds a layer violation, and the baseline didn't grow;
+- no test was weakened without the person's `tests` approval, and, on a fix, its tests fail without the fix;
+- the project's checks for the changed files ran and passed, **except** any whose tool isn't installed where `verify` ran, which are skipped without saying so unless the check sets `ifMissing: "fail"`. Set it on every check that matters, and install the project's tools in CI.
+
+It's a check of the branch as it is when it runs. Nothing records which commit passed, so a branch that moves after review is verified again before it merges, but not reviewed again.
+
+The limits, so nothing here promises more than it does:
+
+- **Guard rails, not a sandbox** ([SECURITY.md](SECURITY.md)). The hooks refuse what they recognise. Shell commands are matched by their text, so a command written to hide what it does can get past a shell rule, and a file a shell command writes is caught after the command, not before. Tools other than Edit, Write, NotebookEdit and Bash, such as an MCP server that writes files, aren't seen by the hooks at all; the finish check and `verify` still see what they changed in git.
+- **Layers are pattern-matched.** Imports are found with regular expressions for `import`, `export … from`, `require()` and `import()` with a literal path, in JavaScript and TypeScript files. A computed import isn't seen, and an import written inside a comment or a string can be reported as if it were real. An import resolves to a file through a relative path or `importAliases` only. Anything else, a workspace package's name included, counts as a package, held only by `denyPackages`, so map workspace packages and `tsconfig` paths in `importAliases`.
+- **Secrets.** Without gitleaks, only file names are checked (`.env`, `secrets/`, keys and keystores), not what files contain. The CI workflow init installs doesn't install gitleaks; add it if you rely on the scan.
+- **The finish check gives up deliberately.** After reporting the same problem three times without progress, it lets the agent finish and says so, for the lead to take up, rather than trap it.
+- **Review is the lead's.** The workflow's skills tell the lead to review each branch against its requirements, and the merge queue only takes branches the lead put there, but nothing mechanical proves a review happened. What's mechanical is `verify`, which runs before every merge code-kit makes.
 
 ## When to use it
 
@@ -99,20 +118,20 @@ Set it up at the start of a new build, straight from the architecture docs, or b
 ## Where it runs
 
 - **In Claude Code**, as a plugin. It's installed once per machine and governs only projects that have `.claude/code-kit.json`.
-- **On every tool call** in those projects, through Claude Code hooks:
+- **On every edit, shell command and finish** in those projects, through Claude Code hooks:
 
   | Hook                     | Runs                        | Enforces                                                          |
   | ------------------------ | --------------------------- | ----------------------------------------------------------------- |
   | `PreToolUse` Edit/Write  | `hooks/guard-paths.mjs`     | lanes, protected paths, spec-check and design gates               |
   | `PreToolUse` Bash        | `hooks/guard-bash.mjs`      | shell rules, dependencies, approval log and secret scan on commit |
   | `PostToolUse` Edit/Write | `hooks/post-edit-check.mjs` | layer rules and the project's `postEdit` commands                 |
-  | `PostToolUse` Bash       | `hooks/lane-audit.mjs`      | ownership of files written by shell commands                      |
+  | `PostToolUse` Bash       | `hooks/lane-audit.mjs`      | ownership of files a shell command wrote, reported for revert     |
   | `Stop`, `SubagentStop`   | `hooks/stop-check.mjs`      | proof before finishing                                            |
 
 - **For the main session and every subagent**, including agents in worktrees under `.claude/worktrees/`.
 - **In front of you, in the terminal and the Desktop app,** through the code-kit mod (Claude Code 2.1.287 or later; see [In the session](#in-the-session)). It shows and acts, and never enforces: the hooks above do that everywhere, the mod or not.
 - **In CI**, through `code-kit verify` in a GitHub Actions workflow that init can install (`templates/github-workflow.yml`).
-- **Locally, with Node 22 or later.** Nothing is sent anywhere. The CLI in `bin/` runs the same rules from a terminal.
+- **Locally, with Node 22 or later.** The CLI in `bin/` runs the same rules from a terminal. The rules themselves send nothing over the network. Three features do, and only when you use them: delegated dependency approvals read the package from the npm registry, the team features (`team`, `intend`) talk to GitHub through your `gh`, or to the team provider you configure, and a bug report you send goes to code-kit's GitHub through your `gh`.
 
 ## Install
 
@@ -231,7 +250,7 @@ code-kit ships no fixed team. Init writes one for each project, from its docs or
 CLAUDE.md                  # plus a section telling the lead how the rules work
 ```
 
-**Who's who.** There are four kinds of actor. The hooks tell the three Claude kinds apart on every tool call; the person works outside them:
+**Who's who.** There are four kinds of actor. The hooks tell the three Claude kinds apart on every call they see; the person works outside them:
 
 | Actor              | Who it is                                                                                   | May write                                       |
 | ------------------ | ------------------------------------------------------------------------------------------- | ----------------------------------------------- |
@@ -261,14 +280,14 @@ Editing an agent file can't loosen a rule. And the agent files are kit files (`.
 
 **Spawned per story.** Dispatch starts a fresh instance of the lane's agent for each story, in its own worktree on `<lane>/st-<n>`. Agents for different lanes run in parallel. Each starts knowing only its agent file and the story's brief, so nothing leaks between stories.
 
-**How the spec is enforced, step by step:**
+**How the spec is followed, step by step** (the steps a hook or `verify` enforces are marked):
 
 1. The brief names the story's requirement IDs.
 2. The agent runs the spec-check skill and saves a requirement table for its branch.
-3. The path guard blocks any code in its lane until that report exists.
-4. The agent's tests name the requirement IDs.
-5. The stop hook runs the checks before the agent can finish.
-6. Review compares the branch with the requirements and the report, and `verify` checks the rules again in CI.
+3. **Enforced:** the path guard blocks any code in its lane until that report exists.
+4. The agent's tests name the requirement IDs; `status` lists the requirements no test names.
+5. **Enforced:** the stop hook runs the checks before the agent can finish.
+6. Review compares the branch with the requirements and the report, and **enforced:** `verify` checks the rules again before merging and in CI.
 
 **The security reviewer** (`.claude/agents/security-reviewer.md`, from `templates/security-reviewer.md`) is a reviewer, not a lane: it owns no paths and checks everyone's work. Init writes it whenever the product handles sign-in, personal data, payments, input from outside or secrets, which is nearly always. It only reads (Read, Grep, Glob, and Bash for `git diff` and the project's audit commands), and the hooks hold it to that like any subagent outside the lanes. spec-design gives each spec a short threat model (what's sensitive, who might attack it, the trust boundaries) and security requirements stories cite. When `code-kit security` says a story's change touches something sensitive, the review runs the agent on the diff against those threat models: it attacks authentication and authorisation, injection (prompt injection too), data exposure, secrets, cryptography, SSRF and redirects, deserialisation, new dependencies and the privacy targets, and grades each finding blocker, concern or nit, with where, the attack and the fix. A blocker sends the branch back like a failing test.
 
@@ -278,29 +297,70 @@ Editing an agent file can't loosen a rule. And the agent files are kit files (`.
 
 ## In the session
 
-With Claude Code 2.1.287 or later, code-kit's mod shows the project in the session, in the terminal (VS Code's terminal included) and the Desktop app. Older versions skip it and keep enforcing everything through the hooks.
+With Claude Code 2.1.287 or later, code-kit's mod shows the project in the session, in the terminal (VS Code's terminal included) and the Desktop app. Older versions skip it and keep enforcing everything through the hooks. The mod shows and acts; it never enforces. Mods don't draw in the VS Code extension's chat panel, the Agent SDK or `claude -p`, and outside a project with `.claude/code-kit.json` the mod draws nothing.
 
-- **The band** sits above the prompt. While the build is moving (the lead mid-turn, an agent at work, the loop started) it opens with the mission: **goal**, the milestone being built and how many of its stories are done; **now**, what the lead is doing and the loop's state, with **Pause** or **Resume**; **next**, the step the loop takes next; and **agents**, a line per agent at work with its current tool and how long since. With Context Graph installed, a line says when a lane edited files without understanding them, and only then. Beneath, labelled **you**, what only you can decide, each with the story it's for ("for ST-4 Booking form (BOOK-1)"), and **d** ("Why, and what each choice does") opens it as a card in the Decisions tab; usage and the plan's pause are labelled **note**. In a team (`team` in the config), it also names what of the team needs you, and only that: your stale claim (Keep or Release), a claim of yours changing the same files as someone else's, an intent touching what you own or lease (every intent, with Agree and Drop, for the tech lead), and a pull request in a lane you own. While the loop runs, a lane's finished work is the lead's to review and merge, so it never waits here; with the loop off, Review and Merge are offered to you. With nothing happening and nothing waiting, the band is gone. It shows:
-  - an agent's call held for you: installing a new package, writing or committing a protected file, or a lane changing the kit. Rather than stopping the agent, the call waits while the band asks ("web wants to install dayjs · 1:53"). **Approve** opens the confirmation and, once you confirm, the same call runs; **Refuse**, or no answer within `harness.hold.minutes` (2 unless set), refuses it as before. Under `autonomy: autonomous`, a call within `approvals.delegate` is approved as delegated without asking. Nothing is held under `claude -p` or the SDK, where nobody can answer;
-  - the lead loop, under `harness.autonomy`. `/code-kit:init` asks you how hands-off you want it. Until you've chosen, the loop's first step waits in the band ("code-kit can keep the build moving between your prompts") with **Keep going**, **Ask each time** and **Off**, and your answer is recorded as your setting. Once the lead has finished a turn, the loop keeps the build moving: with the lead idle and nothing typed in the prompt, it asks `code-kit next` and prompts the lead to dispatch the ready stories, review a finished one, or build its own, never the same step twice while nothing has changed, and never a story an agent is still on: one its lane agent is building, or a reviewer is reviewing, waits until that agent finishes ("waiting: ST-10 is still with its agent"). A step the lead was prompted with twice in a row and that is still next goes to you instead, in the band: "Merge lead/st-1: still next after 2 prompts. Ask the lead again?" with **Go**. **Pause** and **Resume** stop and start it. Under `propose`, each step waits in the band for **Go**; under `off`, the loop does nothing. A lane agent with no tool call for `harness.stall.nudgeMinutes` (5) is messaged, unless its work is done (it handed back, or its branch is in review or the merge queue); at `stall.restartMinutes` (10) the lead is asked to stop it and dispatch its story again, at most `stall.maxRestarts` (2) times, and then the band flags the lane. When every story is done, the band says so and the loop stops. With `harness.agents.reviewer.on`, a finished branch is first reviewed in the background by code-kit's reviewer agent, which the lead starts: it runs `verify` and the review checklist, read-only, and grades each finding blocker, concern or nit. The lead's review prompt then carries the findings, and a blocker means the branch is sent back. The pane shows each review, running with its clock or what it found. If the reviewer hasn't reported within 15 minutes, or the plan's 5-hour use is past `harness.background.pauseAtPercent`, the lead reviews without it. A branch the lead's review passes joins the merge queue (`code-kit queue`). Branches merge one at a time, in the order they passed, each verified against the base as it is then: the lead merges where `approvals.delegate.merge` is on under `autonomous`, otherwise the band shows the head with **Merge** for you. Who may merge is read from the config committed on the base, so a branch can't grant itself merges. There's no first merge for you: setting up commits the rules you approved straight onto the base, and in a project set up before that, the lead puts them there itself (`code-kit queue rules`) before its first merge. A merged lane's worktree is removed when it holds nothing uncommitted. A head that conflicts or fails verify goes back to its lane. The pane lists the queue, and lanes whose branch waits in it read `queued`;
-  - approvals agents have asked for: **Approve…** opens a confirmation with a reason prefilled from the request, which you keep or rewrite. When it isn't clear what it's for, **Ask about it** in that pane: the answer comes from a side call over the lead's conversation and code-kit's facts about the request, shown in the pane and never added to the lead's session; follow-ups carry on the aside. A request waits until it's answered, its file is committed by someone who could, or it's dropped (at most a week); on its card, **Not needed** drops it;
-  - questions from the lead ("The lead asks: which weather provider?"): what it can't settle and only you can, asked with `code-kit ask`. **Answer…** opens it as a card with each of the lead's options and what it does, and **Something else…** for your own words; your answer is recorded and sent to the lead. A question can hold its story, which then reads `waiting on you`: nothing dispatches or reviews it, and the stories that depend on it wait, until you answer;
-  - your brief's open questions, each with who decides and what it holds up (from the table's Owner and Blocks columns; one owned by the lead alone isn't yours, and doesn't show): **Answer…** sends your answer to the lead, which records it in the brief's decisions, and **Ask about it** in the answer box explains it first, beside the conversation; **Later** puts one off until the next session;
-  - a call Claude Code's own permission check refused (its auto mode, a deny rule), which code-kit can't approve past: "Claude Code refused the lead's `pnpm db:generate`". **Put it in the prompt** puts a command in your prompt after `!` for you to run, **Done it** tells the lead you ran or allowed it, and **Not now** tells it to carry on with other work;
-  - with `harness.report.on`, a bug report for code-kit an agent drafted when code-kit got in its way: only code-kit's own facts (its version, the rule, what it said, the command), with the project's folders and email addresses taken out. **Read it** shows the exact text; **Send** files it on code-kit's GitHub with your own `gh` (a comment, if it's filed already; without `gh`, you get the link to file it), and **Discard** drops it;
-  - stories finished and waiting for review: **Review** asks the lead to run `/code-kit:review` on the branch, and **Merge** runs `verify`, checks included, then merges if it passes;
-  - a finish check failing in this session: **Lanes** opens the pane;
-  - a story using more than three times the median of the stories finished this session (once three have finished): **Lanes** opens the pane;
-  - background agents paused, once the plan’s 5-hour use passes `harness.background.pauseAtPercent` (80% unless set).
+### The band
 
-  Each button has a digit: type it in an empty prompt to press it. The band keeps one line per kind ("2 approvals waiting"); the Decisions tab says how many of each kind, then lists a short card for each decision, five at a time (**j** and **k** move), with the selected one in full below.
+The band sits above the prompt. With nothing happening and nothing waiting, it's gone.
 
-- **`/lanes`** opens the Lanes pane. Its first line counts the stories by state (building, in review, queued, sent back, blocked, ready, merged), with the loop's state and the plan's 5-hour use; press a count to show only those lanes. Beneath it, whatever needs you (held calls, approvals, reviews, merges, stalled lanes, outliers) is pinned with its key. Tabs on **1** to **7**: **Lanes** opens on the loop as a card: its mode, the steps it took, the one running and the next. Then each lane on fixed columns: its name, state and story, its agent's current or last tool call with the time since beneath (amber once quiet, red when stalled), and its tokens; the lead reads orchestrating while its turn runs. A selected lane shows its stories as cards (state, requirements, what each waits on or its branch), then its agent and the paths it owns. **Decisions**, each decision that needs you as a card: what you asked for, the story and its requirements, what was happening, what's already settled, why the lead couldn't settle it, and each option with what it does; **Journal**, the build from your request to now in plain sentences, by day: the request and the decisions in the brief, the specification, each story handed out, sent back and merged, each approval and who gave it, each milestone finished, and the loop's steps this session, yours in yellow. Each lane has its own small pixel character, tinted in the lane's colour, whose pose shows its state: working (animated while its agent works), waiting on you, quiet, stalled, done or resting; the lead's wears a crown. Under each lane, its story's timeline on a shared time axis: building, then in review, with send-backs (↩), approvals (◆) and the merge (✓) marked where they fell; **Code map**, the whole project's folders by layer when no story is at work, or a story's files in a column per layer with the imports between them: a file fills with a lane's colour while that lane reads or edits it, and says whether its why (its Context Graph card) is written, out of date or not written yet; **j**/**k** select a file to see its card and what it imports and what imports it, and **o** opens it in Context Graph (box-drawing text in the terminal, an SVG on Desktop); **Trail**, every requirement in the specs as a cell by spec, its glyph and colour saying whether it's done and tested, done but untested, in progress, todo, without a story or removed, with a legend counting each. **h**/**l** and **j**/**k** move between cells and specs (or pick one from the list), showing the requirement's stories, their branches, the code they changed and the tests that name it; beneath the cells, the spec's trail drawn as a flow, each requirement to its stories, code and tests, with a missing link dashed in red; **Queue**, the merge queue; and **Usage**. **j** and **k** move between lanes, and the selected lane's acts are on **a** (approve), **r** (review), **s** (send back, with your reason), **m** (merge), **n** (nudge its agent) and **x** (stop it); **p** pauses or resumes the loop, and **f** filters the lanes by name, agent or story. **Enter** (or **o**) opens the selected lane's story: its requirements beside its spec-check report, the reviewer's findings by severity (each a way into the diff), `verify`'s problems, its usage and loop steps, and its diff against the base, file by file, with the acts its state allows. **b** or Escape goes back to the lanes. Inline (when the terminal can't dock it beside the transcript), it shows the counts, what needs you and a line per lane. It stays current within 2 seconds of a commit, a branch change, a plan edit or an agent starting or stopping. `/lanes` again, or Escape, closes it.
+- **The mission**, while the build is moving (the lead mid-turn, an agent at work, the loop started):
+  - **goal**: the milestone being built and how many of its stories are done;
+  - **now**: what the lead is doing and the loop's state, with **Pause** or **Resume**;
+  - **next**: the step the loop takes next;
+  - **agents**: a line per agent at work, with its current tool and how long since;
+  - with Context Graph installed, a line when a lane edited files without understanding them, and only then.
+- **you**: what only you can decide, each with the story it's for ("for ST-4 Booking form (BOOK-1)"). **d** ("Why, and what each choice does") opens it as a card in the Decisions tab. Usage and the plan's pause are labelled **note**.
+- **The team**, with `team` in the config: only what of the team needs you. Your stale claim (Keep or Release), a claim of yours changing the same files as someone else's, an intent touching what you own or lease (every intent, with Agree and Drop, for the tech lead), and a pull request in a lane you own.
+
+What waits for you there:
+
+- **A held call.** An agent installing a new package, writing or committing a protected file, or a lane changing the kit. Rather than stopping the agent, the call waits while the band asks ("web wants to install dayjs · 1:53"). **Approve** opens the confirmation and, once you confirm, the same call runs; **Refuse**, or no answer within `harness.hold.minutes` (2 unless set), refuses it as before. Under `autonomy: autonomous`, a call within `approvals.delegate` is approved as delegated without asking. Nothing is held under `claude -p` or the SDK, where nobody can answer.
+- **Approvals agents asked for.** **Approve…** opens a confirmation with a reason prefilled from the request, which you keep or rewrite. When it isn't clear what it's for, **Ask about it**: the answer comes from a side call over the lead's conversation and code-kit's facts about the request, shown in the pane and never added to the lead's session, and follow-ups carry on the aside. A request waits until it's answered, its file is committed by someone who could, or it's dropped (at most a week); on its card, **Not needed** drops it.
+- **Questions from the lead** ("The lead asks: which weather provider?"), asked with `code-kit ask`: what it can't settle and only you can. **Answer…** opens it as a card with each of the lead's options and what it does, and **Something else…** for your own words; your answer is recorded and sent to the lead. A question can hold its story, which then reads `waiting on you`: nothing dispatches or reviews it, and the stories that depend on it wait, until you answer.
+- **Your brief's open questions**, each with who decides and what it holds up (from the table's Owner and Blocks columns; one owned by the lead alone isn't yours, and doesn't show). **Answer…** sends your answer to the lead, which records it in the brief's decisions, and **Ask about it** in the answer box explains it first, beside the conversation; **Later** puts one off until the next session.
+- **A call Claude Code's own permission check refused** (its auto mode, a deny rule), which code-kit can't approve past: "Claude Code refused the lead's `pnpm db:generate`". **Put it in the prompt** puts the command in your prompt after `!` for you to run, **Done it** tells the lead you ran or allowed it, and **Not now** tells it to carry on with other work.
+- **A bug report for code-kit**, with `harness.report.on`, drafted by an agent code-kit got in the way of. It holds only code-kit's own facts (its version, the rule, what it said, the command), with the project's folders and email addresses taken out. **Read it** shows the exact text; **Send** files it on code-kit's GitHub with your own `gh` (a comment, if it's filed already; without `gh`, you get the link to file it); **Discard** drops it.
+- **Stories waiting for review**, with the loop off: **Review** asks the lead to run `/code-kit:review` on the branch, and **Merge** runs `verify`, checks included, then merges if it passes. While the loop runs, a lane's finished work is the lead's to review and merge, so it never waits here.
+- **Warnings:** a finish check failing in this session, or a story using more than three times the median of the stories finished this session (once three have finished), each with **Lanes** to open the pane; and background agents paused once the plan's 5-hour use passes `harness.background.pauseAtPercent` (80% unless set).
+
+Each button has a digit: type it in an empty prompt to press it. The band keeps one line per kind ("2 approvals waiting"); the Decisions tab says how many of each kind, then lists a short card for each decision, five at a time (**j** and **k** move), with the selected one in full below.
+
+### The lead loop
+
+The loop keeps the build moving between your prompts, under `harness.autonomy`. `/code-kit:init` asks you how hands-off you want it. Until you've chosen, its first step waits in the band ("code-kit can keep the build moving between your prompts") with **Keep going**, **Ask each time** and **Off**, and your answer is recorded as your setting.
+
+- **Each step.** Once the lead has finished a turn, with the lead idle and nothing typed in the prompt, the loop asks `code-kit next` and prompts the lead to dispatch the ready stories, review a finished one, or build its own. It never prompts the same step twice while nothing has changed, and never a story an agent is still on: one its lane agent is building, or a reviewer is reviewing, waits until that agent finishes ("waiting: ST-10 is still with its agent").
+- **A step that doesn't move.** One the lead was prompted with twice in a row that is still next goes to you instead: "Merge lead/st-1: still next after 2 prompts. Ask the lead again?" with **Go**.
+- **Modes.** **Pause** and **Resume** stop and start it. Under `propose`, each step waits in the band for **Go**; under `off`, the loop does nothing. When every story is done, the band says so and the loop stops.
+- **Stalled lanes.** A lane agent with no tool call for `harness.stall.nudgeMinutes` (5) is messaged, unless its work is done (it handed back, or its branch is in review or the merge queue). At `stall.restartMinutes` (10) the lead is asked to stop it and dispatch its story again, at most `stall.maxRestarts` (2) times, and then the band flags the lane.
+- **The reviewer agent**, with `harness.agents.reviewer.on`. A finished branch is first reviewed in the background by code-kit's reviewer agent, which the lead starts: it runs `verify` and the review checklist, read-only, and grades each finding blocker, concern or nit. The lead's review prompt then carries the findings, and a blocker means the branch is sent back. The pane shows each review, running with its clock or what it found. If the reviewer hasn't reported within 15 minutes, or the plan's 5-hour use is past `harness.background.pauseAtPercent`, the lead reviews without it.
+- **The merge queue** (`code-kit queue`). A branch the lead's review passes joins the queue. Branches merge one at a time, in the order they passed, each verified against the base as it is then: the lead merges where `approvals.delegate.merge` is on under `autonomous`, otherwise the band shows the head with **Merge** for you. Who may merge is read from the config committed on the base, so a branch can't grant itself merges. A head that conflicts or fails verify goes back to its lane. A merged lane's worktree is removed when it holds nothing uncommitted. The pane lists the queue, and lanes whose branch waits in it read `queued`.
+- **The first merge.** There's none for you: setting up commits the rules you approved straight onto the base, and in a project set up before that, the lead puts them there itself (`code-kit queue rules`) before its first merge.
+
+### The Lanes pane
+
+**`/lanes`** opens it; `/lanes` again, or Escape, closes it. It stays current within 2 seconds of a commit, a branch change, a plan edit or an agent starting or stopping. Inline (when the terminal can't dock it beside the transcript), it shows the counts, what needs you and a line per lane.
+
+- **The top.** A count of the stories by state (building, in review, queued, sent back, blocked, ready, merged), with the loop's state and the plan's 5-hour use; press a count to show only those lanes. Beneath it, whatever needs you (held calls, approvals, reviews, merges, stalled lanes, outliers) is pinned with its key.
+- **Tabs, on 1 to 7:**
+  - **Lanes**: the loop as a card (its mode, the steps it took, the one running and the next), then each lane on fixed columns: its name, state and story, its agent's current or last tool call with the time since beneath (amber once quiet, red when stalled), and its tokens; the lead reads orchestrating while its turn runs. Each lane has its own small pixel character, tinted in the lane's colour, whose pose shows its state: working (animated while its agent works), waiting on you, quiet, stalled, done or resting; the lead's wears a crown. Under each lane, its story's timeline on a shared time axis: building, then in review, with send-backs (↩), approvals (◆) and the merge (✓) marked where they fell. A selected lane shows its stories as cards (state, requirements, what each waits on or its branch), then its agent and the paths it owns.
+  - **Decisions**: each decision that needs you as a card: what you asked for, the story and its requirements, what was happening, what's already settled, why the lead couldn't settle it, and each option with what it does.
+  - **Journal**: the build from your request to now in plain sentences, by day: the request and the decisions in the brief, the specification, each story handed out, sent back and merged, each approval and who gave it, each milestone finished, and the loop's steps this session, yours in yellow.
+  - **Code map**: the whole project's folders by layer when no story is at work, or a story's files in a column per layer with the imports between them. A file fills with a lane's colour while that lane reads or edits it, and says whether its why (its Context Graph card) is written, out of date or not written yet. **j**/**k** select a file to see its card and what it imports and what imports it, and **o** opens it in Context Graph (box-drawing text in the terminal, an SVG on Desktop).
+  - **Trail**: every requirement in the specs as a cell by spec, its glyph and colour saying whether it's done and tested, done but untested, in progress, todo, without a story or removed, with a legend counting each. **h**/**l** and **j**/**k** move between cells and specs (or pick one from the list), showing the requirement's stories, their branches, the code they changed and the tests that name it. Beneath the cells, the spec's trail drawn as a flow, each requirement to its stories, code and tests, with a missing link dashed in red.
+  - **Queue**: the merge queue.
+  - **Usage**.
+- **Keys.** **j** and **k** move between lanes, and the selected lane's acts are on **a** (approve), **r** (review), **s** (send back, with your reason), **m** (merge), **n** (nudge its agent) and **x** (stop it); **p** pauses or resumes the loop, and **f** filters the lanes by name, agent or story.
+- **A story.** **Enter** (or **o**) opens the selected lane's story: its requirements beside its spec-check report, the reviewer's findings by severity (each a way into the diff), `verify`'s problems, its usage and loop steps, and its diff against the base, file by file, with the acts its state allows. **b** or Escape goes back to the lanes.
+
+### Other views
+
 - **Refusals** a code-kit hook gives an agent are drawn as cards: what was refused, the rule, what to do, and Approve… where your approval would allow it. The full text is a press away.
 - **`/harness`** opens the harness settings: how the lead loop acts, how long a call waiting on your approval is held, when a stalled lane is nudged and restarted, the reviewer agent and its model, the use at which background agents pause, and whether agents draft bug reports for code-kit. Changing one asks your reason, writes `.claude/code-kit.json` and logs a `kit` approval. Lanes, paths and rules still change through `/code-kit:init`.
-- **`/approvals`** lists the approvals waiting (one per approval and lane, with every file it covers), the approvals in force with minutes left, and every approval given, newest first: who gave it (you, or the lead within your delegated rules), its reason, and the files and branches it covered, merged or not. A request stops waiting once an approval is given for it, or its file is committed by someone who could; a read-only agent such as the reviewer never asks. **`/verify-branch`** runs `code-kit verify` on this branch. Neither calls the model.
+- **`/approvals`** lists the approvals waiting (one per approval and lane, with every file it covers), the approvals in force with minutes left, and every approval given, newest first: who gave it (you, or the lead within your delegated rules), its reason, and the files and branches it covered, merged or not. A request stops waiting once an approval is given for it, or its file is committed by someone who could; a read-only agent such as the reviewer never asks.
+- **`/verify-branch`** runs `code-kit verify` on this branch. Neither it nor `/approvals` calls the model.
 
-Approving from the band records `(approved in the code-kit pane)` with your reason, and a merge from it says it was merged by the person from the pane. A settings change is logged as made in the pane. These happen only on your press: the hooks refuse `approve --via pane`, `merge --person` and `settings set` from every agent. Outside a project with `.claude/code-kit.json`, the mod draws nothing. Mods don't draw in the VS Code extension's chat panel, the Agent SDK or `claude -p`.
+Approving from the band records `(approved in the code-kit pane)` with your reason, and a merge from it says it was merged by the person from the pane. A settings change is logged as made in the pane. These happen only on your press: the hooks refuse `approve --via pane`, `merge --person` and `settings set` from every agent.
 
 ## Build
 
@@ -331,7 +391,7 @@ It's a preview: it's tested end to end against a stand-in for GitHub, and has be
 
 ## Enforce it in CI
 
-The hooks only see Claude Code sessions. For everything else, init offers `.github/workflows/code-kit.yml` (from `templates/github-workflow.yml`). It runs `verify` on every pull request, through `npx @warren-dean/code-kit@<version>`, pinned so CI doesn't change under you. It needs no secret. The one setting to make is marking the `code-kit` check as required on the protected branches.
+The hooks only see Claude Code sessions. For everything else, init offers `.github/workflows/code-kit.yml` (from `templates/github-workflow.yml`). It runs `verify` on every pull request, through `npx @warren-dean/code-kit@<version>`, pinned so CI doesn't change under you. It needs no secret. Two settings to make: mark the `code-kit` check as required on the protected branches, and make sure the workflow installs what the project's checks run, since a check whose tool is missing is skipped unless it sets `ifMissing: "fail"`. Add gitleaks to the workflow for the secret scan of commits' content.
 
 `verify` can't see spec-check reports, because `.claude/state/` isn't committed. Review covers those.
 
@@ -451,7 +511,8 @@ echo "Date formatting for ST-12" > .claude/approvals/web/dep-dayjs             #
 - **Dependencies:** each new package needs its own approval, `dep-<package>` (`/` becomes `+`, so `@scope/pkg` is `dep-@scope+pkg`). It allows the install, and the changes the install makes to manifests and lockfiles that no other lane owns. When the lane commits a manifest or lockfile outside its own paths, the commit hook logs it as a `dependency` approval, with the packages and reasons, and `code-kit verify` accepts it.
 - **Worktrees:** approvals live in the main checkout, so a lane working in its own worktree sees the ones given at the lead's terminal.
 - **Tests:** a commit that weakens a test needs `tests`: `echo "The keeps-order test is wrong until ST-9" > .claude/approvals/web/tests`. It's the person's only, never delegated, and used up by the commit, which logs it with what was weakened.
-- **Lifetime:** 60 minutes; a dependency approval (`dep-…`) lasts until the lane commits the install it allows, at most 7 days, since a story may resume hours later. Agents can't create, edit or even mention approvals or the log.
+- **Lifetime:** 60 minutes; a dependency approval (`dep-…`) lasts until the lane commits the install it allows, at most 7 days, since a story may resume hours later.
+- **Agents can't write them.** An edit to an approval or the log is refused, and so is any agent shell command that names them. Like every shell rule, that's a match on the command's text.
 
 ### From chat
 
