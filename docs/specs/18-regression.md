@@ -1,11 +1,11 @@
 # 18. Regression
 
 **Status:** specified
-**Outcome:** A change that fixes one thing doesn't quietly break another. A fix comes with a test that proves its bug. Tests can't be weakened to get to green. The tests of the code a change reaches run with it. The features a change could affect are named, with the lineage that links them, and the QA lane walks them in a real browser. Main stays green, and while it isn't, no new work starts.
-**Actors:** the person; the lead (review, the loop, the merge queue); lane agents; the QA lane, in build mode (`test-engineer`) and check mode (`qa-check`)
+**Outcome:** A change that fixes one thing doesn't quietly break another. A fix comes with a test that proves its bug. Tests can't be weakened to get to green. The tests of the code a change reaches run with it. The features a change could affect are named, with the lineage that links them, and the QA lane walks them in a real browser. Each requirement has scenarios a machine runs, and a branch doesn't merge while one it reaches fails. Main stays green, and while it isn't, no new work starts.
+**Actors:** the person; the lead (review, the loop, the merge queue); lane agents; the QA lane, in build mode (`test-engineer`, which writes the scenarios) and check mode (`qa-check`); the project's deploy pipeline
 **Depends on:** 03-approve-review-merge, 07-reviewer, 09-merge-queue, 10-traceability, 14-mission-and-maps, 17-onboarding
 
-Found by running code-kit on a codebase under continuous development. Agents fixed issues, and their checks passed, yet other things broke. A fix in shared code ran the shared tests but not the tests of the code importing it. The review compared the branch with its own story and nothing else. A fix with no test could come back, and nothing stopped an agent from deleting or skipping a test to get to green. Each pull request was checked on its own, but nobody checked that main still worked as a whole, or that the features people use still worked.
+Found by running code-kit on a codebase under continuous development. Agents fixed issues, and their checks passed, yet other things broke. A fix in shared code ran the shared tests but not the tests of the code importing it. The review compared the branch with its own story and nothing else. A fix with no test could come back, and nothing stopped an agent from deleting or skipping a test to get to green. Each pull request was checked on its own, but nobody checked that main still worked as a whole, or that the features people use still worked. The same codebase then grew a suite of API scenarios, one file per scenario, each citing a requirement, run against a shared staging environment after each deploy. It caught regressions, but only once they had merged and deployed.
 
 ## In scope
 
@@ -14,12 +14,15 @@ Found by running code-kit on a codebase under continuous development. Agents fix
 - Main kept green, with new work stopped while it isn't (REG-4).
 - A feature map, the lineage from a change up to the features it could affect, and a Features tab (FEAT-1 to FEAT-3).
 - The QA lane's check mode: the affected features walked in a real browser, through an adapter (QA-1 to QA-4).
+- Scenario suites: requirement-level scenarios in the project's own format and runner, written by the QA lane, run against wherever the person says, gating merges when the target runs the branch, and never weakened without the person (SCN-1 to SCN-7).
 - An older setup told what's new (REG-5).
 
 ## Out of scope
 
 - Visual diffs of screenshots, and performance or load testing.
-- Running the app against anything but a local, throwaway environment. Check mode never touches a shared or production system.
+- Check mode running the app anywhere but a local, throwaway environment. It never touches a shared or production system.
+- A scenario runner. code-kit runs the project's runner through a contract (SCN-1); the format, the runner, its identities and its credentials are the project's.
+- Choosing where scenarios run. The targets are the person's, in the config, a kit file every change to which they approve.
 - Hosted browsers. The browser runs on the machine the lane runs on.
 
 ## Data
@@ -63,11 +66,39 @@ Found by running code-kit on a codebase under continuous development. Agents fix
 | `app.readySeconds`   | 90                                                                                                               | How long the app has to answer at `app.url`                                                                                                |
 | `harness.redMinutes` | 60                                                                                                               | How long main may be red before the band puts **Revert** first                                                                             |
 
+### Scenario suites (`scenarios`)
+
+```json
+"scenarios": {
+  "files": ["apps/api/tests/scenarios/*/*.yaml"],
+  "list": "cd apps/api && uv run python -m tests.scenarios.inventory",
+  "run": "cd apps/api && uv run python -m tests.scenarios.run",
+  "targets": {
+    "local": { "serves": "branch", "start": "pnpm --filter api dev:scenarios", "url": "http://localhost:{port}" },
+    "staging": { "serves": "base", "url": "https://api.staging.example.com" }
+  },
+  "gate": { "target": "local", "tags": ["read_only", "writes"] }
+}
+```
+
+| Key                           | Required | What it is                                                                                                                                                                                                                                                           |
+| ----------------------------- | -------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `files`                       | yes      | Globs naming the scenario files. They're the QA lane's paths, and count as tests for REG-2                                                                                                                                                                           |
+| `list`                        | yes      | Prints every scenario as JSON, offline, with no target: `[{ id, requirement, expect: "pass" \| "known_broken", strength, tags, file }]`. `strength` is the number of assertions. Run on the branch and on the base for SCN-4                                         |
+| `run`                         | yes      | Runs the scenarios whose ids it's given, one per line on stdin, against `CODE_KIT_TARGET_URL`, and prints `[{ id, outcome: "passed" \| "failed" \| "error" \| "skipped", step?, detail?, reason? }]`. Credentials come from its own environment, never from code-kit |
+| `targets.<name>.serves`       | yes      | `branch`: the target runs the code of the branch being checked. `base`: it runs whatever was last deployed from the base, like a shared staging                                                                                                                      |
+| `targets.<name>.start`        | no       | For a `branch` target: run in the branch's worktree with `PORT`, a free port, and stopped after the run. Without it, `url` must already serve the branch                                                                                                             |
+| `targets.<name>.url`          | yes      | Where the target answers. `{port}` is `start`'s port; `{branch}` is the branch name made safe for a host name, for a preview deploy per branch                                                                                                                       |
+| `targets.<name>.readySeconds` | no       | How long the target has to answer at `url` (default 120)                                                                                                                                                                                                             |
+| `gate.target`                 | no       | The target merges are gated on. It must be a `branch` target; a `base` target there makes the config invalid, since it would pass branches it never ran. Without `gate`, nothing is gated before merge, and the review says so                                       |
+| `gate.tags`                   | no       | Only scenarios with one of these tags run at the gate (default: all). The rest run after deploy and in `health`                                                                                                                                                      |
+
 ### State
 
 - `.claude/state/health.json`: the latest full run on the base. It records the commit, the time, and the result of each check and feature, as passed, failed or couldn't run, with the first failure's output.
 - `.claude/state/qa.jsonl`: one line per walk. Each line has the branch or base and commit, the feature, the scenario, the result (passed, failed, or couldn't run), the step it failed at, what was expected, what was seen, and its screenshots.
 - `.claude/state/qa/<run>/`: the screenshots of a walk. These are only ever written by check mode, and nothing else in the repository is.
+- `.claude/state/scenarios.jsonl`: one line per scenario run: the target, the branch or base and its commit, each scenario's expected and actual outcome, and the verdict (SCN-3).
 
 ## Requirements
 
@@ -270,6 +301,122 @@ Without an available browser adapter, check mode runs the scripted suites only. 
 - Given no browser adapter available, then the review runs the scripted suites, records no walks, and `next` names what to install.
 - Given a scenario step that would open `https://accounts.example.com`, then the walk stops there, recorded as couldn't run, outside `app.url`.
 
+### SCN-1 The suite is the project's; the rules are code-kit's
+
+code-kit runs no scenario itself. It knows a project's suite through `scenarios.list` and `scenarios.run` (Config), which are usually thin wrappers over the project's own runner: one prints what the scenarios are, the other runs some and prints what happened. Any format and any runner fits: HTTP calls, a browser, a command line. The core never names one.
+
+Every scenario cites one requirement. `status` and the Trail tab show each requirement's scenarios beside its tests, and a requirement with neither is a gap. A requirement no scenario can check, such as one only a person sees on screen, says so in its spec with `**Scenarios:** none, <why>`, and isn't a gap.
+
+**Acceptance**
+
+- Given `list` printing a scenario citing BOOK-9 and no spec defining BOOK-9, then `status` lists the gap.
+- Given BOOK-2 with no scenario and no `**Scenarios:** none` line, then `status` lists BOOK-2 as having no scenario.
+- Given `list` failing or printing something that isn't the shape above, then `verify` says the suite can't be read, with `list`'s output, and that's a problem, not a pass.
+
+### SCN-2 The QA lane writes them, before the code
+
+Scenarios are written by the QA lane's `test-engineer` (build mode), not by the lane building the feature, so the code isn't graded by its own author. `scenarios.files` are the QA lane's paths. A lane building a feature may change a scenario file only to promote it from `known_broken` to `pass` (SCN-4); any other change is refused, and goes to the QA lane as a change request.
+
+When a spec is ready, the plan gains a `qa` story per spec, "Scenarios for <spec>", with no dependency on the build stories, so it's dispatched alongside them. Its brief lists the spec's requirements and their acceptance criteria. Its agent writes scenarios that assert the behaviour the spec describes, the happy path, permissions, tenancy and each error the spec lists, in the project's format. A scenario skill (`.claude/skills/scenarios/SKILL.md`), which init drafts from the project's own guide to writing one, teaches it the format. Its branch is held to `list` reading every file it adds.
+
+A scenario for a requirement whose stories aren't all done is expected to fail. It isn't written as `known_broken`. code-kit derives it from the plan (SCN-3), so `known_broken` keeps one meaning: a defect in something that's built, with the defect described.
+
+**Acceptance**
+
+- Given the web lane changing `apps/api/tests/scenarios/02-booking/BOOK-3.my-bookings.yaml` to add a step, then it's refused, naming the QA lane.
+- Given the web lane changing only that file's `expect` from `known_broken` to `pass`, as `list` shows, then it's allowed.
+- Given spec 02 ready, then `next` dispatches "Scenarios for 02-booking" to the QA lane alongside its build stories.
+- Given a new scenario `list` doesn't read, then the QA branch's `verify` says so.
+
+### SCN-3 What a run means
+
+Each scenario's outcome is judged against what's expected of it:
+
+| Expected                                                                                      | Outcome | Verdict                                                      |
+| --------------------------------------------------------------------------------------------- | ------- | ------------------------------------------------------------ |
+| `pass`                                                                                        | passed  | holds                                                        |
+| `pass`                                                                                        | failed  | **regression**                                               |
+| `known_broken`                                                                                | failed  | still broken                                                 |
+| `known_broken`                                                                                | passed  | **newly fixed**: promote it to `pass`                        |
+| not built yet (its requirement's stories aren't all done, and this branch doesn't deliver it) | failed  | not built yet                                                |
+| not built yet                                                                                 | passed  | holds                                                        |
+| any                                                                                           | error   | **proved nothing**: it couldn't set up, or couldn't clean up |
+| any                                                                                           | skipped | skipped, with the runner's reason, never counted as passed   |
+
+A failure is run once more before it counts. Failing both times is a regression. Failing once and then passing is **flaky**: it doesn't block, but goes to the Decisions tab as a `qa` decision with both runs' details, and three flaky runs of one scenario in a week make it a problem the QA lane is given a story to fix. Retrying until it passes is never the rule.
+
+Every run is recorded in `.claude/state/scenarios.jsonl`.
+
+**Acceptance**
+
+- Given BOOK-3.my-bookings expected `pass` and failing twice, then the verdict is regression.
+- Given BOOK-5.reschedule expected `known_broken` and passing, then the verdict is newly fixed, naming the id to promote.
+- Given BOOK-4's only story still in progress and BOOK-4.cancel failing on another branch, then the verdict is not built yet, and it doesn't block.
+- Given a scenario failing, then passing on the second run, then the verdict is flaky and the Decisions tab has a `qa` card.
+- Given `run` reporting a scenario as error, then the verdict is proved nothing.
+
+### SCN-4 The gate before merge
+
+When the config has `gate`, every merge code-kit makes (`merge`, `queue merge`, and the review's **Merge**) runs the gate after `verify` passes. It starts the gate target from the branch's worktree, waits for `url` to answer, and runs the scenarios that:
+
+- cite a requirement of the branch's story, or one `impact` (FEAT-2) reaches from the branch's changes, and
+- carry one of `gate.tags`.
+
+The merge is refused, and the branch goes back to its lane, on a regression, on a newly fixed scenario the branch didn't promote, on a proved-nothing error, or on a scenario of the branch's own story's requirements that didn't pass. That last one is the story's acceptance: the scenarios the QA lane wrote from the spec pass on the branch that delivers it. A fix story (REG-1) whose requirement has a `known_broken` scenario must promote it.
+
+The target is stopped after the run, whatever happened. A target that doesn't answer within `readySeconds` refuses the merge, saying the scenarios couldn't run; it never lets it through. The merge commit records the target, how many scenarios held, and each verdict that wasn't holds. Runs against one target are one at a time.
+
+Without `gate`, nothing runs before merge. The review says "No scenario gate: scenarios run after deploy only", so a pass is never read as more than it is.
+
+**Acceptance**
+
+- Given web/st-12 (BOOK-2) and BOOK-3.my-bookings, which `impact` reaches, regressing on the local target, then the merge is refused, the branch is sent back with the scenario, its step and its detail, and main is unchanged.
+- Given web/st-12's own BOOK-2.create failing, then the merge is refused: the story's scenarios must pass.
+- Given a fix branch whose requirement's BOOK-5.reschedule passes but is still `known_broken`, then the merge is refused, naming the id to promote.
+- Given `gate.target` naming a `base` target, then the config is invalid, saying a target that doesn't run the branch can't gate it.
+- Given the gate target not answering within its `readySeconds`, then the merge is refused, saying the scenarios couldn't run.
+- Given no `gate`, then the review says scenarios run after deploy only.
+
+### SCN-5 After deploy, and in health
+
+`code-kit scenarios run --target <name> [--ids …] [--commit sha]` runs the suite, or some of it, against any target, and records it. On a `base` target, `--commit` names the commit deployed there. The project's deploy pipeline runs it after each deploy, and on a schedule; init writes those steps when a `base` target exists.
+
+A regression or a proved-nothing error on a `base` target makes the base red, as a failing health run does (REG-4): `next` gives `fix-main`, merges wait, and the band names the scenario and the merges since its last pass. A newly fixed scenario there gives the QA lane a story to promote it. `health` runs the full suite on the gate target, when there is one.
+
+**Acceptance**
+
+- Given `scenarios run --target staging --commit abc1234` with BOOK-3.my-bookings regressing, then the base is red, `next` gives `fix-main` naming BOOK-3.my-bookings and the merges since it last passed on staging.
+- Given the next run on staging passing it, then the hold lifts.
+- Given BOOK-5.reschedule newly fixed on staging, then the plan gains a `qa` story to promote it.
+
+### SCN-6 Scenarios aren't weakened without the person
+
+`list` is run on the base and on the branch, and the difference is judged by id, so moving or renaming a file is never flagged. It flags:
+
+- a scenario that's gone;
+- `pass` demoted to `known_broken`;
+- a scenario moved to another requirement;
+- lower `strength`;
+- tags changed so the gate no longer runs it.
+
+Each is a weakened test under REG-2: the commit hook refuses it unless the person's `tests` approval is in force, holds it in the band with what was weakened, and `verify` flags any the approval log doesn't show approved. Adding scenarios, adding assertions and promoting to `pass` are never flagged.
+
+**Acceptance**
+
+- Given a branch deleting BOOK-3.my-bookings, then the commit is refused and held for the person's `tests` approval, and `verify` names BOOK-3.my-bookings as gone.
+- Given BOOK-3.my-bookings's strength going from 6 to 4, then it's flagged as fewer assertions.
+- Given BOOK-3.my-bookings moved to a new folder with the same id, then nothing is flagged.
+- Given BOOK-3.my-bookings's tags changed from `read_only` to `llm`, with `gate.tags` `[read_only, writes]`, then it's flagged: the gate no longer runs it.
+
+### SCN-7 When one fails, someone says why
+
+A regression at the gate or after deploy starts the QA lane's `qa-check` agent (check mode, read-only), as the reviewer agent is started. It reads the scenario, the run's detail, and the diff since the scenario last held, and writes which change most likely broke it, citing the files and lines. That goes into the send-back, or into `fix-main`'s story, beside the scenario's own detail. It never edits code or scenarios.
+
+**Acceptance**
+
+- Given BOOK-3.my-bookings regressing on web/st-12, then the send-back carries `qa-check`'s explanation naming the changed files it points to.
+- Given `qa-check` writing a scenario file, then it's refused: check mode only reads.
+
 ### REG-5 An older setup is told what's new
 
 The setup version goes to 4. A project on an older setup gets ONB-5's attention line naming what re-running init adds:
@@ -277,9 +424,10 @@ The setup version goes to 4. A project on an older setup gets ONB-5's attention 
 - the feature map;
 - the app's start, seed and environment for check mode;
 - the `qa-check` agent;
-- the test globs.
+- the test globs;
+- the scenario suite: if the project has one, its `scenarios` config, the scenario skill drafted from the project's own guide, and the after-deploy steps for a `base` target. init asks where scenarios may run, and whether one of those places runs a branch, for the gate.
 
-Re-running init drafts them, shows the person the difference, and sets `setup` to 4. Until then, REG-1 to REG-4 still apply, and check mode is skipped, saying what's missing.
+Re-running init drafts them, shows the person the difference, and sets `setup` to 4. Until then, REG-1 to REG-4 still apply, and check mode and the scenario gate are skipped, saying what's missing.
 
 **Acceptance**
 
@@ -291,8 +439,11 @@ Re-running init drafts them, shows the person the difference, and sets `setup` t
 1. REG-1 and REG-2: the most return for the least, and with no new setup.
 2. FEAT-1 and FEAT-2: the feature map and `impact`.
 3. REG-3: checks that reach importers.
-4. QA-1 to QA-4, then FEAT-3.
-5. REG-4 and REG-5.
+4. SCN-1, SCN-3 and SCN-6: the contract, the verdicts and the weakening rules, which work with a suite run anywhere.
+5. SCN-5 with REG-4: scenarios after deploy and main kept green. A project whose only target is a shared staging is fully served from here.
+6. SCN-2, SCN-4 and SCN-7: the QA lane writing them first, the gate for a branch target, and the explanation.
+7. QA-1 to QA-4, then FEAT-3.
+8. REG-5.
 
 ## Open questions
 
