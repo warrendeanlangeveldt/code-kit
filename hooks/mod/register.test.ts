@@ -1319,7 +1319,7 @@ test('HOLD-1 and HOLD-2 a lane installing a new package is held, and the band as
   const w = project();
   w.refusal = webInstall;
   const clock = await start($, on, w);
-  await heldCall($, w, clock);
+  const { call } = await heldCall($, w, clock);
   let ui = await bandUi($);
   expect(
     await ui.find({ type: 'Text', text: /^web wants to install dayjs · 2:00$/ }),
@@ -1332,6 +1332,8 @@ test('HOLD-1 and HOLD-2 a lane installing a new package is held, and the band as
   expect(await ui.find({ type: 'Text', text: /· 1:53$/ })).toBeDefined();
   await ui.unmount();
   w.waiting.get('tu-h1')?.('timed out');
+  // A timed-out hold refuses the call, as the hooks did; awaited, so the test doesn't end mid-call.
+  expect(refused(await call)).toBe(true);
 });
 
 test('DECIDE-2 a decision in the band says which story it is for, and d opens it as a card with its lineage', async ($, on) => {
@@ -1353,7 +1355,7 @@ test('DECIDE-2 a decision in the band says which story it is for, and d opens it
   w.agents = [{ id: 'a1', type: 'web-engineer', description: 'ST-4', status: 'running' }];
   const clock = await start($, on, w);
   await lanes($);
-  await heldCall($, w, clock);
+  const { call } = await heldCall($, w, clock);
   const band = await bandUi($);
   expect(await band.find({ type: 'Text', text: 'for ST-4 Booking form (BOOK-1)' })).toBeDefined();
   expect((await band.find({ key: 'band-decide' }))?.props.hotkey).toBe('d');
@@ -1373,6 +1375,8 @@ test('DECIDE-2 a decision in the band says which story it is for, and d opens it
   );
   await ui.unmount();
   w.waiting.get('tu-h1')?.('timed out');
+  // A timed-out hold refuses the call, as the hooks did; awaited, so the test doesn't end mid-call.
+  expect(refused(await call)).toBe(true);
 });
 
 test('DECIDE-3 an option on the card answers the decision, as the band would', async ($, on) => {
@@ -1829,9 +1833,11 @@ test('HOLD-5 with autonomy propose the delegated rules are not tried; the call i
   w.delegateExit = 0;
   (w.check as any).harness = { autonomy: 'propose', hold: { minutes: 2 } };
   const clock = await start($, on, w);
-  await heldCall($, w, clock);
+  const { call } = await heldCall($, w, clock);
   expect(w.delegated).toEqual([]);
   w.waiting.get('tu-h1')?.('timed out');
+  // A timed-out hold refuses the call, as the hooks did; awaited, so the test doesn't end mid-call.
+  expect(refused(await call)).toBe(true);
 });
 
 test('HOLD-6 with nobody to ask, or hold off, the call is refused at once', async ($, on) => {
@@ -2657,7 +2663,7 @@ test('VIEW-5 what needs the person is pinned at the top with its letter: a held 
   const w = project();
   w.refusal = webInstall;
   const clock = await start($, on, w);
-  await heldCall($, w, clock);
+  const { call } = await heldCall($, w, clock);
   await lanes($);
   const ui = await pane($, PANE);
   expect((await ui.find({ key: 'need-held' }))?.text).toMatch(
@@ -2668,6 +2674,8 @@ test('VIEW-5 what needs the person is pinned at the top with its letter: a held 
   expect(w.opened).toContain(APPROVE);
   await ui.unmount();
   w.waiting.get('tu-h1')?.('timed out');
+  // A timed-out hold refuses the call, as the hooks did; awaited, so the test doesn't end mid-call.
+  expect(refused(await call)).toBe(true);
 });
 
 test('VIEW-6 tabs on 1 to 7, j and k move between lanes, and the selected lane has its keys', async ($, on) => {
