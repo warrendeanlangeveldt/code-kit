@@ -2162,43 +2162,51 @@ test('LOOP-6 the pause is recorded for other tools, and a new session starts wit
   ]);
 });
 
-test('LOOP-3 a quiet lane agent is nudged at 5 minutes, restarted through the lead at 10, and flagged after 2 restarts', async ($, on) => {
-  const w = project();
-  w.next = { step: 'wait', args: '', then: [] };
-  w.agents = [
-    { id: 'a1', type: 'web-engineer', description: 'ST-4 booking form', status: 'running' },
-  ];
-  const clock = await start($, on, w);
-  // First seen at the next look (2 s), so quiet for 5 minutes a look later.
-  await clock.advance(5 * 60000 + 2000);
-  expect(w.sent).toEqual([
-    {
-      to: 'a1',
-      text: 'No tool call for 5 minutes: report where you are, or carry on.',
-    },
-  ]);
-  await lanes($);
-  let ui = await pane($, PANE);
-  expect((await ui.find({ key: 'lane-web' }))?.text).toMatch(/nudged/);
-  await ui.unmount();
-  await clock.advance(5 * 60000);
-  expect(w.prompts[0]).toMatch(
-    /^web-engineer \(agent a1\) on ST-4 has made no tool call for 10 minutes\. Stop it with TaskStop.*\/code-kit:dispatch ST-4$/,
-  );
-  ui = await pane($, PANE);
-  expect((await ui.find({ key: 'lane-web' }))?.text).toMatch(/restarted 1\/2/);
-  await ui.unmount();
-  // The lane's agent is started again, and stalls again, twice more.
-  for (const id of ['a2', 'a3']) {
-    w.agents = [{ id, type: 'web-engineer', description: 'ST-4 booking form', status: 'running' }];
-    await clock.advance(10 * 60000 + 2000);
-  }
-  expect(w.prompts).toHaveLength(2);
-  const band = await bandUi($);
-  expect(await band.find({ type: 'Text', text: 'web stalled 3 times on ST-4' })).toBeDefined();
-  expect(await band.find({ key: 'band-resumeStall' })).toBeDefined();
-  await band.unmount();
-});
+// It steps the clock through tens of minutes of the mod's 2-second refresh, each tick a real round of
+// stubbed CLI runs: about 1.5 to 3 seconds locally, and more on a shared CI runner.
+test(
+  'LOOP-3 a quiet lane agent is nudged at 5 minutes, restarted through the lead at 10, and flagged after 2 restarts',
+  { timeoutMs: 30000 },
+  async ($, on) => {
+    const w = project();
+    w.next = { step: 'wait', args: '', then: [] };
+    w.agents = [
+      { id: 'a1', type: 'web-engineer', description: 'ST-4 booking form', status: 'running' },
+    ];
+    const clock = await start($, on, w);
+    // First seen at the next look (2 s), so quiet for 5 minutes a look later.
+    await clock.advance(5 * 60000 + 2000);
+    expect(w.sent).toEqual([
+      {
+        to: 'a1',
+        text: 'No tool call for 5 minutes: report where you are, or carry on.',
+      },
+    ]);
+    await lanes($);
+    let ui = await pane($, PANE);
+    expect((await ui.find({ key: 'lane-web' }))?.text).toMatch(/nudged/);
+    await ui.unmount();
+    await clock.advance(5 * 60000);
+    expect(w.prompts[0]).toMatch(
+      /^web-engineer \(agent a1\) on ST-4 has made no tool call for 10 minutes\. Stop it with TaskStop.*\/code-kit:dispatch ST-4$/,
+    );
+    ui = await pane($, PANE);
+    expect((await ui.find({ key: 'lane-web' }))?.text).toMatch(/restarted 1\/2/);
+    await ui.unmount();
+    // The lane's agent is started again, and stalls again, twice more.
+    for (const id of ['a2', 'a3']) {
+      w.agents = [
+        { id, type: 'web-engineer', description: 'ST-4 booking form', status: 'running' },
+      ];
+      await clock.advance(10 * 60000 + 2000);
+    }
+    expect(w.prompts).toHaveLength(2);
+    const band = await bandUi($);
+    expect(await band.find({ type: 'Text', text: 'web stalled 3 times on ST-4' })).toBeDefined();
+    expect(await band.find({ key: 'band-resumeStall' })).toBeDefined();
+    await band.unmount();
+  },
+);
 
 test('LOOP-3 an agent whose work is done is never nudged or restarted: it handed back, or its branch waits in the merge queue', async ($, on) => {
   const w = project();
@@ -2245,24 +2253,30 @@ test('LOOP-3 until the person has chosen how hands-off the loop is, a restart is
   await band.unmount();
 });
 
-test('LOOP-3 an agent waiting on a held call (or running a long command) is never quiet', async ($, on) => {
-  const w = project();
-  w.next = { step: 'wait', args: '', then: [] };
-  w.refusal = webInstall;
-  (w.check as any).harness = { hold: { minutes: 10 } };
-  w.agents = [{ id: 'a1', type: 'web-engineer', description: 'ST-4', status: 'running' }];
-  const clock = await start($, on, w);
-  const { call } = await heldCall($, w, clock);
-  await clock.advance(6 * 60000);
-  expect(w.sent).toEqual([]);
-  w.waiting.get('tu-h1')?.('timed out');
-  await call;
-  // Its quiet time starts again when the call ends: nudged 5 minutes after, not at once.
-  await clock.advance(2000);
-  expect(w.sent).toEqual([]);
-  await clock.advance(5 * 60000);
-  expect(w.sent.map((m) => m.to)).toEqual(['a1']);
-});
+// It steps the clock through tens of minutes of the mod's 2-second refresh, each tick a real round of
+// stubbed CLI runs: about 1.5 to 3 seconds locally, and more on a shared CI runner.
+test(
+  'LOOP-3 an agent waiting on a held call (or running a long command) is never quiet',
+  { timeoutMs: 30000 },
+  async ($, on) => {
+    const w = project();
+    w.next = { step: 'wait', args: '', then: [] };
+    w.refusal = webInstall;
+    (w.check as any).harness = { hold: { minutes: 10 } };
+    w.agents = [{ id: 'a1', type: 'web-engineer', description: 'ST-4', status: 'running' }];
+    const clock = await start($, on, w);
+    const { call } = await heldCall($, w, clock);
+    await clock.advance(6 * 60000);
+    expect(w.sent).toEqual([]);
+    w.waiting.get('tu-h1')?.('timed out');
+    await call;
+    // Its quiet time starts again when the call ends: nudged 5 minutes after, not at once.
+    await clock.advance(2000);
+    expect(w.sent).toEqual([]);
+    await clock.advance(5 * 60000);
+    expect(w.sent.map((m) => m.to)).toEqual(['a1']);
+  },
+);
 
 test('LOOP-7 when every story is done the loop stops, and the band says so until dismissed', async ($, on) => {
   const w = project();
