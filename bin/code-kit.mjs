@@ -106,6 +106,7 @@ import {
 import { DEPENDENCY_APPROVAL, dependencyApproval } from '../hooks/lib/dependencies.mjs';
 import { dependencyRuleProblems, npmFacts, packageOf } from '../hooks/lib/registry.mjs';
 import { heldTo, laneOfBranch, verifyBranch } from '../hooks/lib/verify.mjs';
+import { TESTS_APPROVAL } from '../hooks/lib/regression.mjs';
 
 const out = (s) => process.stdout.write(`${s}\n`);
 // Piped into `head` and the like: stop quietly when the reader closes.
@@ -398,6 +399,8 @@ const VERIFY_GROUPS = {
   layers: 'Layer rules',
   baseline: 'Baseline',
   design: 'Designs before screens',
+  tests: 'Weakened tests',
+  regression: 'Fixes and their tests',
   checks: 'Checks',
 };
 
@@ -590,6 +593,7 @@ function mergeOne(branch, config, byPerson) {
       config,
       lane,
       checks: true,
+      branch,
     });
     const problems = Object.entries(VERIFY_GROUPS).flatMap(([key, title]) =>
       found[key].map((p) => `${title}: ${p.split('\n').join('\n    ')}`),
@@ -906,6 +910,7 @@ function story(id) {
         config,
         lane,
         checks: false,
+        branch: s.branch,
       });
       report.verify = {
         checks: false,
@@ -1105,6 +1110,9 @@ function verify() {
     config,
     lane,
     checks: !flag('--no-checks'),
+    // REG-1 is code-kit's own, so CI's --no-checks still proves a fix.
+    fixes: true,
+    branch,
   });
   if (flag('--json')) {
     const count = Object.values(found).reduce((n, list) => n + list.length, 0);
@@ -1299,7 +1307,7 @@ async function approve(given) {
     );
   if (laneName !== undefined && !config.lanes[laneName])
     die(`There is no lane "${laneName}". Lanes: ${Object.keys(config.lanes).join(', ')}.`);
-  const known = new Set(['kit', ...config.protected.map((p) => p.approval)]);
+  const known = new Set(['kit', TESTS_APPROVAL, ...config.protected.map((p) => p.approval)]);
   const isPackage = (n) => /^(@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/.test(n);
   const names = given.map((n) =>
     n.startsWith(DEPENDENCY_APPROVAL) || known.has(n) || !isPackage(n) ? n : dependencyApproval(n),
@@ -1327,6 +1335,10 @@ async function approve(given) {
       );
     const outside = [];
     for (const name of names) {
+      if (name === TESTS_APPROVAL) {
+        outside.push(`${name}: weakening a test is the person's to allow, and is never delegated`);
+        continue;
+      }
       if (name.startsWith(DEPENDENCY_APPROVAL)) {
         if (!rules.dependencies) {
           outside.push(`${name}: dependencies aren't delegated`);

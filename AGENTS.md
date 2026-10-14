@@ -12,6 +12,7 @@ code-kit is a Claude Code plugin: hooks (`hooks/`), skills (`skills/<name>/SKILL
   - `dependencies.mjs`: the packages a command adds, and the files installing them changes;
   - `registry.mjs`: what the npm registry says about a package, for delegated approvals;
   - `security.mjs`: which branches the security reviewer looks at, and why (spec 17, ONB-7);
+  - `regression.mjs`: weakened tests, and whether a fix's tests prove its bug (spec 18, REG-1 and REG-2);
   - `harness.mjs`: the harness settings; `queue.mjs`: the merge queue; `loop-state.mjs`: whether the loop is paused; `storymap.mjs`: a story's code by layer, and each requirement's trail; `timeline.mjs`: when each story's work happened; `journal.mjs`: the build's lineage, from the request to each merge; `team.mjs`: the team in the config, who the developer is, the team provider (GitHub's built in) and the team's rules for the hooks (spec 16); `teamfacts.mjs`: the pure parts the mod shares;
   - `checks.mjs`, `verify.mjs`, `plan.mjs`, `trace.mjs`, `next.mjs` (what to do next, including companions to set up and designs before screens, spec 17);
   - `adapters/`: tools that share a project, such as Context Graph.
