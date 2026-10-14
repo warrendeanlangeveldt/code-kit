@@ -46,12 +46,12 @@ Rules in `CLAUDE.md` and agent prompts are advice. Over a long session, or acros
 - an agent declares "done" with failing type checks, or with work nobody committed;
 - someone force-pushes, commits to `main`, adds a dependency, or runs a deploy nobody asked for.
 
-code-kit catches each of these, most at the moment it would happen: the hook refuses the edit or command and tells the agent why and what to do instead. A file a shell command writes is caught straight after the command, and the agent is told to revert it. The rules live in one reviewed file, not in every prompt, so they hold for every agent and every session. They are guard rails for agents, not a sandbox: see [What a pass means, and the limits](#what-a-pass-means-and-the-limits).
+code-kit catches each of these, most at the moment it would happen: the hook refuses the edit or command and tells the agent why and what to do instead. A file a shell command writes is caught straight after the command, and the agent is told to revert it. The rules live in one reviewed file, not in every prompt, so they hold for every agent and every session. They are guard rails for agents, not a sandbox: see [What verify proves, and its limits](#what-verify-proves-and-its-limits).
 
 ## What it enforces
 
 - **Lanes:** each lane agent writes only its own paths. The main session (the lead) writes contracts, specs and config, and delegates the rest. Any other subagent is read-only. An edit outside those paths is refused before it happens; a file a shell command writes outside them is reported straight after, for the agent to revert, and the finish check refuses to finish until it's gone.
-- **Layers:** each layer depends only on the layers it lists, and never on packages it's denied, for JavaScript and TypeScript imports. An edit that would add a violation is refused before it's written; the rules are checked again after each edit and before finishing, which is what catches a file a shell command wrote. In brownfield code, existing violations can be recorded in a baseline so only new ones block. Imports are found by pattern, not by parsing: see [the limits](#what-a-pass-means-and-the-limits).
+- **Layers:** each layer depends only on the layers it lists, and never on packages it's denied, for JavaScript and TypeScript imports. An edit that would add a violation is refused before it's written; the rules are checked again after each edit and before finishing, which is what catches a file a shell command wrote. In brownfield code, existing violations can be recorded in a baseline so only new ones block. Imports are found by pattern, not by parsing: see [the limits](#what-verify-proves-and-its-limits).
 - **Protected paths and the approval log:** every committed change to the kit, registers or contracts is appended to `.claude/approval-log.jsonl`, in the same commit. Only the lead writes these paths without a person's approval, and the person reviews them in the pull request.
 - **Spec-check before code:** when the project has specs, a lane can't write code on a branch until it has saved a spec-check report for that branch. The hook checks that the report exists; review checks what it says.
 - **Designs before screens** (optional): a screen file can't be written until the design register lists it.
@@ -80,7 +80,7 @@ code-kit catches each of these, most at the moment it would happen: the hook ref
 
 A project without `.claude/code-kit.json` isn't governed at all. An invalid config fails closed: nothing but the config itself can be written until it's fixed.
 
-## What a pass means, and the limits
+## What verify proves, and its limits
 
 When `verify` passes on a branch, you can conclude:
 
@@ -92,13 +92,13 @@ When `verify` passes on a branch, you can conclude:
 
 It's a check of the branch as it is when it runs, at the commit it names. A merge code-kit makes records that commit, and any checks not run, in the merge commit's message. From the merge queue, it merges exactly the commit the lead's review passed: a branch that moves on after its review leaves the queue to be reviewed again.
 
-The limits, so nothing here promises more than it does:
+Its limits:
 
 - **Guard rails, not a sandbox** ([SECURITY.md](SECURITY.md)). The hooks refuse what they recognise. Shell commands are matched by their text, so a command written to hide what it does can get past a shell rule, and a file a shell command writes is caught after the command, not before. Tools other than Edit, Write, NotebookEdit and Bash, such as an MCP server that writes files, aren't seen by the hooks at all; the finish check and `verify` still see what they changed in git.
 - **Layers are pattern-matched.** Imports are found with regular expressions for `import`, `export … from`, `require()` and `import()` with a literal path, in JavaScript and TypeScript files. A computed import isn't seen, and an import written inside a comment or a string can be reported as if it were real. An import resolves to a file through a relative path or `importAliases` only. Anything else, a workspace package's name included, counts as a package, held only by `denyPackages`, so map workspace packages and `tsconfig` paths in `importAliases`.
 - **Secrets.** Without gitleaks, only file names are checked (`.env`, `secrets/`, keys and keystores), not what files contain. The CI workflow init installs doesn't install gitleaks; add it if you rely on the scan.
-- **The finish check gives up deliberately.** After reporting the same problem three times without progress, it lets the agent finish and says so, for the lead to take up, rather than trap it.
-- **Review is the lead's.** The workflow's skills tell the lead to review each branch against its requirements, and the merge queue only takes branches the lead put there, at the commit it reviewed, but nothing mechanical proves what the review looked at. What's mechanical is `verify`, which runs before every merge code-kit makes.
+- **The finish check stops after three tries.** When it has reported the same problem three times without progress, it lets the agent finish and says so, for the lead to take up.
+- **Review is the lead's judgement.** The workflow's skills have the lead review each branch against its requirements, and the merge queue records the commit it reviewed. What the review looked at isn't recorded. `verify` is the mechanical check, and it runs before every merge code-kit makes.
 
 ## When to use it
 
@@ -287,7 +287,8 @@ Editing an agent file can't loosen a rule. And the agent files are kit files (`.
 3. **Enforced:** the path guard blocks any code in its lane until that report exists.
 4. The agent's tests name the requirement IDs; `status` lists the requirements no test names.
 5. **Enforced:** the stop hook runs the checks before the agent can finish.
-6. Review compares the branch with the requirements and the report, and **enforced:** `verify` checks the rules again before merging and in CI.
+6. Review compares the branch with the requirements and the report.
+7. **Enforced:** `verify` checks the rules again before merging and in CI.
 
 **The security reviewer** (`.claude/agents/security-reviewer.md`, from `templates/security-reviewer.md`) is a reviewer, not a lane: it owns no paths and checks everyone's work. Init writes it whenever the product handles sign-in, personal data, payments, input from outside or secrets, which is nearly always. It only reads (Read, Grep, Glob, and Bash for `git diff` and the project's audit commands), and the hooks hold it to that like any subagent outside the lanes. spec-design gives each spec a short threat model (what's sensitive, who might attack it, the trust boundaries) and security requirements stories cite. When `code-kit security` says a story's change touches something sensitive, the review runs the agent on the diff against those threat models: it attacks authentication and authorisation, injection (prompt injection too), data exposure, secrets, cryptography, SSRF and redirects, deserialisation, new dependencies and the privacy targets, and grades each finding blocker, concern or nit, with where, the attack and the fix. A blocker sends the branch back like a failing test.
 
