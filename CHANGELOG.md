@@ -2,6 +2,16 @@
 
 What changed in each release of code-kit, newest first. Versions follow the plugin manifest and the npm package `@warren-dean/code-kit`. Each release is also on [GitHub Releases](https://github.com/warrendeanlangeveldt/code-kit/releases).
 
+## 0.14.0 (2026-10-16)
+
+The lead loop stays in one session, listens to the lead before prompting it again, and asks your choices in Claude Code's own question dialog.
+
+- Only one session in a project runs the loop. Opening a second session there, for anything else, used to have code-kit prompt that session's lead too. The first session whose loop acts now holds a lead lease in `.claude/state/loop.json` and renews it while it runs. Any other session leaves its lead alone, and its band says "the loop runs in another session" with Lead from here to move the loop over. A new session also no longer clears a pause the running session made. `code-kit loop lead` and `code-kit loop release` record the lease, and the hooks refuse both to agents.
+- The loop reads the lead's last reply before prompting again, with a side call over the lead's own conversation. When the reply waits on you (a question, a design to look at, an approval), or you stopped the lead's turn, nothing more is prompted until you answer or speak to the lead. The band says what the lead is waiting on, and its question is asked in Claude Code's dialog with the answers it offered. A step the lead didn't take waits in the band with the lead's reason and Ask again. Before, the loop kept re-sending the same step and then asked you whether to ask again, without knowing what the lead had said.
+- A design story is handed to the lead once a session. While you and the lead design it, the loop leaves it to you instead of prompting the design step again each time a screen is approved.
+- Choices are asked in Claude Code's own question dialog while the lead is idle: how hands-off the loop is, a step under `propose`, a repeated or blocked step, a stalled lane, a stale claim, and a question from the lead with answers to pick from. Each is asked once; dismissed, it stays in the band and the Decisions tab. Approvals, send-backs and settings, which need your reason, stay in the pane.
+- The card for a step still next after two prompts now says why it's yours (the lead was asked twice and something stopped it), where it used to say you'd asked to approve each step.
+
 ## 0.13.0 (2026-10-14)
 
 A fix proves its bug, tests can't be weakened without you, and a passing `verify` says exactly what it covered.
