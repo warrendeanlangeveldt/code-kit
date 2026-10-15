@@ -22,6 +22,7 @@ export const DECISION_KINDS = new Set([
   'brief',
   'denied',
   'report',
+  'waiting',
 ]);
 
 /** What each answer does, in the person's words. */
@@ -54,6 +55,10 @@ const EFFECT = {
     'Puts it in your prompt after !, so you run it yourself; press Enter to run it, then Done it.',
   deniedDone: 'The lead is told you ran it, or allowed it, and carries on.',
   deniedNo: "The lead is told you won't run it now, and carries on with other work.",
+  answerLead: 'The lead is told your answer and carries on.',
+  answerLeadText: 'Type your answer; the lead is told it and carries on.',
+  askAgain: 'The lead is asked to take this step again now.',
+  carryOn: 'The loop goes on with whatever is next.',
   sendReport:
     "Files it on code-kit's GitHub under your account (a comment instead, if it's filed already).",
   discardReport: "It's not sent, and goes.",
@@ -133,6 +138,18 @@ function optionsOf(line) {
       { id: 'sendReport', label: 'Send' },
       { id: 'discardReport', label: 'Discard' },
     ];
+  // LOOP-11: what the lead waits on, read from its reply: its answers, or the person's own words.
+  if (line.kind === 'waiting' && line.waiting.kind === 'person' && line.waiting.question)
+    return [
+      ...line.waiting.options.map((o, i) => ({
+        id: `answerLead-${i}`,
+        act: 'answerLead',
+        label: o.label,
+        effect: o.effect,
+        line: { ...line, choice: o.label },
+      })),
+      { id: 'answerLeadText', label: line.waiting.options.length ? 'Something else…' : 'Answer…' },
+    ];
   return line.actions;
 }
 
@@ -149,6 +166,7 @@ const TAG = {
   brief: 'your brief',
   denied: 'refused',
   report: 'bug report',
+  waiting: 'the lead',
 };
 
 /** At most `n` characters on one line, cut with an ellipsis. */
@@ -200,6 +218,8 @@ function headlineOf(line, story) {
     };
   if (line.kind === 'report')
     return { headline: line.report.title, sub: "drafted by an agent, for code-kit's GitHub" };
+  if (line.kind === 'waiting' && line.waiting.question)
+    return { headline: line.waiting.question, sub: 'from the lead, which waits on it' };
   return { headline: line.text, sub: story ? `${story.id} ${story.title ?? ''}` : '' };
 }
 
@@ -245,6 +265,12 @@ function whyOf(line, check) {
     return `It's an open question in ${line.brief.path}, left for you: what gets built depends on your answer. Not sure what it means? Ask about it when you answer.`;
   if (line.kind === 'denied')
     return `Claude Code's own permission check refused it${line.denial.reason ? ` (${line.denial.reason})` : ''}, which code-kit can't approve past: only you can run it or allow it.`;
+  if (line.kind === 'waiting' && line.waiting.kind === 'person')
+    return "The lead's last reply waits on you, so the loop doesn't prompt it again until you answer, here or in the chat.";
+  if (line.kind === 'waiting' && line.waiting.kind === 'stopped')
+    return 'You stopped the lead mid-turn, so the loop leaves the lead to you until you say.';
+  if (line.kind === 'waiting' && line.waiting.kind === 'blocked')
+    return "The lead was asked to take this step and didn't, so the loop won't ask again until you say.";
   if (line.kind === 'report')
     return "code-kit got in an agent's way. It's sent under your GitHub account to a public repository, so read what it says first.";
   return null;
@@ -363,6 +389,7 @@ export function decisionCards(lines, context = {}) {
             : null) ??
           (line.pull ? `Pull request #${line.pull.number} on ${line.pull.branch}` : null) ??
           (line.question?.blocks ? `${line.question.story} waits on your answer.` : null) ??
+          (line.waiting?.label ? `The loop's last step: ${line.waiting.label}` : null) ??
           (line.denial ? clip(line.denial.command ?? line.denial.what, 400) : null) ??
           (line.report ? line.report.body : null),
         settled,
@@ -380,4 +407,52 @@ export function contextOf(card) {
   if (!card.story) return null;
   const reqs = card.requirements.map((r) => r.id).join(', ');
   return `for ${card.story.id} ${card.story.title}${reqs ? ` (${reqs})` : ''}`;
+}
+
+/** DECIDE-4: the kinds of decision settled with a choice, asked in Claude Code's own question dialog. */
+export const NATIVE_KINDS = new Set(['proposal', 'stalled', 'teamStale', 'question', 'waiting']);
+
+/** One sentence ended as a question asks. */
+const asked = (text, question) => `${String(text).replace(/[.\s]+$/, '')}. ${question}`;
+
+/**
+ * DECIDE-4: a decision card as Claude Code's question dialog asks it: { key, question, header, options:
+ * [{ label, act, line }], typed }, or null for one that needs the pane (a reason to give, an answer to
+ * type with no choices offered). An option without `act` leaves the decision where it is; `typed` names
+ * the act that takes the person's own words, typed under the dialog's Other.
+ */
+export function nativeChoice(card) {
+  if (!NATIVE_KINDS.has(card.kind)) return null;
+  const line = card.line;
+  const w = line.waiting;
+  // What the person stopped, or a reply waiting on them with no question in it, is theirs to pick up
+  // in the chat: no dialog over what they're about to type.
+  if (card.kind === 'waiting' && !(w?.kind === 'person' && w.question) && w?.kind !== 'blocked')
+    return null;
+  const options = card.options
+    .filter((o) => !o.label.endsWith('…'))
+    .slice(0, 4)
+    .map((o) => ({ label: o.label, act: o.act ?? o.id, line: o.line ?? line }));
+  if (!options.length) return null;
+  if (options.length === 1) options.push({ label: 'Not now', act: null, line });
+  const question =
+    card.kind === 'proposal' && line.proposal?.first
+      ? asked(line.text, 'How much should it do on its own?')
+      : card.kind === 'proposal' && line.proposal?.repeated
+        ? `${card.why} ${line.text}`
+        : card.kind === 'stalled'
+          ? asked(`${line.text}. ${card.why}`, 'Restart it?')
+          : card.kind === 'teamStale'
+            ? asked(line.text, 'Keep your claim?')
+            : card.kind === 'waiting' && w.kind === 'blocked'
+              ? asked(line.text, 'Ask the lead again?')
+              : card.headline;
+  return {
+    key: `${card.kind}:${card.headline}:${options.map((o) => o.label).join('|')}`,
+    question: /\?$/.test(question) ? question : `${question}?`,
+    header: card.tag.slice(0, 12),
+    options,
+    typed:
+      card.kind === 'question' ? 'answerTyped' : card.kind === 'waiting' ? 'answerLeadTyped' : null,
+  };
 }

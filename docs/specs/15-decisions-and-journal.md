@@ -66,6 +66,16 @@ Usage, the plan's pause, finish checks and "all done" are notes: labelled "note"
 
 - Given a held call, when the person presses `d` then Refuse on the card, then the call is refused and the band no longer offers Why.
 
+### DECIDE-4 A choice is asked in Claude Code's own dialog
+
+A decision settled by choosing (the loop's first offer of how hands-off it is, a step under `propose`, a step still next after two prompts or one the lead didn't take, a lane stalled past its restarts, a stale claim of the person's, and a question from the lead with two to four answers) is asked in Claude Code's own question dialog, while the lead is idle and nothing is typed in the prompt, one at a time. Each answer acts as its button does; words typed under Other answer a question from the lead as the person's own. A decision with one choice offers Not now beside it. Each is asked once a session: dismissed, it stays in the band and the Decisions tab. What needs a reason or words typed (an approval, a send-back, a setting, a question with no answers offered) stays in the pane, and a turn the person stopped, or a reply with no question in it, opens no dialog. Nothing is asked in a session another one runs the loop for (LOOP-10), nor where nobody can be asked (`claude -p`).
+
+**Acceptance**
+
+- Given the loop's first offer, when the dialog is answered Keep going, then autonomy is recorded as the person's choice and the step is taken.
+- Given the lead's question with two answers, when the person picks one, or types their own words, then it's recorded and sent to the lead; dismissed, it waits in the band and isn't asked again.
+- Given an approval waiting, then no dialog opens for it.
+
 ### ASK-1 The lead asks through code-kit
 
 What the lead can't settle itself and only the person can (a product choice, an account or key only they can create, wording or a design only they can sign off, whether something stays private) is asked with `code-kit ask "<question>" [--story ST-n] [--blocks] [--why "…"] [--option "Label: what it does"]…`, so it waits in their Decisions tab instead of scrolling away in the chat. The same open question is asked once. Only the lead asks: a lane writes the question for the lead. `code-kit ask` lists them; `ask withdraw <id> --reason …` takes back one settled another way. They're kept in `.claude/state/questions.jsonl` in the main checkout.
