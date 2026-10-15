@@ -79,7 +79,7 @@ import { PROJECT, projectMap, storyMap, trail } from '../hooks/lib/storymap.mjs'
 import { journal } from '../hooks/lib/journal.mjs';
 import { dequeue, enqueue, lastMerged, readQueue, settle, waiting } from '../hooks/lib/queue.mjs';
 import { SETTINGS, parseSetting, settingOf, withSetting } from '../hooks/lib/harness.mjs';
-import { readLoop, writeLoop } from '../hooks/lib/loop-state.mjs';
+import { claimLead, readLoop, releaseLead, writeLoop } from '../hooks/lib/loop-state.mjs';
 import {
   claimChanges,
   storyOfBranch,
@@ -162,6 +162,7 @@ const FLAGS = [
   '--peek',
   '--off',
   '--blocks',
+  '--take',
 ];
 const flag = (name) => args.includes(name);
 const writeBaseline = flag('--write');
@@ -1814,6 +1815,8 @@ function reportCommand() {
 /**
  * The lead loop's pause (LOOP-6): `loop` says whether the person paused it; `loop pause|resume`, the
  * person's act from the code-kit band, records it, so other tools' background work pauses with it.
+ * LOOP-10: `loop lead` takes or renews the lease of the one session that runs the loop, and `loop
+ * release` gives it up; the mod runs both, and the hooks refuse all four to agents.
  */
 function loopCommand() {
   const root = resolve('.');
@@ -1822,14 +1825,31 @@ function loopCommand() {
     writeLoop(root, sub === 'pause');
     return out(sub === 'pause' ? 'The lead loop is paused.' : 'The lead loop is running.');
   }
-  if (sub !== undefined) die('code-kit loop [--json] | loop pause | loop resume');
+  // LOOP-10: one session in the project runs the loop; the mod takes and renews the lease.
+  if (sub === 'lead' || sub === 'release') {
+    if (!sessionId) die(`code-kit loop ${sub} needs the session: --session <id>.`);
+    if (sub === 'release')
+      return out(
+        releaseLead(root, sessionId)
+          ? 'This session no longer runs the lead loop.'
+          : "This session wasn't running the lead loop.",
+      );
+    const r = claimLead(root, sessionId, { take: flag('--take') });
+    if (!r.ok)
+      die(
+        `Another session (${r.lead.session}, renewed ${r.lead.at}) runs the lead loop in this project. Leave it there, or take it over with --take.`,
+      );
+    return out('This session runs the lead loop.');
+  }
+  if (sub !== undefined)
+    die(
+      'code-kit loop [--json] | loop pause | loop resume | loop lead --session <id> [--take] | loop release --session <id>',
+    );
   const state = readLoop(root);
   out(
     flag('--json')
       ? JSON.stringify(state)
-      : state.paused
-        ? `The lead loop is paused (since ${state.at}).`
-        : 'The lead loop is running.',
+      : `${state.paused ? `The lead loop is paused (since ${state.at}).` : 'The lead loop is running.'}${state.lead ? ` Session ${state.lead.session} runs it.` : ''}`,
   );
 }
 
@@ -1881,7 +1901,7 @@ function usage() {
       '              | settings [--json] | settings set <key> <value> --reason "…" [--via pane]\n' +
       '              | hold <id> [--minutes N] | hold <id> --answer approved|refused\n' +
       '              | queue [--json] | queue add|drop <branch> | queue rules | queue merge --delegated|--person\n' +
-      '              | loop [--json] | loop pause|resume\n' +
+      '              | loop [--json] | loop pause|resume | loop lead|release --session id [--take]\n' +
       '              | map <story>|project [--json] | trail [--json] | journal [--json]\n' +
       '              | story <id> [--json] | timeline [--json]\n' +
       '              | team [--json] [--fresh] | team since [--json] [--peek]\n' +

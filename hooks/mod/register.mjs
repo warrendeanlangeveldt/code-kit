@@ -51,8 +51,12 @@ import {
   toolLine,
 } from './panes.mjs';
 import {
+  answeredPrompt,
+  designHandedOver,
   leadPrompt,
   nudgeText,
+  outcomePrompt,
+  readOutcome,
   restartPrompt,
   stallDue,
   stepKey,
@@ -61,7 +65,7 @@ import {
   withoutInFlight,
 } from './loop.mjs';
 import { goalOf, nextText } from './mission.mjs';
-import { contextOf, decisionCards, limitsWhy } from './decisions.mjs';
+import { contextOf, decisionCards, limitsWhy, nativeChoice } from './decisions.mjs';
 import { DEFAULT_TEAM_UI, TEAM_ID, teamFrame } from './teamview.mjs';
 import { glowOf, mapStoryOf, touchOf } from './codemap.mjs';
 import { harnessSettings } from '../lib/harness.mjs';
@@ -111,7 +115,22 @@ const loop = {
   nextStep: null, // what `code-kit next` last said, for the band's next row
   done: null, // { count } once every story is done
   doneDismissed: false,
+  // LOOP-11: the step the lead's turn was prompted with, until that turn ends: { prompt, key, label, kind, target }
+  sent: null,
+  // LOOP-11, LOOP-12: what holds the loop: { kind: 'person' | 'stopped' | 'blocked' | 'design', key, label, prompt, question, options, reason }
+  waiting: null,
+  handedDesign: new Set(), // LOOP-12: design stories handed to the lead this session
 };
+// LOOP-10: whether this session runs the loop, the session that does when another does, and when this
+// one last renewed its lease.
+const lease = { mine: false, other: null, renewed: -Infinity };
+const LEASE_RENEW_MS = 30000;
+// LOOP-11: the lead's last reply, read once before the loop next prompts it: { turnId, text, aborted, sent, read }
+let lastReply = null;
+let turnQuestions = []; // the open questions as the lead's running turn started
+// DECIDE-4: decisions asked in Claude Code's own question dialog this session, and whether one is open.
+const offered = new Set();
+let offering = false;
 /** LOOP-8: the times in a row the lead is prompted with one step before the person is asked. */
 const ASK_LIMIT = 2;
 let leadTurn = null; // the lead's running turn, if any
@@ -207,7 +226,7 @@ export function register(on) {
     const cli = `${$.plugin.root}/bin/code-kit.mjs`;
     const cwd = e.cwd ?? (await $.session.cwd());
     const session = await $.session.id();
-    where = { cli, cwd, interactive: e.isInteractive !== false };
+    where = { cli, cwd, session, interactive: e.isInteractive !== false };
     // The held call's answer, for the `code-kit hold` it waits in.
     const answerHeld = (id, answer) =>
       $.process.run(['node', cli, 'hold', id, '--answer', answer], { cwd });
@@ -217,9 +236,12 @@ export function register(on) {
     };
     // What a CLI run said, in a line: why it refused, for a notice.
     const firstLine = (ran) => (ran.stderr || ran.stdout).trim().split('\n')[0];
-    // A session starts with the loop running: a pause recorded by an earlier one no longer holds.
-    if ((await json('loop').catch(() => null))?.paused)
+    // A session starts with the loop running: a pause recorded by an earlier one no longer holds. A pause
+    // by a session that still runs the loop (LOOP-10) is that session's, and stays.
+    const recorded = await json('loop').catch(() => null);
+    if (recorded?.paused && (!recorded.lead || recorded.lead.session === session))
       await $.process.run(['node', cli, 'loop', 'resume'], { cwd }).catch(() => {});
+    lease.other = recorded?.lead && recorded.lead.session !== session ? recorded.lead : null;
     const stamp = async (path) => {
       const s = await $.fs.stat(`${cwd}/${path}`).catch(() => null);
       return s ? `${path}@${s.mtimeMs}` : `${path}-`;
@@ -269,6 +291,11 @@ export function register(on) {
         if (team && check.team?.board && at - boardSynced >= BOARD_EVERY_MS) {
           boardSynced = at;
           $.process.run(['node', cli, 'team', 'board'], { cwd, timeoutMs: 120000 }).catch(() => {});
+        }
+        // LOOP-10: while another session runs the loop, whether it still does (its lease lapses as it ends).
+        if (!lease.mine) {
+          const lead = (await json('loop').catch(() => null))?.lead ?? null;
+          lease.other = lead && lead.session !== session ? lead : null;
         }
         // The agents at work; none where the session has none bound (claude -p before it mounts).
         const atWork = agentsAtWork(await $.agent.list().catch(() => []));
@@ -634,6 +661,12 @@ export function register(on) {
         }
         if (q.kind === 'question')
           model = { ...model, questions: (model.questions ?? []).filter((x) => x.id !== q.id) };
+        // LOOP-11: answered, what the lead waited on no longer holds the loop.
+        if (
+          q.kind === 'lead' ||
+          (q.kind === 'question' && loop.waiting?.questionIds?.includes(q.id))
+        )
+          loop.waiting = null;
         $.ui.invalidate('ui.render');
         const said = /[.!?]$/.test(text) ? text : `${text}.`;
         $.prompt
@@ -641,7 +674,9 @@ export function register(on) {
             text:
               q.kind === 'question'
                 ? `The person answered ${q.id} (${q.question}): ${said}${q.blocks ? ` ${q.story} no longer waits on them.` : ''} Carry on with it.`
-                : `The person answered an open question in ${q.path}, "${q.question}": ${said} Record it in the brief's decision log, take it out of the open questions, and carry on with it.`,
+                : q.kind === 'lead'
+                  ? answeredPrompt(q.question, text)
+                  : `The person answered an open question in ${q.path}, "${q.question}": ${said} Record it in the brief's decision log, take it out of the open questions, and carry on with it.`,
           })
           .catch(() => {});
         await act.reload();
@@ -1004,16 +1039,183 @@ export function register(on) {
         loop.steps.push({ at: await $.clock.now(), kind, target, ...(prompt ? { prompt } : {}) });
         if (loop.steps.length > 50) loop.steps.shift();
       },
-      // LOOP-1: a prompt to the lead, recorded. It isn't awaited: the turn it starts runs on.
-      submit: async (prompt, kind, target) => {
+      // LOOP-1: a prompt to the lead, recorded. It isn't awaited: the turn it starts runs on. LOOP-11:
+      // the step is kept until that turn ends, so the loop reads the reply to it.
+      submit: async (
+        prompt,
+        kind,
+        target,
+        { key = `${kind}:${target}`, label = `${kind} ${target}` } = {},
+      ) => {
         loop.started = true;
         loop.proposal = null;
+        loop.sent = { prompt, key, label, kind, target };
+        // LOOP-12: a design story is handed to the lead once; the person designs it with the lead.
+        if (kind === 'design')
+          for (const id of String(target).split(/\s+/).filter(Boolean)) loop.handedDesign.add(id);
         await act.record(kind, target, prompt);
         $.ui.invalidate('ui.render');
         $.prompt.submit({ text: prompt }).catch((err) => {
+          loop.sent = null;
           notice = `The loop couldn't prompt the lead: ${err?.message ?? err}`;
           $.ui.invalidate('ui.render');
         });
+      },
+      // LOOP-10: this session takes or renews the lease of the one session that runs the loop; another
+      // session holding it keeps it, unless the person moves it here (`take`).
+      lead: async ({ take = false } = {}) => {
+        const now = await $.clock.now();
+        if (lease.mine && !take && now - lease.renewed < LEASE_RENEW_MS) return true;
+        const ran = await $.process
+          .run(['node', cli, 'loop', 'lead', '--session', session, ...(take ? ['--take'] : [])], {
+            cwd,
+          })
+          .catch(() => ({ exitCode: 1 }));
+        const was = lease.mine;
+        lease.mine = ran.exitCode === 0;
+        lease.renewed = now;
+        lease.other = lease.mine ? null : ((await json('loop').catch(() => null))?.lead ?? null);
+        // Taken over by another session: this one stops prompting its lead, and offers nothing more.
+        if (was && !lease.mine) {
+          loop.proposal = null;
+          loop.pending = [];
+          loop.waiting = null;
+        }
+        if (was !== lease.mine || !lease.mine) $.ui.invalidate('ui.render');
+        return lease.mine;
+      },
+      // LOOP-10: the person moves the loop to this session; the other stops prompting its lead.
+      leadHere: async () => {
+        if (!(await act.lead({ take: true }))) {
+          notice = "This session couldn't take the loop: code-kit loop lead failed.";
+          $.ui.invalidate('ui.render');
+          return;
+        }
+        loop.lastKey = null;
+        await act.record('lead', 'this session');
+        $.ui.invalidate('ui.render');
+        await act.step('resume');
+      },
+      // LOOP-11: the lead's last reply, read once before the loop prompts it again. A reply that waits on
+      // the person, or a turn they stopped, holds the loop until they speak; a step the lead didn't take
+      // holds that step while it's still next.
+      hear: async () => {
+        const reply = lastReply;
+        if (!reply || reply.read) return;
+        reply.read = true;
+        const sent = reply.sent;
+        const step = sent
+          ? {
+              key: sent.key,
+              label: sent.label,
+              prompt: sent.prompt,
+              stepKind: sent.kind,
+              target: sent.target,
+            }
+          : {};
+        if (reply.aborted) {
+          loop.waiting = { kind: 'stopped', ...step };
+          $.ui.invalidate('ui.render');
+          return;
+        }
+        // It asked through code-kit: those questions are the person's decisions already.
+        const open = ((await json('ask').catch(() => null)) ?? []).filter(
+          (q) => q.state === 'open',
+        );
+        const asked = open.filter((q) => !reply.asked.includes(q.id));
+        if (asked.length) {
+          model = { ...model, questions: open };
+          loop.waiting = {
+            kind: 'person',
+            ...step,
+            questionIds: asked.map((q) => q.id),
+            reason: `it asked you ${asked.map((q) => q.id).join(', ')} through code-kit`,
+          };
+          $.ui.invalidate('ui.render');
+          return;
+        }
+        if (!reply.text.trim()) return;
+        const said = await act.sideCall(
+          outcomePrompt({ prompt: sent?.prompt ?? null, answer: reply.text }),
+        );
+        const heard = said.isAnswered ? readOutcome(said.text) : null;
+        // Spec 05's data: what came of the step, once known.
+        const record = sent ? loop.steps.findLast((x) => x.prompt === sent.prompt) : null;
+        if (record) record.outcome = heard?.outcome ?? 'unread';
+        if (heard?.outcome === 'needs-person')
+          loop.waiting = {
+            kind: 'person',
+            ...step,
+            question: heard.question,
+            options: heard.options,
+            reason: heard.reason,
+          };
+        else if (heard?.outcome === 'blocked' && sent)
+          loop.waiting = { kind: 'blocked', ...step, reason: heard.reason };
+        if (loop.waiting) $.ui.invalidate('ui.render');
+      },
+      // LOOP-11: the person's choice from the lead's options, or their own words, told to the lead.
+      answerLead: (line) =>
+        act.sendAnswer({ kind: 'lead', question: line.waiting.question }, line.choice),
+      answerLeadTyped: (line, text) =>
+        act.sendAnswer({ kind: 'lead', question: line.waiting.question }, text),
+      answerLeadText: async (line) => {
+        answering = {
+          kind: 'lead',
+          question: line.waiting.question,
+          options: line.waiting.options ?? [],
+          text: '',
+          error: null,
+          aside: { thread: [], draft: '' },
+        };
+        await $.ui.open({ id: ANSWER_ID, title: 'Answer', focus: true, closeOnEscape: true });
+        $.ui.invalidate('ui.render');
+      },
+      // DECIDE-4: a question's answer typed in the dialog, as the person's own words.
+      answerTyped: (line, text) => act.sendAnswer({ kind: 'question', ...line.question }, text),
+      // LOOP-11, LOOP-12: the person asks the lead again for the step that held the loop.
+      askAgain: async () => {
+        const w = loop.waiting;
+        if (!w?.prompt || leadTurn) return;
+        loop.waiting = null;
+        loop.asked = { key: w.key, times: 0 };
+        await act.submit(w.prompt, w.stepKind, w.target, { key: w.key, label: w.label });
+      },
+      // LOOP-11: the person lets the loop go on.
+      carryOn: async () => {
+        loop.waiting = null;
+        loop.lastKey = null;
+        $.ui.invalidate('ui.render');
+        await act.step('resume');
+      },
+      // DECIDE-4: the next decision the person settles with a choice, asked in Claude Code's own question
+      // dialog while the lead is idle. Each is asked once: dismissed, it stays in the band and the
+      // Decisions tab. Never in a session another one runs the loop for, nor over what the person types.
+      offer: async () => {
+        if (offering || leadTurn || loop.sent || !where.interactive) return;
+        if (lease.other && !lease.mine) return;
+        const now = await $.clock.now();
+        const choice = cardsNow(now)
+          .map((card) => ({ card, choice: nativeChoice(card) }))
+          .find((c) => c.choice && !offered.has(c.choice.key));
+        if (!choice) return;
+        const box = await $.prompt.read().catch(() => null);
+        if (box?.text?.trim()) return;
+        offered.add(choice.choice.key);
+        offering = true;
+        const { question, header, options, typed } = choice.choice;
+        const answer = await $.ui
+          .ask(question, { options: options.map((o) => o.label), header })
+          .catch(() => null)
+          .finally(() => {
+            offering = false;
+          });
+        if (answer == null) return;
+        const picked = options.find((o) => o.label === answer);
+        if (picked?.act) await act[picked.act](picked.line);
+        else if (!picked && typed && answer.trim())
+          await act[typed](choice.card.line, answer.trim());
+        act.offer().catch(() => {});
       },
       // LOOP-1, LOOP-5, LOOP-7: with the lead idle and no draft, the step `next` reports.
       step: async (trigger) => {
@@ -1023,6 +1225,11 @@ export function register(on) {
         if (trigger === 'tick' && !loop.started && !loop.pending.length) return;
         const box = await $.prompt.read().catch(() => null);
         if (box?.text?.trim()) return;
+        // LOOP-10: one session in the project runs the loop; in any other, the lead is the person's alone.
+        if (!(await act.lead())) return;
+        // LOOP-11: the lead's last reply first: one that waits on the person holds every step.
+        await act.hear();
+        if (loop.waiting && ['person', 'stopped'].includes(loop.waiting.kind)) return;
         if (loop.pending.length) {
           const { story, prompt } = loop.pending.shift();
           // Until the person has chosen how hands-off the loop is, or under propose, a restart is offered
@@ -1034,6 +1241,7 @@ export function register(on) {
               label: `Restart ${story}`,
               kind: 'restart',
               target: story,
+              key: `restart:${story}`,
               first: !chosenYet,
             };
             $.ui.invalidate('ui.render');
@@ -1080,7 +1288,19 @@ export function register(on) {
           loop.asked = { key, times: 0 };
           if (loop.proposal?.repeated) loop.proposal = null;
         }
+        // LOOP-11, LOOP-12: a step the lead didn't take, or designs left to the person and the lead, hold
+        // that step while it's still next; any other step goes on.
+        if (loop.waiting) {
+          if (loop.waiting.key === key) return;
+          loop.waiting = null;
+          $.ui.invalidate('ui.render');
+        }
         if (!prompt) return;
+        if (designHandedOver(step, loop.handedDesign)) {
+          loop.waiting = { kind: 'design', key, label, prompt, stepKind: kind, target };
+          $.ui.invalidate('ui.render');
+          return;
+        }
         // Never the same step twice while the project stands still.
         const print = await act.fingerprint();
         if (key === loop.lastKey && print === loop.lastPrint) return;
@@ -1090,7 +1310,7 @@ export function register(on) {
         // moving elsewhere (lanes committing) doesn't make a third prompt useful. The person decides.
         if (loop.asked.times >= ASK_LIMIT) {
           if (loop.proposal?.label !== label) {
-            loop.proposal = { prompt, label, kind, target, repeated: loop.asked.times };
+            loop.proposal = { prompt, label, kind, target, key, repeated: loop.asked.times };
             $.ui.invalidate('ui.render');
           }
           return;
@@ -1098,12 +1318,12 @@ export function register(on) {
         // Until the person has chosen how hands-off the loop is, its first step is offered, not taken.
         const chosen = (model.check?.harnessSet ?? []).includes('autonomy');
         if (h.autonomy === 'propose' || !chosen) {
-          loop.proposal = { prompt, label, kind, target, first: !chosen };
+          loop.proposal = { prompt, label, kind, target, key, first: !chosen };
           $.ui.invalidate('ui.render');
           return;
         }
         loop.asked.times += 1;
-        await act.submit(prompt, kind, target);
+        await act.submit(prompt, kind, target, { key, label });
       },
       // The first offer's answers: the person's choice of autonomy, recorded as theirs, then acted on.
       chooseAutonomy: async (value) => {
@@ -1146,10 +1366,10 @@ export function register(on) {
       },
       go: async () => {
         if (!loop.proposal || leadTurn) return;
-        const { prompt, kind, target, repeated } = loop.proposal;
+        const { prompt, kind, target, key, label, repeated } = loop.proposal;
         // The person asked again: once more, then it's theirs to offer again if it still doesn't take.
         loop.asked.times = repeated ? ASK_LIMIT : loop.asked.times + 1;
-        await act.submit(prompt, kind, target);
+        await act.submit(prompt, kind, target, { key, label });
       },
       // LOOP-6: pausing stops new steps at once; a turn in progress finishes.
       pause: async () => {
@@ -1405,6 +1625,9 @@ export function register(on) {
       if (busy) return;
       busy = true;
       try {
+        // LOOP-10: the lead session renews its lease; DECIDE-4: with the lead idle, a decision waiting.
+        if (lease.mine) await act.lead();
+        if (!leadTurn) act.offer().catch(() => {});
         await act.stalls();
         await act.animate();
         const now = await act.fingerprint();
@@ -1629,6 +1852,8 @@ export function register(on) {
 
   on('turn.start', async ($, e, next) => {
     leadTurn = e.turnId;
+    // LOOP-11: the questions already open, so the loop knows which the lead asked in this turn.
+    turnQuestions = (model.questions ?? []).map((q) => q.id);
     $.ui.invalidate('ui.render'); // the lead's lane reads working while its turn runs
     if (reviewTurn === 'next') reviewTurn = e.turnId;
     return next(e);
@@ -1650,6 +1875,16 @@ export function register(on) {
     // as the spike found it must be). The prompt it submits isn't awaited: that turn isn't this hook's.
     if (!e.agentId && (!leadTurn || leadTurn === e.turnId)) {
       leadTurn = null;
+      // LOOP-11: the lead's reply, read before the loop next prompts it, with the step it answered.
+      lastReply = {
+        turnId: e.turnId,
+        text: e.answer ?? '',
+        aborted: Boolean(e.isAborted),
+        sent: loop.sent,
+        asked: turnQuestions,
+        read: false,
+      };
+      loop.sent = null;
       $.ui.invalidate('ui.render');
       // What the person asked for goes first, whatever the loop's state.
       if (personAsks.length) {
@@ -1658,15 +1893,47 @@ export function register(on) {
         return res;
       }
       await act?.step('turn').catch(() => {});
+      // DECIDE-4: a decision waiting, asked in Claude Code's own dialog; not awaited, the person answers.
+      act?.offer().catch(() => {});
     }
     return res;
+  });
+
+  // LOOP-11: the person speaking to the lead answers what the loop waited on, whatever they said; the
+  // loop reads the lead's reply to them before it prompts again. Designs stay theirs (LOOP-12).
+  on('prompt.submit', async ($, e, next) => {
+    if (['composer', 'bridge'].includes(e.origin?.kind) && loop.waiting?.kind !== 'design') {
+      if (loop.waiting) $.ui.invalidate('ui.render');
+      loop.waiting = null;
+      loop.asked = { key: null, times: 0 };
+    }
+    return next(e);
+  });
+
+  // LOOP-10: the lead session ends: the next session to act takes the loop at once.
+  on('session.end', async ($, e, next) => {
+    if (lease.mine && where) {
+      lease.mine = false;
+      await $.process
+        .run(['node', where.cli, 'loop', 'release', '--session', where.session], { cwd: where.cwd })
+        .catch(() => {});
+    }
+    return next(e);
   });
 
   // What the pane and band show of the loop.
   const loopNow = (now) => {
     const h = harness();
     const state =
-      h.autonomy === 'off' ? 'off' : loop.done ? 'done' : loop.paused ? 'paused' : 'running';
+      h.autonomy === 'off'
+        ? 'off'
+        : lease.other && !lease.mine
+          ? 'elsewhere'
+          : loop.done
+            ? 'done'
+            : loop.paused
+              ? 'paused'
+              : 'running';
     const laneNotes = {};
     for (const a of activity.values()) {
       if (!a.lane) continue;
@@ -1684,6 +1951,7 @@ export function register(on) {
       started: loop.started,
       last: last ? `${last.kind} ${last.target}` : null,
       proposal: loop.proposal,
+      waiting: loop.waiting,
       flagged: [...flagged.values()],
       doneCount: loop.done?.count ?? 0,
       steps: loop.steps,
@@ -1820,6 +2088,7 @@ export function register(on) {
     flag: (t) => `${t} stalled again after its restarts, so it came to you.`,
     pause: () => 'You paused the loop.',
     resume: () => 'You resumed the loop.',
+    lead: () => 'You moved the loop to this session.',
     done: (t) => `Every story was done (${t}).`,
   };
   const journalNow = () => {
@@ -1829,7 +2098,7 @@ export function register(on) {
       .map((x) => ({
         at: x.at,
         kind: 'loop',
-        who: ['pause', 'resume'].includes(x.kind) ? 'person' : 'lead',
+        who: ['pause', 'resume', 'lead'].includes(x.kind) ? 'person' : 'lead',
         text: STEP_WORDS[x.kind](x.target),
       }));
     return [...recorded, ...steps].sort((a, b) => a.at - b.at);

@@ -148,3 +148,77 @@ export function restartPrompt({ type, id, story, minutes }) {
 /** The message a quiet agent gets (LOOP-3). */
 export const nudgeText = (minutes) =>
   `No tool call for ${minutes} minutes: report where you are, or carry on.`;
+
+/** LOOP-11: what a lead turn left the build at, as the loop reads the lead's reply. */
+export const OUTCOMES = new Set(['done', 'started', 'needs-person', 'blocked']);
+const ANSWER_SHOWN = 4000;
+
+/**
+ * LOOP-11: the side call that reads the lead's last reply before the loop prompts it again: over the
+ * lead's own conversation (so it knows the whole exchange), with the reply itself for a call that
+ * can't fork. `prompt` is the loop's own prompt for that turn, or null when the person started it.
+ */
+export function outcomePrompt({ prompt = null, answer = '' }) {
+  const reply = String(answer ?? '').trim();
+  const shown =
+    reply.length > ANSWER_SHOWN ? `${reply.slice(0, ANSWER_SHOWN)}\n[… cut short]` : reply;
+  return [
+    prompt
+      ? `code-kit's lead loop prompted you: "${prompt}"`
+      : "The person prompted you, and code-kit's lead loop is about to prompt you with the build's next step.",
+    `Your reply ended your turn. It read:\n"""\n${shown}\n"""`,
+    'Say where that reply left things, so the loop knows whether to prompt you again. Answer with one JSON object and nothing else:',
+    '{"outcome": "done" | "started" | "needs-person" | "blocked", "question": "…", "options": [{"label": "…", "effect": "…"}], "reason": "…"}',
+    '- done: you finished what was asked, or there was nothing to do.',
+    '- started: you started work that carries on without you, such as lane agents.',
+    "- needs-person: you asked the person something, or wait on their answer, approval or feedback before you go on. question: what you wait on, as one question; options: 2 to 4 answers they could give (a label of at most five words, and what it does), or [] when it's theirs to put in words.",
+    "- blocked: you didn't take the step, for a reason no answer from the person settles now. reason: why, in a sentence.",
+  ].join('\n');
+}
+
+/**
+ * LOOP-11: the side call's answer: { outcome, question, options: [{ label, effect }], reason }, or
+ * null when it isn't one (the loop then goes on as before).
+ */
+export function readOutcome(text) {
+  const raw = String(text ?? '');
+  const json = raw.slice(raw.indexOf('{'), raw.lastIndexOf('}') + 1);
+  let parsed;
+  try {
+    parsed = JSON.parse(json);
+  } catch {
+    return null;
+  }
+  if (!parsed || !OUTCOMES.has(parsed.outcome)) return null;
+  const words = (s, n) =>
+    typeof s === 'string' && s.trim() ? s.replace(/\s+/g, ' ').trim().slice(0, n) : null;
+  const options = (Array.isArray(parsed.options) ? parsed.options : [])
+    .map((o) => ({ label: words(o?.label, 40), effect: words(o?.effect, 200) }))
+    .filter((o) => o.label)
+    .slice(0, 4);
+  return {
+    outcome: parsed.outcome,
+    question: words(parsed.question, 400),
+    options: options.length >= 2 ? options : [],
+    reason: words(parsed.reason, 300),
+  };
+}
+
+/**
+ * LOOP-12: a design is made with the person, so the loop hands a design story to the lead once; while
+ * the stories `next` names have all been handed over, it leaves them to the person and the lead.
+ */
+export const designHandedOver = (step, handed) =>
+  step?.step === 'design' &&
+  (step.args ?? '')
+    .split(/\s+/)
+    .filter(Boolean)
+    .every((id) => handed.has(id));
+
+/** LOOP-11: the lead's prompt with the person's answer to what it waited on. */
+export const answeredPrompt = (question, answer) => {
+  const said = /[.!?]$/.test(answer) ? answer : `${answer}.`;
+  return question
+    ? `The person answered what you asked ("${question}"): ${said} Carry on with it.`
+    : `The person says: ${said} Carry on with it.`;
+};

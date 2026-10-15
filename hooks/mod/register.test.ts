@@ -152,6 +152,10 @@ function project() {
     } as any,
     sent: [] as { to: any; text: string }[],
     loopPaused: false, // the pause recorded by `code-kit loop`
+    leadSession: null as string | null, // LOOP-10: the session holding the lead lease
+    leadClaims: 0,
+    asked: [] as { question: string; options: string[]; header?: string }[], // dialogs the mod opened
+    typed: null as string | null, // what the person types under the dialog's Other, if anything
     map: null as any, // `code-kit map <story> --json`
     trail: null as any, // `code-kit trail --json`
     journal: { events: [] as any[] }, // `code-kit journal --json`
@@ -244,7 +248,28 @@ function stub(on: any, w: World) {
       w.loopPaused = argv[3] === 'pause';
       return ran(0, '');
     }
-    if (sub === 'loop') return ran(0, JSON.stringify({ paused: w.loopPaused, at: null }));
+    if (sub === 'loop' && argv[3] === 'lead') {
+      const session = argv[argv.indexOf('--session') + 1];
+      if (w.leadSession && w.leadSession !== session && !argv.includes('--take'))
+        return ran(1, '', `Another session (${w.leadSession}) runs the lead loop in this project.`);
+      w.leadSession = session;
+      w.leadClaims += 1;
+      return ran(0, 'This session runs the lead loop.');
+    }
+    if (sub === 'loop' && argv[3] === 'release') {
+      w.acts.push([...argv.slice(2)]);
+      if (w.leadSession === argv[argv.indexOf('--session') + 1]) w.leadSession = null;
+      return ran(0, '');
+    }
+    if (sub === 'loop')
+      return ran(
+        0,
+        JSON.stringify({
+          paused: w.loopPaused,
+          at: null,
+          lead: w.leadSession ? { session: w.leadSession, at: '2026-10-16T00:00:00.000Z' } : null,
+        }),
+      );
     if (sub === 'sent-back') {
       w.acts.push([...argv.slice(2)]);
       return ran(0, `Recorded: ${argv[3]} was sent back.`);
@@ -371,6 +396,7 @@ function stub(on: any, w: World) {
   });
   on('turn.start', ($: any, e: any) => e);
   on('turn.complete', () => ({ text: '' }));
+  on('session.end', ($: any, e: any) => ({ sessionId: e.sessionId }));
   on('session.usage', () => ({ value: { startedAt: 0, context: {}, rateLimits: w.limits } }));
   on('session.measure', ($: any, e: any) => ({ changed: e.changed }));
   // A model request, answered with the usage the test gave it.
@@ -397,10 +423,16 @@ function stub(on: any, w: World) {
     if (w.leadBusy) return new Promise(() => {});
     return { text: e.text };
   });
-  // $.ui.ask is the AskUserQuestion dialog: the person picks a label.
-  on('tool.call', { tool: 'AskUserQuestion' }, ($: any, e: any) => ({
-    result: { questions: e.questions, answers: { [e.questions[0].question]: w.answer } },
-  }));
+  // $.ui.ask is the AskUserQuestion dialog: the person picks w.answer where it's one of its labels, types
+  // w.typed under Other, or else dismisses it.
+  on('tool.call', { tool: 'AskUserQuestion' }, ($: any, e: any) => {
+    const q = e.questions[0];
+    const labels = (q.options ?? []).map((o: any) => o.label);
+    w.asked.push({ question: q.question, options: labels, header: q.header });
+    const answer = labels.includes(w.answer) ? w.answer : w.typed;
+    if (answer == null) return { deny: 'The person dismissed the question.' };
+    return { result: { questions: e.questions, answers: { [q.question]: answer } } };
+  });
   // Another plugin's command, as the mod asks for it (Context Graph's /graph).
   on('command.run', ($: any, e: any) => {
     w.commands.push({ command: e.command, args: e.args });
@@ -559,10 +591,10 @@ test('PANE-4 with nothing changed it reads the project every 10 seconds while th
   const before = w.runs;
   await clock.advance(8000); // four quiet ticks: git only
   expect(w.runs - before).toBe(4);
-  // The fifth reads it all (check, status, next, requests, stops, queue, timeline, the lead's questions
-  // and the reports waiting) between two looks at git.
+  // The fifth reads it all (check, status, next, requests, stops, queue, timeline, the lead's questions,
+  // the reports waiting, and which session runs the loop, while this one doesn't) between two looks at git.
   await clock.advance(2000);
-  expect(w.runs - before).toBe(15);
+  expect(w.runs - before).toBe(16);
 });
 
 test('CARD-4 outside a code-kit project, /lanes says so, opens nothing, and there is no band', async ($, on) => {
@@ -2293,6 +2325,301 @@ test('LOOP-7 when every story is done the loop stops, and the band says so until
   ui = await bandUi($);
   expect(await ui.find({ type: 'Text', text: /Milestone done/ })).toBeUndefined();
   await ui.unmount();
+});
+
+/** The lead's turn, ending with what it said; `isAborted` when the person stopped it. */
+async function leadSays($: any, id: string, answer: string, isAborted = false) {
+  await $.turn.start({ turnId: id, text: '' } as any);
+  await $.turn.complete({
+    turnId: id,
+    answer,
+    durationMs: 1,
+    isAborted,
+    reason: isAborted ? 'aborted' : 'answer',
+  } as any);
+}
+/** What the person types and sends to the lead. */
+const personSays = ($: any, text: string) =>
+  $.prompt.submit({ text, origin: { kind: 'composer' }, wait: false } as any);
+/** The side call's reading of the lead's reply (LOOP-11). */
+const outcome = (o: any) => ({ isAnswered: true, text: JSON.stringify(o), usage: null });
+const unread = { isAnswered: true, text: 'Nothing to classify.', usage: null };
+
+test('LOOP-10 a second session opened in the project never prompts its lead; Lead from here moves the loop to it', async ($, on) => {
+  const w = project();
+  w.leadSession = 's-other'; // a working session already runs the loop
+  const clock = await start($, on, w);
+  await leadTurn($);
+  await settle(clock);
+  await clock.advance(4000);
+  expect(w.prompts).toEqual([]);
+  const ui = await bandUi($);
+  expect(await ui.find({ type: 'Text', text: 'the loop runs in another session' })).toBeDefined();
+  await press($, 'band-leadHere');
+  await ui.unmount();
+  expect(w.leadSession).toBe('s1');
+  expect(w.prompts).toEqual(['Dispatch ST-9: run /code-kit:dispatch ST-9.']);
+});
+
+test("LOOP-10 a new session leaves a live lead session's pause alone", async ($, on) => {
+  const w = project();
+  w.loopPaused = true;
+  w.leadSession = 's-other';
+  await start($, on, w);
+  expect(w.acts).not.toContainEqual(['loop', 'resume']);
+  expect(w.loopPaused).toBe(true);
+});
+
+test('LOOP-10 the lead session renews its lease while it runs, and releases it as it ends', async ($, on) => {
+  const w = project();
+  const clock = await start($, on, w);
+  await leadTurn($);
+  await settle(clock);
+  expect(w.leadSession).toBe('s1');
+  const claims = w.leadClaims;
+  await clock.advance(32000);
+  expect(w.leadClaims).toBeGreaterThan(claims);
+  await $.session.end({ reason: 'prompt_input_exit', sessionId: 's1', resume: {} } as any);
+  expect(w.acts).toContainEqual(['loop', 'release', '--session', 's1']);
+  expect(w.leadSession).toBe(null);
+});
+
+test("LOOP-11 a reply that waits on the person holds the loop; the dialog asks the lead's question and the answer goes to the lead", async ($, on) => {
+  const w = project();
+  w.sideReply = unread;
+  const clock = await start($, on, w);
+  await leadTurn($);
+  await settle(clock);
+  expect(w.prompts).toEqual(['Dispatch ST-9: run /code-kit:dispatch ST-9.']);
+  w.sideReply = outcome({
+    outcome: 'needs-person',
+    question: 'Should ST-9 show prices with GST?',
+    options: [
+      { label: 'Include GST', effect: 'Every price shows GST.' },
+      { label: 'Exclude GST', effect: 'GST is added at checkout.' },
+    ],
+    reason: 'a pricing rule only the person can set',
+  });
+  w.next = { step: 'review', args: 'ST-4', then: [] };
+  w.answer = 'Include GST';
+  await leadSays($, 't-2', 'Before I dispatch ST-9: should its prices include GST?');
+  await settle(clock);
+  // The side call read the reply over the lead's own conversation, with the step it answered.
+  expect(w.sideAsks.at(-1).fork).toBe(true);
+  expect(w.sideAsks.at(-1).prompt).toMatch(/prompted you: "Dispatch ST-9/);
+  expect(w.sideAsks.at(-1).prompt).toMatch(/should its prices include GST\?/);
+  expect(w.asked.at(-1)).toEqual({
+    question: 'Should ST-9 show prices with GST?',
+    options: ['Include GST', 'Exclude GST'],
+    header: 'the lead',
+  });
+  expect(w.prompts.slice(1)).toEqual([
+    'The person answered what you asked ("Should ST-9 show prices with GST?"): Include GST. Carry on with it.',
+  ]);
+});
+
+test('LOOP-11 dismissed, what the lead waits on stays in the band, and the loop prompts again only once the person has spoken', async ($, on) => {
+  const w = project();
+  w.sideReply = unread;
+  const clock = await start($, on, w);
+  await leadTurn($);
+  await settle(clock);
+  w.sideReply = outcome({
+    outcome: 'needs-person',
+    question: 'Which plan names should the pricing page use?',
+    options: [
+      { label: 'Basic and Pro', effect: 'Two plans.' },
+      { label: 'Starter, Team, Business', effect: 'Three plans.' },
+    ],
+  });
+  w.next = { step: 'review', args: 'ST-4', then: [] };
+  await leadSays($, 't-2', 'Which plan names do you want on the pricing page?');
+  await settle(clock);
+  await clock.advance(6000);
+  expect(w.prompts).toHaveLength(1);
+  expect(w.asked).toHaveLength(1); // asked once, and dismissed: not asked again
+  const ui = await bandUi($);
+  expect(
+    await ui.find({
+      type: 'Text',
+      text: 'The lead waits on you: Which plan names should the pricing page use?',
+    }),
+  ).toBeDefined();
+  await ui.unmount();
+  // The person answers in the chat; the lead's reply to them doesn't wait on them.
+  await personSays($, 'Basic and Pro.');
+  w.sideReply = outcome({ outcome: 'done' });
+  await leadSays($, 't-3', 'Updated the plan names.');
+  await settle(clock);
+  expect(w.prompts.at(-1)).toBe('Review ST-4: run /code-kit:review ST-4.');
+});
+
+test('LOOP-11 a turn the person stopped holds the loop, with no dialog, until they speak or press Carry on', async ($, on) => {
+  const w = project();
+  w.sideReply = unread;
+  const clock = await start($, on, w);
+  await leadTurn($);
+  await settle(clock);
+  w.next = { step: 'review', args: 'ST-4', then: [] };
+  await leadSays($, 't-2', '', true);
+  await settle(clock);
+  await clock.advance(4000);
+  expect(w.prompts).toHaveLength(1);
+  expect(w.asked).toEqual([]);
+  const ui = await bandUi($);
+  expect(
+    await ui.find({ type: 'Text', text: "You stopped the lead's turn: the loop waits for you" }),
+  ).toBeDefined();
+  await press($, 'band-carryOn');
+  await ui.unmount();
+  expect(w.prompts.at(-1)).toBe('Review ST-4: run /code-kit:review ST-4.');
+});
+
+test("LOOP-11 a step the lead didn't take waits with its reason; Ask again prompts it, and a new step goes on", async ($, on) => {
+  const w = project();
+  w.next = { step: 'merge', args: 'lead/st-1', then: [] };
+  w.sideReply = unread;
+  const clock = await start($, on, w);
+  await leadTurn($);
+  await settle(clock);
+  expect(w.prompts).toHaveLength(1);
+  w.sideReply = outcome({
+    outcome: 'blocked',
+    reason: 'main has a failing check that lead/st-1 does not touch',
+  });
+  w.refs += ' c1 refs/heads/core/st-1\n';
+  await leadSays($, 't-2', "I can't merge lead/st-1 while main's checks fail.");
+  await settle(clock);
+  // The person's own turn, and lanes committing, don't make the step worth prompting again.
+  w.sideReply = unread;
+  w.refs += ' c2 refs/heads/core/st-2\n';
+  await leadTurn($, 't-3');
+  await settle(clock);
+  expect(w.prompts).toHaveLength(1);
+  expect(w.asked.at(-1)?.options).toEqual(['Ask again', 'Not now']);
+  expect(w.asked.at(-1)?.question).toMatch(/the lead didn't take it.*Ask the lead again\?$/);
+  const ui = await bandUi($);
+  expect(
+    await ui.find({
+      type: 'Text',
+      text: "Merge lead/st-1: the lead didn't take it: main has a failing check that lead/st-1 does not touch",
+    }),
+  ).toBeDefined();
+  await press($, 'band-askAgain');
+  await ui.unmount();
+  expect(w.prompts).toHaveLength(2);
+  expect(w.prompts[1]).toMatch(/^Merge lead\/st-1/);
+  // A new step isn't held by the old one.
+  w.sideReply = outcome({ outcome: 'blocked', reason: 'still failing' });
+  await leadSays($, 't-4', 'Still failing.');
+  await settle(clock);
+  w.next = { step: 'dispatch', args: 'ST-9', then: [] };
+  w.sideReply = unread;
+  await leadTurn($, 't-5');
+  await settle(clock);
+  expect(w.prompts.at(-1)).toBe('Dispatch ST-9: run /code-kit:dispatch ST-9.');
+});
+
+test('LOOP-12 a design story is handed to the lead once; the loop leaves designing it to the person and the lead', async ($, on) => {
+  const w = project();
+  w.next = { step: 'design', args: 'ST-21 ST-22', then: [] };
+  w.sideReply = unread;
+  const clock = await start($, on, w);
+  await leadTurn($);
+  await settle(clock);
+  expect(w.prompts).toEqual([
+    'Design ST-21, ST-22 before any of their screens are built: run /code-kit:design ST-21 ST-22.',
+  ]);
+  // The person and the lead go back and forth; ST-21's approved design changes the project.
+  for (const turn of ['t-2', 't-3']) {
+    await personSays($, 'Make the header calmer.');
+    w.refs += ` ${turn} refs/heads/design/${turn}\n`;
+    await leadTurn($, turn);
+    await settle(clock);
+  }
+  expect(w.prompts.filter((p: string) => p.startsWith('Design'))).toHaveLength(1);
+  const ui = await bandUi($);
+  expect(
+    await ui.find({
+      type: 'Text',
+      text: "Design ST-21, ST-22: with you and the lead, so the loop doesn't prompt it again",
+    }),
+  ).toBeDefined();
+  await ui.unmount();
+  // A design story not handed over yet is.
+  w.next = { step: 'design', args: 'ST-22 ST-30', then: [] };
+  await leadTurn($, 't-4');
+  await settle(clock);
+  expect(w.prompts.at(-1)).toBe(
+    'Design ST-22, ST-30 before any of their screens are built: run /code-kit:design ST-22 ST-30.',
+  );
+});
+
+test("DECIDE-4 the loop's first offer is asked in Claude Code's own dialog; Keep going records it and takes the step", async ($, on) => {
+  const w = project();
+  (w.check as any).harnessSet = [];
+  w.sideReply = unread;
+  w.answer = 'Keep going';
+  const clock = await start($, on, w);
+  await leadTurn($);
+  await settle(clock);
+  expect(w.asked[0].options).toEqual(['Keep going', 'Ask each time', 'Off']);
+  expect(w.asked[0].question).toMatch(
+    /^code-kit can keep the build moving between your prompts\. Next: Dispatch ST-9\. How much should it do on its own\?$/,
+  );
+  expect(w.acts.some((a) => a.join(' ').startsWith('settings set autonomy autonomous'))).toBe(true);
+  expect(w.prompts).toEqual(['Dispatch ST-9: run /code-kit:dispatch ST-9.']);
+});
+
+test("DECIDE-4 the lead's question is asked in the dialog: an option answers it, and a dismissed one isn't asked again", async ($, on) => {
+  const w = project();
+  w.questions = [question()];
+  w.next = { step: 'wait', args: '', then: [] };
+  const clock = await start($, on, w);
+  await clock.advance(4000);
+  expect(w.asked).toHaveLength(1);
+  expect(w.asked[0]).toEqual({
+    question: 'Which weather provider: the Bureau of Meteorology or a commercial service?',
+    options: ['Bureau of Meteorology', 'Commercial'],
+    header: 'question',
+  });
+  await clock.advance(6000);
+  expect(w.asked).toHaveLength(1);
+  const ui = await bandUi($);
+  expect(
+    await ui.find({ type: 'Text', text: /^The lead asks: Which weather provider/ }),
+  ).toBeDefined();
+  await ui.unmount();
+});
+
+test("DECIDE-4 an option chosen in the dialog, or the person's own words typed there, answer the lead's question", async ($, on) => {
+  const w = project();
+  w.questions = [question()];
+  w.next = { step: 'wait', args: '', then: [] };
+  w.typed = 'Both, the Bureau first';
+  const clock = await start($, on, w);
+  await clock.advance(4000);
+  expect(w.acts).toContainEqual([
+    'ask',
+    'answer',
+    'Q-1',
+    'Both, the Bureau first',
+    '--via',
+    'pane',
+  ]);
+  expect(w.prompts.at(-1)).toMatch(
+    /^The person answered Q-1 .*: Both, the Bureau first\. ST-4 no longer waits/,
+  );
+});
+
+test('DECIDE-4 nothing is asked in a session another one runs the loop for', async ($, on) => {
+  const w = project();
+  w.leadSession = 's-other';
+  w.questions = [question()];
+  w.next = { step: 'wait', args: '', then: [] };
+  const clock = await start($, on, w);
+  await clock.advance(6000);
+  expect(w.asked).toEqual([]);
 });
 
 // --- the reviewer -----------------------------------------------------------------------------------

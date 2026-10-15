@@ -1483,6 +1483,51 @@ try {
       2,
       "the person's own act",
     );
+    // LOOP-10: one session runs the loop; a second one opened in the project doesn't take it.
+    expect('a session takes the lead', fKit('loop', 'lead', '--session', 's1'), 0);
+    expect(
+      'the loop names the session that runs it, beside the pause',
+      truth(loopNow().lead?.session === 's1' && loopNow().paused === false),
+      0,
+    );
+    expect('it renews its own lease', fKit('loop', 'lead', '--session', 's1'), 0);
+    expect(
+      'another session is refused while the lease is live, and told how to take it',
+      fKit('loop', 'lead', '--session', 's2'),
+      1,
+      '--take',
+    );
+    fKit('loop', 'pause');
+    expect('pausing keeps the lead', truth(loopNow().lead?.session === 's1'), 0);
+    fKit('loop', 'resume');
+    expect(
+      'taken over, the other session runs it',
+      fKit('loop', 'lead', '--session', 's2', '--take'),
+      0,
+    );
+    const notLead = fKit('loop', 'release', '--session', 's1');
+    expect(
+      "a session that isn't the lead releases nothing",
+      truth(notLead.stdout.includes("wasn't running") && loopNow().lead?.session === 's2'),
+      0,
+    );
+    const released = fKit('loop', 'release', '--session', 's2');
+    expect('the lead releases it', truth(released.stdout.includes('no longer')), 0);
+    expect('with nobody leading, lead is null', truth(loopNow().lead === null), 0);
+    // A lease not renewed within its time has lapsed: the session that wrote it has ended.
+    writeFileSync(
+      join(f.dir, '.claude/state/loop.json'),
+      JSON.stringify({ paused: false, lead: { session: 's1', at: '2020-01-01T00:00:00.000Z' } }),
+    );
+    expect('a lapsed lease is nobody', truth(loopNow().lead === null), 0);
+    expect('and the next session takes it', fKit('loop', 'lead', '--session', 's3'), 0);
+    expect('lead needs a session', fKit('loop', 'lead'), 1, '--session');
+    expect(
+      'no agent takes or releases the lead',
+      fHook(`node "${kitCli}" loop lead --session s9 --take`),
+      2,
+      'Lead from here',
+    );
     expect(
       'after it, main delegates merges to the lead by its committed rules',
       truth(

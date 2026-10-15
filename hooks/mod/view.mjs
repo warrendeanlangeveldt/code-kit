@@ -788,6 +788,7 @@ export function bandLines({
     lines.push({
       kind: 'proposal',
       text: `code-kit can keep the build moving between your prompts. Next: ${loop.proposal.label}.`,
+      proposal: loop.proposal,
       actions: [
         { id: 'keepGoing', label: 'Keep going' },
         { id: 'askEach', label: 'Ask each time' },
@@ -801,8 +802,12 @@ export function bandLines({
       text: loop.proposal.repeated
         ? `${loop.proposal.label}: still next after ${loop.proposal.repeated} prompts. Ask the lead again?`
         : `${loop.proposal.label}?`,
-      actions: [{ id: 'go', label: 'Go' }],
+      proposal: loop.proposal,
+      actions: [{ id: 'go', label: loop.proposal.repeated ? 'Ask again' : 'Go' }],
     });
+  // LOOP-11, LOOP-12: what the loop read in the lead's reply holds it until the person says.
+  const waitingLine = waitingOf(loop?.waiting);
+  if (waitingLine) lines.push(waitingLine);
   // A held call's request is asked on its own line above, not again here.
   // CARD-2: counted as decisions, not files: one approval for a lane covers every file it was asked for.
   const asks = approvalAsks((requests?.open ?? []).filter((r) => !held.some((h) => sameAsk(h, r))));
@@ -915,7 +920,14 @@ export function bandLines({
   // With the mission rows drawn, the loop's state and its Pause or Resume are on the `now` row.
   else if (mission.length) {
     // nothing more
-  } else if (loop?.state === 'paused')
+  } else if (loop?.state === 'elsewhere')
+    // LOOP-10: another session in this project runs the loop; this one never prompts its lead.
+    lines.push({
+      kind: 'loop',
+      text: 'the loop runs in another session',
+      actions: [{ id: 'leadHere', label: 'Lead from here' }],
+    });
+  else if (loop?.state === 'paused')
     lines.push({ kind: 'loop', text: 'loop paused', actions: [{ id: 'resume', label: 'Resume' }] });
   else if (loop?.state === 'running' && loop.started)
     lines.push({
@@ -930,6 +942,48 @@ export function bandLines({
   return lines;
 }
 
+/**
+ * LOOP-11, LOOP-12: the band's line for what the loop waits on, or null: the lead waiting on the
+ * person (its question, when the reply asked one), a turn the person stopped, a step the lead didn't
+ * take, or design stories left to the person and the lead.
+ */
+export function waitingOf(waiting) {
+  if (!waiting) return null;
+  if (waiting.kind === 'person')
+    return {
+      kind: 'waiting',
+      text: waiting.question
+        ? `The lead waits on you: ${waiting.question}`
+        : `The lead waits on you${waiting.reason ? `: ${waiting.reason}` : ''}`,
+      waiting,
+      actions: waiting.question
+        ? [{ id: 'openDecision', label: 'Answer…' }]
+        : [{ id: 'carryOn', label: 'Carry on' }],
+    };
+  if (waiting.kind === 'stopped')
+    return {
+      kind: 'waiting',
+      text: "You stopped the lead's turn: the loop waits for you",
+      waiting,
+      actions: [{ id: 'carryOn', label: 'Carry on' }],
+    };
+  if (waiting.kind === 'blocked')
+    return {
+      kind: 'waiting',
+      text: `${waiting.label}: the lead didn't take it${waiting.reason ? `: ${waiting.reason}` : ''}`,
+      waiting,
+      actions: [{ id: 'askAgain', label: 'Ask again' }],
+    };
+  if (waiting.kind === 'design')
+    return {
+      kind: 'designing',
+      text: `${waiting.label}: with you and the lead, so the loop doesn't prompt it again`,
+      waiting,
+      actions: [{ id: 'askAgain', label: 'Ask the lead' }],
+    };
+  return null;
+}
+
 /** The band, drawn with the elements `$.ui.resolve(e)` returned; `onAction(id, line)` acts. */
 export function band(lines, { Box, Text, Button }, onAction) {
   const COLOR = {
@@ -938,6 +992,8 @@ export function band(lines, { Box, Text, Button }, onAction) {
     queue: 'blue',
     stalled: 'red',
     proposal: 'cyan',
+    waiting: 'cyan',
+    designing: 'blue',
     loop: 'green',
     done: 'green',
     approvals: 'yellow',
@@ -1143,7 +1199,11 @@ export function questionAsidePrompt({ q, thread = [], question }) {
   return [
     "The person is deciding how to answer a question in code-kit's Decisions pane, and asks you about it first. Answer in a few short sentences, in plain words: what the question means, why it matters for the build, what the choices are and what each leads to, and what you'd recommend if you know enough to. Use what you know from this conversation, the project's docs you've read, and the facts below. If you don't know, say so; don't guess. This answer goes to that pane, not into the conversation: don't act on it.",
     '',
-    q.kind === 'brief' ? `An open question in ${q.path}:` : `A question the lead asked (${q.id}):`,
+    q.kind === 'brief'
+      ? `An open question in ${q.path}:`
+      : q.kind === 'lead'
+        ? 'What the lead asked in its last reply, and waits on:'
+        : `A question the lead asked (${q.id}):`,
     `- ${q.question}`,
     ...(q.owner ? [`- who decides: ${q.owner}`] : []),
     ...(q.kind === 'brief' && q.blocks ? [`- what it holds up: ${q.blocks}`] : []),
@@ -1224,7 +1284,9 @@ export function answerPane(
         children: [
           kind === 'brief'
             ? `An open question in ${answering.path}. The lead records your answer in the brief's decisions and builds on it.`
-            : `${answering.id}, from the lead${answering.story ? `, for ${answering.story}` : ''}. Your answer is recorded and sent to the lead.`,
+            : kind === 'lead'
+              ? 'From the lead, which waits on it. Your answer is sent to the lead.'
+              : `${answering.id}, from the lead${answering.story ? `, for ${answering.story}` : ''}. Your answer is recorded and sent to the lead.`,
         ],
       }),
       ...(kind === 'brief' && (answering.owner || answering.blocks)

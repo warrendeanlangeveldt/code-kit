@@ -33,7 +33,15 @@ import {
   approvalAsks,
   askWords,
 } from '../hooks/mod/view.mjs';
-import { leadPrompt, storiesInFlight, withoutInFlight } from '../hooks/mod/loop.mjs';
+import {
+  answeredPrompt,
+  designHandedOver,
+  leadPrompt,
+  outcomePrompt,
+  readOutcome,
+  storiesInFlight,
+  withoutInFlight,
+} from '../hooks/mod/loop.mjs';
 
 const fixture = JSON.parse(
   readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'fixture.json'), 'utf8'),
@@ -505,6 +513,101 @@ test('LOOP-9 the loop leaves out stories an agent is at work on, building or rev
     step: 'dispatch',
     args: 'ST-1',
   });
+});
+
+test("LOOP-11 the loop reads the lead's reply: what it left the build at, its question and options", () => {
+  const prompt = outcomePrompt({
+    prompt: 'Dispatch ST-9: run /code-kit:dispatch ST-9.',
+    answer: 'Should ST-9 include GST?',
+  });
+  assert.match(prompt, /prompted you: "Dispatch ST-9/);
+  assert.match(prompt, /Should ST-9 include GST\?/);
+  assert.match(outcomePrompt({ answer: 'x' }), /The person prompted you/);
+  assert.match(outcomePrompt({ answer: 'y'.repeat(5000) }), /\[… cut short\]/);
+  assert.deepEqual(
+    readOutcome(
+      'Here it is:\n```json\n{"outcome":"needs-person","question":"Include GST?","options":[{"label":"Yes","effect":"GST shown"},{"label":"No"}],"reason":"a pricing rule"}\n```',
+    ),
+    {
+      outcome: 'needs-person',
+      question: 'Include GST?',
+      options: [
+        { label: 'Yes', effect: 'GST shown' },
+        { label: 'No', effect: null },
+      ],
+      reason: 'a pricing rule',
+    },
+  );
+  // One option is no choice: the person answers in their own words.
+  assert.deepEqual(
+    readOutcome('{"outcome":"needs-person","question":"Q?","options":[{"label":"Only"}]}').options,
+    [],
+  );
+  assert.equal(readOutcome('{"outcome":"maybe"}'), null);
+  assert.equal(readOutcome('not a reading'), null);
+  assert.equal(readOutcome('{"outcome":"done"}').question, null);
+  assert.equal(
+    answeredPrompt('Include GST?', 'Yes'),
+    'The person answered what you asked ("Include GST?"): Yes. Carry on with it.',
+  );
+});
+
+test('LOOP-12 a design step is held once all its stories were handed to the lead', () => {
+  const handed = new Set(['ST-21', 'ST-22']);
+  assert.equal(designHandedOver({ step: 'design', args: 'ST-21 ST-22' }, handed), true);
+  assert.equal(designHandedOver({ step: 'design', args: 'ST-22 ST-30' }, handed), false);
+  assert.equal(designHandedOver({ step: 'dispatch', args: 'ST-21' }, handed), false);
+});
+
+test("LOOP-8 and DECIDE-4 a repeated step's card says why it's the person's, and the dialog asks it", async () => {
+  const { decisionCards, nativeChoice } = await import('../hooks/mod/decisions.mjs');
+  const check = { exists: true, valid: true, problems: [], lanes: {} };
+  const state = projectState(check, { problems: [], stories: [] }, null, new Set());
+  const loop = {
+    state: 'running',
+    proposal: { label: 'Design ST-21, ST-22', prompt: 'p', repeated: 2 },
+  };
+  const [card] = decisionCards(bandLines({ state, requests: { open: [] }, stops: [], loop }), {
+    state,
+  });
+  assert.equal(
+    card.why,
+    "The lead was asked to do this 2 times and it's still the next step, so something stopped it.",
+  );
+  assert.deepEqual(
+    card.options.map((o) => o.label),
+    ['Ask again'],
+  );
+  const choice = nativeChoice(card);
+  assert.equal(
+    choice.question,
+    "The lead was asked to do this 2 times and it's still the next step, so something stopped it. Design ST-21, ST-22: still next after 2 prompts. Ask the lead again?",
+  );
+  assert.deepEqual(
+    choice.options.map((o) => [o.label, o.act]),
+    [
+      ['Ask again', 'go'],
+      ['Not now', null],
+    ],
+  );
+  // What the person stopped, or a reply with no question in it, isn't asked over their typing.
+  for (const waiting of [{ kind: 'stopped' }, { kind: 'person', reason: 'r' }]) {
+    const [c] = decisionCards(
+      bandLines({ state, requests: { open: [] }, stops: [], loop: { state: 'running', waiting } }),
+      { state },
+    );
+    assert.equal(nativeChoice(c), null);
+  }
+  // An approval needs a reason typed in its pane: never the dialog.
+  const [approval] = decisionCards(
+    bandLines({
+      state,
+      requests: { open: [{ lane: 'web', names: ['dep-x'], what: 'npm install x' }] },
+      stops: [],
+    }),
+    { state },
+  );
+  assert.equal(nativeChoice(approval), null);
 });
 
 test('the mod: BAND-2 and BAND-4, the band lines and their hotkeys, and ACT-1 the prefilled reason', () => {

@@ -11,6 +11,8 @@
 - Stall detection per lane agent: a message at 5 minutes, a restart at 10, at most twice, then a flag.
 - Autonomy levels, autonomous by default; a pause in the band.
 - The loop's own record of what it did, shown in the pane.
+- One session in a project runs the loop; any other session opened there leaves its lead alone.
+- Reading the lead's reply before prompting it again, so a reply that waits on the person isn't followed by another prompt.
 
 ## Later
 
@@ -18,21 +20,23 @@
 
 ## Data
 
-| Entity    | Field    | Type      | Required | Rules                                                                      |
-| --------- | -------- | --------- | -------- | -------------------------------------------------------------------------- |
-| Loop step | at       | timestamp | yes      |                                                                            |
-| Loop step | kind     | enum      | yes      | `dispatch`, `review`, `merge`, `nudge`, `restart`, `flag`, `pause`, `done` |
-| Loop step | target   | string    | yes      | Story ids, a branch, or an agent                                           |
-| Loop step | prompt   | string    | no       | The prompt given to the lead, for dispatch, review and merge               |
-| Loop step | outcome  | string    | no       | What came of it, once known                                                |
-| Agent     | lastCall | timestamp | yes      | The agent's last tool call, from the session's events                      |
-| Agent     | restarts | integer   | yes      | Restarts by the loop for the current story, at most 2                      |
+| Entity     | Field    | Type      | Required | Rules                                                                                                               |
+| ---------- | -------- | --------- | -------- | ------------------------------------------------------------------------------------------------------------------- |
+| Loop step  | at       | timestamp | yes      |                                                                                                                     |
+| Loop step  | kind     | enum      | yes      | `dispatch`, `review`, `merge`, `design`, `nudge`, `restart`, `flag`, `pause`, `resume`, `lead`, `done`              |
+| Loop step  | target   | string    | yes      | Story ids, a branch, or an agent                                                                                    |
+| Loop step  | prompt   | string    | no       | The prompt given to the lead, for dispatch, review and merge                                                        |
+| Loop step  | outcome  | string    | no       | What came of it, once the lead's reply is read (LOOP-11): `done`, `started`, `needs-person`, `blocked`, or `unread` |
+| Lead lease | session  | string    | yes      | The session that runs the loop (LOOP-10)                                                                            |
+| Lead lease | at       | timestamp | yes      | When it last renewed the lease; one not renewed for 90 seconds has lapsed                                           |
+| Agent      | lastCall | timestamp | yes      | The agent's last tool call, from the session's events                                                               |
+| Agent      | restarts | integer   | yes      | Restarts by the loop for the current story, at most 2                                                               |
 
-Loop steps are kept for the session and shown in the pane; they aren't written to the repository.
+Loop steps are kept for the session and shown in the pane; they aren't written to the repository. The lead lease is kept with the pause in `.claude/state/loop.json`, in the main checkout.
 
 ## States
 
-The loop: `running` → `waiting` (the lead is mid-turn, or the person is typing) → `running`; `running` → `paused` (the person pressed Pause, or autonomy is `off`) → `running`; `running` → `done` (every story in the plan is done).
+The loop: `running` → `waiting` (the lead is mid-turn, the person is typing, or the lead's reply waits on the person) → `running`; `elsewhere` (another session runs it) → `running` (that session ended, or the person pressed Lead from here); `running` → `paused` (the person pressed Pause, or autonomy is `off`) → `running`; `running` → `done` (every story in the plan is done).
 
 A lane agent, as the loop sees it: `working` → `quiet` (no tool call for 5 minutes) → `nudged` → `working` or `restarted` (10 minutes) → `flagged` (after 2 restarts). An agent waiting on a held call (06) stays `working`.
 
@@ -94,7 +98,7 @@ Autonomy (12) is `autonomous` (the default), `propose` or `off`.
 
 ### LOOP-6 Pause and resume
 
-The band shows the loop's state ("loop on", "loop paused") with a Pause or Resume key. Pausing stops new steps at once; a turn in progress finishes. The pause is recorded (`code-kit loop`), so another tool's background work in the project, such as Context Graph's card writer and curator, pauses with it; a new session starts with the loop running.
+The band shows the loop's state ("loop on", "loop paused") with a Pause or Resume key. Pausing stops new steps at once; a turn in progress finishes. The pause is recorded (`code-kit loop`), so another tool's background work in the project, such as Context Graph's card writer and curator, pauses with it; a new session starts with the loop running, unless another session that still runs the loop (LOOP-10) paused it.
 
 **Acceptance**
 
@@ -121,10 +125,47 @@ The lead is prompted with one step at most twice in a row. A step still next aft
 
 - Given ST-9 dispatched and its agent at work, and ST-4's lane agent still building, when `next` says review ST-4, then dispatch ST-9, then the lead isn't prompted and the band says it's waiting on both; when ST-4's agent finishes, the lead is asked to review ST-4 only.
 
+### LOOP-10 One session runs the loop
+
+Only one session in a project prompts its lead. The first session whose loop acts takes the lead lease (`code-kit loop lead --session <id>`) and renews it every 30 seconds while it runs; a lease not renewed for 90 seconds has lapsed, and as the session ends it releases it (`code-kit loop release`). Any other session opened in the project, for any reason, never prompts its lead and offers no step: its band reads "the loop runs in another session" with **Lead from here**, which takes the lease over (`--take`); the other session then stops prompting. Once the lease has lapsed, the next session whose loop acts takes it. The hooks refuse `loop lead` and `loop release` from every agent.
+
+- **Errors:** if the lease can't be read or written, the session doesn't run the loop.
+
+**Acceptance**
+
+- Given a session running the loop, when the person opens a second session in the project and works there, then the second session's lead receives no prompt from code-kit, and its band offers Lead from here.
+- Given Lead from here pressed in the second session, then it runs the loop and the first stops prompting.
+- Given the lead session ends, then its lease is released, and the next session to act takes it.
+- Given an agent running `code-kit loop lead --take`, then the hooks refuse it.
+
+### LOOP-11 The loop reads the lead's reply first
+
+Before prompting the lead again, the loop reads the lead's last reply: with a side call over the lead's own conversation (which shares its prompt cache and adds nothing to it), it asks where the reply left things, as `done`, `started`, `needs-person` (with the question and up to four answers) or `blocked` (with why). The step's record keeps that outcome.
+
+- A reply that waits on the person, a question the lead asked in the turn through `code-kit ask`, or a turn the person stopped holds the loop: nothing is prompted until the person speaks to the lead, answers, or presses **Carry on**. The band says what the lead waits on ("The lead waits on you: …"), and its question is asked in Claude Code's own dialog (DECIDE-4); an answer there, or in the Decisions tab, goes to the lead as "The person answered what you asked (…): …. Carry on with it."
+- A step the lead didn't take (`blocked`) waits in the band with its reason and **Ask again**, while it's still next; a different step goes on.
+- A reply that can't be read leaves the loop as before (LOOP-8 still counts the prompts).
+
+**Acceptance**
+
+- Given the lead's reply asks the person whether prices include GST, when the turn ends, then no step is prompted, the dialog asks the question with the lead's answers, and the answer chosen goes to the lead.
+- Given the dialog dismissed, then the band keeps the question, the loop prompts nothing however the project moves, and once the person has spoken and the lead's reply doesn't wait on them, the loop prompts the next step.
+- Given the person stopped the lead mid-turn, then no dialog opens and nothing is prompted until they speak or press Carry on.
+- Given the lead couldn't merge for a failing check, then the merge waits in the band with that reason; Ask again prompts it once more; a new step is prompted as usual.
+
+### LOOP-12 A design story is handed over once
+
+A design is made with the person (`/code-kit:design`), so the loop prompts the lead to design a story once a session. While every story `next` names for design has been handed over, the loop doesn't prompt it again, however the design register moves as the person approves screens, and the band says it's with the person and the lead, with **Ask the lead**. A design story not handed over yet is prompted as usual.
+
+**Acceptance**
+
+- Given ST-21 and ST-22 handed to the lead for design, when the person and the lead go back and forth and ST-21's design is approved, then the loop prompts no further design step for them; when ST-30 becomes ready to design, the lead is prompted for it.
+
 ## Quality targets
 
 - A step is submitted within 5 seconds of the lead going idle with work to do.
 - The loop never submits two prompts for the same step.
+- The loop never prompts the lead while the lead's last reply waits on the person.
 
 ## Open questions
 
