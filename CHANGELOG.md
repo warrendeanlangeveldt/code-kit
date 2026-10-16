@@ -2,6 +2,17 @@
 
 What changed in each release of code-kit, newest first. Versions follow the plugin manifest and the npm package `@warren-dean/code-kit`. Each release is also on [GitHub Releases](https://github.com/warrendeanlangeveldt/code-kit/releases).
 
+## 0.18.0 (2026-10-17)
+
+code-kit's instructions to your agents now keep up with code-kit, it tells you when something needs you, and the fixes found by checking two live builds.
+
+- Re-running `/code-kit:init` never updated code-kit's section of CLAUDE.md or the lane agents' `Always:` rules, so the rules from 0.16.0 and 0.17.0 never reached projects already set up. `code-kit instructions` now renders both from the templates and your config, between `<!-- code-kit:begin vN -->` and `<!-- code-kit:end -->` markers, and says whether each file is current, behind or written before the markers. `--write` brings marked parts up to date and never touches anything outside them. A part written before the markers, often tailored by an earlier init, is merged once by the lead, keeping your own lines. While any is behind, `code-kit next` says so before any other step and the loop asks the lead to update them. Init writes them with the same command.
+- With Claude Code 2.1.301 or later, code-kit raises a system notification when something new needs you, such as an approval, a question from the lead, a stalled lane or a merge that's yours: "code-kit: the lead asks you". Each decision is notified once, and `notify.on` turns it off.
+- **w** on a working lane in the Lanes pane puts that lane agent's transcript in the main view (Claude Code 2.1.301 or later).
+- The loop no longer prompts the same story over and over. A story waiting on another wakes only when that story changes state, not on each of its commits, and a story the lead's turn left where it stood is parked whatever the reply said. In one build, "Review ST-160" had been prompted 31 times.
+- A lane's hand-back of more than ten lines or 1,200 characters is refused by the stop hook, which also finds the report in the main checkout.
+- Lanes may write scratch files in Claude Code's own temporary folder, and `git diff`, `log` and `show` may read the audit log's history.
+
 ## 0.17.0 (2026-10-17)
 
 The lead's context stays lean: lanes report to a file, and the lead's context is compacted when a milestone finishes.
