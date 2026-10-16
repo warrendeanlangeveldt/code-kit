@@ -66,7 +66,7 @@ import {
   withdrawQuestion,
 } from '../hooks/lib/questions.mjs';
 import { traceFile } from '../hooks/lib/trace.mjs';
-import { buildStatus, specCheckRows } from '../hooks/lib/plan.mjs';
+import { buildStatus, readStories, specCheckRows } from '../hooks/lib/plan.mjs';
 import { recordSentBack } from '../hooks/lib/reviews.mjs';
 import {
   SECURITY_AGENT,
@@ -96,6 +96,7 @@ import {
   PANE,
   approvalHistory,
   approvalsInForce,
+  decidedBy,
   delegatedMark,
   grantApprovals,
   dropRequests,
@@ -968,7 +969,7 @@ function story(id) {
 
 // Open approval requests and the approvals in force, for the person and the mod's band.
 function requests() {
-  load();
+  const { config } = load();
   // CARD-7: a request nobody needs answered any more is dropped: the person's Dismiss, or the lead.
   if (rest[0] === 'drop') {
     if (!rest[1])
@@ -982,15 +983,20 @@ function requests() {
       `Dropped ${r.dropped.length} request${r.dropped.length === 1 ? '' : 's'}: ${r.dropped.map((d) => `${d.names.join(', ')} for ${d.lane ? `the ${d.lane} lane` : d.actor}`).join('; ')}.`,
     );
   }
-  const open = openRequests(resolve('.'));
+  // HELM-2: each request's number for `requests drop`, and whose decision it is.
+  const open = openRequests(resolve('.')).map((r, i) => ({
+    ...r,
+    n: i + 1,
+    by: decidedBy(r.names, config),
+  }));
   const granted = approvalsInForce(resolve('.'));
   // CARD-6: every approval given, newest first.
   const history = approvalHistory(resolve('.')).slice(0, 100);
   if (flag('--json')) return out(JSON.stringify({ open, inForce: granted, history }, null, 2));
   out(open.length ? `${open.length} approval request(s) open:` : 'No approval requests open.');
-  open.forEach((r, i) =>
+  open.forEach((r) =>
     out(
-      `  ${i + 1}. ${r.names.join(', ')} for ${r.lane ? `the ${r.lane} lane` : r.actor}: ${r.what}  (${r.why}; asked ${r.at.slice(0, 16).replace('T', ' ')})`,
+      `  ${r.n}. ${r.names.join(', ')} for ${r.lane ? `the ${r.lane} lane` : r.actor}, ${r.by === 'lead' ? "the lead's to decide" : "the person's to decide"}: ${r.what}  (${r.why}; asked ${r.at.slice(0, 16).replace('T', ' ')})`,
     ),
   );
   out(granted.length ? `\n${granted.length} approval(s) in force:` : '\nNo approvals in force.');
@@ -1366,6 +1372,19 @@ async function approve(given) {
       die(
         'This project delegates no approvals to the lead ("approvals.delegate" isn\'t set). Ask the person.',
       );
+    // HELM-3: the lead approves a package for a story it has read, not by default.
+    const packages = names.filter((n) => n.startsWith(DEPENDENCY_APPROVAL));
+    if (packages.length && !storyGiven)
+      die(
+        `Nothing was approved. Name the story the package is for, with --story ST-n: approve a dependency only when that story's requirements need it, nothing the project already depends on does the job, and it fits the principles and the layer it goes in.`,
+      );
+    const stories = storyGiven && config.docs?.plan ? readStories('.', config.docs.plan) : [];
+    const story = storyGiven
+      ? (stories.find((st) => st.id.toUpperCase() === storyGiven.toUpperCase()) ??
+        (config.docs?.plan
+          ? die(`Nothing was approved: ${config.docs.plan} has no story ${storyGiven}.`)
+          : { id: storyGiven }))
+      : null;
     const outside = [];
     for (const name of names) {
       if (name === TESTS_APPROVAL) {
@@ -1378,10 +1397,22 @@ async function approve(given) {
           continue;
         }
         const pkg = packageOf(name);
-        const problems = dependencyRuleProblems(await npmFacts(pkg), rules.dependencies);
+        // HELM-3: the registry rules are npm's; a package from another ecosystem is the lead's judgement.
+        const registries = new Set(
+          openRequests(resolve('.'))
+            .filter((r) => r.names.includes(name) && (r.lane ?? undefined) === laneName)
+            .map((r) => r.registries?.[pkg])
+            .filter(Boolean),
+        );
+        const npm = !registries.size || registries.has('npm');
+        const problems = npm ? dependencyRuleProblems(await npmFacts(pkg), rules.dependencies) : [];
         if (problems.length) outside.push(`${name}: ${problems.join('; ')}`);
-        else marks[name] = delegatedMark(`dependencies (${pkg})`);
-      } else if (rules.protected.includes(name)) marks[name] = delegatedMark(`protected: ${name}`);
+        else
+          marks[name] = delegatedMark(
+            `dependencies (${pkg}${npm ? '' : `, from ${[...registries].join(', ')}, judged by the lead`}) for ${story.id}`,
+          );
+      } else if (rules.protected.includes(name))
+        marks[name] = delegatedMark(`protected: ${name}${story ? ` for ${story.id}` : ''}`);
       else
         outside.push(
           `${name}: not among the delegated approvals (${rules.protected.join(', ') || 'none'})`,

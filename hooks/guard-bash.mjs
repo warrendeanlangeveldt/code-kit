@@ -8,7 +8,12 @@
 import { appendFileSync, existsSync, readFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { join, resolve } from 'node:path';
-import { addedPackages, dependencyApproval, isDependencyFile } from './lib/dependencies.mjs';
+import {
+  addedPackages,
+  dependencyApproval,
+  ecosystemOf,
+  isDependencyFile,
+} from './lib/dependencies.mjs';
 import { CODE_KIT, GIT, codeOf, commandsOf, runs } from './lib/shell.mjs';
 import { block, start } from './lib/hook.mjs';
 import { CONFIG_FILE } from './lib/config.mjs';
@@ -22,7 +27,9 @@ import {
   arrivesWithMerge,
   approval,
   approvalHowTo,
+  askHowTo,
   currentBranch,
+  decidedBy,
   dependencyChange,
   dependencyGrants,
   useApproval,
@@ -242,8 +249,8 @@ if (approves && !delegating && !forPerson)
     `Blocked: this project doesn't let the lead record approvals ("approvals.lead" is off).${config.approvals.delegate ? ' Within the delegated rules, approve it yourself with --delegated;' : ''} Ask the person to run the \`!\` command from the refusal, or to turn "approvals": { "lead": true } on in the config.\nCommand: ${cmd}`,
   );
 
-// Each new package needs a person's approval, for this actor; it also covers the manifest and lockfile
-// changes the install makes (lib/rules.mjs › dependencyChange).
+// Each new package needs an approval for this actor (the lead's where dependencies are delegated, HELM-3,
+// otherwise a person's); it also covers the manifest and lockfile changes the install makes (lib/rules.mjs › dependencyChange).
 if (packages.length) {
   if (actor.kind === 'readonly')
     block(`Blocked: ${actor.label} is read-only; it may not add dependencies.\nCommand: ${cmd}`);
@@ -256,22 +263,17 @@ if (packages.length) {
       actor,
       unapproved.map(dependencyApproval),
       cmd,
-      "A new dependency needs a person's approval.",
+      'A new dependency needs an approval.',
+      Date.now(),
+      // HELM-3: where each package comes from, for the registry rules (npm's only).
+      { registries: Object.fromEntries(unapproved.map((p) => [p, ecosystemOf(cmd, p)])) },
     );
-    const ask =
-      actor.kind === 'lead'
-        ? 'Ask the person to approve it by running'
-        : config.approvals.delegate
-          ? "Write a short change request for the lead (the package, why, and the lane's story), and stop. The lead approves it within the project's delegated rules, or asks the person to run"
-          : "Write a short change request for the lead (the package, why, and the lane's story), and stop. The lead asks the person to run";
+    // HELM-2, HELM-3: a lane asks the lead, which judges the package on its merits where it decides.
+    const names = unapproved.map(dependencyApproval);
+    const whose =
+      decidedBy(names, config) === 'lead' ? "is the lead's decision" : "needs a person's approval";
     block(
-      `Blocked: a new dependency (${unapproved.join(', ')}) needs a person's approval. ${ask}\n${approvalHowTo(
-        unapproved.map(dependencyApproval),
-        actor,
-        sessionIn ?? project,
-        'installing it, and the manifest and lockfile changes that makes,',
-        config,
-      )}\nCommand: ${cmd}`,
+      `Blocked: a new dependency (${unapproved.join(', ')}) ${whose}. ${askHowTo(names, actor, sessionIn ?? project, config, { allows: 'installing it, and the manifest and lockfile changes that makes,' })}\nCommand: ${cmd}`,
     );
   }
 }
@@ -392,7 +394,7 @@ if (kitWrite && actor.kind !== 'lead' && !approval(root, 'kit', actor)) {
     "The .claude kit is changed only by the lead or with a person's approval.",
   );
   block(
-    `Blocked: the .claude kit is changed only by the lead or with a person's approval. Ask the lead to run\n${approvalHowTo('kit', actor, root, undefined, config)}`,
+    `Blocked: the .claude kit is changed only by the lead or with a person's approval. ${askHowTo('kit', actor, root, config, { need: 'the change to the kit, and what the story needs it for' })}`,
   );
 }
 
@@ -447,7 +449,7 @@ function recordApprovals() {
     if (entry && !granted && actor.kind !== 'lead' && !byDependency) {
       recordRequest(root, actor, entry.approval, file, entry.why);
       block(
-        `Blocked: ${file} is ${entry.why}; committing it needs a person's approval in force. Ask the lead to run\n${approvalHowTo(entry.approval, actor, root, undefined, config)}`,
+        `Blocked: ${file} is ${entry.why}; committing it needs ${decidedBy(entry.approval, config) === 'lead' ? "the lead's" : "a person's"} approval in force. ${askHowTo(entry.approval, actor, root, config)}`,
       );
     }
     if (granted)

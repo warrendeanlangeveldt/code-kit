@@ -46,7 +46,7 @@ Read the story, every requirement it cites, and the full diff (`git diff <base>.
 - **Tested:** a test proves each acceptance criterion and names the requirement ID. The test would fail if the behaviour were broken; one that asserts nothing, or only asserts a mock, doesn't count.
 - **Its journeys still pass end to end:** where the project has a QA lane, run the end-to-end suites that cover this story's requirements (the qa lane's command, filtered to them) against the branch. A journey that broke fails the review, even when the story's own tests pass. A story the QA lane delivered is reviewed the same way: each journey's test proves the requirements it cites, through the real screens and services, with no mocked responses.
 - **The spec-check report matches:** its table has no row still `missing` or `conflicts` without an answer, and its questions were answered, not guessed.
-- **Only the story:** changes beyond the story (refactors elsewhere, other stories' requirements, new dependencies) are called out. They may be fine, but they're the person's call.
+- **Only the story:** changes beyond the story (refactors elsewhere, other stories' requirements) are sent back, or split into their own story. A new dependency is yours to judge, as in `/code-kit:decide`: the story's requirements need it, nothing the project has does the job, and it fits the principles and the layer. Only what crosses a guardrail (the spec, a contract, the architecture) is the person's call.
 - **Contracts respected:** the code uses the contracts as written. A lane that needed a contract change should have asked, not worked around it.
 
 ## 4. The security review

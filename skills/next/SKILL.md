@@ -26,6 +26,7 @@ It returns `step`, `why`, `args`, `then` (steps that can follow straight after) 
 | Config, but no specs, plan or stories                        | `spec-design`                                             |
 | A companion the config wants, not set up yet                 | `setup`: run that tool's init skill (`args`), before code |
 | An older setup missing what init now adds, nothing in flight | `update`: re-run init, before any new story               |
+| A lane waits on a request you decide                         | `decide`: approve it, or answer with an alternative       |
 | Stories finished on their branches                           | `review`, then `dispatch` what's ready                    |
 | Design stories ready (`**Lane:** design`)                    | `design`, then `dispatch` what needs no design            |
 | Stories ready                                                | `dispatch`                                                |
@@ -51,7 +52,7 @@ Run the named skill with the Skill tool: `code-kit:<step>`, with `args` (and the
 After a step finishes, run `next --json` again and carry on with the new step, without asking, as long as nothing needs the person. Stop and hand over when:
 
 - a skill asks the person questions (spec-design's rounds, spec-check's blocking questions, review's scope questions);
-- something needs the person's approval (init's draft, an approval for a protected path). If the config has `approvals.lead`, ask for it in chat: when they approve in their own message, record it with the `code-kit approve` command the refusal names (their words as the reason) and carry on;
+- something needs the person's approval (init's draft, an approval that's theirs: `requests --json` marks it `by: "person"`). What a lane asks for that's yours (`by: "lead"`) you decide with `/code-kit:decide`, without stopping. If the config has `approvals.lead`, ask for it in chat: when they approve in their own message, record it with the `code-kit approve` command the refusal names (their words as the reason) and carry on;
 - a person has to act: merge a pull request to a protected branch, add a CI secret;
 - the step is `wait` or `done`;
 - the same step comes back twice in a row with nothing changed. Report what's stuck instead of looping.

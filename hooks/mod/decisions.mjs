@@ -227,9 +227,7 @@ function headlineOf(line, story) {
 function whyOf(line, check) {
   if (line.kind === 'held') {
     const c = line.held;
-    const rule = c.refusal ? firstSentence(c.refusal) : 'It needs an approval only you can give.';
-    const limits = limitsWhy(c.outside);
-    return limits ? `${rule} ${limits}` : rule;
+    return c.refusal ? firstSentence(c.refusal) : 'It needs an approval only you can give.';
   }
   if (line.kind === 'approvals')
     return line.request?.why ?? 'It needs an approval only you can give.';
@@ -278,23 +276,6 @@ function whyOf(line, check) {
 
 /** A refusal's first sentence: what the rule is, without the instructions meant for the agent. */
 const firstSentence = (text) => text.match(/^.*?[.!?](?=\s|$)/)?.[0] ?? text;
-
-/**
- * Why the lead couldn't approve it itself, from `code-kit approve --delegated`'s refusal: nothing
- * delegated, or the delegated rules each name it missed ("dep-x: fewer than 1000 weekly downloads").
- */
-export function limitsWhy(outside) {
-  if (!outside) return null;
-  if (/delegates no approvals/.test(outside))
-    return "You haven't let the lead approve these itself.";
-  const misses = outside
-    .split('\n')
-    .filter((l) => /^\s{2}\S/.test(l))
-    .map((l) => l.trim());
-  return misses.length
-    ? `It's outside the limits you set for the lead: ${misses.join('; ')}.`
-    : null;
-}
 
 /** The story a line belongs to: the held call's or request's lane's story, the stalled story, the queued branch's. */
 function storyOf(line, state) {

@@ -67,13 +67,13 @@ With no answer within the hold time (12; default 2 minutes), or on Refuse, the c
 
 - Given a held call and no answer for 2 minutes, then the agent receives code-kit's refusal and the band shows the open request.
 
-### HOLD-5 Delegated rules first
+### HOLD-5 Only the person's approvals are held
 
-With autonomy `autonomous` and `approvals.delegate` covering the approval, the lead's delegated rules decide first, without asking: within them, approved and logged as delegated; outside them, held and asked.
+Replaced by HELM-2 and HELM-6 (19): a call is held only when an approval it needs is the person's. One the lead decides is refused, and the lead approves it on its merits; the mod no longer approves within the delegated rules on the lead's behalf.
 
 **Acceptance**
 
-- Given `approvals.delegate.dependencies` and a well-used MIT package, when a lane installs it, then it's approved within the delegated rules and runs, without asking.
+- Given `approvals.delegate.dependencies`, when a lane installs a package, then the call isn't held and the lane is told to ask the lead.
 
 ### HOLD-6 Not held where nobody can answer
 

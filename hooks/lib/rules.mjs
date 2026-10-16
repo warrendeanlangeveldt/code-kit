@@ -71,9 +71,51 @@ export const GIVEN_FILE = '.claude/state/approvals-given.jsonl';
 /** Marks an approval the lead granted on its own, within `approvals.delegate`; `rule` names the rule. */
 export const delegatedMark = (rule) => `(approved by the lead within the delegated rules: ${rule})`;
 
-/** The command the lead runs to approve `names` itself, within the delegated rules. */
+/** The command the lead runs to approve `names` itself, within the delegated rules (HELM-3: for a story). */
 export const delegateCommand = (names, lane) =>
-  `node "${CLI}" approve ${[names].flat().join(' ')}${lane ? ` --lane ${lane}` : ''} --delegated --reason "<why, for this story>"`;
+  `node "${CLI}" approve ${[names].flat().join(' ')}${lane ? ` --lane ${lane}` : ''} --delegated --story <ST-n> --reason "<${
+    [names].flat().some((n) => String(n).startsWith(DEPENDENCY_APPROVAL))
+      ? 'what the story needs it for, what the project already has, how it fits'
+      : 'what the story needs the change for'
+  }>"`;
+
+/**
+ * HELM-1: whether the lead grants approval `name` itself, by the project's delegated rules. Weakening a
+ * test is always the person's; a package is the lead's where dependencies are delegated.
+ */
+export function leadDecides(name, config) {
+  const rules = config?.approvals?.delegate;
+  if (!rules || name === 'tests') return false;
+  if (String(name).startsWith(DEPENDENCY_APPROVAL)) return Boolean(rules.dependencies);
+  return (rules.protected ?? []).includes(name);
+}
+
+/** HELM-2: whose decision approvals `names` are: the lead's when it may grant every one, else the person's. */
+export const decidedBy = (names, config) =>
+  [names].flat().every((n) => leadDecides(n, config)) ? 'lead' : 'person';
+
+/**
+ * HELM-2: what an actor refused for `names` does next, after the refusal's first line. A lane asks the
+ * lead, never the person: with no `!` command where the lead decides. The lead approves its own call
+ * on its merits. What the person decides is brought to them by the lead.
+ */
+export function askHowTo(names, actor, root, config, { allows, need } = {}) {
+  const lane = actor?.kind === 'lane' ? actor.lane : undefined;
+  const pkg = [names].flat().some((n) => String(n).startsWith(DEPENDENCY_APPROVAL));
+  const brief =
+    need ??
+    (pkg
+      ? 'the package, the story and requirement that need it, what the project already has that you checked, and anything lighter that would do'
+      : 'the file, the story and requirement that need the change, and what you checked first');
+  if (decidedBy(names, config) === 'lead') {
+    if (actor?.kind === 'lead')
+      return `You decide this as the lead. Approve it only if the story's requirements need it${pkg ? ', nothing the project already depends on does the job, and it fits the principles and the layer it goes in' : ' and it keeps to the spec and the architecture'}:\n  Decided by the lead: ${delegateCommand(names)}`;
+    return `The lead decides this, not the person. Hand the lead a change request and stop: ${brief}. The lead approves it, or tells you what to use instead.\n  Decided by the lead: ${delegateCommand(names, lane)}`;
+  }
+  if (actor?.kind === 'lead')
+    return `This is the person's decision: ask them, with what it's for and your recommendation. They approve it with\n${approvalHowTo(names, actor, root, allows, config)}`;
+  return `The person decides this, and the lead brings it to them. Hand the lead a change request and stop: ${brief}. Their approval is\n${approvalHowTo(names, actor, root, allows, config)}`;
+}
 
 export const relayCommand = (names, lane) =>
   `node "${CLI}" approve ${[names].flat().join(' ')}${lane ? ` --lane ${lane}` : ''} --reason "<the person's words>"`;
@@ -370,7 +412,7 @@ export function dropRequests(root, which, { by, reason = null }, now = Date.now(
  * actor, names and command or file while one is still open count as one request. Recording never
  * changes the refusal, so any failure here is ignored.
  */
-export function recordRequest(root, actor, names, what, why, now = Date.now()) {
+export function recordRequest(root, actor, names, what, why, now = Date.now(), extra = {}) {
   // A read-only agent (a reviewer) is never approved to write: what it changed goes back, not to the
   // person as a request.
   if (actor?.kind === 'readonly') return;
@@ -382,6 +424,7 @@ export function recordRequest(root, actor, names, what, why, now = Date.now()) {
       names: [names].flat(),
       what: String(what).slice(0, 200),
       why: String(why).slice(0, 300),
+      ...extra,
     };
     if (openRequests(root, now).some((r) => sameRequest(r, request))) return;
     const file = requestsFile(root);
@@ -715,7 +758,11 @@ export function writeProblem(actor, rel, root, config) {
   // and every committed change is in the audit log. Anyone else needs a person's approval as well.
   if (guarded && actor.kind !== 'lead' && !approval(root, guarded.approval, actor)) {
     recordRequest(root, actor, guarded.approval, rel, guarded.why);
-    return `${rel} is ${guarded.why} and needs a person's approval. Ask the lead (a person) to run\n${approvalHowTo(guarded.approval, actor, root, undefined, config)}`;
+    const who =
+      decidedBy(guarded.approval, config) === 'lead'
+        ? "the lead's approval"
+        : "a person's approval";
+    return `${rel} is ${guarded.why} and needs ${who}. ${askHowTo(guarded.approval, actor, root, config)}`;
   }
   if (matchesAny(rel, config.anyActor)) return null;
   if (actor.kind === 'readonly') return readonlyProblem(actor, rel);

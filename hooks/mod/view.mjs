@@ -1231,13 +1231,7 @@ export function questionAsidePrompt({ q, thread = [], question }) {
  * names, the lane, what was refused and why, its story, the limits it missed), the aside so far, and the
  * question. It answers in the pane, never in the conversation, and acts on nothing.
  */
-export function approvalAsidePrompt({
-  request,
-  story = null,
-  outside = null,
-  thread = [],
-  question,
-}) {
+export function approvalAsidePrompt({ request, story = null, thread = [], question }) {
   return [
     "The person is deciding whether to approve something code-kit stopped, and asks you about it in code-kit's approval pane. Answer in a few short sentences, in plain words: what it is, why it's needed for the work, what approving it lets happen, and anything risky about it. Use what you know from this conversation and the facts below. If you don't know, say so; don't guess. This answer goes to that pane, not into the conversation: don't act on it, and don't change your plans because of it.",
     '',
@@ -1251,7 +1245,6 @@ export function approvalAsidePrompt({
           `- story: ${story.id} ${story.title ?? ''}${story.requirements?.length ? ` (${story.requirements.join(', ')})` : ''}`,
         ]
       : []),
-    ...(outside ? [`- outside the limits the person set for the lead: ${outside}`] : []),
     ...(thread.length
       ? [
           '',
@@ -1350,6 +1343,8 @@ export function resultPane(result, { Box, Text }) {
 
 const APPROVAL_LINE =
   /^\s*! echo "<what you are approving>" > .*?\.claude\/approvals\/(?:([^/\s]+)\/)?([^/\s]+)\s*$/gm;
+const LEAD_LINE =
+  /^\s*Decided by the lead: node "[^"]*" approve (.+?)(?: --lane (\S+))? --delegated\b/m;
 
 /**
  * A code-kit refusal read back from the text its hooks print (CARD-1): what was refused, the rule and
@@ -1363,10 +1358,23 @@ export function refusalCard(raw) {
   const [first, ...rest] = text.split('\n');
   const approvals = [...text.matchAll(APPROVAL_LINE)];
   const command = text.match(/^Command: (.+)$/m)?.[1] ?? null;
+  // HELM-2: what the lead decides carries its own approve command, never a person's `!` lines.
+  const byLead = text.match(LEAD_LINE);
   const request = (what) =>
-    approvals.length
-      ? { names: approvals.map((m) => m[2]), lane: approvals[0][1] ?? null, what }
-      : null;
+    byLead
+      ? {
+          names: byLead[1].split(/\s+/),
+          lane: byLead[2] ?? null,
+          what,
+          by: 'lead',
+        }
+      : approvals.length
+        ? { names: approvals.map((m) => m[2]), lane: approvals[0][1] ?? null, what, by: 'person' }
+        : null;
+  const todoFor = (lasts) =>
+    byLead
+      ? 'The lead decides it on its merits: it approves it, or tells the lane what to use instead.'
+      : `A person approves it, here or with the \`!\` command, ${lasts}.`;
   let m = first.match(/^The (.+?) may not write (\S+?)(?: \(owned by the (.+)\))?\.$/);
   if (m)
     return {
@@ -1377,23 +1385,25 @@ export function refusalCard(raw) {
       request: null,
       raw: text,
     };
-  m = first.match(/^(\S+) is (.+) and needs a person's approval\./);
+  m = first.match(/^(\S+) is (.+) and needs (?:a person's|the lead's) approval\./);
   if (m)
     return {
       kind: 'approval',
       title: `Approval needed: ${m[1]}`,
       why: `It's ${m[2]}.`,
-      todo: 'A person approves it, here or with the `!` command, for 60 minutes.',
+      todo: todoFor('for 60 minutes'),
       request: request(`write ${m[1]}`),
       raw: text,
     };
-  m = first.match(/^(\S+) is (.+); committing it needs a person's approval in force\./);
+  m = first.match(
+    /^(\S+) is (.+); committing it needs (?:a person's|the lead's) approval in force\./,
+  );
   if (m)
     return {
       kind: 'approval',
       title: `Commit refused: ${m[1]}`,
       why: `It's ${m[2]}.`,
-      todo: 'A person approves it, here or with the `!` command, for 60 minutes.',
+      todo: todoFor('for 60 minutes'),
       request: request(`commit ${m[1]}`),
       raw: text,
     };
@@ -1402,17 +1412,21 @@ export function refusalCard(raw) {
       kind: 'kit',
       title: 'Kit edit refused',
       why: "The .claude kit is changed only by the lead or with a person's approval.",
-      todo: 'A person approves it, here or with the `!` command, for 60 minutes.',
+      todo: todoFor('for 60 minutes'),
       request: request('change the .claude kit'),
       raw: text,
     };
-  m = first.match(/^a new dependency \((.+?)\) needs a person's approval\./);
+  m = first.match(
+    /^a new dependency \((.+?)\) (?:needs a person's approval|is the lead's decision)\./,
+  );
   if (m)
     return {
       kind: 'dependency',
       title: `Install refused: ${m[1]}`,
-      why: "A new dependency needs a person's approval.",
-      todo: 'A person approves it, here or with the `!` command, until the install is committed (at most 7 days).',
+      why: byLead
+        ? "A new dependency is the lead's decision."
+        : "A new dependency needs a person's approval.",
+      todo: todoFor('until the install is committed (at most 7 days)'),
       request: request(command ?? `install ${m[1]}`),
       raw: text,
     };

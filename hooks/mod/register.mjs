@@ -67,7 +67,7 @@ import {
   withoutInFlight,
 } from './loop.mjs';
 import { goalOf, nextText } from './mission.mjs';
-import { contextOf, decisionCards, limitsWhy, nativeChoice } from './decisions.mjs';
+import { contextOf, decisionCards, nativeChoice } from './decisions.mjs';
 import { DEFAULT_TEAM_UI, TEAM_ID, teamFrame } from './teamview.mjs';
 import { glowOf, mapStoryOf, touchOf } from './codemap.mjs';
 import { harnessSettings } from '../lib/harness.mjs';
@@ -268,7 +268,11 @@ export function register(on) {
         const valid = Boolean(check?.valid);
         const status = valid ? await json('status') : null;
         const nextStep = valid ? await json('next') : null;
-        const requests = valid ? await json('requests') : null;
+        const all = valid ? await json('requests') : null;
+        // HELM-6: the person sees only their own decisions; the lead decides the rest.
+        const requests = all
+          ? { ...all, open: (all.open ?? []).filter((r) => r.by !== 'lead') }
+          : null;
         const stops = valid ? ((await json('stops', '--session', session)) ?? []) : [];
         const queue = valid ? ((await json('queue')) ?? []) : [];
         // VIEW-2: when each story's work happened, for the lanes' timelines.
@@ -532,7 +536,6 @@ export function register(on) {
           reason: prefilledReason(line.request),
           error: null,
           heldId: line.heldId ?? null,
-          outside: line.outside ?? null,
           aside: { thread: [], draft: '' },
         };
         await $.ui.open({ id: APPROVE_ID, title: 'Approve', focus: true, closeOnEscape: true });
@@ -581,7 +584,7 @@ export function register(on) {
         const same = (r) =>
           [...r.names].sort().join() === [...line.request.names].sort().join() &&
           (r.lane ?? r.actor) === (line.request.lane ?? line.request.actor);
-        const numbers = open.flatMap((r, i) => (same(r) ? [i + 1] : []));
+        const numbers = open.flatMap((r, i) => (same(r) ? [r.n ?? i + 1] : []));
         if (!numbers.length) return;
         const ran = await $.process.run(
           ['node', cli, 'requests', 'drop', numbers.join(','), '--via', 'pane'],
@@ -734,7 +737,6 @@ export function register(on) {
             why: line.held.refusal ?? null,
           },
           heldId: line.held.id,
-          outside: line.held.outside ?? null,
         }),
       // ACT-5: a side call over the lead's own conversation (it shares the prompt cache, and nothing is
       // added to the conversation); before the lead's first reply, from the prompt's facts alone.
@@ -785,7 +787,6 @@ export function register(on) {
         const prompt = approvalAsidePrompt({
           request: asked.request,
           story: row?.story ?? null,
-          outside: limitsWhy(asked.outside) ?? null,
           thread,
           question: q,
         });
@@ -1757,26 +1758,6 @@ export function register(on) {
       // HOLD-6: nobody to ask (claude -p, the SDK), or hold switched off: refused as today.
       if (!ask || !where?.interactive || minutes <= 0 || model.state?.kind !== 'ok') return res;
       const id = e.tool_use_id;
-      let outsideLimits = null;
-      // HOLD-5: under autonomy, the project's delegated rules decide first, without asking.
-      if ((settings?.autonomy ?? 'autonomous') === 'autonomous') {
-        const delegated = await $.process.run(
-          [
-            'node',
-            where.cli,
-            'approve',
-            ...ask.names,
-            ...(ask.lane ? ['--lane', ask.lane] : []),
-            '--delegated',
-            '--reason',
-            `Held call within the delegated rules: ${ask.what}`,
-          ],
-          { cwd: where.cwd, timeoutMs: 60000 },
-        );
-        if (delegated.exitCode === 0) return next(e);
-        // DECIDE-2: why it's outside the limits the person set, for the decision's card.
-        outsideLimits = (delegated.stderr || delegated.stdout || '').trim();
-      }
       const agent = e.agentId ? agentsSeen.get(e.agentId) : null;
       held.set(id, {
         id,
@@ -1788,10 +1769,9 @@ export function register(on) {
         what: ask.what,
         since: await $.clock.now(),
         minutes,
-        // DECIDE-2: the call itself, the rule that refused it, and why the lead couldn't approve it.
+        // DECIDE-2: the call itself, and the rule that refused it.
         command: e.command ?? e.file_path ?? null,
         refusal: text.split('\n')[0],
-        outside: outsideLimits,
       });
       $.ui.invalidate('ui.render');
       // The wait is a process the band's answer ends (`code-kit hold`), so it isn't the hook's own time.

@@ -22,8 +22,8 @@ Always:
 - Read every file you change in full, plus its imports and its callers.
 - Search before you build; reuse existing services, providers, components and schemas.
 - Write only in your owned paths. For anything else, write a short change request for the lead and stop.
-- Something only the person can decide (a product choice, wording, an account): write the question for the lead, with the choices and what each does, and carry on with what doesn't depend on it, or stop. The lead asks the person.
-- A new dependency needs a person's approval for your lane. If the install is refused, put the package, why it's needed and the approval command from the refusal in a change request for the lead, and stop.
+- You answer to the lead, never the person. A question the spec doesn't settle (a product choice, UX the spec is silent on, an account): write it for the lead, with the choices and what each does, and carry on with what doesn't depend on it, or stop. The lead decides, or asks the person.
+- A new dependency needs the lead's approval. Before asking, check the project doesn't already have something that does the job. If the install is refused, put in a change request for the lead: the package, the story and requirement that need it, what you checked, and anything lighter that would do; then stop. The lead approves it, or tells you what to use instead.
 - Build every feature end to end. No mocks, stubs, placeholder screens or "coming soon".
 - Prove each acceptance criterion with a test whose title names the requirement ID, e.g. `BOOK-4 …`.
 - Fixing a bug: first write a test that fails because of the bug, through the code that's already there, then fix it. `verify` runs your test without the fix, and it must fail on an assertion, not because it calls something the fix adds.

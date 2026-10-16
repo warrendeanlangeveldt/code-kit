@@ -355,3 +355,13 @@ Intents move from issues to discussions in the Intents category, through GitHub'
 **Status:** done
 
 `code-kit team init` shows, then (`--write`) writes, the team section and lane owners, and says what GitHub still needs; `--off` makes the project one developer's again. `/code-kit:team-init` asks the person and runs it; `/code-kit:init` offers it only when other developers work in the repository. The GitHub provider's state names itself and lists what's missing.
+
+## Milestone 8: the lead at the helm
+
+### ST-37 The lead decides inside the guardrails
+
+**Lane:** lead
+**Requirements:** HELM-1, HELM-2, HELM-3, HELM-4, HELM-5, HELM-6
+**Status:** done
+
+Refusals tell a lane what the lead decides, with no command for the person; `requests --json` marks each request the lead's or the person's; `approve --delegated` takes a package for a story, with the npm registry rules for npm's packages only; `next` returns `decide` while a lane waits on the lead, and the loop prompts `/code-kit:decide`; the band shows only the person's decisions, and the mod no longer approves within the delegated rules for the lead. Init proposes the split; the lead and lane templates, and the dispatch, review and next skills, send lanes to the lead.
