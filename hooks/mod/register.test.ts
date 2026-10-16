@@ -2531,7 +2531,10 @@ test("LEAN-3 when a milestone finishes, the person is asked to compact the lead'
   w.contextPercent = 62;
   on('session.compact', ($: any, e: any) => {
     compacted.push(e.instructions);
-    return { messages: [] };
+    // A compaction leaves the summary in the conversation's place.
+    return {
+      messages: [{ role: 'user', text: 'Summary: M0 done; ST-4 in progress on web/st-4.' }],
+    };
   });
   const clock = await start($, on, w);
   await leadTurn($);
