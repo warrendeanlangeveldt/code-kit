@@ -236,6 +236,14 @@ if (runs(cmd, new RegExp(String.raw`^${CODE_KIT}\s+settings\s+set\b`)))
   block(
     `Blocked: changing the harness settings is the person's own act, from the code-kit pane (/harness) or their terminal. Tell them what you'd change and why, and stop.\nCommand: ${cmd}`,
   );
+// ONB-8: code-kit's instructions are the lead's to bring up to date, like the rest of the kit.
+if (
+  runs(cmd, new RegExp(String.raw`^${CODE_KIT}\s+instructions\b.*\s--write\b`)) &&
+  actor.kind !== 'lead'
+)
+  block(
+    `Blocked: code-kit's instructions in CLAUDE.md and the agent files are the lead's to update. Tell the lead they're behind, and carry on.\nCommand: ${cmd}`,
+  );
 if (queues && actor.kind !== 'lead')
   block(
     `Blocked: only the lead puts branches in the merge queue, after its review passes them. Finish your story and commit it on your branch; the lead reviews it.\nCommand: ${cmd}`,

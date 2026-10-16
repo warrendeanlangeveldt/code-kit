@@ -419,6 +419,8 @@ Owner backend lane / backend-engineer → jobs lane / jobs-engineer: 14 file(s),
 
 Lanes never change silently: only when you approve the diff.
 
+code-kit's own instructions to your agents, its section of CLAUDE.md and each lane agent's `Always:` rules, are kept between markers and rendered from your config, so a newer code-kit can bring them up to date without touching anything you wrote around them. `code-kit instructions` says where each stands, and `--write` updates them. When they're behind, `code-kit next` says so before any other step and the loop asks the lead to update them. A setup from before the markers is merged once, by the lead, keeping your own lines.
+
 ## The CLI
 
 Run from the project root, as `code-kit <command>` once installed (`npm i -g @warren-dean/code-kit`), or `npx @warren-dean/code-kit <command>`. Add `--config .claude/code-kit.draft.json` to any command to read a draft instead. In a session, the `/code-kit:check` skill runs `check` and `unowned` for you. `next` also works in a project without code-kit, or outside a git repository.
@@ -434,6 +436,7 @@ code-kit verify [--base ref] [--branch name] [--no-checks] [--json]  # a branch'
 code-kit security [--base ref] [--branch name] [--json]  # whether a branch needs the security review, and why: sign-in, permissions, outside input, personal data, payments, secrets, dependencies
 code-kit status [--base ref] [--json]  # stories and requirements against the spec
 code-kit next [--base ref] [--json]    # the step to take now, from the project's state
+code-kit instructions [--write] [--json] | instructions show lead|lane  # code-kit's part of CLAUDE.md and the lane agents: where each stands, brought up to date, or printed
 code-kit trace <path>... [--json]      # what a file is for: requirements, lane, layer rules
 code-kit merge <branch> --delegated|--person [--into branch]  # merge a branch that passes verify: the lead where approvals.delegate.merge is on, or the person
 code-kit requests [--json]                                   # approval requests still waiting, numbered, each the lead's or the person's to decide, the approvals in force, and every approval given

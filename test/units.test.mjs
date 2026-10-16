@@ -1101,6 +1101,19 @@ test('LOOP-1 to LOOP-3 the loop: prompts for steps, and what a quiet agent is du
     'The api lane asks for pillow: yours to decide. Run /code-kit:decide 2.',
   );
   assert.equal(stepLabel({ step: 'decide', args: '2 3' }), 'Decide requests 2, 3');
+  // ONB-8: code-kit's instructions behind, merged by hand or written.
+  assert.match(
+    leadPrompt({
+      step: 'instructions',
+      args: 'merge',
+      why: "code-kit's instructions in CLAUDE.md are behind.",
+    }),
+    /^code-kit's instructions in CLAUDE\.md are behind\. Run node "code-kit" instructions to see which files, then merge each one: .* Commit the change on a branch/,
+  );
+  assert.match(
+    leadPrompt({ step: 'instructions', args: 'write', why: 'Behind.' }),
+    /^Behind\. Run node "code-kit" instructions --write\. Commit/,
+  );
   assert.equal(
     leadPrompt({ step: 'review', args: 'ST-4' }),
     'Review ST-4: run /code-kit:review ST-4.',

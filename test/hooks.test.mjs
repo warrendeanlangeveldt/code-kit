@@ -5426,6 +5426,130 @@ else process.exit(1);
       0,
     );
   }
+
+  // --- ONB-8: code-kit's own instructions, kept current ---------------------------------------------
+  {
+    const k = newRepo();
+    cleanups.push(k.dir);
+    const kPut = (rel, body) => {
+      mkdirSync(dirname(join(k.dir, rel)), { recursive: true });
+      writeFileSync(join(k.dir, rel), body);
+    };
+    const kRead = (rel) => readFileSync(join(k.dir, rel), 'utf8');
+    const kCli = (...args) =>
+      spawnSync('node', [kitCli, ...args], { cwd: k.dir, encoding: 'utf8' });
+    // As an older init wrote them: the project's own lines around code-kit's.
+    kPut(
+      'CLAUDE.md',
+      "# Bookings\n\nOur own notes.\n\n## Enforced, not advised\n\n- a person's approval for every new dependency.\n\nChanging the rules means editing `.claude/code-kit.json` (the lead only).\n\n## Deploying\n\nOurs.\n",
+    );
+    kPut(
+      '.claude/agents/web-engineer.md',
+      "---\nname: web-engineer\n---\n\nLane rules:\n- our own rule\n\nAlways:\n\n- A new dependency needs a person's approval for your lane.\n- Finish with: what you did.\n",
+    );
+    kPut(
+      'docs/spec/01-booking.md',
+      '# Booking\n\n### BOOK-1 Request a booking\n\nA guest asks for a room.\n',
+    );
+    kPut(
+      'docs/spec/plan.md',
+      '# Plan\n\n## M1\n\n### ST-1 Booking form\n\n**Lane:** web\n**Requirements:** BOOK-1\n**Status:** todo\n',
+    );
+    const states = () =>
+      Object.fromEntries(
+        JSON.parse(kCli('instructions', '--json').stdout).files.map((f) => [f.file, f.state]),
+      );
+    expect(
+      'ONB-8 instructions an older init wrote are found, and called for merging once',
+      truth(
+        states()['CLAUDE.md'] === 'legacy' &&
+          states()['.claude/agents/web-engineer.md'] === 'legacy',
+        JSON.stringify(states()),
+      ),
+      0,
+    );
+    expect(
+      'and next asks the lead to merge them before the next step',
+      truth(
+        (() => {
+          const n = JSON.parse(kCli('next', '--json').stdout);
+          return n.step === 'instructions' && n.args === 'merge';
+        })(),
+      ),
+      0,
+    );
+    expect(
+      '--write never overwrites one written before the markers',
+      truth(
+        (() => {
+          kCli('instructions', '--write');
+          return kRead('CLAUDE.md').includes("a person's approval for every new dependency");
+        })(),
+      ),
+      0,
+    );
+    // The lead's merge: the old part replaced with the rendered one, the project's own lines kept.
+    const lead = kCli('instructions', 'show', 'lead').stdout.trim();
+    const lane = kCli('instructions', 'show', 'lane').stdout.trim();
+    kPut('CLAUDE.md', `# Bookings\n\nOur own notes.\n\n${lead}\n\n## Deploying\n\nOurs.\n`);
+    kPut(
+      '.claude/agents/web-engineer.md',
+      `---\nname: web-engineer\n---\n\nLane rules:\n- our own rule\n\n${lane}\n`,
+    );
+    expect(
+      'merged, they read as current, and the lane rules say the lead decides packages',
+      truth(
+        Object.values(states()).every((st) => st === 'current') &&
+          lane.includes("A new dependency needs the lead's approval") &&
+          lane.includes('.claude/state/reports/'),
+        JSON.stringify(states()),
+      ),
+      0,
+    );
+    // A formatter rewrapping the project's markdown doesn't make code-kit's part stale.
+    kPut(
+      'CLAUDE.md',
+      kRead('CLAUDE.md').replace(
+        "- the project's checks before any agent finishes.",
+        "- the project's checks before any agent\n  finishes.",
+      ),
+    );
+    expect('a rewrapped section is still current', truth(states()['CLAUDE.md'] === 'current'), 0);
+    // A config change the lead's section reflects (approvals from chat) makes it stale; --write mends it.
+    const cfg = JSON.parse(kRead('.claude/code-kit.json'));
+    cfg.approvals = { ...(cfg.approvals ?? {}), lead: true };
+    kPut('.claude/code-kit.json', JSON.stringify(cfg, null, 2));
+    expect(
+      "a config change leaves the lead's section stale",
+      truth(states()['CLAUDE.md'] === 'stale'),
+      0,
+    );
+    kCli('instructions', '--write');
+    expect(
+      "--write brings it up to date, keeping the project's own lines",
+      truth(
+        states()['CLAUDE.md'] === 'current' &&
+          kRead('CLAUDE.md').includes('Our own notes.') &&
+          kRead('CLAUDE.md').includes('## Deploying') &&
+          kRead('CLAUDE.md').includes('approvals from chat'),
+      ),
+      0,
+    );
+    expect(
+      'a lane may not update the instructions',
+      spawnSync('node', [join(hooks, 'guard-bash.mjs')], {
+        input: JSON.stringify({
+          cwd: k.dir,
+          tool_input: { command: `node "${kitCli}" instructions --write` },
+          agent_type: 'web-engineer',
+        }),
+        env: { ...process.env, CLAUDE_PROJECT_DIR: k.dir },
+        encoding: 'utf8',
+      }),
+      2,
+      "the lead's to update",
+    );
+  }
 } finally {
   for (const d of cleanups) rmSync(d, { recursive: true, force: true });
 }

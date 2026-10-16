@@ -102,7 +102,8 @@ Draft, alongside the config:
   - its layers and what they may depend on;
   - the specs it reads;
   - the command that proves its work;
-  - its lane rules.
+  - its lane rules: the rules the docs set for this lane, and anything the project adds to code-kit's own (its principles and architecture docs, its own words for what's banned). These are the project's, so they stay outside code-kit's part.
+  - Leave out the template's `Always:` list: it's code-kit's part, which `code-kit instructions --write` adds once the config is written, between its markers.
   - If an agent already exists, keep its content and add only what's missing.
   - Drop the spec-check lines if the config has no `docs.specs`.
 - **A security reviewer:** write `.claude/agents/security-reviewer.md` from `${CLAUDE_PLUGIN_ROOT}/templates/security-reviewer.md`, in the same approval as the lane agents, whenever the product handles sign-in, personal data, payments, input from outside (forms, APIs, webhooks, uploads) or secrets. That's almost every product; leave it out only for one with none of these, such as a static site or a local tool with no accounts, and say why. It is a reviewer, not a lane: no entry in `lanes`, no paths, and only read-only tools (Read, Grep, Glob, and Bash for commands that change nothing), so the hooks treat it as read-only too. Fill it in from the docs (or the code, for brownfield):
@@ -111,7 +112,7 @@ Draft, alongside the config:
   - the privacy and data residency targets in the principles;
   - the project's audit commands (for example `npm audit --omit=dev`, `pip-audit`), each run once now; leave out one that isn't installed, and say so.
   - If the agent already exists, keep its content and add only what's missing.
-- **CLAUDE.md:** add the section from `${CLAUDE_PLUGIN_ROOT}/templates/claude-md.md`.
+- **CLAUDE.md:** code-kit's section is rendered from the config, not written by hand: once the config is written, `node "${CLAUDE_PLUGIN_ROOT}/bin/code-kit.mjs" instructions --write` adds it between its markers (`<!-- code-kit:begin vN -->` … `<!-- code-kit:end -->`). Anything the project wants to say beyond it (its layer order in words, its docs, its own rules) goes in a section of its own, outside the markers, so a later code-kit never touches it.
 - **Project skills, with the agents** (recipes like "new screen", "new migration" or "new endpoint"): one per recipe in the architecture's `## Recipes`, or any other doc that describes one step by step. Draft them now, alongside the agents, and show them in the same approval; the agents and their skills are one piece of work. Brownfield code without recipes in its docs: propose recipes from the patterns the code already follows (how its existing screens, endpoints or migrations are built), as drafts the person approves. Never write an empty one.
   - Write each as `.claude/skills/<name>/SKILL.md`, saying in its description which recipe in which doc it comes from, so an update can find it again.
   - List it under **Skills to use** on every lane agent whose paths the recipe touches, not only one: a recipe that adds a migration and the endpoint that uses it belongs to both lanes. A recipe only the lead follows goes in the CLAUDE.md section instead.
@@ -154,6 +155,7 @@ Re-run whenever the build has moved on: new apps or packages, folders that moved
 
 1. **Re-read** the docs and the repository as in section 1, including the brownfield steps if the code has grown past the docs.
 2. **Draft** the whole config again into `.claude/code-kit.draft.json`, starting from the live one. Keep everything that's still right, so the diff shows only real changes. If the live config has no `harness.autonomy`, ask the person about it as in section 2.
+   Bring code-kit's own instructions up to date: run `code-kit instructions`. Parts between markers are rewritten with `--write`. A part written before the markers (CLAUDE.md's `## Enforced, not advised` section, an agent's `Always:` list) is merged once: replace it with what `code-kit instructions show lead` or `show lane` prints, and move every line the project wrote itself into a section of its own outside the markers. Show the person the difference with the rest.
    A config without `"setup": 3` predates what setup now includes; add whichever of these the project is missing, as section 2 and 3 describe, and set `"setup": 3`:
    - project skills for the recipes in the docs (or, without recipes, the patterns the code follows), listed on the lane agents;
    - the design gate for every lane that owns screens, with its register; and design stories in the plan for screens not yet built (ask the person before adding stories);

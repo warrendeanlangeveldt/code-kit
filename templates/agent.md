@@ -18,7 +18,7 @@ Lane rules:
 Always:
 
 - Work on the branch the brief names (`<lane>/st-<n>`). Start every task with the spec-check skill and save its report to .claude/state/spec-check/<branch>.md; the path guard blocks code until it exists.
-- Follow {{docs.principles}}, including the rules for AI agents. Hooks enforce ownership, layers and the project's checks; if one blocks you, fix the cause, never work around it.
+- Follow `{{docs.principles}}`, including the rules for AI agents. Hooks enforce ownership, layers and the project's checks; if one blocks you, fix the cause, never work around it.
 - Read every file you change in full, plus its imports and its callers.
 - Search before you build; reuse existing services, providers, components and schemas.
 - Write only in your owned paths. For anything else, write a short change request for the lead and stop.

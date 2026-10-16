@@ -77,6 +77,13 @@ import {
 import { storyTimes } from '../hooks/lib/timeline.mjs';
 import { PROJECT, projectMap, storyMap, trail } from '../hooks/lib/storymap.mjs';
 import { journal } from '../hooks/lib/journal.mjs';
+import {
+  INSTRUCTIONS_VERSION,
+  agentRules,
+  instructionsState,
+  leadSection,
+  writeInstructions,
+} from '../hooks/lib/instructions.mjs';
 import { dequeue, enqueue, lastMerged, readQueue, settle, waiting } from '../hooks/lib/queue.mjs';
 import { SETTINGS, parseSetting, settingOf, withSetting } from '../hooks/lib/harness.mjs';
 import { claimLead, readLoop, releaseLead, writeLoop } from '../hooks/lib/loop-state.mjs';
@@ -1884,8 +1891,48 @@ function loopCommand() {
   );
 }
 
+/**
+ * ONB-8: code-kit's own instructions (the lead's section of CLAUDE.md, each lane agent's "Always:" rules):
+ * where each stands, `--write` to bring the marked ones up to date, `--show lead|lane` to print one.
+ */
+function instructionsCommand() {
+  const { config } = load();
+  const root = resolve('.');
+  if (rest[0] === 'show') {
+    if (!['lead', 'lane'].includes(rest[1])) die('code-kit instructions show lead|lane');
+    return out(rest[1] === 'lead' ? leadSection(root, config) : agentRules(root, config));
+  }
+  const changed = flag('--write') ? writeInstructions(root, config) : [];
+  const files = instructionsState(root, config);
+  if (flag('--json'))
+    return out(
+      JSON.stringify(
+        {
+          version: INSTRUCTIONS_VERSION,
+          files: files.map(({ file, kind, state, version }) => ({ file, kind, state, version })),
+          written: changed,
+        },
+        null,
+        2,
+      ),
+    );
+  const said = {
+    current: 'up to date',
+    stale: 'from an older code-kit or config; --write brings it up to date',
+    missing: 'none yet; --write adds it',
+    legacy: 'written before code-kit marked its part; merge it once, by hand (below)',
+  };
+  if (changed.length) out(`Brought up to date: ${changed.join(', ')}.`);
+  for (const f of files) out(`  ${f.file}: ${said[f.state]}`);
+  if (files.some((f) => f.state === 'legacy'))
+    out(
+      '\nTo merge one: replace its old code-kit part (in CLAUDE.md from `## Enforced, not advised` to the line about changing the rules; in an agent file from `Always:` to the end of its list) with what `code-kit instructions show lead` or `show lane` prints. Keep every line the project wrote itself (its own rules, its layer order, its docs) outside the markers, under a heading of its own, so a later refresh never touches them.',
+    );
+}
+
 const commands = {
   check,
+  instructions: instructionsCommand,
   loop: loopCommand,
   approve: () => (rest.length ? approve(rest) : usage()),
   merge: () => (rest.length === 1 ? merge(rest[0]) : usage()),
@@ -1922,6 +1969,7 @@ function usage() {
       '              | verify [--base ref] [--branch name] [--no-checks] | status [--base ref] [--json]\n' +
       '              | security [--base ref] [--branch name] [--json]\n' +
       '              | next [--base ref] [--json] | adapters | trace <path>... [--json]\n' +
+      '              | instructions [--write] [--json] | instructions show lead|lane\n' +
       '              | approve <name>... --reason "…" [--lane name]   [--config file]\n' +
       '              | merge <branch> --delegated|--person [--into branch] | requests [--json] | requests drop <n>|all\n' +
       '              | ask "<question>" [--story ST-n] [--blocks] [--why "…"] [--option "Label: effect"]... | ask [--json]\n' +
