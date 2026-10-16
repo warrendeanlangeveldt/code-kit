@@ -205,8 +205,9 @@ export function approvalsGiven(root) {
 export function realPath(path) {
   let dir = resolve(path);
   const rest = [];
+  // basename, not a slice after dirname: dirname('/x') is '/', so slicing past it cut the name's first letter.
   while (!existsSync(dir)) {
-    rest.unshift(dir.slice(dirname(dir).length + 1));
+    rest.unshift(basename(dir));
     dir = dirname(dir);
   }
   return join(realpathSync(dir), ...rest);

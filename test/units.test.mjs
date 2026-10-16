@@ -877,6 +877,12 @@ test("install scripts are told apart: a prebuilt binary, a native build, or the 
   assert.match(validate(c).join(' '), /allowInstallScripts/);
 });
 
+test('a path under a top-level folder that does not exist keeps its whole name', async () => {
+  const { realPath } = await import('../hooks/lib/rules.mjs');
+  // /private exists on macOS only: on Linux its first letter was cut off.
+  assert.equal(realPath('/no-such-top-folder/claude-1/x.py'), '/no-such-top-folder/claude-1/x.py');
+});
+
 test('files any agent may write have a reviewer: the lead, or the lane an entry names', async () => {
   const { reviewerOf } = await import('../hooks/lib/rules.mjs');
   const c = clone();
