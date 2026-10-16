@@ -1684,6 +1684,7 @@ export function register(on) {
     const lane = e.agent_id ? activity.get(e.agent_id)?.lane : null;
     denied.set(e.tool_use_id ?? `${e.tool_name}-${denied.size}`, {
       id: e.tool_use_id ?? `${e.tool_name}-${denied.size}`,
+      agentId: e.agent_id ?? null,
       who: lane ? `the ${lane} lane` : (e.agent_type ?? (e.agent_id ? 'an agent' : 'the lead')),
       tool: e.tool_name,
       command,
@@ -1733,6 +1734,19 @@ export function register(on) {
     try {
       const res = await next(e);
       const text = res?.deny ?? (res?.isError ? (res.text ?? String(res.result ?? '')) : null);
+      // PERM-1: a refused call that later goes through (retried, or allowed) no longer waits for the person.
+      if (!text && denied.size) {
+        const command = e.tool === 'Bash' ? (e.command ?? null) : null;
+        const before = denied.size;
+        for (const [id, d] of denied)
+          if (
+            d.tool === e.tool &&
+            d.agentId === (e.agentId ?? null) &&
+            (!d.command || d.command === command)
+          )
+            denied.delete(id);
+        if (denied.size < before) $.ui.invalidate('ui.render');
+      }
       if (text && refusalCard(text)) {
         refusals.set(e.tool_use_id, text);
         if (refusals.size > REFUSALS_KEPT) refusals.delete(refusals.keys().next().value);

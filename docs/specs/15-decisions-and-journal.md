@@ -121,11 +121,12 @@ A question can be terse ("Product domain (for the inbound email address…)"). I
 
 ### PERM-1 What Claude Code itself refused
 
-A call Claude Code's own permission check refuses (its auto mode, a deny rule), which code-kit can't approve past, waits in the band for the person: "Claude Code refused the lead's `pnpm db:generate`", with Put it in the prompt (a shell command goes in the prompt after `!`, for them to run), Done it (the lead is told they ran it or allowed it) and Not now (the lead is told to carry on with other work and not get round it). The card says what Claude Code said.
+A call Claude Code's own permission check refuses (its auto mode, a deny rule), which code-kit can't approve past, waits in the band for the person: "Claude Code refused the lead's `pnpm db:generate`", with Put it in the prompt (a shell command goes in the prompt after `!`, for them to run), Done it (the lead is told they ran it or allowed it) and Not now (the lead is told to carry on with other work and not get round it). The card says what Claude Code said. A refused call that later goes through, the same tool from the same agent (for a shell command, the same command), no longer waits: it was retried or allowed, and nothing is left for the person to do.
 
 **Acceptance**
 
 - Given Claude Code refusing the lead's `pnpm db:generate && pnpm db:migrate`, then the band names it; Put it in the prompt fills `! pnpm db:generate && pnpm db:migrate`; Done it prompts the lead and clears it.
+- Given Claude Code refusing the lead's `pnpm db:generate` and `pnpm db:migrate`, when `pnpm db:generate` then runs, then only `pnpm db:migrate` still waits; another command running clears neither.
 
 ### REPORT-1 Agents draft reports for code-kit
 
