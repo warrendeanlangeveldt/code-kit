@@ -156,6 +156,8 @@ function project() {
     leadClaims: 0,
     asked: [] as { question: string; options: string[]; header?: string }[], // dialogs the mod opened
     typed: null as string | null, // what the person types under the dialog's Other, if anything
+    agentFiles: {} as Record<string, string>, // .claude/agents/<name>.md, by path
+    spawned: [] as any[], // agent.spawn as it reached Claude Code beneath the mod
     map: null as any, // `code-kit map <story> --json`
     trail: null as any, // `code-kit trail --json`
     journal: { events: [] as any[] }, // `code-kit journal --json`
@@ -397,6 +399,14 @@ function stub(on: any, w: World) {
   on('turn.start', ($: any, e: any) => e);
   on('turn.complete', () => ({ text: '' }));
   on('session.end', ($: any, e: any) => ({ sessionId: e.sessionId }));
+  on('fs.read', ($: any, e: any) => {
+    if (w.agentFiles[e.path] === undefined) throw new Error(`ENOENT: ${e.path}`);
+    return { value: w.agentFiles[e.path] };
+  });
+  on('agent.spawn', ($: any, e: any) => {
+    w.spawned.push(e);
+    return { model: e.model ?? 'claude-opus-5-5', agentId: `a-${w.spawned.length}` };
+  });
   on('session.usage', () => ({ value: { startedAt: 0, context: {}, rateLimits: w.limits } }));
   on('session.measure', ($: any, e: any) => ({ changed: e.changed }));
   // A model request, answered with the usage the test gave it.
@@ -2620,6 +2630,45 @@ test('DECIDE-4 nothing is asked in a session another one runs the loop for', asy
   const clock = await start($, on, w);
   await clock.advance(6000);
   expect(w.asked).toEqual([]);
+});
+
+// --- the lane agents' model (SET-4) ---------------------------------------------------------------
+
+const dispatch = ($: any, subagentType: string, model?: string) =>
+  $.agent.spawn({
+    prompt: 'ST-9 pricing',
+    description: 'ST-9 pricing',
+    subagentType,
+    ...(model ? { model } : {}),
+  });
+
+test("SET-4 a lane agent starts on the lane model set; the lead's own choice, an agent file's model and other agents are left alone", async ($, on) => {
+  const w = project();
+  (w.check as any).harness = { agents: { lanes: { model: 'sonnet' } } };
+  w.agentFiles['/work/.claude/agents/web-engineer.md'] =
+    '---\nname: web-engineer\nmodel: opus\n---\nYou are the web engineer.\n';
+  w.agentFiles['/work/.claude/agents/api-engineer.md'] =
+    '---\nname: api-engineer\nmodel: inherit\n---\n';
+  await start($, on, w);
+  await dispatch($, 'core-engineer');
+  await dispatch($, 'api-engineer');
+  await dispatch($, 'core-engineer', 'haiku');
+  await dispatch($, 'web-engineer');
+  await dispatch($, 'general-purpose');
+  expect(w.spawned.map((e) => [e.subagentType, e.model ?? null])).toEqual([
+    ['core-engineer', 'sonnet'],
+    ['api-engineer', 'sonnet'],
+    ['core-engineer', 'haiku'],
+    ['web-engineer', null],
+    ['general-purpose', null],
+  ]);
+});
+
+test('SET-4 with no lane model set, lane agents start as Claude Code decides', async ($, on) => {
+  const w = project();
+  await start($, on, w);
+  await dispatch($, 'core-engineer');
+  expect(w.spawned[0].model ?? null).toBe(null);
 });
 
 // --- the reviewer -----------------------------------------------------------------------------------

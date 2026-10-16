@@ -2,6 +2,13 @@
 
 What changed in each release of code-kit, newest first. Versions follow the plugin manifest and the npm package `@warren-dean/code-kit`. Each release is also on [GitHub Releases](https://github.com/warrendeanlangeveldt/code-kit/releases).
 
+## 0.15.0 (2026-10-16)
+
+The lane agents can run on a cheaper model than the lead.
+
+- `harness.agents.lanes.model` sets the model each lane agent starts on, such as `sonnet`. The mod sets it as the lead dispatches each lane agent, so the lead, the background reviewer and the security reviewer keep your session's model. A model the lead's own call names still wins, and so does a `model:` line in a lane's agent file. Leave the setting out and lane agents start on the session's model, as before.
+- `/code-kit:init` asks which model the lanes should use and recommends Sonnet: each lane agent builds one story inside its own paths, and the hooks, `verify` and the lead's review catch what it gets wrong. `/harness` has the setting as a model picker, and `code-kit settings set agents.lanes.model <model>` sets it from the command line.
+
 ## 0.14.0 (2026-10-16)
 
 The lead loop stays in one session, listens to the lead before prompting it again, and asks your choices in Claude Code's own question dialog.

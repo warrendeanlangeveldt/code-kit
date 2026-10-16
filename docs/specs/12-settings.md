@@ -20,6 +20,7 @@
 | `stall.restartMinutes`      | number  | 10           | Greater than `nudgeMinutes`                                                                                              |
 | `stall.maxRestarts`         | integer | 2            |                                                                                                                          |
 | `agents.reviewer`           | object  | off          | `{ on, model }`; model an alias (`haiku`, `sonnet`, `opus`) or an id; without one, the session's model                   |
+| `agents.lanes.model`        | string  | none         | The lane agents' model, an alias or an id; without one, the session's model (SET-4)                                      |
 | `background.pauseAtPercent` | number  | 80           | Of the plan's 5-hour use (08)                                                                                            |
 | `report.on`                 | boolean | `false`      | Agents may draft bug reports for code-kit, which the person sends or discards (15, REPORT-1)                             |
 
@@ -44,6 +45,15 @@ The Settings view lists each setting with its value and a control (select, numbe
 ### SET-3 Structure stays with init
 
 Lanes, paths, layers and protected paths aren't editable in the pane; the Settings view links to `/code-kit:init` for them.
+
+### SET-4 The lane agents' model
+
+With `agents.lanes.model` set, the mod sets that model on each lane agent as it starts (`agent.spawn`), so a cheaper model builds the stories while the lead, the reviewer and the security reviewer keep the session's. A model the lead's call names wins, and so does a model a lane's agent file sets (other than `inherit`). `/code-kit:init` asks for it, recommending `sonnet`; `/harness` changes it like any setting.
+
+**Acceptance**
+
+- Given `agents.lanes.model` `sonnet`, when the lead dispatches `core-engineer`, then it starts on Sonnet; when the call names `haiku`, on Haiku; `web-engineer`, whose file sets `model: opus`, on Opus; a reviewer or any agent that isn't a lane's, as Claude Code decides.
+- Given no lane model set, lane agents start as Claude Code decides.
 
 ## Open questions
 

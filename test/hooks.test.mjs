@@ -3683,6 +3683,34 @@ else process.exit(2);
       ),
       0,
     );
+    // SET-4: the lane agents' model, for the mod to start each lane agent on.
+    const lanes = sCli(
+      'settings',
+      'set',
+      'agents.lanes.model',
+      'sonnet',
+      '--reason',
+      'cheaper lanes',
+    );
+    expect(
+      'SET-4 the lane model is set like any setting, and check --json carries it for the mod',
+      truth(
+        lanes.status === 0 &&
+          JSON.parse(readFileSync(join(s.dir, '.claude/code-kit.json'), 'utf8')).harness.agents
+            ?.lanes?.model === 'sonnet' &&
+          JSON.parse(sCli('check', '--json').stdout).harness?.agents?.lanes?.model === 'sonnet',
+        lanes.stdout + lanes.stderr,
+      ),
+      0,
+    );
+    expect(
+      "and null puts the lanes back on the session's model",
+      truth(
+        sCli('settings', 'set', 'agents.lanes.model', 'null', '--reason', 'back').status === 0 &&
+          JSON.parse(sCli('check', '--json').stdout).harness?.agents?.lanes?.model === null,
+      ),
+      0,
+    );
     const bad = sCli('settings', 'set', 'hold.minutes', '99', '--reason', 'longer');
     expect(
       'a value out of range changes nothing',

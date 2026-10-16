@@ -34,8 +34,10 @@ import {
   askWords,
 } from '../hooks/mod/view.mjs';
 import {
+  agentFileModel,
   answeredPrompt,
   designHandedOver,
+  laneModel,
   leadPrompt,
   outcomePrompt,
   readOutcome,
@@ -552,6 +554,37 @@ test("LOOP-11 the loop reads the lead's reply: what it left the build at, its qu
   );
 });
 
+test("SET-4 a lane agent's model: the lead's choice, then its agent file's, then the setting", async () => {
+  const { harnessProblems, harnessSettings } = await import('../hooks/lib/harness.mjs');
+  const lanes = { web: { agent: 'web-engineer' }, api: { agent: 'api-engineer' } };
+  assert.equal(laneModel({ type: 'web-engineer', lanes, setting: 'sonnet' }), 'sonnet');
+  assert.equal(laneModel({ type: 'web-engineer', model: 'haiku', lanes, setting: 'sonnet' }), null);
+  assert.equal(
+    laneModel({ type: 'web-engineer', lanes, setting: 'sonnet', fileModel: 'opus' }),
+    null,
+  );
+  assert.equal(
+    laneModel({ type: 'web-engineer', lanes, setting: 'sonnet', fileModel: 'inherit' }),
+    'sonnet',
+  );
+  assert.equal(laneModel({ type: 'security-reviewer', lanes, setting: 'sonnet' }), null);
+  assert.equal(laneModel({ type: 'web-engineer', lanes, setting: null }), null);
+  assert.equal(
+    agentFileModel('---\nname: web\nmodel: "opus"\ntools: Read\n---\nmodel: haiku\n'),
+    'opus',
+  );
+  assert.equal(agentFileModel('---\nname: web\n---\nmodel: haiku\n'), null);
+  assert.equal(harnessSettings({}).agents.lanes.model, null);
+  assert.equal(
+    harnessSettings({ agents: { lanes: { model: 'sonnet' } } }).agents.lanes.model,
+    'sonnet',
+  );
+  assert.match(
+    harnessProblems({ agents: { lanes: { model: 3 } } })[0],
+    /agents\.lanes\.model" must be a model/,
+  );
+});
+
 test('LOOP-12 a design step is held once all its stories were handed to the lead', () => {
   const handed = new Set(['ST-21', 'ST-22']);
   assert.equal(designHandedOver({ step: 'design', args: 'ST-21 ST-22' }, handed), true);
@@ -799,7 +832,7 @@ test('SET-1 the harness settings: defaults, validation and typed values', async 
     autonomy: 'autonomous',
     hold: { minutes: 2 },
     stall: { nudgeMinutes: 5, restartMinutes: 10, maxRestarts: 2 },
-    agents: { reviewer: { on: false, model: null } },
+    agents: { reviewer: { on: false, model: null }, lanes: { model: null } },
     background: { pauseAtPercent: 80 },
     report: { on: false },
   });
