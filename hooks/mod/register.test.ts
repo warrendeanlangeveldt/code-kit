@@ -1707,6 +1707,38 @@ test("PERM-1 a call Claude Code's own permission check refused waits for the per
   await after.unmount();
 });
 
+test('PERM-1 a refused call that later goes through no longer waits for the person', async ($, on) => {
+  const w = project();
+  await start($, on, w);
+  const refused = (id: string, command: string) =>
+    $.classic.PermissionDenied({
+      tool_name: 'Bash',
+      tool_input: { command },
+      tool_use_id: id,
+      reason: 'Permission for this action was denied by the Claude Code auto mode classifier.',
+    });
+  await refused('tu-1', 'pnpm db:generate');
+  await refused('tu-2', 'pnpm db:migrate');
+  // another command going through leaves both waiting
+  await $.tool.call({ tool: 'Bash', tool_use_id: 'tu-3', command: 'pnpm test' } as any);
+  let band = await bandUi($);
+  expect(await band.find({ type: 'Text', text: /^2 calls refused by Claude Code/ })).toBeDefined();
+  await band.unmount();
+  // the lead retries one and it goes through: only the other still waits
+  await $.tool.call({ tool: 'Bash', tool_use_id: 'tu-4', command: 'pnpm db:generate' } as any);
+  band = await bandUi($);
+  expect(
+    await band.find({ type: 'Text', text: "Claude Code refused the lead's `pnpm db:migrate`" }),
+  ).toBeDefined();
+  await band.unmount();
+  await $.tool.call({ tool: 'Bash', tool_use_id: 'tu-5', command: 'pnpm db:migrate' } as any);
+  band = await bandUi($);
+  expect(
+    await band.find({ type: 'Text', text: /Claude Code refused|refused by Claude Code/ }),
+  ).toBeUndefined();
+  await band.unmount();
+});
+
 test('CARD-8 two approvals waiting are two decisions, each approved or dropped on its own', async ($, on) => {
   const w = project();
   w.requests = [

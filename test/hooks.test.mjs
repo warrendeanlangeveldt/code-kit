@@ -361,6 +361,53 @@ try {
     bash('echo x | tee .claude/agents/web.md', 'web-engineer'),
     2,
   );
+  expect(
+    'a lane may read the config with an inline script, without asking anyone',
+    bash(
+      `python3 -c "\nimport json;c=json.load(open('.claude/code-kit.json'))\nfor k,v in c['lanes'].items():\n  if len(v)>0: print(k, json.dumps(v)[:300].replace('\\n',' '))"`,
+      'web-engineer',
+    ),
+    0,
+  );
+  expect(
+    'or with node',
+    bash(
+      `node -e "const c=JSON.parse(require('fs').readFileSync('.claude/code-kit.json','utf8'));console.log(Object.keys(c))"`,
+      'web-engineer',
+    ),
+    0,
+  );
+  expect(
+    'and no approval request is filed for it',
+    truth(
+      !existsSync(join(repo, '.claude/state/requests.jsonl')) ||
+        !readFileSync(join(repo, '.claude/state/requests.jsonl'), 'utf8').includes('json.load'),
+    ),
+    0,
+  );
+  expect(
+    'an inline script that writes the kit is still refused',
+    bash(
+      `python3 -c "import json;c=json.load(open('.claude/code-kit.json'));c['x']=1;json.dump(c,open('.claude/code-kit.json','w'))"`,
+      'web-engineer',
+    ),
+    2,
+  );
+  expect(
+    'and so is one that writes it with node',
+    bash(`node -e "require('fs').writeFileSync('.claude/code-kit.json','{}')"`, 'web-engineer'),
+    2,
+  );
+  expect(
+    "and so is a script's output redirected into it",
+    bash(`python3 -c "print('{}')" > .claude/code-kit.json`, 'web-engineer'),
+    2,
+  );
+  expect(
+    "and a Python script run from a file, which the hook can't read",
+    bash('python3 tools/fix.py .claude/code-kit.json', 'web-engineer'),
+    2,
+  );
   expect("the project's blocked commands", bash('supabase db push'), 2, 'Deploying is done by CI');
   expect('restricted commands: an owning lane', bash('supabase db reset', 'db-engineer'), 0);
   expect('restricted commands: the lead', bash('supabase db reset'), 0);

@@ -5,7 +5,7 @@ description: Check a task against the project's specs before implementing it, an
 
 # Spec check
 
-The project's specs are in the folder named by `docs.specs` in `.claude/code-kit.json`. The engineering principles are in `docs.principles`, and the plan in `docs.plan`.
+The project's specs are in the folder named by `docs.specs` in `.claude/code-kit.json`. The engineering principles are in `docs.principles`, and the plan in `docs.plan`. Open the config with the Read tool. A shell script that reads it works too, but one that could write to it waits for a person's approval.
 
 ## Steps
 

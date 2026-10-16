@@ -368,8 +368,21 @@ if (team) {
 const KIT_PATH = /\.claude\/(hooks|agents|skills|settings[^/]*\.json|README\.md|code-kit\.json)/;
 // a real redirect into a file; `2>&1` and `>/dev/null` are not writes
 const WRITES =
-  /((?<![0-9&])>>?\s*(?!&|\/dev\/null)\S|\btee\b|\bsed\s+-i|\bperl\s+-i|\bmv\b|\bcp\b|\brm\b|\bpython3?\b|\bnode\s+-e|\btruncate\b|\bchmod\b|\bln\b)/;
-const kitWrite = commandsOf(cmd).some((c) => KIT_PATH.test(c.text) && WRITES.test(c.text));
+  /((?<![0-9&])>>?\s*(?!&|\/dev\/null)\S|\btee\b|\bsed\s+-i|\bperl\s+-i|\bmv\b|\bcp\b|\brm\b|\btruncate\b|\bchmod\b|\bln\b)/;
+// An inline script (`python3 -c`, `node -e`) is judged by its code: lanes read the config this way,
+// and a read isn't a change to the kit. A Python script run from a file can't be read here, so it counts.
+const SCRIPT = /\bpython3?\b/;
+const INLINE =
+  /(?:^|\s)(?:python3?\s+(?:-\w+\s+)*-c|node\s+(?:-\w+\s+)*(?:-e|--eval|-p|--print))\s/;
+const SCRIPT_WRITES =
+  /\bopen(?:Sync)?\s*\([^)]*['"][rwax]*[wax+][rwax+b]*['"]|\.write_(?:text|bytes)\b|\.(?:unlink|rename|touch|rmdir|chmod|symlink_to)\s*\(|\bos\.(?:remove|unlink|rename|replace|rmdir|chmod|symlink|system|popen)\b|\bshutil\.|\bsubprocess\.|\b(?:writeFile|appendFile|rm|rmdir|unlink|rename|copyFile|cp|chmod|truncate|symlink|createWriteStream)(?:Sync)?\s*\(|\bexecSync\b|\bspawnSync\b|\bchild_process\b/;
+const writesKit = ({ text, code }) => {
+  if (!KIT_PATH.test(text)) return false;
+  // the script's own text is quoted, so a `>` in it isn't a redirect; one outside it still is
+  if (INLINE.test(text)) return WRITES.test(code) || SCRIPT_WRITES.test(text);
+  return WRITES.test(text) || SCRIPT.test(text);
+};
+const kitWrite = commandsOf(cmd).some(writesKit);
 if (kitWrite && actor.kind !== 'lead' && !approval(root, 'kit', actor)) {
   recordRequest(
     root,
