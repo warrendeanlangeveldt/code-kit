@@ -93,6 +93,24 @@ MANAGERS.pip3 = MANAGERS.pip;
  * except a shell's `-c` script, which runs.
  */
 export function addedPackages(cmd) {
+  return [...new Set(packagesWithManagers(cmd).map((p) => p.name))];
+}
+
+/** The package managers that read the npm registry: their packages are npm's. */
+const NPM_MANAGERS = new Set(['npm', 'pnpm', 'yarn', 'bun']);
+
+/**
+ * HELM-3: the registry `pkg` comes from, by the command that adds it: `npm` for npm, pnpm, yarn and
+ * bun, otherwise the manager's name (`pip`, `uv`, `cargo`…), or null when the command doesn't add it.
+ */
+export function ecosystemOf(cmd, pkg) {
+  const found = packagesWithManagers(cmd).find((p) => p.name === pkg);
+  if (!found) return null;
+  return NPM_MANAGERS.has(found.manager) ? 'npm' : found.manager;
+}
+
+/** Each package `cmd` adds, with the manager that adds it: `{ name, manager }`. */
+function packagesWithManagers(cmd) {
   const found = [];
   for (const { text, code } of commandsOf(cmd)) {
     // Words split where the quote-masked code has spaces, so a quoted word stays one word.
@@ -103,18 +121,18 @@ export function addedPackages(cmd) {
     words.forEach(({ word, quoted }, i) => {
       if (quoted) return;
       if (SHELLS.has(basename(word)) && words[i + 1]?.word === '-c' && words[i + 2])
-        found.push(...addedPackages(words[i + 2].word));
+        found.push(...packagesWithManagers(words[i + 2].word));
       const manager = MANAGERS[basename(word)];
       if (manager)
         found.push(
           ...packagesAfter(
             words.slice(i + 1).map((w) => w.word),
             manager,
-          ),
+          ).map((name) => ({ name, manager: basename(word).replace(/3$/, '') })),
         );
     });
   }
-  return [...new Set(found)];
+  return found;
 }
 
 const SHELLS = new Set(['sh', 'bash', 'zsh']);

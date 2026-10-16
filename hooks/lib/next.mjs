@@ -9,7 +9,7 @@ import { buildStatus, readStories, DESIGN, LEAD } from './plan.mjs';
 import { pendingSetup } from './adapters/index.mjs';
 import { CONFIG_FILE, SETUP_VERSION } from './config.mjs';
 import { readQueue, waiting } from './queue.mjs';
-import { laneOf } from './rules.mjs';
+import { decidedBy, laneOf, openRequests } from './rules.mjs';
 import { SECURITY_AGENT_FILE } from './security.mjs';
 
 export const DRAFT_FILE = '.claude/code-kit.draft.json';
@@ -252,6 +252,16 @@ export function nextStep(root, base) {
   if (unbuildable.length)
     attention.push(
       `${unbuildable.join(', ')} can't be dispatched until the plan's gaps are fixed.`,
+    );
+  // HELM-4: a lane waiting on something the lead decides goes first: the lane can't go on without it.
+  const forLeadToDecide = openRequests(root).flatMap((r, i) =>
+    r.lane && decidedBy(r.names, config) === 'lead' ? [{ ...r, n: i + 1 }] : [],
+  );
+  if (forLeadToDecide.length)
+    return result(
+      'decide',
+      `${forLeadToDecide.map((r, i) => `${i ? 'the' : 'The'} ${r.lane} lane asks for ${r.names.map((n) => n.replace(/^dep-/, '').replaceAll('+', '/')).join(', ')}`).join('; ')}: yours to decide, against the story's requirements, the spec and the principles.`,
+      { args: forLeadToDecide.map((r) => r.n).join(' ') },
     );
   // The merge queue (spec 09): branches the lead's review passed. Under autonomy, where the base's
   // committed rules delegate merges, the lead merges the head first, so dependents see it; otherwise

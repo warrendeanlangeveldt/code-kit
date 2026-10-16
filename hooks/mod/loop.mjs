@@ -4,6 +4,7 @@
 
 /** The steps the loop hands the lead; the rest (spec-design, init, check) wait for the person. */
 const LEAD_STEPS = new Set([
+  'decide',
   'dispatch',
   'review',
   'lead',
@@ -80,6 +81,11 @@ export function leadPrompt(step, { cli = 'code-kit' } = {}) {
   // SETUP-2: the base has no rules yet; the lead puts the approved ones there, then merges as usual.
   if (step.step === 'rules')
     return `Put code-kit's approved rules onto ${ids[0] ?? 'the base'}: run node "${cli}" queue rules. It commits the rules as committed on this branch, without switching branches; after it, merge the queue as usual.`;
+  // HELM-4: a lane waits on the lead's decision; the decide skill takes each request on its merits.
+  if (step.step === 'decide')
+    return ids.length
+      ? `${step.why ?? 'A lane waits on your decision.'} Run /code-kit:decide ${ids.join(' ')}.`
+      : null;
   // ONB-3: a companion set up before any coding.
   if (step.step === 'setup')
     return ids.length
@@ -115,6 +121,7 @@ export function stepLabel(step) {
   const ids = (step.args ?? '').split(/\s+/).filter(Boolean).join(', ');
   const verb =
     {
+      decide: 'Decide requests',
       dispatch: 'Dispatch',
       review: 'Review',
       lead: 'Build',

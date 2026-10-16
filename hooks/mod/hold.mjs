@@ -13,6 +13,8 @@ const HOLDABLE = new Set(['dependency', 'approval', 'kit']);
 export function holdable(resultText) {
   const card = refusalCard(resultText);
   if (!card || !HOLDABLE.has(card.kind) || !card.request?.names.length) return null;
+  // HELM-6: what the lead decides is never held for the person; the lane asks the lead.
+  if (card.request.by === 'lead') return null;
   return { kind: card.kind, title: card.title, ...card.request };
 }
 

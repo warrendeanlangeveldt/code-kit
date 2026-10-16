@@ -1224,20 +1224,96 @@ try {
     );
     expect('nor does the command', delegate('good-pkg', '--lane', 'web', '--reason', 'x'), 1);
     put('.claude/code-kit.json', delegateFixture);
+    // HELM-3: the lead approves a package for a story in the plan.
+    put(
+      'docs/spec/plan.md',
+      '# Plan\n\n## M1\n\n### ST-4 Bookings table\n\n**Lane:** web\n**Requirements:** BOOK-1\n**Status:** in progress\n\n### ST-138 Image libraries\n\n**Lane:** backend\n**Requirements:** MED-5\n**Status:** in progress\n',
+    );
     expect(
       "with it set, a lane's refusal names the lead's delegated command",
       bash(addLodash, 'web-engineer'),
       2,
       'approve dep-lodash --lane web --delegated',
     );
+    expect(
+      "HELM-2 the lane is told it's the lead's decision, with no command for the person",
+      truth(
+        (() => {
+          const r = bash(addLodash, 'web-engineer');
+          return (
+            r.status === 2 &&
+            r.stderr.includes("is the lead's decision") &&
+            r.stderr.includes('Hand the lead a change request') &&
+            !r.stderr.includes('! echo') &&
+            !/ask the person|a person runs/i.test(r.stderr)
+          );
+        })(),
+      ),
+      0,
+    );
+    expect(
+      "and the request is the lead's to decide",
+      truth(
+        JSON.parse(
+          spawnSync('node', [kitCli, 'requests', '--json'], { cwd: repo, encoding: 'utf8' }).stdout,
+        ).open.some((r) => r.names.includes('dep-lodash') && r.by === 'lead' && r.n >= 1),
+      ),
+      0,
+    );
+    expect(
+      'HELM-4 next hands it to the lead to decide',
+      truth(
+        JSON.parse(
+          spawnSync('node', [kitCli, 'next', '--json'], { cwd: repo, encoding: 'utf8' }).stdout,
+        ).step === 'decide',
+      ),
+      0,
+    );
+    expect(
+      'HELM-3 a package approved without a story is refused',
+      delegate('good-pkg', '--lane', 'web', '--reason', 'x'),
+      1,
+      'Name the story the package is for',
+    );
+    expect(
+      'and one for a story the plan does not have',
+      delegate('good-pkg', '--lane', 'web', '--story', 'ST-999', '--reason', 'x'),
+      1,
+      'has no story ST-999',
+    );
+    expect(
+      'a Python package the backend lane asked for',
+      bash('cd workers && uv add "pillow>=12.3.0"', 'backend-engineer'),
+      2,
+      "is the lead's decision",
+    );
+    expect(
+      "is judged by the lead, without the npm registry (which hasn't heard of it)",
+      truth(
+        delegate(
+          'pillow',
+          '--lane',
+          'backend',
+          '--story',
+          'ST-138',
+          '--reason',
+          'MED-5 needs HEIC decoding',
+        ).status === 0 &&
+          readFileSync(join(repo, '.claude/approvals/backend/dep-pillow'), 'utf8').includes(
+            'dependencies (pillow, from uv, judged by the lead) for ST-138',
+          ),
+      ),
+      0,
+    );
     expect('a lane never approves', bash(delegateGood, 'web-engineer'), 2, 'only the lead');
     expect('the lead may run it', bash(delegateGood), 0);
     expect(
       'AUT-2 a package within the rules is approved, marked with its rule',
       truth(
-        delegate('good-pkg', '--lane', 'web', '--reason', 'tables for ST-4').status === 0 &&
+        delegate('good-pkg', '--lane', 'web', '--reason', 'tables for ST-4', '--story', 'ST-4')
+          .status === 0 &&
           readFileSync(join(repo, '.claude/approvals/web/dep-good-pkg'), 'utf8').includes(
-            'tables for ST-4 (approved by the lead within the delegated rules: dependencies (good-pkg))',
+            'tables for ST-4 (approved by the lead within the delegated rules: dependencies (good-pkg) for ST-4)',
           ),
       ),
       0,
@@ -1247,35 +1323,80 @@ try {
       bash('pnpm --filter office add good-pkg', 'web-engineer'),
       0,
     );
-    expect('a scoped package too', delegate('@scope/fine', '--lane', 'web', '--reason', 'x'), 0);
+    expect(
+      'a scoped package too',
+      delegate('@scope/fine', '--lane', 'web', '--reason', 'x', '--story', 'ST-4'),
+      0,
+    );
     expect(
       'AUT-4 a copyleft licence goes to the person',
-      delegate('gpl-pkg', '--lane', 'web', '--reason', 'x'),
+      delegate('gpl-pkg', '--lane', 'web', '--reason', 'x', '--story', 'ST-4'),
       1,
       'licence (GPL-3.0)',
     );
-    expect('so does an old package', delegate('old-pkg', '--reason', 'x'), 1, 'last release');
-    expect('a little-used one', delegate('tiny-pkg', '--reason', 'x'), 1, 'downloads');
+    expect(
+      'so does an old package',
+      delegate('old-pkg', '--reason', 'x', '--story', 'ST-4'),
+      1,
+      'last release',
+    );
+    expect(
+      'a little-used one',
+      delegate('tiny-pkg', '--reason', 'x', '--story', 'ST-4'),
+      1,
+      'downloads',
+    );
     expect(
       'one whose install runs scripts',
-      delegate('scripted-pkg', '--reason', 'x'),
+      delegate('scripted-pkg', '--reason', 'x', '--story', 'ST-4'),
       1,
       'runs a script that runs its own code',
     );
     expect(
       'and one the registry has never heard of',
-      delegate('nowhere-pkg', '--reason', 'x'),
+      delegate('nowhere-pkg', '--reason', 'x', '--story', 'ST-4'),
       1,
       "isn't on the npm registry",
     );
     expect(
       'it is all or nothing',
       truth(
-        delegate('good-pkg', 'gpl-pkg', '--lane', 'qa', '--reason', 'x').status === 1 &&
-          !approved('qa/dep-good-pkg'),
+        delegate('good-pkg', 'gpl-pkg', '--lane', 'qa', '--reason', 'x', '--story', 'ST-4')
+          .status === 1 && !approved('qa/dep-good-pkg'),
       ),
       0,
     );
+    expect(
+      'HELM-2 a lane writing a protected file the lead decides is told so, with no command for the person',
+      truth(
+        (() => {
+          const r = write('design/approved-screens.json', 'web-engineer');
+          return (
+            r.status === 2 &&
+            r.stderr.includes("needs the lead's approval") &&
+            r.stderr.includes('The lead decides this') &&
+            !r.stderr.includes('! echo')
+          );
+        })(),
+      ),
+      0,
+    );
+    put('.claude/code-kit.json', fixture);
+    expect(
+      'one the person keeps is brought to them by the lead',
+      truth(
+        (() => {
+          const r = write('design/approved-screens.json', 'web-engineer');
+          return (
+            r.status === 2 &&
+            r.stderr.includes("needs a person's approval") &&
+            r.stderr.includes('the lead brings it to them')
+          );
+        })(),
+      ),
+      0,
+    );
+    put('.claude/code-kit.json', delegateFixture);
     expect(
       'a delegated protected approval',
       delegate('design', '--lane', 'web', '--reason', 'register the screen'),
@@ -1307,6 +1428,8 @@ try {
     );
   } finally {
     registry.kill();
+    rmSync(join(repo, 'docs/spec/plan.md'), { force: true });
+    rmSync(join(repo, '.claude/approvals/backend/dep-pillow'), { force: true });
     git('reset', '-q');
     git('checkout', '-q', '--', 'design/approved-screens.json');
     rmSync(logFile, { force: true });

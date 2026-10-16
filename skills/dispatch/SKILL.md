@@ -89,4 +89,4 @@ Give them the same brief. Claude Code opened in that worktree then acts as the l
 
 - Set each dispatched story's `**Status:**` in the plan to `in progress`, and commit it on the lead's branch.
 - Tell the person, in a few lines: what was dispatched, to which lane and branch, what's still blocked and on what, and what's ready next.
-- As each agent finishes, read its report. If it came back blocked on questions, bring the questions to the person. If it came back done, run the review skill on its branch.
+- As each agent finishes, read its report. If it came back with a change request or a question, decide it yourself with `/code-kit:decide`, and bring to the person only what crosses a guardrail. If it came back done, run the review skill on its branch.

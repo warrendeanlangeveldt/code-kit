@@ -2,6 +2,17 @@
 
 What changed in each release of code-kit, newest first. Versions follow the plugin manifest and the npm package `@warren-dean/code-kit`. Each release is also on [GitHub Releases](https://github.com/warrendeanlangeveldt/code-kit/releases).
 
+## 0.16.0 (2026-10-16)
+
+The lead runs the team inside your guardrails, and lanes ask the lead, never you.
+
+- You decide what crosses a guardrail: changes to the specs, the contracts and the architecture's rules, the screens' visual design, CI, weakened tests, and product questions the spec doesn't answer. The lead decides the rest, as `approvals.delegate` names it. `/code-kit:init` proposes that split and asks what else you want to keep; re-run it on an existing project to get the split, and the new wording in CLAUDE.md and the lane agent files.
+- A lane refused something the lead decides is told so, with no `!` command and no mention of you. It hands the lead a change request with what it needs, the story and requirement, and what it checked first. The call isn't held, and nothing reaches your band. `code-kit requests` numbers each request and says whose it is to decide.
+- The new `/code-kit:decide` skill judges each request on its merits. A package is approved only when the story's requirements need it, nothing the project already depends on does the job, and it fits the principles and the lane's layer; otherwise the lead tells the lane what to use instead. Only what crosses a guardrail comes to you, with the lead's recommendation. `code-kit next` returns `decide` while a lane waits on the lead, so the loop prompts it before reviews and dispatches.
+- `code-kit approve --delegated` takes a package for a story: `--story ST-n`, checked against the plan, and recorded in the audit log. The npm registry rules apply only to npm's packages. A Python, Rust, Go or Ruby package used to be looked up on npm and sent to you; it's now the lead's judgement.
+- The mod no longer approves calls within the delegated rules by itself. Every approval the lead gives now comes with its reasons.
+- UX is the lead's to decide from the spec and the principles you agreed, such as what a screen does on an error or an empty list. A screen's visual design is still yours to approve.
+
 ## 0.15.1 (2026-10-16)
 
 Lanes stop less often to wait for you.

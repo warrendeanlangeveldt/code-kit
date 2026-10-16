@@ -97,10 +97,7 @@ function project() {
     setExit: 0,
     allowed: false, // an approval in force: the hooks beneath let the call through
     bashRuns: 0,
-    delegateExit: 1,
-    delegateRefusal:
-      'This project delegates no approvals to the lead ("approvals.delegate" isn\'t set). Ask the person.',
-    delegated: [] as string[][],
+    delegated: [] as string[][], // HELM-6: the mod never approves for the lead, so this stays empty
     holds: [] as string[][],
     draft: '', // what the person has typed in the prompt
     heads: { 'web/st-4': 'abc123def4567890\n' } as Record<string, string>,
@@ -284,8 +281,7 @@ function stub(on: any, w: World) {
     if (sub === 'queue') return ran(0, JSON.stringify(w.queue));
     if (sub === 'approve' && argv.includes('--delegated')) {
       w.delegated.push([...argv.slice(2)]);
-      if (w.delegateExit === 0) w.allowed = true;
-      return ran(w.delegateExit, '', w.delegateExit ? w.delegateRefusal : '');
+      return ran(1, '', 'Nothing was approved.');
     }
     if (sub === 'hold') {
       const id = argv[3];
@@ -651,6 +647,24 @@ test('BAND-2 and BAND-4 one open request reads "1 approval waiting", with Approv
   const button = await ui.find({ key: 'band-approve' });
   expect(button?.props.hotkey).toBe('1');
   await ui.unmount();
+});
+
+test("HELM-6 a request the lead decides isn't the person's: only theirs waits in the band", async ($, on) => {
+  const w = project();
+  w.requests = [
+    { ...dayjs, n: 1, by: 'lead' },
+    { ...dayjs, names: ['contract'], what: 'packages/contracts/a.ts', n: 2, by: 'person' },
+  ];
+  await start($, on, w);
+  const ui = await bandUi($);
+  expect(await ui.find({ type: 'Text', text: '1 approval waiting' })).toBeDefined();
+  await press($, 'band-decide');
+  await ui.unmount();
+  // Not needed drops it by the number the CLI gave it, past the lead's request it doesn't show.
+  const decisions = await pane($, PANE);
+  await press($, 'decide-dropRequest', PANE);
+  expect(w.acts).toContainEqual(['requests', 'drop', '2', '--via', 'pane']);
+  await decisions.unmount();
 });
 
 test('ACT-1 and BAND-3 approving with the prefilled reason grants it for the lane, and the line goes', async ($, on) => {
@@ -1412,9 +1426,8 @@ test('DECIDE-2 a decision in the band says which story it is for, and d opens it
   expect(card?.text).toMatch(/BOOK-1 Request a booking/);
   expect(card?.text).toMatch(/npm install dayjs/);
   expect(card?.text).toMatch(/ST-4 Booking form \(BOOK-1\) was handed to the web lane/);
-  expect(card?.text).toMatch(
-    /Blocked: a new dependency \(dayjs\) needs a person's approval\. You haven't let the lead approve these itself\./,
-  );
+  expect(card?.text).toMatch(/Blocked: a new dependency \(dayjs\) needs a person's approval\./);
+  expect(card?.text).not.toMatch(/limits you set/);
   expect((await ui.find({ key: 'decision-option-approveHeld' }))?.text).toMatch(
     /The held call runs now, and the agent carries on/,
   );
@@ -1972,10 +1985,12 @@ test('HOLD-4 Refuse, or no answer in the hold time, lets the refusal through and
   await ui.unmount();
 });
 
-test('HOLD-5 within the delegated rules the call is approved as delegated and runs, without asking', async ($, on) => {
+const leadInstall =
+  'Blocked: a new dependency (dayjs) is the lead\'s decision. The lead decides this, not the person. Hand the lead a change request and stop: the package, the story and requirement that need it, what the project already has that you checked, and anything lighter that would do. The lead approves it, or tells you what to use instead.\n  Decided by the lead: node "/x/bin/code-kit.mjs" approve dep-dayjs --lane web --delegated --story <ST-n> --reason "<what the story needs it for, what the project already has, how it fits>"\nCommand: npm install dayjs';
+
+test("HOLD-5 and HELM-6 a lane's call the lead decides isn't held, and the mod doesn't approve it for the lead", async ($, on) => {
   const w = project();
-  w.refusal = webInstall;
-  w.delegateExit = 0;
+  w.refusal = leadInstall;
   await start($, on, w);
   const res: any = await $.tool.call({
     tool: 'Bash',
@@ -1983,18 +1998,17 @@ test('HOLD-5 within the delegated rules the call is approved as delegated and ru
     command: 'npm install dayjs',
     agentId: 'a1',
   } as any);
-  expect(refused(res)).toBe(false);
-  expect(w.delegated[0]).toEqual(
-    expect.arrayContaining(['approve', 'dep-dayjs', '--lane', 'web', '--delegated']),
-  );
+  expect(refused(res)).toBe(true);
   expect(w.holds).toEqual([]);
+  expect(w.delegated).toEqual([]);
+  const band = await bandUi($);
+  expect(await band.find({ type: 'Text', text: /wants to install/ })).toBeUndefined();
+  await band.unmount();
 });
 
-test('HOLD-5 with autonomy propose the delegated rules are not tried; the call is held', async ($, on) => {
+test("HOLD-5 a call the person decides is held for them, without trying the lead's rules", async ($, on) => {
   const w = project();
   w.refusal = webInstall;
-  w.delegateExit = 0;
-  (w.check as any).harness = { autonomy: 'propose', hold: { minutes: 2 } };
   const clock = await start($, on, w);
   const { call } = await heldCall($, w, clock);
   expect(w.delegated).toEqual([]);

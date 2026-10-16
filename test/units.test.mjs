@@ -807,7 +807,7 @@ test('files any agent may write have a reviewer: the lead, or the lane an entry 
   assert.match(validate(c).join(' '), /"anyActor"/);
 });
 
-test('HOLD-1 a protected file refused at commit is holdable, and results are read in every shape', async () => {
+test('HOLD-1 and HELM-6 a protected file refused at commit is holdable, one the lead decides is not, and results are read in every shape', async () => {
   const { holdable, resultText } = await import('../hooks/mod/hold.mjs');
   const refusal =
     'PreToolUse:Bash hook error: Blocked: design/approved-screens.json is the register of approved designs; committing it needs a person\'s approval in force. Ask the lead to run\n  ! echo "<what you are approving>" > .claude/approvals/web/design\n(a person runs it; …)';
@@ -817,7 +817,20 @@ test('HOLD-1 a protected file refused at commit is holdable, and results are rea
     names: ['design'],
     lane: 'web',
     what: 'commit design/approved-screens.json',
+    by: 'person',
   });
+  // HELM-6: what the lead decides is never held for the person.
+  const forLead =
+    'PreToolUse:Bash hook error: Blocked: a new dependency (dayjs) is the lead\'s decision. The lead decides this, not the person. Hand the lead a change request and stop: the package, …\n  Decided by the lead: node "/x/bin/code-kit.mjs" approve dep-dayjs --lane web --delegated --story <ST-n> --reason "<…>"\nCommand: npm install dayjs';
+  assert.equal(holdable(forLead), null);
+  const { refusalCard } = await import('../hooks/mod/view.mjs');
+  assert.deepEqual(refusalCard(forLead).request, {
+    names: ['dep-dayjs'],
+    lane: 'web',
+    what: 'npm install dayjs',
+    by: 'lead',
+  });
+  assert.match(refusalCard(forLead).todo, /The lead decides it on its merits/);
   assert.equal(resultText({ deny: 'x' }), 'x');
   assert.equal(resultText({ isError: true, text: 'y', result: 'z' }), 'y');
   assert.equal(resultText({ result: 'Error: PreToolUse' }), 'Error: PreToolUse');
@@ -988,6 +1001,16 @@ test('LOOP-1 to LOOP-3 the loop: prompts for steps, and what a quiet agent is du
     leadPrompt({ step: 'dispatch', args: 'ST-7 ST-9' }),
     'Dispatch ST-7, ST-9: run /code-kit:dispatch ST-7 ST-9.',
   );
+  // HELM-4: a lane waiting on the lead's decision.
+  assert.equal(
+    leadPrompt({
+      step: 'decide',
+      args: '2',
+      why: 'The api lane asks for pillow: yours to decide.',
+    }),
+    'The api lane asks for pillow: yours to decide. Run /code-kit:decide 2.',
+  );
+  assert.equal(stepLabel({ step: 'decide', args: '2 3' }), 'Decide requests 2, 3');
   assert.equal(
     leadPrompt({ step: 'review', args: 'ST-4' }),
     'Review ST-4: run /code-kit:review ST-4.',
@@ -1442,7 +1465,7 @@ test('JOURNAL-1 the brief read for the journal: the request, the decisions, and 
 });
 
 test('DECIDE-2 a decision card carries the lineage: the story, its requirements, what was settled, why, and each choice', async () => {
-  const { decisionCards, contextOf, limitsWhy } = await import('../hooks/mod/decisions.mjs');
+  const { decisionCards, contextOf } = await import('../hooks/mod/decisions.mjs');
   const line = {
     kind: 'held',
     text: 'web wants to install dayjs',
@@ -1455,8 +1478,6 @@ test('DECIDE-2 a decision card carries the lineage: the story, its requirements,
       command: 'npm install dayjs',
       refusal:
         "Blocked: a new dependency (dayjs) needs a person's approval. Write a short change request.",
-      outside:
-        "Nothing was approved. These are outside the project's delegated rules, so the person decides:\n  dep-dayjs: fewer than 1000 weekly downloads\nAsk the person.",
     },
   };
   const usage = { kind: 'usage', text: 'plan at 91%', actions: [] };
@@ -1480,19 +1501,9 @@ test('DECIDE-2 a decision card carries the lineage: the story, its requirements,
   assert.deepEqual(card.requirements, [{ id: 'BOOK-1', title: 'Request a booking' }]);
   assert.equal(card.doing, 'npm install dayjs');
   assert.deepEqual(card.settled, ['ST-4 was handed to the web lane.']);
-  assert.equal(
-    card.why,
-    "Blocked: a new dependency (dayjs) needs a person's approval. It's outside the limits you set for the lead: dep-dayjs: fewer than 1000 weekly downloads.",
-  );
+  assert.equal(card.why, "Blocked: a new dependency (dayjs) needs a person's approval.");
   assert.match(card.options[0].effect, /held call runs now/);
   assert.equal(contextOf(card), 'for ST-4 Booking form (BOOK-1)');
-  assert.equal(
-    limitsWhy(
-      'This project delegates no approvals to the lead ("approvals.delegate" isn\'t set). Ask the person.',
-    ),
-    "You haven't let the lead approve these itself.",
-  );
-  assert.equal(limitsWhy(null), null);
 });
 
 test('TEAM-1 the team in the config: a tech lead, owners on lanes, and the defaults', async () => {
