@@ -75,6 +75,8 @@ function project() {
     agents: [] as { type: string; status: string; id?: string; description?: string }[],
     limits: [] as { kind: string; percentUsed: number }[],
     contextPercent: 0, // LEAN-3: how full the lead's context is
+    notified: [] as { text: string; title?: string }[], // NOTIFY-1
+    viewed: [] as (string | null)[], // WATCH-1
     approveExit: 0,
     mergeExit: 0,
     answer: 'Merge',
@@ -408,6 +410,15 @@ function stub(on: any, w: World) {
     value: { startedAt: 0, context: { percent: w.contextPercent }, rateLimits: w.limits },
   }));
   on('session.measure', ($: any, e: any) => ({ changed: e.changed }));
+  // NOTIFY-1: the person's notification channel; WATCH-1: the main view.
+  on('ui.notify', ($: any, e: any) => {
+    w.notified.push({ text: e.text, title: e.title });
+    return { value: { isSent: true, channel: 'iterm2' } };
+  });
+  on('ui.view', ($: any, e: any) => {
+    w.viewed.push(e.agentId ?? null);
+    return { value: {} };
+  });
   // A model request, answered with the usage the test gave it.
   on('turn.step', async function* ($: any, e: any) {
     return {
@@ -2134,7 +2145,9 @@ test('LOOP-1 nothing is submitted mid-turn, or while the person has a draft, or 
   expect(w.prompts).toEqual(['Dispatch ST-9: run /code-kit:dispatch ST-9.']);
   await leadTurn($, 't-3');
   await settle(clock);
-  expect(w.prompts).toHaveLength(1);
+  // LOOP-13: the turn left ST-9 where it stood, so it's parked, and the next step goes instead.
+  expect(w.prompts.filter((p: string) => p.startsWith('Dispatch ST-9'))).toHaveLength(1);
+  expect(w.prompts.at(-1)).toMatch(/^Build ST-6, ST-7 yourself/);
 });
 
 test("LOOP-1 review and the lead's own stories are prompted with their skill", async ($, on) => {
@@ -2566,6 +2579,39 @@ test("LEAN-3 when a milestone finishes, the person is asked to compact the lead'
   expect(compacted).toHaveLength(1);
 });
 
+test("LOOP-13 a review the lead's turn didn't move isn't prompted again while other lanes commit, whatever the reply reads as", async ($, on) => {
+  const w = project();
+  w.stories.push({
+    id: 'ST-160',
+    title: 'Content security policy',
+    lane: 'web',
+    state: 'in review',
+    branch: 'web/st-160',
+    waitingOn: [],
+  });
+  w.refs += ' p1 refs/heads/web/st-160\n';
+  w.next = { step: 'review', args: 'ST-160', then: [] };
+  w.sideReply = unread;
+  const clock = await start($, on, w);
+  await leadTurn($);
+  await settle(clock);
+  expect(w.prompts).toEqual(['Review ST-160: run /code-kit:review ST-160.']);
+  // The lead says it waits, the reading comes back done, and lanes keep committing.
+  w.sideReply = outcome({ outcome: 'done' });
+  for (const [i, turn] of ['t-2', 't-3', 't-4', 't-5'].entries()) {
+    w.refs += ` x${i} refs/heads/core/st-${i}\n`;
+    await leadSays($, turn, 'ST-160 waits on ST-165; nothing to review yet.');
+    await settle(clock);
+    w.sideReply = unread;
+  }
+  expect(w.prompts).toHaveLength(1);
+  // Its own branch moves: it's prompted again.
+  w.refs = w.refs.replace(' p1 refs/heads/web/st-160', ' p2 refs/heads/web/st-160');
+  await leadTurn($, 't-6');
+  await settle(clock);
+  expect(w.prompts).toHaveLength(2);
+});
+
 test('LOOP-13 stories the lead says wait on other work are parked, each until what it waits on moves', async ($, on) => {
   const w = project();
   w.stories.push(
@@ -2635,9 +2681,16 @@ test('LOOP-13 stories the lead says wait on other work are parked, each until wh
   await leadTurn($, 't-3');
   await settle(clock);
   expect(w.prompts).toHaveLength(asked);
-  // The story building on ST-158 commits: ST-158 wakes, and ST-172 still waits.
+  // The story building on ST-158 commits: that alone doesn't wake it.
   w.refs = w.refs.replace(' s2 refs/heads/api/st-164', ' s9 refs/heads/api/st-164');
   await leadTurn($, 't-4');
+  await settle(clock);
+  expect(w.prompts).toHaveLength(asked);
+  // It finishes: ST-158 wakes, and ST-172 still waits.
+  w.stories = w.stories.map((s: any) => (s.id === 'ST-164' ? { ...s, state: 'in review' } : s));
+  w.refs += ' s10 refs/heads/api/st-164-done\n';
+  await clock.advance(2000);
+  await leadTurn($, 't-5');
   await settle(clock);
   expect(w.prompts.at(-1)).toBe('Review ST-158: run /code-kit:review ST-158.');
   expect(w.prompts).toHaveLength(asked + 1);
@@ -3351,6 +3404,10 @@ test('VIEW-6 tabs on 1 to 7, j and k move between lanes, and the selected lane h
   await press($, 'lane-next', PANE);
   await press($, 'lane-next', PANE);
   expect((await ui.find({ key: 'lane-web' }))?.text).toMatch(/^›/);
+  // WATCH-1: w puts the lane agent's transcript in the main view.
+  expect((await ui.find({ key: 'act-watch' }))?.props.hotkey).toBe('w');
+  await press($, 'act-watch', PANE);
+  expect(w.viewed).toEqual(['a1']);
   expect((await ui.find({ key: 'act-nudge' }))?.props.hotkey).toBe('n');
   await press($, 'act-nudge', PANE);
   expect(w.sent).toEqual([
@@ -3364,6 +3421,30 @@ test('VIEW-6 tabs on 1 to 7, j and k move between lanes, and the selected lane h
   await press($, 'lane-prev', PANE);
   expect((await ui.find({ key: 'lane-lead' }))?.text).toMatch(/^›/);
   await ui.unmount();
+});
+
+test('NOTIFY-1 a decision new since the last look raises one notification; what waited before, and notify.on false, raise none', async ($, on) => {
+  const w = project();
+  w.requests = [dayjs];
+  const clock = await start($, on, w);
+  await clock.advance(2000);
+  // The approval waiting when the session first looked isn't news.
+  expect(w.notified).toEqual([]);
+  w.questions = [question()];
+  w.refs += ' q1 refs/heads/web/st-4-q\n';
+  await clock.advance(2000);
+  await clock.advance(2000);
+  expect(w.notified).toHaveLength(1);
+  expect(w.notified[0].title).toBe('code-kit: the lead asks you');
+  await clock.advance(2000);
+  expect(w.notified).toHaveLength(1);
+  // Turned off, a new decision raises nothing.
+  (w.check as any).harness = { notify: { on: false } };
+  w.questions = [question(), question({ id: 'Q-2', question: 'Which payment provider?' })];
+  w.refs += ' q2 refs/heads/web/st-4-q2\n';
+  await clock.advance(2000);
+  await clock.advance(2000);
+  expect(w.notified).toHaveLength(1);
 });
 
 test('VIEW-6 s sends the selected story back, with the reason the person gives', async ($, on) => {

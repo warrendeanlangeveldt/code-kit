@@ -205,8 +205,9 @@ export function approvalsGiven(root) {
 export function realPath(path) {
   let dir = resolve(path);
   const rest = [];
+  // basename, not a slice after dirname: dirname('/x') is '/', so slicing past it cut the name's first letter.
   while (!existsSync(dir)) {
-    rest.unshift(dir.slice(dirname(dir).length + 1));
+    rest.unshift(basename(dir));
     dir = dirname(dir);
   }
   return join(realpathSync(dir), ...rest);
@@ -775,9 +776,14 @@ export function writeProblem(actor, rel, root, config) {
 const readonlyProblem = (actor, rel) =>
   `${actor.label} is read-only; it may not write ${rel}. If a command you ran changed it (a build, a formatter or a code generator), put it back with git restore -- ${rel} (or delete it if it's new), and run such commands only in a throwaway worktree of the branch.`;
 
+// Claude Code's own temporary folders (a session's scratchpad, its tool output): no repository's files.
+const CLAUDE_TEMP = ['/private/tmp/claude-*/**', '/tmp/claude-*/**'];
+
 function outsideAllowed(actor, rel, root, config) {
-  if (actor.kind !== 'lead') return false;
   const target = resolve(root, rel);
+  // A lane's scratch files go where Claude Code's own do, outside every repository.
+  if (actor.kind === 'lane') return CLAUDE_TEMP.some((g) => globToRegExp(g).test(target));
+  if (actor.kind !== 'lead') return false;
   return config.lead.outside.some((g) =>
     globToRegExp(resolve(root, g.replace(/^~(?=\/)/, homedir()))).test(target),
   );

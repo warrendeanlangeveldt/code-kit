@@ -72,6 +72,17 @@ Security is a reviewer, not a lane: it owns no paths and checks everyone's work.
 - Given a branch that needs it and no `.claude/agents/security-reviewer.md`, then `code-kit security` says to re-run `/code-kit:init` to add the agent.
 - Given a config older than 3 with no `.claude/agents/security-reviewer.md`, then `next` gives `update`, naming the security reviewer, even when no lane owns screens.
 
+### ONB-8 code-kit's instructions keep up with code-kit
+
+The parts of a project's instructions that are code-kit's own, the lead's section of CLAUDE.md and each lane agent's `Always:` rules, are rendered from code-kit's templates and the config, and kept between markers (`<!-- code-kit:begin vN -->` … `<!-- code-kit:end -->`). `code-kit instructions` says where each stands: current; stale (from an older code-kit, or a config that has changed since, such as what the lead may approve); written before the markers; or missing. `--write` rewrites the marked ones and adds missing ones, and never overwrites one written before the markers: an older init often tailored those by hand, so the lead merges each once, keeping the project's own lines outside the markers. `show lead` and `show lane` print the parts. While any is stale or unmerged, `next` gives `instructions` before any other step, and the loop prompts the lead to bring them up to date and merge the change; a newer code-kit's rules reach the agents only this way. Init writes code-kit's parts with the same command. Only the lead may run `--write`.
+
+**Acceptance**
+
+- Given CLAUDE.md and an agent file as an older init wrote them, then `instructions` calls them unmerged, `next` gives `instructions` with `merge`, and `--write` leaves them as they are.
+- Given both merged from `show lead` and `show lane`, then both are current, and the lane rules say a new dependency needs the lead's approval.
+- Given `approvals.lead` turned on, then the lead's section is stale, and `--write` brings it up to date, leaving the project's own lines around it.
+- Given a lane running `code-kit instructions --write`, then it's refused.
+
 ## Open questions
 
 | Question | Owner | Blocks |

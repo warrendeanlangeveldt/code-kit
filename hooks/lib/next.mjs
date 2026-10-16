@@ -10,6 +10,7 @@ import { pendingSetup } from './adapters/index.mjs';
 import { CONFIG_FILE, SETUP_VERSION } from './config.mjs';
 import { readQueue, waiting } from './queue.mjs';
 import { decidedBy, laneOf, openRequests } from './rules.mjs';
+import { instructionsState } from './instructions.mjs';
 import { SECURITY_AGENT_FILE } from './security.mjs';
 
 export const DRAFT_FILE = '.claude/code-kit.draft.json';
@@ -253,6 +254,24 @@ export function nextStep(root, base) {
     attention.push(
       `${unbuildable.join(', ')} can't be dispatched until the plan's gaps are fixed.`,
     );
+  // ONB-8: code-kit's own instructions to the lead and the lanes, brought up to date before the next step:
+  // a newer code-kit's rules reach the agents only through them.
+  const instructions = instructionsState(root, config);
+  const behind = instructions.filter((f) => ['stale', 'legacy'].includes(f.state));
+  // A file with no code-kit part may be one the project keeps without it: said, not insisted on.
+  const none = instructions.filter((f) => f.state === 'missing');
+  if (none.length)
+    attention.push(
+      `${none.map((f) => f.file).join(', ')} ${none.length === 1 ? 'has' : 'have'} none of code-kit's instructions; \`code-kit instructions --write\` adds them.`,
+    );
+  if (behind.length) {
+    const legacy = behind.filter((f) => f.state === 'legacy');
+    return result(
+      'instructions',
+      `code-kit's instructions in ${behind.map((f) => f.file).join(', ')} are behind this code-kit${legacy.length ? `; ${legacy.length === behind.length ? 'they were' : `${legacy.map((f) => f.file).join(', ')} were`} written before code-kit marked its part, so merge ${legacy.length === 1 ? 'it' : 'them'} once by hand, keeping the project's own lines` : ''}.`,
+      { args: legacy.length ? 'merge' : 'write' },
+    );
+  }
   // HELM-4: a lane waiting on something the lead decides goes first: the lane can't go on without it.
   const forLeadToDecide = openRequests(root).flatMap((r, i) =>
     r.lane && decidedBy(r.names, config) === 'lead' ? [{ ...r, n: i + 1 }] : [],

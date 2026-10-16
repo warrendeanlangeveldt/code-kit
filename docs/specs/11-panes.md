@@ -43,7 +43,15 @@ Anything waiting on the person (held calls, approvals, reviews, merges, stalls, 
 
 ### VIEW-6 Keyboard
 
-j/k move between lanes; Enter opens the selected story; a approves, r reviews, m merges, s sends back, n nudges, x stops the agent, p pauses the loop, 1–4 switch tabs, f filters, Esc goes back or closes. Every action also has a button. (A mod's key is a digit or a lowercase letter, so the filter is on f rather than /.)
+j/k move between lanes; Enter opens the selected story; a approves, r reviews, m merges, s sends back, w watches, n nudges, x stops the agent, p pauses the loop, 1–4 switch tabs, f filters, Esc goes back or closes. Every action also has a button. (A mod's key is a digit or a lowercase letter, so the filter is on f rather than /.)
+
+### WATCH-1 Watching a lane's agent
+
+**w** (Watch), on a lane whose agent is at work, puts that agent's own transcript in the main view, as the person's switch from Claude Code's tasks list does (`$.ui.view`, Claude Code 2.1.301 or later); the tasks list brings the main conversation back. With no agent at work in the lane, or a Claude Code that can't show it from here, the band says why and nothing moves.
+
+**Acceptance**
+
+- Given the web lane's agent at work, when the person presses w on the web lane, then the main view shows that agent's transcript.
 
 ### VIEW-7 Story drill-down
 

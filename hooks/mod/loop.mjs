@@ -4,6 +4,7 @@
 
 /** The steps the loop hands the lead; the rest (spec-design, init, check) wait for the person. */
 const LEAD_STEPS = new Set([
+  'instructions',
   'decide',
   'dispatch',
   'review',
@@ -96,13 +97,16 @@ export function parkWatch(id, on = [], stories = []) {
 }
 
 /**
- * LOOP-13: where the watched stories stand, as one string: each one's state, its branch's commit and
- * whether an agent is at work on it. A parked story wakes when this changes.
+ * LOOP-13: where the watched stories stand, as one string. The parked story itself (the first) counts
+ * its state, its branch's commit and whether an agent is at work on it; each story it waits on counts its
+ * state alone, so the commits of a story still being built don't wake the one waiting for it to finish.
+ * A parked story wakes when this changes.
  */
 export function storiesSignature(ids, stories = [], heads = new Map(), inFlight = new Set()) {
   return ids
-    .map((id) => {
+    .map((id, i) => {
       const s = stories.find((x) => x.id === id);
+      if (i > 0) return `${id}:${s?.state ?? '?'}`;
       return `${id}:${s?.state ?? '?'}:${s?.branch ? (heads.get(s.branch) ?? '') : ''}:${inFlight.has(id) ? 'busy' : ''}`;
     })
     .join('|');
@@ -134,6 +138,14 @@ export function leadPrompt(step, { cli = 'code-kit' } = {}) {
   // SETUP-2: the base has no rules yet; the lead puts the approved ones there, then merges as usual.
   if (step.step === 'rules')
     return `Put code-kit's approved rules onto ${ids[0] ?? 'the base'}: run node "${cli}" queue rules. It commits the rules as committed on this branch, without switching branches; after it, merge the queue as usual.`;
+  // ONB-8: code-kit's instructions brought up to date, then committed like any change to the kit.
+  if (step.step === 'instructions') {
+    const how =
+      step.args === 'merge'
+        ? `Run node "${cli}" instructions to see which files, then merge each one: replace its old code-kit part with what node "${cli}" instructions show lead (CLAUDE.md) or show lane (an agent file) prints, and keep every line the project wrote itself outside the markers, under a heading of its own. Then run node "${cli}" instructions --write for the rest.`
+        : `Run node "${cli}" instructions --write.`;
+    return `${step.why ?? "code-kit's instructions are behind."} ${how} Commit the change on a branch and merge it like your own stories, so new lane agents start with the current rules.`;
+  }
   // HELM-4: a lane waits on the lead's decision; the decide skill takes each request on its merits.
   if (step.step === 'decide')
     return ids.length
@@ -175,6 +187,7 @@ export function stepLabel(step) {
   const verb =
     {
       decide: 'Decide requests',
+      instructions: 'Update the instructions',
       dispatch: 'Dispatch',
       review: 'Review',
       lead: 'Build',

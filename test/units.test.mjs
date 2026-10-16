@@ -575,16 +575,25 @@ test('LOOP-13 stories waiting on other work: read from the reply, watched, and l
   ];
   // The stories it waits on, and the unfinished ones building on it.
   assert.deepEqual(parkWatch('ST-158', ['ST-175'], stories), ['ST-158', 'ST-175', 'ST-164']);
-  const heads = new Map([['api/st-164', 'a1']]);
+  const heads = new Map([
+    ['media/st-158', 'm1'],
+    ['api/st-164', 'a1'],
+  ]);
   const before = storiesSignature(['ST-158', 'ST-164'], stories, heads, new Set());
+  // The parked story's own commit or agent wakes it; a waited-on story's commits don't, its state does.
+  const ownMoved = new Map([...heads, ['media/st-158', 'm2']]);
+  assert.notEqual(storiesSignature(['ST-158', 'ST-164'], stories, ownMoved, new Set()), before);
   assert.notEqual(
-    storiesSignature(['ST-158', 'ST-164'], stories, new Map([['api/st-164', 'a2']]), new Set()),
+    storiesSignature(['ST-158', 'ST-164'], stories, heads, new Set(['ST-158'])),
     before,
   );
-  assert.notEqual(
-    storiesSignature(['ST-158', 'ST-164'], stories, heads, new Set(['ST-164'])),
+  const otherMoved = new Map([...heads, ['api/st-164', 'a2']]);
+  assert.equal(
+    storiesSignature(['ST-158', 'ST-164'], stories, otherMoved, new Set(['ST-164'])),
     before,
   );
+  const finished = stories.map((s) => (s.id === 'ST-164' ? { ...s, state: 'in review' } : s));
+  assert.notEqual(storiesSignature(['ST-158', 'ST-164'], finished, heads, new Set()), before);
   assert.deepEqual(stepStories({ kind: 'review', target: 'ST-158 st-172' }), ['ST-158', 'ST-172']);
   assert.deepEqual(stepStories({ kind: 'merge', target: 'ST-158' }), []);
   const parked = new Map([['ST-158', { on: ['ST-164'] }]]);
@@ -595,6 +604,23 @@ test('LOOP-13 stories waiting on other work: read from the reply, watched, and l
   const wait = withoutInFlight({ step: 'review', args: 'ST-158' }, new Set(), parked);
   assert.equal(wait.step, 'wait');
   assert.match(wait.why, /ST-158 waits on ST-164; the loop goes on when one moves/);
+});
+
+test('NOTIFY-1 only decisions new since the last look are notified, headed by what kind they are', async () => {
+  const { newDecisions, decisionKey } = await import('../hooks/mod/decisions.mjs');
+  const cards = [
+    { kind: 'question', headline: 'Include GST?', story: { id: 'ST-9' } },
+    { kind: 'held', headline: 'web wants to install dayjs', story: null },
+    { kind: 'notice', headline: 'Merged web/st-4', story: null },
+  ];
+  assert.deepEqual(newDecisions(cards, new Set([decisionKey(cards[1])])), [
+    {
+      key: 'question|Include GST?',
+      title: 'code-kit: the lead asks you',
+      text: 'Include GST? (ST-9)',
+    },
+  ]);
+  assert.deepEqual(newDecisions(cards, new Set(cards.map(decisionKey))), []);
 });
 
 test("LEAN-3 a milestone done is one whose every story is done, and the summary keeps what's in flight", () => {
@@ -851,6 +877,12 @@ test("install scripts are told apart: a prebuilt binary, a native build, or the 
   assert.match(validate(c).join(' '), /allowInstallScripts/);
 });
 
+test('a path under a top-level folder that does not exist keeps its whole name', async () => {
+  const { realPath } = await import('../hooks/lib/rules.mjs');
+  // /private exists on macOS only: on Linux its first letter was cut off.
+  assert.equal(realPath('/no-such-top-folder/claude-1/x.py'), '/no-such-top-folder/claude-1/x.py');
+});
+
 test('files any agent may write have a reviewer: the lead, or the lane an entry names', async () => {
   const { reviewerOf } = await import('../hooks/lib/rules.mjs');
   const c = clone();
@@ -906,6 +938,7 @@ test('SET-1 the harness settings: defaults, validation and typed values', async 
     agents: { reviewer: { on: false, model: null }, lanes: { model: null } },
     background: { pauseAtPercent: 80 },
     compact: { milestone: 'ask' },
+    notify: { on: true },
     report: { on: false },
   });
   assert.match(
@@ -1074,6 +1107,19 @@ test('LOOP-1 to LOOP-3 the loop: prompts for steps, and what a quiet agent is du
     'The api lane asks for pillow: yours to decide. Run /code-kit:decide 2.',
   );
   assert.equal(stepLabel({ step: 'decide', args: '2 3' }), 'Decide requests 2, 3');
+  // ONB-8: code-kit's instructions behind, merged by hand or written.
+  assert.match(
+    leadPrompt({
+      step: 'instructions',
+      args: 'merge',
+      why: "code-kit's instructions in CLAUDE.md are behind.",
+    }),
+    /^code-kit's instructions in CLAUDE\.md are behind\. Run node "code-kit" instructions to see which files, then merge each one: .* Commit the change on a branch/,
+  );
+  assert.match(
+    leadPrompt({ step: 'instructions', args: 'write', why: 'Behind.' }),
+    /^Behind\. Run node "code-kit" instructions --write\. Commit/,
+  );
   assert.equal(
     leadPrompt({ step: 'review', args: 'ST-4' }),
     'Review ST-4: run /code-kit:review ST-4.',
@@ -1187,11 +1233,12 @@ test("VIEW-1, VIEW-4, VIEW-6 panes v2: counts, liveness and the selected lane's 
   assert.deepEqual(countsOf({ kind: 'none' }), []);
   const ids = (lane, extra) =>
     laneActions(lane, { queue, ...extra }).map((a) => `${a.hotkey}:${a.id}`);
-  assert.deepEqual(ids(state.lanes[1]), ['n:nudge', 'x:stop']);
+  assert.deepEqual(ids(state.lanes[1]), ['w:watch', 'n:nudge', 'x:stop']);
   assert.deepEqual(ids(state.lanes[2]), ['r:review', 's:sendBack']);
   assert.deepEqual(ids(state.lanes[3]), ['m:merge']);
   assert.deepEqual(ids(state.lanes[1], { held: [{ lane: 'web' }] }), [
     'a:approve',
+    'w:watch',
     'n:nudge',
     'x:stop',
   ]);

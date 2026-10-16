@@ -1,11 +1,11 @@
-// Runs the mod's own tests (hooks/mod/*.test.ts) with `claude plugin test`, which needs Claude Code
-// 2.1.287 or later. Where that isn't installed, it says so and skips them; the mod's drawing is also
+// Runs the mod's own tests (hooks/mod/*.test.ts) with `claude plugin test`. The mod runs on Claude Code
+// 2.1.287 or later, but its tests stand in for events 2.1.301 added (ui.notify, ui.view), so they need that. Where that isn't installed, it says so and skips them; the mod's drawing is also
 // tested with node in units.test.mjs, and the CLI it reads in hooks.test.mjs.
 import { spawnSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const NEEDS = [2, 1, 287];
+const NEEDS = [2, 1, 301];
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const v = spawnSync('claude', ['--version'], { encoding: 'utf8' });
 const found = v.status === 0 ? v.stdout.match(/(\d+)\.(\d+)\.(\d+)/) : null;
