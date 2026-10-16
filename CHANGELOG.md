@@ -2,6 +2,15 @@
 
 What changed in each release of code-kit, newest first. Versions follow the plugin manifest and the npm package `@warren-dean/code-kit`. Each release is also on [GitHub Releases](https://github.com/warrendeanlangeveldt/code-kit/releases).
 
+## 0.17.0 (2026-10-17)
+
+The lead's context stays lean: lanes report to a file, and the lead's context is compacted when a milestone finishes.
+
+- A lane on a story's branch now writes its full report to `.claude/state/reports/<branch>.md` before it finishes: what it did, the commands it ran with their output, what's left, and anything it needs decided. It hands the lead at most ten lines naming that file. The stop hook won't let a lane finish without the report, and the review, dispatch and decide skills read it when they need the detail. Before, every lane pasted its whole report, output included, into the lead's context; in one project that was about 236k of the lead's 780k tokens.
+- Lanes don't message the lead while they work. They hand back once, when they finish or when they're blocked.
+- When a milestone finishes during the session, the lead's context is compacted before the loop's next step, as the new `harness.compact.milestone` setting says: `ask` (the default) asks you in Claude Code's dialog, `auto` compacts at once, and `off` leaves it alone. The summary keeps the stories in flight and what waits on you, and drops the finished stories' detail. It's skipped when the context is under 25% full.
+- Re-run `/code-kit:init` to update your lane agent files with the new reporting rules. Until then, the stop hook tells each lane what to do.
+
 ## 0.16.1 (2026-10-16)
 
 The lead loop stops asking for stories that are waiting on other work.
