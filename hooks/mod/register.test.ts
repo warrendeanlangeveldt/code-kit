@@ -75,6 +75,8 @@ function project() {
     agents: [] as { type: string; status: string; id?: string; description?: string }[],
     limits: [] as { kind: string; percentUsed: number }[],
     contextPercent: 0, // LEAN-3: how full the lead's context is
+    notified: [] as { text: string; title?: string }[], // NOTIFY-1
+    viewed: [] as (string | null)[], // WATCH-1
     approveExit: 0,
     mergeExit: 0,
     answer: 'Merge',
@@ -408,6 +410,15 @@ function stub(on: any, w: World) {
     value: { startedAt: 0, context: { percent: w.contextPercent }, rateLimits: w.limits },
   }));
   on('session.measure', ($: any, e: any) => ({ changed: e.changed }));
+  // NOTIFY-1: the person's notification channel; WATCH-1: the main view.
+  on('ui.notify', ($: any, e: any) => {
+    w.notified.push({ text: e.text, title: e.title });
+    return { value: { isSent: true, channel: 'iterm2' } };
+  });
+  on('ui.view', ($: any, e: any) => {
+    w.viewed.push(e.agentId ?? null);
+    return { value: {} };
+  });
   // A model request, answered with the usage the test gave it.
   on('turn.step', async function* ($: any, e: any) {
     return {
@@ -3351,6 +3362,10 @@ test('VIEW-6 tabs on 1 to 7, j and k move between lanes, and the selected lane h
   await press($, 'lane-next', PANE);
   await press($, 'lane-next', PANE);
   expect((await ui.find({ key: 'lane-web' }))?.text).toMatch(/^›/);
+  // WATCH-1: w puts the lane agent's transcript in the main view.
+  expect((await ui.find({ key: 'act-watch' }))?.props.hotkey).toBe('w');
+  await press($, 'act-watch', PANE);
+  expect(w.viewed).toEqual(['a1']);
   expect((await ui.find({ key: 'act-nudge' }))?.props.hotkey).toBe('n');
   await press($, 'act-nudge', PANE);
   expect(w.sent).toEqual([
@@ -3364,6 +3379,30 @@ test('VIEW-6 tabs on 1 to 7, j and k move between lanes, and the selected lane h
   await press($, 'lane-prev', PANE);
   expect((await ui.find({ key: 'lane-lead' }))?.text).toMatch(/^›/);
   await ui.unmount();
+});
+
+test('NOTIFY-1 a decision new since the last look raises one notification; what waited before, and notify.on false, raise none', async ($, on) => {
+  const w = project();
+  w.requests = [dayjs];
+  const clock = await start($, on, w);
+  await clock.advance(2000);
+  // The approval waiting when the session first looked isn't news.
+  expect(w.notified).toEqual([]);
+  w.questions = [question()];
+  w.refs += ' q1 refs/heads/web/st-4-q\n';
+  await clock.advance(2000);
+  await clock.advance(2000);
+  expect(w.notified).toHaveLength(1);
+  expect(w.notified[0].title).toBe('code-kit: the lead asks you');
+  await clock.advance(2000);
+  expect(w.notified).toHaveLength(1);
+  // Turned off, a new decision raises nothing.
+  (w.check as any).harness = { notify: { on: false } };
+  w.questions = [question(), question({ id: 'Q-2', question: 'Which payment provider?' })];
+  w.refs += ' q2 refs/heads/web/st-4-q2\n';
+  await clock.advance(2000);
+  await clock.advance(2000);
+  expect(w.notified).toHaveLength(1);
 });
 
 test('VIEW-6 s sends the selected story back, with the reason the person gives', async ($, on) => {

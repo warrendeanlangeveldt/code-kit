@@ -158,3 +158,12 @@ A draft waits in the band ("A bug report for code-kit to send: …") and as a ca
 - Given a brief "Groomers lose bookings on paper" whose decision log records "Web only" because groomers use laptops, and a plan, then `code-kit journal --json` opens with the request, then "Decided: Web only, because groomers use laptops.", and includes the specification.
 - Given an approval logged by the lead within the delegated rules, then the journal says the lead approved it within the limits the person set; given one from the pane, that the person approved it, in their words.
 - Given those events, when the person opens the Journal tab, then they show by day, from the request to the merge.
+
+### NOTIFY-1 Told when something new needs you
+
+When a decision that needs the person's act appears (an approval, a held call, the lead's question or the brief's, the lead waiting on them, a stalled lane, a call Claude Code refused, a step to approve, a merge that's theirs), the session that runs the loop raises a system notification through the person's own notification channel (`$.ui.notify`, Claude Code 2.1.301 or later): "code-kit: the lead asks you", with what it asks and its story. Each decision is notified once; several at one look are one notification. What was waiting when the session first looked isn't news, and notices and reports aren't notified. `harness.notify.on` (default on) turns it off. On an older Claude Code nothing is raised.
+
+**Acceptance**
+
+- Given an approval waiting when the session starts, then nothing is notified; when the lead then asks a question, then one notification "code-kit: the lead asks you" is raised, and none again for it.
+- Given `notify.on` false, then a new question raises nothing.

@@ -120,6 +120,8 @@ export function laneActions(lane, { queue = [], held = [], requests = [] } = {})
   const head = queue.find((e) => ['waiting', 'merging'].includes(e.state));
   if (head && head.branch === lane.branch) acts.push({ id: 'merge', label: 'Merge', hotkey: 'm' });
   if (lane.active && lane.agent) {
+    // WATCH-1: the lane agent's own transcript, in the main view.
+    acts.push({ id: 'watch', label: 'Watch', hotkey: 'w' });
     acts.push({ id: 'nudge', label: 'Nudge', hotkey: 'n' });
     acts.push({ id: 'stop', label: 'Stop', hotkey: 'x' });
   }

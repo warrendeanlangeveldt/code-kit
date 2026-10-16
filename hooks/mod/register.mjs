@@ -74,7 +74,7 @@ import {
   withoutInFlight,
 } from './loop.mjs';
 import { goalOf, nextText } from './mission.mjs';
-import { contextOf, decisionCards, nativeChoice } from './decisions.mjs';
+import { contextOf, decisionCards, decisionKey, nativeChoice, newDecisions } from './decisions.mjs';
 import { DEFAULT_TEAM_UI, TEAM_ID, teamFrame } from './teamview.mjs';
 import { glowOf, mapStoryOf, touchOf } from './codemap.mjs';
 import { harnessSettings } from '../lib/harness.mjs';
@@ -144,6 +144,8 @@ let turnQuestions = []; // the open questions as the lead's running turn started
 // DECIDE-4: decisions asked in Claude Code's own question dialog this session, and whether one is open.
 const offered = new Set();
 let offering = false;
+// NOTIFY-1: the decisions waiting at the last look, by key; null until the first look.
+let notified = null;
 /** LOOP-8: the times in a row the lead is prompted with one step before the person is asked. */
 const ASK_LIMIT = 2;
 let leadTurn = null; // the lead's running turn, if any
@@ -1310,6 +1312,28 @@ export function register(on) {
       // DECIDE-4: the next decision the person settles with a choice, asked in Claude Code's own question
       // dialog while the lead is idle. Each is asked once: dismissed, it stays in the band and the
       // Decisions tab. Never in a session another one runs the loop for, nor over what the person types.
+      // NOTIFY-1: what newly needs the person, as a system notification, from the session that runs the
+      // loop. What waited before this session looked isn't news. On a Claude Code without $.ui.notify,
+      // the call fails and nothing is raised.
+      notifyNew: async () => {
+        if (model.state?.kind !== 'ok' || !where.interactive) return;
+        const cards = cardsNow(await $.clock.now());
+        const fresh = newDecisions(cards, notified ?? new Set());
+        const first = notified === null;
+        notified = new Set(cards.map(decisionKey));
+        if (first || !fresh.length || harness().notify?.on === false) return;
+        if (lease.other && !lease.mine) return;
+        const one =
+          fresh.length === 1
+            ? fresh[0]
+            : {
+                title: `code-kit: ${fresh.length} things need you`,
+                text: fresh.map((f) => f.text).join('; '),
+              };
+        await Promise.resolve()
+          .then(() => $.ui.notify(one.text, { title: one.title }))
+          .catch(() => {});
+      },
       offer: async () => {
         if (offering || leadTurn || loop.sent || !where.interactive) return;
         if (lease.other && !lease.mine) return;
@@ -1631,6 +1655,24 @@ export function register(on) {
         ((await $.agent.list().catch(() => [])) ?? []).find(
           (a) => a.status === 'running' && a.type === lane.agent,
         ) ?? null,
+      // WATCH-1: the person's press puts the lane agent's transcript in the main view, as the tasks list
+      // does; the tasks list (or Escape there) brings the main conversation back.
+      watchLane: async (lane) => {
+        const agent = await act.runningAgentOf(lane);
+        if (!agent) {
+          notice = `No agent is at work in the ${lane.name} lane to watch.`;
+          $.ui.invalidate('ui.render');
+          return;
+        }
+        const r = await Promise.resolve()
+          .then(() => $.ui.view({ agentId: agent.id }))
+          .catch(() => ({
+            deny: 'this Claude Code shows an agent only from its tasks list (2.1.301 or later shows it from here)',
+          }));
+        notice = r?.deny ? `Couldn't show the ${lane.name} lane's agent: ${r.deny}.` : null;
+        if (!r?.deny) await act.record('watch', `${lane.name} · ${agent.type}`);
+        $.ui.invalidate('ui.render');
+      },
       nudgeLane: async (lane) => {
         const agent = await act.runningAgentOf(lane);
         if (!agent) return;
@@ -1737,6 +1779,7 @@ export function register(on) {
           return act.review({ story: { ...lane.story, branch: lane.branch } });
         if (id === 'merge') return act.mergeQueue({ branch: lane.branch });
         if (id === 'sendBack') return act.sendBack(lane);
+        if (id === 'watch') return act.watchLane(lane);
         if (id === 'nudge') return act.nudgeLane(lane);
         if (id === 'stop') return act.stopLane(lane);
       },
@@ -1758,6 +1801,7 @@ export function register(on) {
         // LOOP-10: the lead session renews its lease; DECIDE-4: with the lead idle, a decision waiting.
         if (lease.mine) await act.lead();
         if (!leadTurn) act.offer().catch(() => {});
+        await act.notifyNew().catch(() => {});
         await act.stalls();
         await act.animate();
         const now = await act.fingerprint();

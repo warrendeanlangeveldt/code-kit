@@ -597,6 +597,23 @@ test('LOOP-13 stories waiting on other work: read from the reply, watched, and l
   assert.match(wait.why, /ST-158 waits on ST-164; the loop goes on when one moves/);
 });
 
+test('NOTIFY-1 only decisions new since the last look are notified, headed by what kind they are', async () => {
+  const { newDecisions, decisionKey } = await import('../hooks/mod/decisions.mjs');
+  const cards = [
+    { kind: 'question', headline: 'Include GST?', story: { id: 'ST-9' } },
+    { kind: 'held', headline: 'web wants to install dayjs', story: null },
+    { kind: 'notice', headline: 'Merged web/st-4', story: null },
+  ];
+  assert.deepEqual(newDecisions(cards, new Set([decisionKey(cards[1])])), [
+    {
+      key: 'question|Include GST?',
+      title: 'code-kit: the lead asks you',
+      text: 'Include GST? (ST-9)',
+    },
+  ]);
+  assert.deepEqual(newDecisions(cards, new Set(cards.map(decisionKey))), []);
+});
+
 test("LEAN-3 a milestone done is one whose every story is done, and the summary keeps what's in flight", () => {
   const stories = [
     { id: 'ST-1', milestone: 'M0', state: 'done' },
@@ -906,6 +923,7 @@ test('SET-1 the harness settings: defaults, validation and typed values', async 
     agents: { reviewer: { on: false, model: null }, lanes: { model: null } },
     background: { pauseAtPercent: 80 },
     compact: { milestone: 'ask' },
+    notify: { on: true },
     report: { on: false },
   });
   assert.match(
@@ -1187,11 +1205,12 @@ test("VIEW-1, VIEW-4, VIEW-6 panes v2: counts, liveness and the selected lane's 
   assert.deepEqual(countsOf({ kind: 'none' }), []);
   const ids = (lane, extra) =>
     laneActions(lane, { queue, ...extra }).map((a) => `${a.hotkey}:${a.id}`);
-  assert.deepEqual(ids(state.lanes[1]), ['n:nudge', 'x:stop']);
+  assert.deepEqual(ids(state.lanes[1]), ['w:watch', 'n:nudge', 'x:stop']);
   assert.deepEqual(ids(state.lanes[2]), ['r:review', 's:sendBack']);
   assert.deepEqual(ids(state.lanes[3]), ['m:merge']);
   assert.deepEqual(ids(state.lanes[1], { held: [{ lane: 'web' }] }), [
     'a:approve',
+    'w:watch',
     'n:nudge',
     'x:stop',
   ]);

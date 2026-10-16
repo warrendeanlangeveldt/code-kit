@@ -75,6 +75,12 @@ export const SETTINGS = {
     about:
       "When a milestone finishes, compact the lead's context before the next: ask you, do it, or leave it",
   },
+  'notify.on': {
+    default: true,
+    problem: (v) => (typeof v === 'boolean' ? null : 'must be true or false'),
+    about:
+      'A system notification when something new needs you: an approval, a question, a stalled lane',
+  },
   'report.on': {
     default: false,
     problem: (v) => (typeof v === 'boolean' ? null : 'must be true or false'),

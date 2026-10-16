@@ -437,3 +437,32 @@ export function nativeChoice(card) {
       card.kind === 'question' ? 'answerTyped' : card.kind === 'waiting' ? 'answerLeadTyped' : null,
   };
 }
+
+/** NOTIFY-1: a decision's identity across refreshes: its kind and what it asks. */
+export const decisionKey = (card) => `${card.kind}|${card.headline}`;
+
+/**
+ * NOTIFY-1: the decisions that weren't waiting at the last look, each as a system notification: what it
+ * asks, headed by what kind of decision it is. `seen` holds the keys from the last look.
+ */
+export function newDecisions(cards, seen) {
+  return cards
+    .filter((c) => NOTIFY_TITLE[c.kind] && !seen.has(decisionKey(c)))
+    .map((c) => ({
+      key: decisionKey(c),
+      title: `code-kit: ${NOTIFY_TITLE[c.kind] ?? 'a decision for you'}`,
+      text: `${c.headline}${c.story ? ` (${c.story.id})` : ''}`,
+    }));
+}
+
+const NOTIFY_TITLE = {
+  held: 'an approval to give',
+  approvals: 'an approval to give',
+  question: 'the lead asks you',
+  brief: 'a question in your brief',
+  waiting: 'the lead waits on you',
+  stalled: 'a lane stalled',
+  denied: 'Claude Code refused a call',
+  proposal: 'a step to approve',
+  queue: 'a merge for you',
+};
