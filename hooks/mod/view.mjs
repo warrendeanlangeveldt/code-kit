@@ -1496,6 +1496,7 @@ export const SETTINGS_ID = 'code-kit-settings';
 const CHOICES = {
   autonomy: ['autonomous', 'propose', 'off'],
   'agents.reviewer.model': ['', 'haiku', 'sonnet', 'opus'],
+  'agents.lanes.model': ['', 'haiku', 'sonnet', 'opus'],
 };
 const shown = (v) =>
   v === null || v === '' ? "the session's" : v === true ? 'on' : v === false ? 'off' : String(v);

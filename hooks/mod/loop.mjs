@@ -222,3 +222,20 @@ export const answeredPrompt = (question, answer) => {
     ? `The person answered what you asked ("${question}"): ${said} Carry on with it.`
     : `The person says: ${said} Carry on with it.`;
 };
+
+/** SET-4: the `model:` an agent file's frontmatter names, or null. */
+export function agentFileModel(text) {
+  const front = /^---\r?\n([\s\S]*?)\r?\n---/.exec(String(text ?? ''))?.[1] ?? '';
+  return /^model:\s*['"]?([^'"\s]+)['"]?\s*$/m.exec(front)?.[1] ?? null;
+}
+
+/**
+ * SET-4: the model to start a lane agent on, or null to leave the spawn as it is: a model the lead's
+ * call names wins, then the lane agent file's own (other than `inherit`), then `harness.agents.lanes.model`.
+ */
+export function laneModel({ type, model = null, lanes = {}, setting = null, fileModel = null }) {
+  if (model || !setting) return null;
+  if (!Object.values(lanes).some((l) => l.agent === type)) return null;
+  if (fileModel && fileModel !== 'inherit') return null;
+  return setting;
+}

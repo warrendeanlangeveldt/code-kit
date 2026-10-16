@@ -51,6 +51,15 @@ export const SETTINGS = {
         : `must be a model (${MODELS.join(', ')}, or an id), or null for the session's`,
     about: "The reviewer's model; none means the session's",
   },
+  'agents.lanes.model': {
+    default: null,
+    problem: (v) =>
+      v === null || (typeof v === 'string' && v.length > 0)
+        ? null
+        : `must be a model (${MODELS.join(', ')}, or an id), or null for the session's`,
+    about:
+      "The lane agents' model, set as each is dispatched; none means the session's. A lane's agent file with its own model keeps it",
+  },
   'background.pauseAtPercent': {
     default: 80,
     problem: (v) =>

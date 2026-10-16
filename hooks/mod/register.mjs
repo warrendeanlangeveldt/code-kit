@@ -51,8 +51,10 @@ import {
   toolLine,
 } from './panes.mjs';
 import {
+  agentFileModel,
   answeredPrompt,
   designHandedOver,
+  laneModel,
   leadPrompt,
   nudgeText,
   outcomePrompt,
@@ -1827,6 +1829,26 @@ export function register(on) {
       },
     });
   });
+
+  // SET-4: a lane agent starts on the lane model the person set, unless the lead's call names one or
+  // the lane's agent file sets its own.
+  on('agent.spawn', async ($, e, next) => {
+    const setting = harness().agents.lanes.model;
+    const lanes = model.check?.lanes ?? {};
+    if (!setting || e.model || !Object.values(lanes).some((l) => l.agent === e.subagentType))
+      return next(e);
+    const file = where
+      ? await $.fs.read(`${where.cwd}/.claude/agents/${e.subagentType}.md`).catch(() => null)
+      : null;
+    const chosen = laneModel({
+      type: e.subagentType,
+      model: e.model,
+      lanes,
+      setting,
+      fileModel: typeof file === 'string' ? agentFileModel(file) : null,
+    });
+    return next(chosen ? { ...e, model: chosen } : e);
+  }).catch(($, e, next) => next(e));
 
   // USE-1: each model request's usage, as the request ends; the lead's requests carry no agentId.
   on('turn.step', async function* ($, e, next) {
