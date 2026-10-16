@@ -2,6 +2,13 @@
 
 What changed in each release of code-kit, newest first. Versions follow the plugin manifest and the npm package `@warren-dean/code-kit`. Each release is also on [GitHub Releases](https://github.com/warrendeanlangeveldt/code-kit/releases).
 
+## 0.15.1 (2026-10-16)
+
+Lanes stop less often to wait for you.
+
+- A lane reading `.claude/code-kit.json` with an inline script, such as `python3 -c "json.load(open(...))"`, no longer waits for your approval. The bash guard used to count any Python command that named a kit file as a change to the kit, so each lane that read its spec folders this way filed a kit request and stopped: 11 of one project's 16 approval requests. An inline Python or Node script is now judged by its code, and only one that writes the kit, or whose output is redirected into it, is refused. A Python script run from a file still counts as a change, and the check after each shell call still catches any real write. The spec-check skill tells lanes to open the config with the Read tool.
+- A call Claude Code refused that later goes through, the same tool from the same agent (for a shell command, the same command), leaves the band. Before, every refusal stayed in the band until you pressed Done it or Not now, even after a retry had worked, so the band could show calls refused that no longer needed you.
+
 ## 0.15.0 (2026-10-16)
 
 The lane agents can run on a cheaper model than the lead.
