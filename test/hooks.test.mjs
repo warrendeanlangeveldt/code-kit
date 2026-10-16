@@ -4040,6 +4040,21 @@ else process.exit(2);
   );
   commitAll('lane work');
   expect('a lane with committed work may finish', stop('platform-engineer'), 0);
+  {
+    // LEAN-1: on its story's branch, a lane writes its full report before its short hand-back.
+    const was = String(git('rev-parse', '--abbrev-ref', 'HEAD')).trim();
+    git('checkout', '-q', '-b', 'platform/st-5');
+    expect(
+      'LEAN-1 a lane on its story branch writes its report before it finishes',
+      stop('platform-engineer'),
+      2,
+      'Write your full report to .claude/state/reports/platform_st-5.md',
+    );
+    put('.claude/state/reports/platform_st-5.md', '# ST-5\n\nDone: the runbook.\n');
+    expect('and with it written, finishes', stop('platform-engineer'), 0);
+    git('checkout', '-q', was);
+    git('branch', '-q', '-D', 'platform/st-5');
+  }
   expect('read-only agents are not checked', stop('Explore'), 0);
   put('workers/jobs/x.ts', 'export const x = 1;\n');
   expect(

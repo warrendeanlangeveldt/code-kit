@@ -8,7 +8,8 @@ import { loadBaseline, newProblems } from './lib/baseline.mjs';
 import { runChecks } from './lib/checks.mjs';
 import { block, start } from './lib/hook.mjs';
 import { layerProblems } from './lib/layers.mjs';
-import { actorFor, actorRoot } from './lib/rules.mjs';
+import { actorFor, actorRoot, currentBranch, reportPath } from './lib/rules.mjs';
+import { storyOfBranch } from './lib/teamfacts.mjs';
 import { auditProblems, changedFiles } from './lane-audit.mjs';
 
 const { input, project, config, error } = start();
@@ -91,5 +92,14 @@ if (actor.kind === 'lane' && changed.length) {
     "Commit your work on your branch (stage only your lane's files; the message names the task, what changed and the proof), then finish:",
     changed.join('\n'),
   );
+}
+
+// LEAN-1: the lead's context gets a short hand-back; the detail waits in a file it reads when it reviews.
+if (actor.kind === 'lane' && storyOfBranch(currentBranch(root))) {
+  const report = reportPath(root);
+  if (!existsSync(join(root, report)))
+    blockCounted(
+      `Write your full report to ${report} before you finish: what you did and why, the spec section, the commands you ran with their output, what's left, and anything you need decided (with the choices, and any text you'd have pasted, such as a migration you can't write yet). Then finish with a short hand-back of at most ten lines: the story and branch, done or blocked, any decision the lead must make, and that report's path. Don't paste output or code into the hand-back; the lead reads the file when it reviews.`,
+    );
 }
 passed();

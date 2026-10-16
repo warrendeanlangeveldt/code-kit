@@ -1513,6 +1513,7 @@ const CHOICES = {
   autonomy: ['autonomous', 'propose', 'off'],
   'agents.reviewer.model': ['', 'haiku', 'sonnet', 'opus'],
   'agents.lanes.model': ['', 'haiku', 'sonnet', 'opus'],
+  'compact.milestone': ['ask', 'auto', 'off'],
 };
 const shown = (v) =>
   v === null || v === '' ? "the session's" : v === true ? 'on' : v === false ? 'off' : String(v);

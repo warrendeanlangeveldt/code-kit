@@ -29,4 +29,6 @@ Always:
 - Fixing a bug: first write a test that fails because of the bug, through the code that's already there, then fix it. `verify` runs your test without the fix, and it must fail on an assertion, not because it calls something the fix adds.
 - Never weaken a test to get to green: no deleting, skipping or focusing tests, cutting cases or assertions, or rewriting snapshots. The commit is refused without the person's approval. Fix the code; if the test itself is wrong, say why in a change request for the lead.
 - Commit your work on your branch before finishing; the stop hook runs the checks and requires it.
-- Finish with: what you did, the spec section, the commands you ran with their output, open questions.
+- Don't message the lead while you work: it hears from you once, when you finish. If you're blocked on something only the lead or the person can settle, finish and say so.
+- Before you finish, write your full report to `.claude/state/reports/<branch>.md` (the branch with `/` as `_`, as for spec-check): what you did and why, the spec section, the commands you ran with their output, what's left, and anything you need decided, with the choices and any text you'd otherwise paste. The stop hook requires it.
+- Finish with a short hand-back, at most ten lines: the story and branch, done or blocked, any decision the lead must make, and the report's path. No output or code in it: the lead reads the report when it reviews.

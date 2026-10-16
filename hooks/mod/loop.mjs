@@ -310,3 +310,27 @@ export function laneModel({ type, model = null, lanes = {}, setting = null, file
   if (fileModel && fileModel !== 'inherit') return null;
   return setting;
 }
+
+/** LEAN-3: compacting a context below this share of its window isn't worth the summary it costs. */
+export const COMPACT_FLOOR = 25;
+
+/**
+ * LEAN-3: the milestones every story of which is done, in the plan's order. A milestone with no stories
+ * isn't one.
+ */
+export function milestonesDone(stories = []) {
+  const by = new Map();
+  for (const s of stories) {
+    if (!s.milestone) continue;
+    by.set(s.milestone, [...(by.get(s.milestone) ?? []), s]);
+  }
+  return [...by].filter(([, list]) => list.every((s) => s.state === 'done')).map(([m]) => m);
+}
+
+/** LEAN-3: what the lead's summary keeps when its context is compacted after a milestone. */
+export const compactInstructions = (milestone) =>
+  [
+    `${milestone} is done; the build goes on with the next milestone.`,
+    'Keep: the milestone just finished, in a line; every story in flight now, with its lane, its branch and where it stands (building, in review, in the merge queue, waiting and on what); the decisions and questions waiting on the person; what the person decided or asked for in this session that still applies; and the rules and preferences they set.',
+    "Drop: the finished stories' details, lane reports and hand-backs, command output, diffs and file contents. Each is in git, the plan or the lanes' report files, to read again when it's needed.",
+  ].join('\n');

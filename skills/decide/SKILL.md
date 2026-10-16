@@ -13,7 +13,7 @@ The CLI is `node "${CLAUDE_PLUGIN_ROOT}/bin/code-kit.mjs"`.
 
 `requests --json` lists each open request with its number (`n`), the lane, what it asked for (`names`, `what`), and whose decision it is (`by`). The argument, if given, names the numbers to take. Take every request `by: "lead"`. A request `by: "person"` is theirs: see step 4.
 
-For each, read the lane's change request (its last report, or ask the lane with SendMessage if it's still running), its story in the plan, and the requirements the story cites, in the specs.
+For each, read the lane's change request (its report, in `.claude/state/reports/<branch>.md` in its worktree), its story in the plan, and the requirements the story cites, in the specs.
 
 ## 2. Judge it
 

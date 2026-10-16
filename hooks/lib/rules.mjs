@@ -815,6 +815,14 @@ export function ownerOf(rel, config) {
   return matchesAny(rel, config.lead.paths) ? 'lead' : null;
 }
 
+/**
+ * LEAN-1: a lane's full report for its branch: what it did, the commands it ran and their output, its
+ * questions. The lead's context gets a short hand-back naming this file, and reads it when it reviews.
+ */
+export function reportPath(root) {
+  return `.claude/state/reports/${currentBranch(root).replace(/[^\w.-]+/g, '_')}.md`;
+}
+
 // Lane work starts with the spec-check skill: its report for the branch must exist first.
 export function specCheckPath(root) {
   return `.claude/state/spec-check/${currentBranch(root).replace(/[^\w.-]+/g, '_')}.md`;
