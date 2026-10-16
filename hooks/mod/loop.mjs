@@ -96,13 +96,16 @@ export function parkWatch(id, on = [], stories = []) {
 }
 
 /**
- * LOOP-13: where the watched stories stand, as one string: each one's state, its branch's commit and
- * whether an agent is at work on it. A parked story wakes when this changes.
+ * LOOP-13: where the watched stories stand, as one string. The parked story itself (the first) counts
+ * its state, its branch's commit and whether an agent is at work on it; each story it waits on counts its
+ * state alone, so the commits of a story still being built don't wake the one waiting for it to finish.
+ * A parked story wakes when this changes.
  */
 export function storiesSignature(ids, stories = [], heads = new Map(), inFlight = new Set()) {
   return ids
-    .map((id) => {
+    .map((id, i) => {
       const s = stories.find((x) => x.id === id);
+      if (i > 0) return `${id}:${s?.state ?? '?'}`;
       return `${id}:${s?.state ?? '?'}:${s?.branch ? (heads.get(s.branch) ?? '') : ''}:${inFlight.has(id) ? 'busy' : ''}`;
     })
     .join('|');

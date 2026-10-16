@@ -775,9 +775,14 @@ export function writeProblem(actor, rel, root, config) {
 const readonlyProblem = (actor, rel) =>
   `${actor.label} is read-only; it may not write ${rel}. If a command you ran changed it (a build, a formatter or a code generator), put it back with git restore -- ${rel} (or delete it if it's new), and run such commands only in a throwaway worktree of the branch.`;
 
+// Claude Code's own temporary folders (a session's scratchpad, its tool output): no repository's files.
+const CLAUDE_TEMP = ['/private/tmp/claude-*/**', '/tmp/claude-*/**'];
+
 function outsideAllowed(actor, rel, root, config) {
-  if (actor.kind !== 'lead') return false;
   const target = resolve(root, rel);
+  // A lane's scratch files go where Claude Code's own do, outside every repository.
+  if (actor.kind === 'lane') return CLAUDE_TEMP.some((g) => globToRegExp(g).test(target));
+  if (actor.kind !== 'lead') return false;
   return config.lead.outside.some((g) =>
     globToRegExp(resolve(root, g.replace(/^~(?=\/)/, homedir()))).test(target),
   );

@@ -575,16 +575,25 @@ test('LOOP-13 stories waiting on other work: read from the reply, watched, and l
   ];
   // The stories it waits on, and the unfinished ones building on it.
   assert.deepEqual(parkWatch('ST-158', ['ST-175'], stories), ['ST-158', 'ST-175', 'ST-164']);
-  const heads = new Map([['api/st-164', 'a1']]);
+  const heads = new Map([
+    ['media/st-158', 'm1'],
+    ['api/st-164', 'a1'],
+  ]);
   const before = storiesSignature(['ST-158', 'ST-164'], stories, heads, new Set());
+  // The parked story's own commit or agent wakes it; a waited-on story's commits don't, its state does.
+  const ownMoved = new Map([...heads, ['media/st-158', 'm2']]);
+  assert.notEqual(storiesSignature(['ST-158', 'ST-164'], stories, ownMoved, new Set()), before);
   assert.notEqual(
-    storiesSignature(['ST-158', 'ST-164'], stories, new Map([['api/st-164', 'a2']]), new Set()),
+    storiesSignature(['ST-158', 'ST-164'], stories, heads, new Set(['ST-158'])),
     before,
   );
-  assert.notEqual(
-    storiesSignature(['ST-158', 'ST-164'], stories, heads, new Set(['ST-164'])),
+  const otherMoved = new Map([...heads, ['api/st-164', 'a2']]);
+  assert.equal(
+    storiesSignature(['ST-158', 'ST-164'], stories, otherMoved, new Set(['ST-164'])),
     before,
   );
+  const finished = stories.map((s) => (s.id === 'ST-164' ? { ...s, state: 'in review' } : s));
+  assert.notEqual(storiesSignature(['ST-158', 'ST-164'], finished, heads, new Set()), before);
   assert.deepEqual(stepStories({ kind: 'review', target: 'ST-158 st-172' }), ['ST-158', 'ST-172']);
   assert.deepEqual(stepStories({ kind: 'merge', target: 'ST-158' }), []);
   const parked = new Map([['ST-158', { on: ['ST-164'] }]]);

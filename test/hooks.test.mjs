@@ -231,6 +231,15 @@ try {
   expect("the lead writes Claude's memory", writeAt(memoryFile), 0);
   expect('a lane may not', writeAt(memoryFile, 'web-engineer'), 2);
   expect(
+    "a lane writes scratch files in Claude Code's own temporary folder",
+    writeAt(
+      '/private/tmp/claude-501/-Users-x-project/session-1/scratchpad/probe.py',
+      'web-engineer',
+    ),
+    0,
+  );
+  expect('but nowhere else in /tmp', writeAt('/private/tmp/elsewhere/probe.py', 'web-engineer'), 2);
+  expect(
     'the rest of ~/.claude stays blocked',
     writeAt(join(homedir(), '.claude', 'settings.json')),
     2,
@@ -340,7 +349,25 @@ try {
     'reading the log through the shell is refused too, and the refusal says to use the Read tool',
     bash('cat .claude/approval-log.jsonl | head'),
     2,
-    'read it with the Read tool',
+    'with the Read tool',
+  );
+  expect(
+    "a lane may read the log's history with git, as a review does",
+    bash('git diff main...HEAD -- .claude/approval-log.jsonl | head -40', 'web-engineer'),
+    0,
+  );
+  expect(
+    'but not write what git prints anywhere',
+    bash('git show HEAD:.claude/approval-log.jsonl > /tmp/log.jsonl', 'web-engineer'),
+    2,
+  );
+  expect(
+    'nor through tee',
+    bash(
+      'git log -p -- .claude/approval-log.jsonl | tee .claude/approval-log.jsonl',
+      'web-engineer',
+    ),
+    2,
   );
   expect(
     'the lead edits the kit through the shell',
@@ -4052,6 +4079,21 @@ else process.exit(2);
     );
     put('.claude/state/reports/platform_st-5.md', '# ST-5\n\nDone: the runbook.\n');
     expect('and with it written, finishes', stop('platform-engineer'), 0);
+    const handingBack = (message) =>
+      hook('stop-check.mjs', { ...as('platform-engineer'), last_assistant_message: message });
+    expect(
+      'LEAN-1 a hand-back longer than ten lines is refused, with the report to point to instead',
+      handingBack(Array.from({ length: 15 }, (_, i) => `- step ${i}: ran it, passed`).join('\n')),
+      2,
+      'Your hand-back is 15 lines',
+    );
+    expect(
+      'and a short one finishes',
+      handingBack(
+        'ST-5 platform/st-5: done.\nNo decision needed.\nReport: .claude/state/reports/platform_st-5.md',
+      ),
+      0,
+    );
     git('checkout', '-q', was);
     git('branch', '-q', '-D', 'platform/st-5');
   }

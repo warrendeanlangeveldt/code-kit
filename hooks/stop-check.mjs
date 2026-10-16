@@ -19,6 +19,9 @@ const { input, project, config, error } = start();
 // reported MAX_REPEATS times in a row means no progress: say so and let the finish through rather than
 // loop. A different problem means progress, and counts from one again.
 const MAX_REPEATS = 3;
+// LEAN-1: the most a lane's hand-back holds.
+const HAND_BACK_LINES = 10;
+const HAND_BACK_CHARS = 1200;
 const memory = join(
   project,
   '.claude/state/stop-blocks',
@@ -97,9 +100,17 @@ if (actor.kind === 'lane' && changed.length) {
 // LEAN-1: the lead's context gets a short hand-back; the detail waits in a file it reads when it reviews.
 if (actor.kind === 'lane' && storyOfBranch(currentBranch(root))) {
   const report = reportPath(root);
-  if (!existsSync(join(root, report)))
+  // Written in the lane's worktree, or by its absolute path in the main checkout: either is found.
+  if (!existsSync(join(root, report)) && !existsSync(join(project, report)))
     blockCounted(
       `Write your full report to ${report} before you finish: what you did and why, the spec section, the commands you ran with their output, what's left, and anything you need decided (with the choices, and any text you'd have pasted, such as a migration you can't write yet). Then finish with a short hand-back of at most ten lines: the story and branch, done or blocked, any decision the lead must make, and that report's path. Don't paste output or code into the hand-back; the lead reads the file when it reviews.`,
+    );
+  // The hand-back is what reaches the lead's context: a few lines, the detail left in the report.
+  const handBack = String(input.last_assistant_message ?? '').trim();
+  const lines = handBack.split('\n').filter((l) => l.trim()).length;
+  if (lines > HAND_BACK_LINES || handBack.length > HAND_BACK_CHARS)
+    blockCounted(
+      `Your hand-back is ${lines} lines and ${handBack.length} characters, and all of it goes into the lead's context. Finish again with at most ${HAND_BACK_LINES} short lines: the story and branch, done or blocked, any decision the lead must make, and ${report}. Don't restate the report: the lead reads it when it reviews.`,
     );
 }
 passed();

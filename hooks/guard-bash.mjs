@@ -58,6 +58,21 @@ const RUNS = [
 for (const [re, why] of RUNS) {
   if (runs(cmd, re, { quoted: false })) block(`Blocked: ${why}\nCommand: ${cmd}`);
 }
+/**
+ * Whether `cmd` only reads git's history, with what it prints piped into read-only filters: `git diff
+ * main...HEAD -- .claude/approval-log.jsonl`, `git log -p -- … | head`. No redirect, no tee, nothing else.
+ */
+function gitReadsOnly(cmd) {
+  const code = codeOf(cmd);
+  if (/>|\btee\b|`|\$\(/.test(code)) return false;
+  const parts = commandsOf(cmd);
+  return (
+    parts.length > 0 &&
+    new RegExp(String.raw`^${GIT}(?:diff|log|show|blame)\b`).test(parts[0].code) &&
+    parts.slice(1).every((c) => /^(?:grep|head|tail|wc|cat|sort|uniq|less)\b/.test(c.code))
+  );
+}
+
 // These read the command whole: a pipe spans commands, and an approval or the log can be written
 // through a quoted path.
 const ALWAYS = [
@@ -73,8 +88,8 @@ const ALWAYS = [
   ],
   [
     /approval-log\.jsonl/,
-    "The approval audit log is appended only by the commit hook; nobody edits it. A shell command may not name it, even to read it; read it with the Read tool, which can't write.",
-    cmd,
+    "The approval audit log is appended only by the commit hook; nobody edits it. A shell command may not name it except to read its history with git (git diff, log or show, piped only into grep, head, tail or wc); read the file itself with the Read tool, which can't write.",
+    gitReadsOnly(cmd) ? '' : cmd,
   ],
 ];
 for (const [re, why, text] of ALWAYS) {

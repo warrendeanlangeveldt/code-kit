@@ -1065,10 +1065,19 @@ export function register(on) {
       ) => {
         loop.started = true;
         loop.proposal = null;
-        loop.sent = { prompt, key, label, kind, target };
+        const sent = { prompt, key, label, kind, target, before: new Map() };
+        loop.sent = sent;
         // LOOP-12: a design story is handed to the lead once; the person designs it with the lead.
         if (kind === 'design')
           for (const id of String(target).split(/\s+/).filter(Boolean)) loop.handedDesign.add(id);
+        // LOOP-13: where the step's stories stood when the lead was prompted, to tell after its turn
+        // whether it moved them.
+        // A design is made with the person over many turns (LOOP-12), so it's never counted as unmoved.
+        const ids = kind === 'design' ? [] : stepStories({ kind, target });
+        if (ids.length) {
+          const seen = await act.storiesNow();
+          for (const id of ids) sent.before.set(id, seen.sig([id]));
+        }
         await act.record(kind, target, prompt);
         $.ui.invalidate('ui.render');
         $.prompt.submit({ text: prompt }).catch((err) => {
@@ -1142,6 +1151,16 @@ export function register(on) {
           loop.parked.set(w.id, { on: w.on, why: w.why, watch, sig: seen.sig(watch), at: now });
         }
         $.ui.invalidate('ui.render');
+      },
+      // LOOP-13: the stories of the step the lead was prompted with that its turn left where they stood.
+      parkUnmoved: async (sent, reason) => {
+        if (!sent?.before?.size) return;
+        const seen = await act.storiesNow();
+        await act.park(
+          [...sent.before]
+            .filter(([id, sig]) => !loop.parked.has(id) && seen.sig([id]) === sig)
+            .map(([id]) => ({ id, on: [], why: reason ?? "the lead's turn didn't move it" })),
+        );
       },
       // LOOP-13: a parked story wakes when anything it watches moves, or after PARK_MS with nothing moving.
       unpark: async () => {
@@ -1238,7 +1257,7 @@ export function register(on) {
           $.ui.invalidate('ui.render');
           return;
         }
-        if (!reply.text.trim()) return;
+        if (!reply.text.trim()) return act.parkUnmoved(sent, null);
         const said = await act.sideCall(
           outcomePrompt({ prompt: sent?.prompt ?? null, answer: reply.text }),
         );
@@ -1261,6 +1280,10 @@ export function register(on) {
             })),
           );
         }
+        // LOOP-13: a story the lead's turn left exactly where it stood wasn't taken, whatever the reply
+        // reads as; it's parked like one the lead said waits, so the loop doesn't prompt it again until
+        // it moves.
+        if (heard?.outcome !== 'needs-person') await act.parkUnmoved(sent, heard?.reason);
         if (heard?.outcome === 'needs-person')
           loop.waiting = {
             kind: 'person',

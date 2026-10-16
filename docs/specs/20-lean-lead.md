@@ -22,11 +22,12 @@ Found measuring a lead session on a project of 138 stories: about 780k tokens si
 
 ### LEAN-1 The report in a file, a short hand-back
 
-Before a lane on a story's branch finishes, it writes its full report to `.claude/state/reports/<branch with / as _>.md` in its worktree: what it did and why, the spec section, the commands it ran with their output, what's left, and anything it needs decided, with the choices and any text it would otherwise paste. Its hand-back to the lead is at most ten lines: the story and branch, done or blocked, any decision the lead must make, and the report's path. The stop hook refuses to let a lane on a story branch finish without the report. The review, dispatch and decide skills read the report when they need its detail.
+Before a lane on a story's branch finishes, it writes its full report to `.claude/state/reports/<branch with / as _>.md` in its worktree: what it did and why, the spec section, the commands it ran with their output, what's left, and anything it needs decided, with the choices and any text it would otherwise paste. Its hand-back to the lead is at most ten lines: the story and branch, done or blocked, any decision the lead must make, and the report's path. The stop hook refuses to let a lane on a story branch finish without the report (in its worktree, or by its path in the main checkout), and refuses a hand-back of more than ten lines or 1,200 characters, three times at most, as for every block it repeats. The review, dispatch and decide skills read the report when they need its detail.
 
 **Acceptance**
 
 - Given the platform lane on `platform/st-5` with its work committed and no report, when it finishes, then it's refused, and told where to write the report and what the hand-back holds; with the report written, it finishes.
+- Given a hand-back of 15 lines, then it's refused with its length and what to keep; one of three lines finishes.
 
 ### LEAN-2 One word per story
 
