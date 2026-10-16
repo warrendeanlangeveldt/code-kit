@@ -58,12 +58,16 @@ import {
   leadPrompt,
   nudgeText,
   outcomePrompt,
+  PARK_MS,
+  parkWatch,
   readOutcome,
   restartPrompt,
   stallDue,
   stepKey,
   stepLabel,
+  stepStories,
   storiesInFlight,
+  storiesSignature,
   withoutInFlight,
 } from './loop.mjs';
 import { goalOf, nextText } from './mission.mjs';
@@ -122,6 +126,8 @@ const loop = {
   // LOOP-11, LOOP-12: what holds the loop: { kind: 'person' | 'stopped' | 'blocked' | 'design', key, label, prompt, question, options, reason }
   waiting: null,
   handedDesign: new Set(), // LOOP-12: design stories handed to the lead this session
+  // LOOP-13: stories the lead said wait on other work: id → { on, why, watch, sig, at }
+  parked: new Map(),
 };
 // LOOP-10: whether this session runs the loop, the session that does when another does, and when this
 // one last renewed its lease.
@@ -1099,6 +1105,45 @@ export function register(on) {
         $.ui.invalidate('ui.render');
         await act.step('resume');
       },
+      // LOOP-13: where the watched stories stand now: their states, branch commits, and agents at work.
+      storiesNow: async () => {
+        const refs = await $.process
+          .run(['git', 'for-each-ref', '--format=%(objectname) %(refname)', 'refs/heads'], { cwd })
+          .catch(() => ({ stdout: '' }));
+        const heads = new Map(
+          String(refs.stdout ?? '')
+            .split('\n')
+            .map((l) => /^\s*(\S+)\s+(?:refs\/heads\/)?(\S+)/.exec(l))
+            .filter(Boolean)
+            .map((m) => [m[2], m[1]]),
+        );
+        const inFlight = storiesInFlight(await $.agent.list().catch(() => []));
+        const stories = model.state?.stories ?? [];
+        return {
+          heads,
+          inFlight,
+          stories,
+          sig: (ids) => storiesSignature(ids, stories, heads, inFlight),
+        };
+      },
+      park: async (waits) => {
+        if (!waits.length) return;
+        const now = await $.clock.now();
+        const seen = await act.storiesNow();
+        for (const w of waits) {
+          const watch = parkWatch(w.id, w.on, seen.stories);
+          loop.parked.set(w.id, { on: w.on, why: w.why, watch, sig: seen.sig(watch), at: now });
+        }
+        $.ui.invalidate('ui.render');
+      },
+      // LOOP-13: a parked story wakes when anything it watches moves, or after PARK_MS with nothing moving.
+      unpark: async () => {
+        if (!loop.parked.size) return;
+        const now = await $.clock.now();
+        const seen = await act.storiesNow();
+        for (const [id, p] of loop.parked)
+          if (now - p.at >= PARK_MS || seen.sig(p.watch) !== p.sig) loop.parked.delete(id);
+      },
       // LOOP-11: the lead's last reply, read once before the loop prompts it again. A reply that waits on
       // the person, or a turn they stopped, holds the loop until they speak; a step the lead didn't take
       // holds that step while it's still next.
@@ -1145,6 +1190,21 @@ export function register(on) {
         // Spec 05's data: what came of the step, once known.
         const record = sent ? loop.steps.findLast((x) => x.prompt === sent.prompt) : null;
         if (record) record.outcome = heard?.outcome ?? 'unread';
+        // LOOP-13: stories the lead said wait on other work are parked, each until what it waits on moves.
+        const ids = stepStories(sent);
+        if (['waiting', 'blocked'].includes(heard?.outcome) && ids.length) {
+          const named = new Map((heard.waits ?? []).map((w) => [w.story, w]));
+          // A blocked step, or a reply that names none, parks all its stories; otherwise those it names.
+          const waiting =
+            heard.outcome === 'blocked' || !named.size ? ids : ids.filter((id) => named.has(id));
+          await act.park(
+            waiting.map((id) => ({
+              id,
+              on: named.get(id)?.on ?? [],
+              why: named.get(id)?.why ?? heard.reason ?? null,
+            })),
+          );
+        }
         if (heard?.outcome === 'needs-person')
           loop.waiting = {
             kind: 'person',
@@ -1154,7 +1214,7 @@ export function register(on) {
             reason: heard.reason,
           };
         else if (heard?.outcome === 'blocked' && sent)
-          loop.waiting = { kind: 'blocked', ...step, reason: heard.reason };
+          loop.waiting = { kind: 'blocked', ...step, reason: heard.reason, stories: ids };
         if (loop.waiting) $.ui.invalidate('ui.render');
       },
       // LOOP-11: the person's choice from the lead's options, or their own words, told to the lead.
@@ -1181,11 +1241,13 @@ export function register(on) {
         const w = loop.waiting;
         if (!w?.prompt || leadTurn) return;
         loop.waiting = null;
+        for (const id of w.stories ?? []) loop.parked.delete(id);
         loop.asked = { key: w.key, times: 0 };
         await act.submit(w.prompt, w.stepKind, w.target, { key: w.key, label: w.label });
       },
       // LOOP-11: the person lets the loop go on.
       carryOn: async () => {
+        for (const id of loop.waiting?.stories ?? []) loop.parked.delete(id);
         loop.waiting = null;
         loop.lastKey = null;
         $.ui.invalidate('ui.render');
@@ -1253,12 +1315,15 @@ export function register(on) {
           return act.submit(prompt, 'restart', story);
         }
         const ran = await $.process.run(['node', cli, 'next', '--json'], { cwd });
+        // LOOP-13: a parked story stays out of the step until what it waits on moves.
+        await act.unpark();
         // LOOP-9: never a story an agent is already at work on, building or reviewing it.
         const step =
           ran.exitCode === 0
             ? withoutInFlight(
                 parseJson(ran.stdout),
                 storiesInFlight(await $.agent.list().catch(() => [])),
+                loop.parked,
               )
             : null;
         // MISSION-1: the band shows what the loop takes next.
@@ -1294,9 +1359,17 @@ export function register(on) {
         // LOOP-11, LOOP-12: a step the lead didn't take, or designs left to the person and the lead, hold
         // that step while it's still next; any other step goes on.
         if (loop.waiting) {
-          if (loop.waiting.key === key) return;
-          loop.waiting = null;
-          $.ui.invalidate('ui.render');
+          // LOOP-13: a blocked step's stories are parked, so the line stays while any of them is, and
+          // other steps go on; a step without stories holds while it's still next.
+          const stories = loop.waiting.stories ?? [];
+          const held = stories.length
+            ? stories.some((id) => loop.parked.has(id))
+            : loop.waiting.key === key;
+          if (held && !stories.length) return;
+          if (!held) {
+            loop.waiting = null;
+            $.ui.invalidate('ui.render');
+          }
         }
         if (!prompt) return;
         if (designHandedOver(step, loop.handedDesign)) {

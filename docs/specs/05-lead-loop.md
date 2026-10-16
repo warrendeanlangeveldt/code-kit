@@ -161,6 +161,15 @@ A design is made with the person (`/code-kit:design`), so the loop prompts the l
 
 - Given ST-21 and ST-22 handed to the lead for design, when the person and the lead go back and forth and ST-21's design is approved, then the loop prompts no further design step for them; when ST-30 becomes ready to design, the lead is prompted for it.
 
+### LOOP-13 A story waiting on other work is parked
+
+When the lead's reply says a step's stories aren't due yet because they wait on work still going (a lane building a story they merge with, a rebuild, a check running), the loop parks each such story, by story rather than by step. A parked story is left out of every step, so a step that later names it with others prompts only the others. It wakes when anything it watches moves: its own state or branch, the stories the lead said it waits on, and the unfinished stories that depend on it (a pair the lead merges together). Each story's state, branch commit and agent at work count as moves, and other lanes' commits don't. With nothing moving for 30 minutes, it wakes anyway and the lead is asked once more. A step the lead didn't take for another reason parks its stories too, and its line stays in the band while any of them is parked, while other steps go on. Ask again and Carry on wake them at once. With every story in a step parked, the band's next row says what each waits on.
+
+**Acceptance**
+
+- Given the loop prompted "Review ST-158, ST-172" and the lead replied that ST-158 merges with ST-164, still being built, and ST-172's checks are re-running, when `next` then names ST-158, ST-172 and ST-173, then the lead is prompted to review ST-173 alone.
+- Given both still parked and another lane committing, then nothing is prompted; when ST-164's branch moves, then the lead is prompted to review ST-158, and ST-172 stays parked.
+
 ## Quality targets
 
 - A step is submitted within 5 seconds of the lead going idle with work to do.

@@ -40,8 +40,11 @@ import {
   laneModel,
   leadPrompt,
   outcomePrompt,
+  parkWatch,
   readOutcome,
+  stepStories,
   storiesInFlight,
+  storiesSignature,
   withoutInFlight,
 } from '../hooks/mod/loop.mjs';
 
@@ -538,6 +541,7 @@ test("LOOP-11 the loop reads the lead's reply: what it left the build at, its qu
         { label: 'No', effect: null },
       ],
       reason: 'a pricing rule',
+      waits: [],
     },
   );
   // One option is no choice: the person answers in their own words.
@@ -552,6 +556,43 @@ test("LOOP-11 the loop reads the lead's reply: what it left the build at, its qu
     answeredPrompt('Include GST?', 'Yes'),
     'The person answered what you asked ("Include GST?"): Yes. Carry on with it.',
   );
+});
+
+test('LOOP-13 stories waiting on other work: read from the reply, watched, and left out of the step', () => {
+  assert.match(outcomePrompt({ answer: 'x' }), /- waiting: the step isn't due yet/);
+  assert.deepEqual(
+    readOutcome(
+      '{"outcome":"waiting","waits":[{"story":"st-158","on":["ST-164","nope"],"why":"merges with ST-164"},{"story":"later"}]}',
+    ).waits,
+    [{ story: 'ST-158', on: ['ST-164'], why: 'merges with ST-164' }],
+  );
+  const stories = [
+    { id: 'ST-158', state: 'in review', branch: 'media/st-158' },
+    { id: 'ST-164', state: 'in progress', branch: 'api/st-164', dependsOn: ['ST-158'] },
+    { id: 'ST-170', state: 'done', branch: 'api/st-170', dependsOn: ['ST-158'] },
+  ];
+  // The stories it waits on, and the unfinished ones building on it.
+  assert.deepEqual(parkWatch('ST-158', ['ST-175'], stories), ['ST-158', 'ST-175', 'ST-164']);
+  const heads = new Map([['api/st-164', 'a1']]);
+  const before = storiesSignature(['ST-158', 'ST-164'], stories, heads, new Set());
+  assert.notEqual(
+    storiesSignature(['ST-158', 'ST-164'], stories, new Map([['api/st-164', 'a2']]), new Set()),
+    before,
+  );
+  assert.notEqual(
+    storiesSignature(['ST-158', 'ST-164'], stories, heads, new Set(['ST-164'])),
+    before,
+  );
+  assert.deepEqual(stepStories({ kind: 'review', target: 'ST-158 st-172' }), ['ST-158', 'ST-172']);
+  assert.deepEqual(stepStories({ kind: 'merge', target: 'ST-158' }), []);
+  const parked = new Map([['ST-158', { on: ['ST-164'] }]]);
+  assert.deepEqual(withoutInFlight({ step: 'review', args: 'ST-158 ST-173' }, new Set(), parked), {
+    step: 'review',
+    args: 'ST-173',
+  });
+  const wait = withoutInFlight({ step: 'review', args: 'ST-158' }, new Set(), parked);
+  assert.equal(wait.step, 'wait');
+  assert.match(wait.why, /ST-158 waits on ST-164; the loop goes on when one moves/);
 });
 
 test("SET-4 a lane agent's model: the lead's choice, then its agent file's, then the setting", async () => {

@@ -2510,6 +2510,83 @@ test('LOOP-11 dismissed, what the lead waits on stays in the band, and the loop 
   expect(w.prompts.at(-1)).toBe('Review ST-4: run /code-kit:review ST-4.');
 });
 
+test('LOOP-13 stories the lead says wait on other work are parked, each until what it waits on moves', async ($, on) => {
+  const w = project();
+  w.stories.push(
+    {
+      id: 'ST-158',
+      title: 'Storage',
+      lane: 'web',
+      state: 'in review',
+      branch: 'web/st-158',
+      waitingOn: [],
+    },
+    {
+      id: 'ST-164',
+      title: 'Callers use the storage',
+      lane: 'api',
+      state: 'in progress',
+      branch: 'api/st-164',
+      dependsOn: ['ST-158'],
+      waitingOn: [],
+    },
+    {
+      id: 'ST-172',
+      title: 'Silent tests',
+      lane: 'core',
+      state: 'in review',
+      branch: 'core/st-172',
+      waitingOn: [],
+    },
+    {
+      id: 'ST-173',
+      title: 'Verdicts',
+      lane: 'lead',
+      state: 'in review',
+      branch: 'lead/st-173',
+      waitingOn: [],
+    },
+  );
+  w.refs += ' s1 refs/heads/web/st-158\n s2 refs/heads/api/st-164\n s3 refs/heads/core/st-172\n';
+  w.next = { step: 'review', args: 'ST-158 ST-172', then: [] };
+  w.sideReply = unread;
+  const clock = await start($, on, w);
+  await leadTurn($);
+  await settle(clock);
+  expect(w.prompts.at(-1)).toBe('Review ST-158, ST-172: run /code-kit:review.');
+  // The lead says neither is due yet; next then names a third story as well.
+  w.sideReply = outcome({
+    outcome: 'waiting',
+    waits: [
+      { story: 'ST-158', on: [], why: 'it merges with its paired branch' },
+      { story: 'ST-172', on: [], why: 'its merge checks are re-running' },
+    ],
+  });
+  w.next = { step: 'review', args: 'ST-158 ST-172 ST-173', then: [] };
+  await leadSays(
+    $,
+    't-2',
+    'None of these is due: ST-158 merges with ST-164; ST-172 re-runs its checks.',
+  );
+  await settle(clock);
+  // Only the story that isn't waiting is asked for.
+  expect(w.prompts.at(-1)).toBe('Review ST-173: run /code-kit:review ST-173.');
+  const asked = w.prompts.length;
+  // Lanes committing elsewhere don't wake them, and nothing is prompted while both still wait.
+  w.sideReply = unread;
+  w.next = { step: 'review', args: 'ST-158 ST-172', then: [] };
+  w.refs += ' x1 refs/heads/core/st-9\n';
+  await leadTurn($, 't-3');
+  await settle(clock);
+  expect(w.prompts).toHaveLength(asked);
+  // The story building on ST-158 commits: ST-158 wakes, and ST-172 still waits.
+  w.refs = w.refs.replace(' s2 refs/heads/api/st-164', ' s9 refs/heads/api/st-164');
+  await leadTurn($, 't-4');
+  await settle(clock);
+  expect(w.prompts.at(-1)).toBe('Review ST-158: run /code-kit:review ST-158.');
+  expect(w.prompts).toHaveLength(asked + 1);
+});
+
 test('LOOP-11 a turn the person stopped holds the loop, with no dialog, until they speak or press Carry on', async ($, on) => {
   const w = project();
   w.sideReply = unread;
