@@ -40,8 +40,8 @@ export function storiesInFlight(agents) {
  * gives way to the next one `next` listed; with nothing left, the loop waits, saying for what, until an
  * agent finishes (which moves the project on).
  */
-export function withoutInFlight(step, inFlight) {
-  if (!step || !inFlight?.size) return step;
+export function withoutInFlight(step, inFlight, parked = new Map()) {
+  if (!step || (!inFlight?.size && !parked?.size)) return step;
   const chain = [step, ...(step.then ?? [])].map(({ then: _then, ...s }) => s);
   const kept = [];
   const busy = [];
@@ -51,18 +51,71 @@ export function withoutInFlight(step, inFlight) {
       continue;
     }
     const ids = (s.args ?? '').split(/\s+/).filter(Boolean);
-    const free = ids.filter((id) => !inFlight.has(id.toUpperCase()));
-    busy.push(...ids.filter((id) => inFlight.has(id.toUpperCase())));
+    const held = (id) => inFlight?.has(id.toUpperCase()) || parked?.has(id.toUpperCase());
+    const free = ids.filter((id) => !held(id));
+    busy.push(...ids.filter(held));
     if (free.length) kept.push({ ...s, args: free.join(' ') });
   }
   if (kept.length) return { ...kept[0], ...(kept.length > 1 ? { then: kept.slice(1) } : {}) };
-  const names = [...new Set(busy)];
+  const names = [...new Set(busy.map((id) => id.toUpperCase()))];
+  const working = names.filter((id) => inFlight?.has(id));
+  // LOOP-13: what each parked story waits on, as the lead said.
+  const waits = names
+    .filter((id) => !inFlight?.has(id))
+    .map(
+      (id) =>
+        `${id} waits${parked.get(id)?.on?.length ? ` on ${parked.get(id).on.join(', ')}` : ''}`,
+    );
   return {
     step: 'wait',
-    why: `${names.join(', ')} ${names.length === 1 ? 'is' : 'are'} still with ${names.length === 1 ? 'its agent' : 'their agents'}; the loop goes on when one finishes`,
+    why: [
+      working.length
+        ? `${working.join(', ')} ${working.length === 1 ? 'is' : 'are'} still with ${working.length === 1 ? 'its agent' : 'their agents'}`
+        : null,
+      ...waits,
+    ]
+      .filter(Boolean)
+      .join('; ')
+      .concat('; the loop goes on when one moves'),
     inFlight: names,
   };
 }
+
+/** LOOP-13: how long a parked story waits with nothing it waits on moving, before the lead is asked again. */
+export const PARK_MS = 30 * 60_000;
+
+/**
+ * LOOP-13: the stories to watch while `id` is parked: itself, the stories the lead said it waits on,
+ * and the stories that depend on it and aren't done (a pair the lead merges together).
+ */
+export function parkWatch(id, on = [], stories = []) {
+  const dependents = stories
+    .filter((s) => (s.dependsOn ?? []).includes(id) && s.state !== 'done')
+    .map((s) => s.id);
+  return [...new Set([id, ...on, ...dependents])];
+}
+
+/**
+ * LOOP-13: where the watched stories stand, as one string: each one's state, its branch's commit and
+ * whether an agent is at work on it. A parked story wakes when this changes.
+ */
+export function storiesSignature(ids, stories = [], heads = new Map(), inFlight = new Set()) {
+  return ids
+    .map((id) => {
+      const s = stories.find((x) => x.id === id);
+      return `${id}:${s?.state ?? '?'}:${s?.branch ? (heads.get(s.branch) ?? '') : ''}:${inFlight.has(id) ? 'busy' : ''}`;
+    })
+    .join('|');
+}
+
+/** The story ids a step names, upper-cased: `review ST-158 ST-172` gives ST-158 and ST-172. */
+export const stepStories = (step) =>
+  STORY_STEPS.has(step?.stepKind ?? step?.kind ?? step?.step)
+    ? String(step?.target ?? step?.args ?? '')
+        .split(/\s+/)
+        .filter((id) => /^ST-\d+$/i.test(id))
+        .map((id) => id.toUpperCase())
+    : [];
 
 /**
  * The prompt for a step from `code-kit next --json` (LOOP-1), or null when it isn't the lead's to
@@ -157,7 +210,7 @@ export const nudgeText = (minutes) =>
   `No tool call for ${minutes} minutes: report where you are, or carry on.`;
 
 /** LOOP-11: what a lead turn left the build at, as the loop reads the lead's reply. */
-export const OUTCOMES = new Set(['done', 'started', 'needs-person', 'blocked']);
+export const OUTCOMES = new Set(['done', 'started', 'needs-person', 'blocked', 'waiting']);
 const ANSWER_SHOWN = 4000;
 
 /**
@@ -175,11 +228,12 @@ export function outcomePrompt({ prompt = null, answer = '' }) {
       : "The person prompted you, and code-kit's lead loop is about to prompt you with the build's next step.",
     `Your reply ended your turn. It read:\n"""\n${shown}\n"""`,
     'Say where that reply left things, so the loop knows whether to prompt you again. Answer with one JSON object and nothing else:',
-    '{"outcome": "done" | "started" | "needs-person" | "blocked", "question": "…", "options": [{"label": "…", "effect": "…"}], "reason": "…"}',
+    '{"outcome": "done" | "started" | "needs-person" | "blocked" | "waiting", "question": "…", "options": [{"label": "…", "effect": "…"}], "reason": "…", "waits": [{"story": "ST-n", "on": ["ST-n"], "why": "…"}]}',
     '- done: you finished what was asked, or there was nothing to do.',
     '- started: you started work that carries on without you, such as lane agents.',
     "- needs-person: you asked the person something, or wait on their answer, approval or feedback before you go on. question: what you wait on, as one question; options: 2 to 4 answers they could give (a label of at most five words, and what it does), or [] when it's theirs to put in words.",
-    "- blocked: you didn't take the step, for a reason no answer from the person settles now. reason: why, in a sentence.",
+    "- waiting: the step isn't due yet for some or all of its stories: they wait on other work still going (a lane building a story they merge with, a rebuild, a check running). waits: one entry per story that waits, with the stories it waits on (their ST ids, [] when it's other work) and why, in a few words. Use this, not done, when you said a story can't be taken yet.",
+    "- blocked: you didn't take the step, for a reason no answer from the person settles now and no work in flight will change. reason: why, in a sentence.",
   ].join('\n');
 }
 
@@ -203,11 +257,21 @@ export function readOutcome(text) {
     .map((o) => ({ label: words(o?.label, 40), effect: words(o?.effect, 200) }))
     .filter((o) => o.label)
     .slice(0, 4);
+  const story = (v) =>
+    typeof v === 'string' && /^ST-\d+$/i.test(v.trim()) ? v.trim().toUpperCase() : null;
+  const waits = (Array.isArray(parsed.waits) ? parsed.waits : [])
+    .map((w) => ({
+      story: story(w?.story),
+      on: (Array.isArray(w?.on) ? w.on : []).map(story).filter(Boolean),
+      why: words(w?.why, 200),
+    }))
+    .filter((w) => w.story);
   return {
     outcome: parsed.outcome,
     question: words(parsed.question, 400),
     options: options.length >= 2 ? options : [],
     reason: words(parsed.reason, 300),
+    waits,
   };
 }
 

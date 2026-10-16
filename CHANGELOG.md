@@ -2,6 +2,14 @@
 
 What changed in each release of code-kit, newest first. Versions follow the plugin manifest and the npm package `@warren-dean/code-kit`. Each release is also on [GitHub Releases](https://github.com/warrendeanlangeveldt/code-kit/releases).
 
+## 0.16.1 (2026-10-16)
+
+The lead loop stops asking for stories that are waiting on other work.
+
+- When the lead says a story isn't due yet because it waits on work still going, such as a paired story a lane is building, a rebuild or a check running, the loop parks that story. A parked story is left out of every step, so a step that names it with others prompts the lead only for the others. Before, the loop held a declined step only while the step stayed exactly the same, so when one more story became ready, or any lane committed, it prompted the same reviews again.
+- A parked story wakes when what it waits on moves: its own branch or state, the stories the lead named, or the unfinished stories in the plan that depend on it. Other lanes' commits don't wake it. After 30 minutes with nothing moving, the lead is asked once more.
+- The band's next row says what each parked story waits on. A step the lead declined for another reason no longer holds up every other step.
+
 ## 0.16.0 (2026-10-16)
 
 The lead runs the team inside your guardrails, and lanes ask the lead, never you.

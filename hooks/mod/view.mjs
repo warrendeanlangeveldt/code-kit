@@ -101,6 +101,8 @@ export function projectState(check, status, next = null, atWork = new Set()) {
       worktree: s.worktree ?? null,
       requirements: s.requirements ?? [],
       waitingOn: s.waitingOn ?? [],
+      // LOOP-13: a parked story watches the stories building on it.
+      dependsOn: s.dependsOn ?? [],
       milestone: s.milestone ?? null,
     })),
   };
