@@ -365,3 +365,11 @@ Intents move from issues to discussions in the Intents category, through GitHub'
 **Status:** done
 
 Refusals tell a lane what the lead decides, with no command for the person; `requests --json` marks each request the lead's or the person's; `approve --delegated` takes a package for a story, with the npm registry rules for npm's packages only; `next` returns `decide` while a lane waits on the lead, and the loop prompts `/code-kit:decide`; the band shows only the person's decisions, and the mod no longer approves within the delegated rules for the lead. Init proposes the split; the lead and lane templates, and the dispatch, review and next skills, send lanes to the lead.
+
+### ST-38 A lean lead
+
+**Lane:** lead
+**Requirements:** LEAN-1, LEAN-2, LEAN-3
+**Status:** done
+
+Lanes write their full report to `.claude/state/reports/<branch>.md` and hand back a few lines, required by the stop hook; the lane template stops progress messages; the review, dispatch and decide skills read the report when they need it; `harness.compact.milestone` compacts the lead's context when a milestone finishes, asked by default.

@@ -40,6 +40,8 @@ import {
   laneModel,
   leadPrompt,
   outcomePrompt,
+  compactInstructions,
+  milestonesDone,
   parkWatch,
   readOutcome,
   stepStories,
@@ -595,6 +597,21 @@ test('LOOP-13 stories waiting on other work: read from the reply, watched, and l
   assert.match(wait.why, /ST-158 waits on ST-164; the loop goes on when one moves/);
 });
 
+test("LEAN-3 a milestone done is one whose every story is done, and the summary keeps what's in flight", () => {
+  const stories = [
+    { id: 'ST-1', milestone: 'M0', state: 'done' },
+    { id: 'ST-2', milestone: 'M0', state: 'done' },
+    { id: 'ST-3', milestone: 'M1', state: 'done' },
+    { id: 'ST-4', milestone: 'M1', state: 'in review' },
+    { id: 'ST-5', state: 'done' },
+  ];
+  assert.deepEqual(milestonesDone(stories), ['M0']);
+  const said = compactInstructions('M0');
+  assert.match(said, /^M0 is done/);
+  assert.match(said, /every story in flight now/);
+  assert.match(said, /Drop: the finished stories' details, lane reports/);
+});
+
 test("SET-4 a lane agent's model: the lead's choice, then its agent file's, then the setting", async () => {
   const { harnessProblems, harnessSettings } = await import('../hooks/lib/harness.mjs');
   const lanes = { web: { agent: 'web-engineer' }, api: { agent: 'api-engineer' } };
@@ -888,8 +905,13 @@ test('SET-1 the harness settings: defaults, validation and typed values', async 
     stall: { nudgeMinutes: 5, restartMinutes: 10, maxRestarts: 2 },
     agents: { reviewer: { on: false, model: null }, lanes: { model: null } },
     background: { pauseAtPercent: 80 },
+    compact: { milestone: 'ask' },
     report: { on: false },
   });
+  assert.match(
+    harnessProblems({ compact: { milestone: 'sometimes' } }).join(' '),
+    /ask, auto, off/,
+  );
   assert.equal(
     harnessSettings({ autonomy: 'propose', stall: { nudgeMinutes: 3 } }).stall.nudgeMinutes,
     3,

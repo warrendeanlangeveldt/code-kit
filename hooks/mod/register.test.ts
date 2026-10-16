@@ -74,6 +74,7 @@ function project() {
     refs: ' aaa refs/heads/main\n bbb refs/heads/web/st-4\n',
     agents: [] as { type: string; status: string; id?: string; description?: string }[],
     limits: [] as { kind: string; percentUsed: number }[],
+    contextPercent: 0, // LEAN-3: how full the lead's context is
     approveExit: 0,
     mergeExit: 0,
     answer: 'Merge',
@@ -403,7 +404,9 @@ function stub(on: any, w: World) {
     w.spawned.push(e);
     return { model: e.model ?? 'claude-opus-5-5', agentId: `a-${w.spawned.length}` };
   });
-  on('session.usage', () => ({ value: { startedAt: 0, context: {}, rateLimits: w.limits } }));
+  on('session.usage', () => ({
+    value: { startedAt: 0, context: { percent: w.contextPercent }, rateLimits: w.limits },
+  }));
   on('session.measure', ($: any, e: any) => ({ changed: e.changed }));
   // A model request, answered with the usage the test gave it.
   on('turn.step', async function* ($: any, e: any) {
@@ -2508,6 +2511,59 @@ test('LOOP-11 dismissed, what the lead waits on stays in the band, and the loop 
   await leadSays($, 't-3', 'Updated the plan names.');
   await settle(clock);
   expect(w.prompts.at(-1)).toBe('Review ST-4: run /code-kit:review ST-4.');
+});
+
+test("LEAN-3 when a milestone finishes, the person is asked to compact the lead's context first, and the loop goes on after", async ($, on) => {
+  const w = project();
+  w.stories = [
+    {
+      id: 'ST-1',
+      title: 'Foundations',
+      lane: 'web',
+      state: 'in review',
+      branch: 'web/st-1',
+      milestone: 'M0',
+      waitingOn: [],
+    },
+    ...w.stories.map((s) => ({ ...s, milestone: 'M1' })),
+  ];
+  const compacted: string[] = [];
+  w.contextPercent = 62;
+  on('session.compact', ($: any, e: any) => {
+    compacted.push(e.instructions);
+    // A compaction leaves the summary in the conversation's place.
+    return {
+      messages: [
+        { role: 'user', text: 'Summary: M0 done; ST-4 in progress on web/st-4.', toolUses: [] },
+      ],
+    };
+  });
+  const clock = await start($, on, w);
+  await leadTurn($);
+  await settle(clock);
+  expect(compacted).toEqual([]);
+  const prompted = w.prompts.length;
+  // ST-1 merges: M0 is done, and the next turn's end asks before the loop's next step.
+  w.stories[0] = { ...w.stories[0], state: 'done' };
+  w.refs += ' m1 refs/heads/main-moved\n';
+  await clock.advance(2000);
+  w.answer = 'Compact now';
+  await leadTurn($, 't-2');
+  await settle(clock);
+  expect(w.asked.at(-1)?.question).toMatch(
+    /^M0 is done, and the lead's context is 62% full\. Compact it/,
+  );
+  expect(w.asked.at(-1)?.options).toEqual(['Compact now', 'Not now']);
+  expect(compacted).toHaveLength(1);
+  expect(compacted[0]).toMatch(/^M0 is done/);
+  expect(compacted[0]).toMatch(/every story in flight now/);
+  // The loop's step follows the compaction.
+  expect(w.prompts.length).toBeGreaterThan(prompted);
+  // The same milestone isn't offered twice, and a context below the floor isn't worth compacting.
+  w.contextPercent = 10;
+  await leadTurn($, 't-3');
+  await settle(clock);
+  expect(compacted).toHaveLength(1);
 });
 
 test('LOOP-13 stories the lead says wait on other work are parked, each until what it waits on moves', async ($, on) => {

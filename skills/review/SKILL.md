@@ -14,6 +14,7 @@ The CLI is `node "${CLAUDE_PLUGIN_ROOT}/bin/code-kit.mjs"`. `<base>` is the bran
 - **The branch and its story.** `status --json` lists each story with its branch, its commits ahead of the base, and its worktree, if one is checked out. For a pull request, `gh pr view <n> --json headRefName,baseRefName` gives both.
 - **Where to run things.** Use the branch's worktree if it has one. Otherwise check it out in a throwaway worktree: `git worktree add .claude/worktrees/review-st-<n> <branch>`, and remove it when you're done.
 - **The spec-check report** is in that worktree, in `.claude/state/spec-check/<branch with / as _>.md`. The state folder isn't committed, so a branch pushed from elsewhere may not have one. Say so, and review against the specs directly.
+- **The lane's report** is beside it, in `.claude/state/reports/<branch with / as _>.md`: what it did, the commands it ran with their output, and what's left. Its hand-back to you was a few lines naming this file; read the file here, not before, and only the parts the review needs.
 
 ## 2. Run the rules
 

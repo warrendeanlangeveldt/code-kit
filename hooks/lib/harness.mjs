@@ -6,6 +6,9 @@ export const AUTONOMY = ['autonomous', 'propose', 'off'];
 export const MODELS = ['haiku', 'sonnet', 'opus'];
 
 /** Each setting by its dotted key: its default, and why a value is wrong (or null when it's right). */
+/** LEAN-3: what the loop does with the lead's context when a milestone finishes. */
+export const COMPACT = ['ask', 'auto', 'off'];
+
 export const SETTINGS = {
   autonomy: {
     default: 'autonomous',
@@ -65,6 +68,12 @@ export const SETTINGS = {
     problem: (v) =>
       Number.isFinite(v) && v > 0 && v <= 100 ? null : 'must be a percentage from 1 to 100',
     about: "The plan's 5-hour use at which background agents pause",
+  },
+  'compact.milestone': {
+    default: 'ask',
+    problem: (v) => (COMPACT.includes(v) ? null : `must be one of ${COMPACT.join(', ')}`),
+    about:
+      "When a milestone finishes, compact the lead's context before the next: ask you, do it, or leave it",
   },
   'report.on': {
     default: false,

@@ -58,7 +58,10 @@ import {
   leadPrompt,
   nudgeText,
   outcomePrompt,
+  COMPACT_FLOOR,
   PARK_MS,
+  compactInstructions,
+  milestonesDone,
   parkWatch,
   readOutcome,
   restartPrompt,
@@ -128,6 +131,8 @@ const loop = {
   handedDesign: new Set(), // LOOP-12: design stories handed to the lead this session
   // LOOP-13: stories the lead said wait on other work: id → { on, why, watch, sig, at }
   parked: new Map(),
+  // LEAN-3: the milestones already done when this session first looked, and those finished since.
+  milestones: null,
 };
 // LOOP-10: whether this session runs the loop, the session that does when another does, and when this
 // one last renewed its lease.
@@ -1144,6 +1149,55 @@ export function register(on) {
         for (const [id, p] of loop.parked)
           if (now - p.at >= PARK_MS || seen.sig(p.watch) !== p.sig) loop.parked.delete(id);
       },
+      // LEAN-3: a milestone finished in this session: the lead's context is compacted before the next,
+      // asked in Claude Code's dialog or done at once, as compact.milestone says. True when it took over
+      // the turn's end, so the loop's step waits until the compaction is done or declined.
+      compactAtMilestone: async () => {
+        const done = milestonesDone(model.state?.stories ?? []);
+        if (loop.milestones === null) {
+          loop.milestones = new Set(done);
+          return false;
+        }
+        const fresh = done.filter((m) => !loop.milestones.has(m));
+        if (!fresh.length) return false;
+        const mode = harness().compact?.milestone ?? 'ask';
+        if (mode === 'off' || offering || !where.interactive || (lease.other && !lease.mine)) {
+          for (const m of fresh) loop.milestones.add(m);
+          return false;
+        }
+        const box = await $.prompt.read().catch(() => null);
+        if (box?.text?.trim()) return false;
+        for (const m of fresh) loop.milestones.add(m);
+        const percent = (await $.session.usage().catch(() => null))?.context?.percent ?? 0;
+        if (percent < COMPACT_FLOOR) return false;
+        const milestone = fresh.at(-1);
+        const compact = async () => {
+          const r = await $.session
+            .compact({ instructions: compactInstructions(milestone) })
+            .catch((err) => ({ skip: String(err?.message ?? err) }));
+          if (r?.skip) notice = `The lead's context wasn't compacted: ${r.skip}`;
+          await act.record('compact', milestone);
+          $.ui.invalidate('ui.render');
+          await act.step('resume').catch(() => {});
+        };
+        if (mode === 'auto') {
+          compact().catch(() => {});
+          return true;
+        }
+        offering = true;
+        $.ui
+          .ask(
+            `${milestone} is done, and the lead's context is ${Math.round(percent)}% full. Compact it before the next milestone? The summary keeps what's in flight and what waits on you, and drops the finished stories' detail.`,
+            { options: ['Compact now', 'Not now'], header: 'Context' },
+          )
+          .catch(() => null)
+          .then(async (answer) => {
+            offering = false;
+            if (answer === 'Compact now') await compact();
+            else await act.step('resume').catch(() => {});
+          });
+        return true;
+      },
       // LOOP-11: the lead's last reply, read once before the loop prompts it again. A reply that waits on
       // the person, or a turn they stopped, holds the loop until they speak; a step the lead didn't take
       // holds that step while it's still next.
@@ -1981,6 +2035,8 @@ export function register(on) {
         $.prompt.submit({ text }).catch(() => {});
         return res;
       }
+      // LEAN-3: a milestone just finished: its compaction comes before the next step.
+      if (await act?.compactAtMilestone().catch(() => false)) return res;
       await act?.step('turn').catch(() => {});
       // DECIDE-4: a decision waiting, asked in Claude Code's own dialog; not awaited, the person answers.
       act?.offer().catch(() => {});
