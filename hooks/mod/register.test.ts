@@ -2533,7 +2533,9 @@ test("LEAN-3 when a milestone finishes, the person is asked to compact the lead'
     compacted.push(e.instructions);
     // A compaction leaves the summary in the conversation's place.
     return {
-      messages: [{ role: 'user', text: 'Summary: M0 done; ST-4 in progress on web/st-4.' }],
+      messages: [
+        { role: 'user', text: 'Summary: M0 done; ST-4 in progress on web/st-4.', toolUses: [] },
+      ],
     };
   });
   const clock = await start($, on, w);
