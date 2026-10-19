@@ -5427,6 +5427,99 @@ else process.exit(1);
     );
   }
 
+  // --- LEAN-6: worktrees released for a fresh agent, and pruned once merged ------------------------
+  {
+    const t = newRepo();
+    cleanups.push(t.dir);
+    const tCli = (...args) =>
+      spawnSync('node', [kitCli, ...args], { cwd: t.dir, encoding: 'utf8' });
+    const tree = (branch) => join(t.dir, '.claude/worktrees', branch.replace('/', '-'));
+    for (const branch of ['web/st-1', 'web/st-2']) {
+      t.git('worktree', 'add', '-q', '-b', branch, tree(branch), 'main');
+      writeFileSync(join(tree(branch), `${branch.replace('/', '-')}.txt`), 'work\n');
+      execFileSync('git', [
+        '-C',
+        tree(branch),
+        '-c',
+        'user.email=t@t',
+        '-c',
+        'user.name=t',
+        'add',
+        '-A',
+      ]);
+      execFileSync('git', [
+        '-C',
+        tree(branch),
+        '-c',
+        'user.email=t@t',
+        '-c',
+        'user.name=t',
+        'commit',
+        '-q',
+        '-m',
+        branch,
+      ]);
+      mkdirSync(join(tree(branch), '.claude/state/reports'), { recursive: true });
+      writeFileSync(
+        join(tree(branch), `.claude/state/reports/${branch.replace('/', '_')}.md`),
+        `# ${branch}\n`,
+      );
+    }
+    t.git('merge', '-q', '--no-ff', '-m', 'merge st-1', 'web/st-1');
+    const listed = JSON.parse(tCli('worktrees', '--json').stdout);
+    expect(
+      'LEAN-6 worktrees lists each with its story, whether it is merged and clean, and its report',
+      truth(
+        listed.some(
+          (w) => w.branch === 'web/st-1' && w.story === 'ST-1' && w.merged && w.clean && w.report,
+        ) && listed.some((w) => w.branch === 'web/st-2' && !w.merged),
+        JSON.stringify(listed),
+      ),
+      0,
+    );
+    writeFileSync(join(tree('web/st-2'), 'web-st-2.txt'), 'changed\n');
+    expect(
+      'a worktree with uncommitted work is never released',
+      tCli('worktrees', 'release', 'web/st-2'),
+      1,
+      'uncommitted changes',
+    );
+    execFileSync('git', ['-C', tree('web/st-2'), 'checkout', '-q', '--', '.']);
+    expect(
+      'released for a fresh agent: the worktree goes, the branch and its report stay',
+      truth(
+        tCli('worktrees', 'release', 'web/st-2').status === 0 &&
+          !existsSync(tree('web/st-2')) &&
+          existsSync(join(t.dir, '.claude/state/reports/web_st-2.md')) &&
+          t.git('branch', '--list', 'web/st-2').includes('web/st-2'),
+      ),
+      0,
+    );
+    expect(
+      'prune removes the merged and clean one, keeping its report',
+      truth(
+        tCli('worktrees', 'prune').status === 0 &&
+          !existsSync(tree('web/st-1')) &&
+          existsSync(join(t.dir, '.claude/state/reports/web_st-1.md')),
+      ),
+      0,
+    );
+    expect(
+      'a lane may not release or prune worktrees',
+      spawnSync('node', [join(hooks, 'guard-bash.mjs')], {
+        input: JSON.stringify({
+          cwd: t.dir,
+          tool_input: { command: `node "${kitCli}" worktrees prune` },
+          agent_type: 'web-engineer',
+        }),
+        env: { ...process.env, CLAUDE_PROJECT_DIR: t.dir },
+        encoding: 'utf8',
+      }),
+      2,
+      "releasing worktrees is the lead's",
+    );
+  }
+
   // --- ONB-8: code-kit's own instructions, kept current ---------------------------------------------
   {
     const k = newRepo();

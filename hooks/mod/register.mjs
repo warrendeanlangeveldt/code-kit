@@ -61,6 +61,9 @@ import {
   COMPACT_FLOOR,
   PARK_MS,
   compactInstructions,
+  continuePrompt,
+  requestContext,
+  wrapUpText,
   milestonesDone,
   parkWatch,
   readOutcome,
@@ -1049,6 +1052,23 @@ export function register(on) {
         const who = attribution(agentId, agentsSeen.get(agentId) ?? null, model.check, model.state);
         ledger = withUsage(ledger, who, usage);
         $.ui.invalidate('ui.render');
+        // LEAN-5: a lane agent past its context limit is told to wrap up; its story goes on fresh.
+        const limit = harness().agents.lanes.contextLimit;
+        const agent = agentId ? agentsSeen.get(agentId) : null;
+        const lane = Object.entries(model.check?.lanes ?? {}).find(
+          ([, l]) => l.agent === agent?.type,
+        );
+        if (!limit || !lane || requestContext(usage) < limit) return;
+        const a = activityOf(agentId, await $.clock.now());
+        if (a.overflow) return;
+        a.overflow = true;
+        a.lane = lane[0];
+        a.story = who.story ?? a.story ?? lane[0];
+        await act.record(
+          'wrap up',
+          `${lane[0]} · ${a.story} at ${Math.round(requestContext(usage) / 1000)}k`,
+        );
+        await $.session.send({ to: { agentId }, text: wrapUpText(limit) }).catch(() => {});
       },
       // --- the lead loop (spec 05) ---------------------------------------------------------------
       record: async (kind, target, prompt) => {
@@ -1177,14 +1197,15 @@ export function register(on) {
         const done = milestonesDone(model.state?.stories ?? []);
         if (loop.milestones === null) {
           loop.milestones = new Set(done);
-          return false;
+          return act.compactAtThreshold();
         }
         const fresh = done.filter((m) => !loop.milestones.has(m));
-        if (!fresh.length) return false;
+        // LEAN-4: past compact.at, the lead's context is compacted between turns, milestone or not.
+        if (!fresh.length) return act.compactAtThreshold();
         const mode = harness().compact?.milestone ?? 'ask';
         if (mode === 'off' || offering || !where.interactive || (lease.other && !lease.mine)) {
           for (const m of fresh) loop.milestones.add(m);
-          return false;
+          return act.compactAtThreshold();
         }
         const box = await $.prompt.read().catch(() => null);
         if (box?.text?.trim()) return false;
@@ -1216,6 +1237,25 @@ export function register(on) {
             offering = false;
             if (answer === 'Compact now') await compact();
             else await act.step('resume').catch(() => {});
+          });
+        return true;
+      },
+      // LEAN-4: the lead's context compacted at once when it's past compact.at; true when it took over.
+      compactAtThreshold: async () => {
+        const at = harness().compact?.at ?? 40;
+        if (!at || offering || !where.interactive || (lease.other && !lease.mine)) return false;
+        const percent = (await $.session.usage().catch(() => null))?.context?.percent ?? 0;
+        if (percent < Math.max(at, COMPACT_FLOOR)) return false;
+        const box = await $.prompt.read().catch(() => null);
+        if (box?.text?.trim()) return false;
+        Promise.resolve()
+          .then(() => $.session.compact({ instructions: compactInstructions() }))
+          .catch((err) => ({ skip: String(err?.message ?? err) }))
+          .then(async (r) => {
+            if (r?.skip) notice = `The lead's context wasn't compacted: ${r.skip}`;
+            await act.record('compact', `at ${Math.round(percent)}%`);
+            $.ui.invalidate('ui.render');
+            await act.step('resume').catch(() => {});
           });
         return true;
       },
@@ -1258,9 +1298,15 @@ export function register(on) {
           return;
         }
         if (!reply.text.trim()) return act.parkUnmoved(sent, null);
-        const said = await act.sideCall(
-          outcomePrompt({ prompt: sent?.prompt ?? null, answer: reply.text }),
-        );
+        // LEAN-6: the reply and the prompt it answered are enough to read it, so a small model reads
+        // them, instead of a fork over the lead's whole conversation on its own model at every turn's end.
+        const said = await $.model
+          .complete({
+            model: 'sonnet',
+            prompt: outcomePrompt({ prompt: sent?.prompt ?? null, answer: reply.text }),
+            maxTokens: 600,
+          })
+          .catch(() => ({ isAnswered: false }));
         const heard = said.isAnswered ? readOutcome(said.text) : null;
         // Spec 05's data: what came of the step, once known.
         const record = sent ? loop.steps.findLast((x) => x.prompt === sent.prompt) : null;
@@ -2021,6 +2067,16 @@ export function register(on) {
   // SET-4: a lane agent starts on the lane model the person set, unless the lead's call names one or
   // the lane's agent file sets its own.
   on('agent.spawn', async ($, e, next) => {
+    // LEAN-7: the security reviewer runs on the reviewers' model, unless the call or its file names one.
+    const reviewerModel = harness().agents.reviewer.model;
+    if (e.subagentType === 'security-reviewer' && reviewerModel && !e.model) {
+      const file = where
+        ? await $.fs.read(`${where.cwd}/.claude/agents/security-reviewer.md`).catch(() => null)
+        : null;
+      const own = typeof file === 'string' ? agentFileModel(file) : null;
+      if (!own || own === 'inherit') return next({ ...e, model: reviewerModel });
+      return next(e);
+    }
     const setting = harness().agents.lanes.model;
     const lanes = model.check?.lanes ?? {};
     if (!setting || e.model || !Object.values(lanes).some((l) => l.agent === e.subagentType))
@@ -2078,7 +2134,25 @@ export function register(on) {
     const res = await next(e);
     // LOOP-3: a lane agent that has handed back its work isn't stalled while it waits; a message that
     // starts it again shows as its next tool call.
-    if (e.agentId) activityOf(e.agentId, await $.clock.now()).handedBack = true;
+    if (e.agentId) {
+      const a = activityOf(e.agentId, await $.clock.now());
+      a.handedBack = true;
+      // LEAN-5: an agent that handed back at its limit: the lead carries its story on with a fresh one.
+      if (a.overflow && !a.continued && act) {
+        a.continued = true;
+        const agent = agentsSeen.get(e.agentId);
+        const story = (model.state?.stories ?? []).find((s) => s.id === a.story);
+        loop.pending.push({
+          story: a.story,
+          prompt: continuePrompt({
+            type: agent?.type ?? 'The lane agent',
+            story: a.story,
+            branch: story?.branch ?? null,
+            cli: where?.cli,
+          }),
+        });
+      }
+    }
     // REVW-3: a subagent's last turn may be the reviewer's report.
     if (e.agentId && act) await act.reviewed(e.agentId, e.answer).catch(() => {});
     // LOOP-1: the lead is idle; the loop's next step, if one is due (submitted from turn.complete,

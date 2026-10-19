@@ -41,7 +41,10 @@ import {
   leadPrompt,
   outcomePrompt,
   compactInstructions,
+  continuePrompt,
   milestonesDone,
+  requestContext,
+  wrapUpText,
   parkWatch,
   readOutcome,
   stepStories,
@@ -638,6 +641,25 @@ test("LEAN-3 a milestone done is one whose every story is done, and the summary 
   assert.match(said, /Drop: the finished stories' details, lane reports/);
 });
 
+test('LEAN-4 to LEAN-5 the context a request carried, the wrap-up, and carrying a story on', () => {
+  assert.equal(
+    requestContext({
+      input_tokens: 10,
+      cache_read_input_tokens: 200,
+      cache_creation_input_tokens: 5,
+      output_tokens: 99,
+    }),
+    215,
+  );
+  assert.equal(requestContext(null), 0);
+  assert.match(wrapUpText(250000), /^Your context is past 250k tokens/);
+  assert.match(compactInstructions(), /^The lead's context is compacted between turns/);
+  assert.equal(
+    continuePrompt({ type: 'api-engineer', story: 'ST-9', branch: 'api/st-9', cli: '/k.mjs' }),
+    'api-engineer handed ST-9 back at its context limit, with its work committed on api/st-9. Carry the story on with a fresh agent: run node "/k.mjs" worktrees release api/st-9 (it keeps the commits and moves the report to the main checkout), then dispatch ST-9 again with the same brief, adding "Read your earlier report first: .claude/state/reports/api_st-9.md in the main checkout": /code-kit:dispatch ST-9',
+  );
+});
+
 test("SET-4 a lane agent's model: the lead's choice, then its agent file's, then the setting", async () => {
   const { harnessProblems, harnessSettings } = await import('../hooks/lib/harness.mjs');
   const lanes = { web: { agent: 'web-engineer' }, api: { agent: 'api-engineer' } };
@@ -935,9 +957,12 @@ test('SET-1 the harness settings: defaults, validation and typed values', async 
     autonomy: 'autonomous',
     hold: { minutes: 2 },
     stall: { nudgeMinutes: 5, restartMinutes: 10, maxRestarts: 2 },
-    agents: { reviewer: { on: false, model: null }, lanes: { model: null } },
+    agents: {
+      reviewer: { on: false, model: 'sonnet' },
+      lanes: { model: null, contextLimit: 250000 },
+    },
     background: { pauseAtPercent: 80 },
-    compact: { milestone: 'ask' },
+    compact: { at: 40, milestone: 'ask' },
     notify: { on: true },
     report: { on: false },
   });

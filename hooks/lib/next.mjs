@@ -1,7 +1,7 @@
 // What to do next, from the project's state alone: no docs → spec-design; a spec still being shaped →
 // spec-design; a ready spec or existing code without the kit → init; then, from the plan and git:
 // review finished stories, dispatch ready ones, wait on running ones, or plan the next milestone.
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join, posix } from 'node:path';
 import { loadConfig, mergeDelegation } from './config.mjs';
@@ -254,6 +254,12 @@ export function nextStep(root, base) {
     attention.push(
       `${unbuildable.join(', ')} can't be dispatched until the plan's gaps are fixed.`,
     );
+  // LEAN-6: worktrees whose story is merged and which hold nothing uncommitted are only disk space.
+  const leftovers = mergedWorktrees(root, config);
+  if (leftovers)
+    attention.push(
+      `${leftovers} worktree${leftovers === 1 ? ' is' : 's are'} merged and clean; \`code-kit worktrees prune\` removes them, keeping their reports.`,
+    );
   // ONB-8: code-kit's own instructions to the lead and the lanes, brought up to date before the next step:
   // a newer code-kit's rules reach the agents only through them.
   const instructions = instructionsState(root, config);
@@ -484,4 +490,24 @@ export function missingSkills(root) {
       );
   }
   return out;
+}
+
+/** LEAN-6: how many of the project's worktrees have a merged branch and nothing uncommitted. */
+function mergedWorktrees(root, config) {
+  const list = git(root, 'worktree', 'list', '--porcelain');
+  if (!list) return 0;
+  const from = config.branches?.protected?.[0];
+  if (!from || !git(root, 'rev-parse', '--verify', '-q', from)) return 0;
+  let n = 0;
+  for (const block of list.split('\n\n').slice(1)) {
+    const path = /^worktree (.+)$/m.exec(block)?.[1];
+    const branch = /^branch refs\/heads\/(.+)$/m.exec(block)?.[1];
+    if (!path || !branch) continue;
+    const merged =
+      spawnSync('git', ['merge-base', '--is-ancestor', branch, from], { cwd: root }).status === 0;
+    if (!merged) continue;
+    const status = spawnSync('git', ['-C', path, 'status', '--porcelain'], { encoding: 'utf8' });
+    if (status.status === 0 && !status.stdout.trim()) n++;
+  }
+  return n;
 }

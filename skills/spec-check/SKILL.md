@@ -12,7 +12,7 @@ The project's specs are in the folder named by `docs.specs` in `.claude/code-kit
 1. **Find the section.** The task should name its requirement IDs (`BOOK-4`, headings in the specs) or a spec section. If it doesn't, search the specs folder for the domain nouns. Read the whole section, not just the matching lines, plus every section it references.
 2. **Read the principles.** Re-read the parts of `docs.principles` that apply: layers, ports and providers, events, testing and the rules for agents. Note this lane's layer rules from `layers` in the config.
 3. **Make a checklist.** One line per requirement: behaviour, fields, error cases, permissions, states, tests.
-4. **Compare with the code.** For each line, search for where it's implemented, then read those files in full.
+4. **Compare with the code.** For each line, search for where it's implemented, then read what implements it: the functions and types the requirement touches, not every file around them.
 5. **Report** as a table:
 
 | Requirement | Status (done / partial / missing / conflicts) | Where | Note |

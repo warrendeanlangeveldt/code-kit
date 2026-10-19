@@ -382,6 +382,8 @@ function stub(on: any, w: World) {
   });
   on('model.complete', ($: any, e: any) => {
     w.sideAsks.push({ model: e.model, prompt: e.prompt });
+    // LEAN-6: the loop reads the lead's reply with a small model; the test's reading answers it.
+    if (/Say where that reply left things/.test(e.prompt)) return { value: w.sideReply };
     return { value: { isAnswered: true, text: 'From the facts alone.', usage: null } };
   });
   // Claude Code's own settings hooks beneath: none answer a permission denial.
@@ -2312,6 +2314,60 @@ test(
   },
 );
 
+test('LEAN-5 a lane agent past its context limit is told to wrap up, and its story goes on with a fresh agent', async ($, on) => {
+  const w = project();
+  w.next = { step: 'wait', args: '', then: [] };
+  w.agents = [
+    { id: 'a1', type: 'web-engineer', description: 'ST-4 booking form', status: 'running' },
+  ];
+  const clock = await start($, on, w);
+  await clock.advance(2000);
+  await request($, 'a1', 100);
+  expect(w.sent).toEqual([]);
+  // 270k of context, past the 250k limit: told once, however many requests follow.
+  await request($, 'a1', 300);
+  await request($, 'a1', 320);
+  expect(w.sent).toHaveLength(1);
+  expect(w.sent[0].text).toMatch(/^Your context is past 250k tokens/);
+  await $.turn.complete({
+    turnId: 't-a1',
+    agentId: 'a1',
+    answer: 'ST-4: committed, report written.',
+    durationMs: 1,
+    isAborted: false,
+  } as any);
+  await leadTurn($, 't-2');
+  await settle(clock);
+  expect(w.prompts.at(-1)).toMatch(
+    /^web-engineer handed ST-4 back at its context limit, with its work committed on web\/st-4\. Carry the story on with a fresh agent: run node ".*" worktrees release web\/st-4/,
+  );
+  expect(w.prompts.at(-1)).toMatch(
+    /Read your earlier report first: \.claude\/state\/reports\/web_st-4\.md/,
+  );
+});
+
+test("LEAN-4 past compact.at the lead's context is compacted between turns, without asking", async ($, on) => {
+  const w = project();
+  const compacted: string[] = [];
+  on('session.compact', ($: any, e: any) => {
+    compacted.push(e.instructions);
+    return {
+      messages: [{ role: 'user', text: 'Summary: ST-4 in progress on web/st-4.', toolUses: [] }],
+    };
+  });
+  w.contextPercent = 35;
+  const clock = await start($, on, w);
+  await leadTurn($);
+  await settle(clock);
+  expect(compacted).toEqual([]);
+  w.contextPercent = 46;
+  await leadTurn($, 't-2');
+  await settle(clock);
+  expect(compacted).toHaveLength(1);
+  expect(compacted[0]).toMatch(/^The lead's context is compacted between turns/);
+  expect(w.asked.filter((a) => /Compact/.test(a.question))).toEqual([]);
+});
+
 test('LOOP-3 an agent whose work is done is never nudged or restarted: it handed back, or its branch waits in the merge queue', async ($, on) => {
   const w = project();
   w.next = { step: 'wait', args: '', then: [] };
@@ -2477,7 +2533,9 @@ test("LOOP-11 a reply that waits on the person holds the loop; the dialog asks t
   await leadSays($, 't-2', 'Before I dispatch ST-9: should its prices include GST?');
   await settle(clock);
   // The side call read the reply over the lead's own conversation, with the step it answered.
-  expect(w.sideAsks.at(-1).fork).toBe(true);
+  // LEAN-6: read by a small model from the reply itself, not a fork over the lead's conversation.
+  expect(w.sideAsks.at(-1).fork).toBeUndefined();
+  expect(w.sideAsks.at(-1).model).toBe('sonnet');
   expect(w.sideAsks.at(-1).prompt).toMatch(/prompted you: "Dispatch ST-9/);
   expect(w.sideAsks.at(-1).prompt).toMatch(/should its prices include GST\?/);
   expect(w.asked.at(-1)).toEqual({
@@ -2541,7 +2599,8 @@ test("LEAN-3 when a milestone finishes, the person is asked to compact the lead'
     ...w.stories.map((s) => ({ ...s, milestone: 'M1' })),
   ];
   const compacted: string[] = [];
-  w.contextPercent = 62;
+  // Under compact.at (40%), so only the milestone brings the question.
+  w.contextPercent = 30;
   on('session.compact', ($: any, e: any) => {
     compacted.push(e.instructions);
     // A compaction leaves the summary in the conversation's place.
@@ -2561,6 +2620,7 @@ test("LEAN-3 when a milestone finishes, the person is asked to compact the lead'
   w.refs += ' m1 refs/heads/main-moved\n';
   await clock.advance(2000);
   w.answer = 'Compact now';
+  w.contextPercent = 62;
   await leadTurn($, 't-2');
   await settle(clock);
   expect(w.asked.at(-1)?.question).toMatch(
@@ -2901,6 +2961,17 @@ test('SET-4 with no lane model set, lane agents start as Claude Code decides', a
   await start($, on, w);
   await dispatch($, 'core-engineer');
   expect(w.spawned[0].model ?? null).toBe(null);
+});
+
+test("LEAN-7 the security reviewer starts on the reviewers' model, Sonnet unless set, and its own file's model wins", async ($, on) => {
+  const w = project();
+  await start($, on, w);
+  await dispatch($, 'security-reviewer');
+  await dispatch($, 'security-reviewer', 'opus');
+  w.agentFiles['/work/.claude/agents/security-reviewer.md'] =
+    '---\nname: security-reviewer\nmodel: opus\n---\n';
+  await dispatch($, 'security-reviewer');
+  expect(w.spawned.map((e) => e.model ?? null)).toEqual(['sonnet', 'opus', null]);
 });
 
 // --- the reviewer -----------------------------------------------------------------------------------
