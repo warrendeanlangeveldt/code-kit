@@ -340,10 +340,27 @@ export function milestonesDone(stories = []) {
   return [...by].filter(([, list]) => list.every((s) => s.state === 'done')).map(([m]) => m);
 }
 
-/** LEAN-3: what the lead's summary keeps when its context is compacted after a milestone. */
-export const compactInstructions = (milestone) =>
+/** LEAN-3, LEAN-4: what the lead's summary keeps when its context is compacted, after a milestone or not. */
+export const compactInstructions = (milestone = null) =>
   [
-    `${milestone} is done; the build goes on with the next milestone.`,
+    milestone
+      ? `${milestone} is done; the build goes on with the next milestone.`
+      : "The lead's context is compacted between turns; the build goes on.",
     'Keep: the milestone just finished, in a line; every story in flight now, with its lane, its branch and where it stands (building, in review, in the merge queue, waiting and on what); the decisions and questions waiting on the person; what the person decided or asked for in this session that still applies; and the rules and preferences they set.',
     "Drop: the finished stories' details, lane reports and hand-backs, command output, diffs and file contents. Each is in git, the plan or the lanes' report files, to read again when it's needed.",
   ].join('\n');
+
+/** LEAN-5: the context a model request carried: what it sent, read from the cache, and wrote to it. */
+export const requestContext = (usage) =>
+  (usage?.input_tokens ?? 0) +
+  (usage?.cache_read_input_tokens ?? 0) +
+  (usage?.cache_creation_input_tokens ?? 0);
+
+/** LEAN-5: what a lane agent past its context limit is told. */
+export const wrapUpText = (limit) =>
+  `Your context is past ${Math.round(limit / 1000)}k tokens, and every step from here rereads all of it. Finish the step you're on, commit your work, write your report, and hand back now. The lead carries the story on with a fresh agent that reads your report.`;
+
+/** LEAN-5, LEAN-6: the lead's prompt to carry a story on with a fresh agent once its agent handed back at the limit. */
+export function continuePrompt({ type, story, branch, cli = 'code-kit' }) {
+  return `${type} handed ${story} back at its context limit, with its work committed${branch ? ` on ${branch}` : ''}. Carry the story on with a fresh agent: run node "${cli}" worktrees release ${branch ?? '<branch>'} (it keeps the commits and moves the report to the main checkout), then dispatch ${story} again with the same brief, adding "Read your earlier report first: .claude/state/reports/${(branch ?? '<branch>').replace(/[^\w.-]+/g, '_')}.md in the main checkout": /code-kit:dispatch ${story}`;
+}

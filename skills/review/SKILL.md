@@ -38,7 +38,7 @@ Any problem it reports means the branch goes back. Don't fix a lane's code yours
 
 ## 3. Check the work against the story
 
-Read the story, every requirement it cites, and the full diff (`git diff <base>...<branch>`). Read each changed file in full where the diff alone doesn't show the behaviour. Then, for each requirement:
+Read the story and every requirement it cites. Then start from what's already been worked out, not the whole diff: the lane's report (`.claude/state/reports/<branch with / as _>.md`, in its worktree or the main checkout), the reviewer's findings when the background reviewer ran, and `git diff --stat <base>...<branch>`. Open the diff one file at a time (`git diff <base>...<branch> -- <file>`) for the files each requirement depends on and the files a finding names, and a changed file in full only where its diff doesn't show the behaviour. Everything you open stays in your context for the rest of the build, so open what the verdict needs. Then, for each requirement:
 
 | Requirement | Acceptance criterion | Built (where) | Test (which) | Verdict |
 | ----------- | -------------------- | ------------- | ------------ | ------- |
@@ -84,7 +84,7 @@ Report the table, `verify`'s result, the security review's findings (or that non
   node "${CLAUDE_PLUGIN_ROOT}/bin/code-kit.mjs" sent-back <branch> --reason "<the problems, in one line>"
   ```
 
-  Send the list to the same lane agent if it's still running (SendMessage), or dispatch the story again with the list added to the brief. Set the story's status to `in progress`.
+  Dispatch the story again to a fresh agent with the list added to the brief (`/code-kit:dispatch`, which first releases the branch's worktree), never to the agent that built it: its context is already large. Set the story's status to `in progress`.
 
 - **Ask the person.** When the right answer is a product or scope decision (the spec is silent, or the lane found a real conflict), put the question to the person with your recommendation. Don't merge around it.
 

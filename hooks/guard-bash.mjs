@@ -236,6 +236,14 @@ if (runs(cmd, new RegExp(String.raw`^${CODE_KIT}\s+settings\s+set\b`)))
   block(
     `Blocked: changing the harness settings is the person's own act, from the code-kit pane (/harness) or their terminal. Tell them what you'd change and why, and stop.\nCommand: ${cmd}`,
   );
+// LEAN-6: releasing or pruning worktrees is the lead's, which knows which stories are still at work.
+if (
+  runs(cmd, new RegExp(String.raw`^${CODE_KIT}\s+worktrees\s+(?:release|prune)\b`)) &&
+  actor.kind !== 'lead'
+)
+  block(
+    `Blocked: releasing worktrees is the lead's, which knows which stories are still at work. Finish your story and hand back.\nCommand: ${cmd}`,
+  );
 // ONB-8: code-kit's instructions are the lead's to bring up to date, like the rest of the kit.
 if (
   runs(cmd, new RegExp(String.raw`^${CODE_KIT}\s+instructions\b.*\s--write\b`)) &&

@@ -47,12 +47,13 @@ export const SETTINGS = {
     about: 'A background reviewer for each finished branch',
   },
   'agents.reviewer.model': {
-    default: null,
+    default: 'sonnet',
     problem: (v) =>
       v === null || (typeof v === 'string' && v.length > 0)
         ? null
         : `must be a model (${MODELS.join(', ')}, or an id), or null for the session's`,
-    about: "The reviewer's model; none means the session's",
+    about:
+      "The reviewers' model (code-kit's reviewer and the security reviewer); none means the session's",
   },
   'agents.lanes.model': {
     default: null,
@@ -63,11 +64,25 @@ export const SETTINGS = {
     about:
       "The lane agents' model, set as each is dispatched; none means the session's. A lane's agent file with its own model keeps it",
   },
+  'agents.lanes.contextLimit': {
+    default: 250000,
+    problem: (v) =>
+      Number.isInteger(v) && v >= 0 ? null : 'must be a whole number of tokens, 0 for no limit',
+    about:
+      "The context a lane agent may reach before it's asked to wrap up and hand its story to a fresh agent; 0 for no limit",
+  },
   'background.pauseAtPercent': {
     default: 80,
     problem: (v) =>
       Number.isFinite(v) && v > 0 && v <= 100 ? null : 'must be a percentage from 1 to 100',
     about: "The plan's 5-hour use at which background agents pause",
+  },
+  'compact.at': {
+    default: 40,
+    problem: (v) =>
+      Number.isFinite(v) && v >= 0 && v <= 100 ? null : 'must be a percentage from 0 (off) to 100',
+    about:
+      "How full the lead's context may get, as a share of its window, before it's compacted between turns; 0 for never",
   },
   'compact.milestone': {
     default: 'ask',

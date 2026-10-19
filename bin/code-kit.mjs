@@ -33,8 +33,9 @@
 //                                    the harness settings; set is the person's own change
 //                         record approvals a person gave in chat (with approvals.lead on, the lead runs it)
 // --config <file> reads a draft (.claude/code-kit.draft.json) instead of .claude/code-kit.json.
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import {
+  copyFileSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -1930,8 +1931,84 @@ function instructionsCommand() {
     );
 }
 
+/** LEAN-6: a worktree of the project, with its branch, story, report and whether it's merged and clean. */
+function worktreeList(config) {
+  const root = resolve('.');
+  const run = (...a) => spawnSync('git', a, { cwd: root, encoding: 'utf8' }).stdout?.trim() ?? '';
+  const from = findBase(config, false);
+  const blocks = run('worktree', 'list', '--porcelain').split('\n\n').filter(Boolean);
+  return blocks.slice(1).map((b) => {
+    const path = /^worktree (.+)$/m.exec(b)?.[1];
+    const branch = /^branch refs\/heads\/(.+)$/m.exec(b)?.[1] ?? null;
+    const report = branch ? `.claude/state/reports/${branch.replace(/[^\w.-]+/g, '_')}.md` : null;
+    const status = spawnSync('git', ['-C', path, 'status', '--porcelain'], { encoding: 'utf8' });
+    return {
+      path,
+      branch,
+      story: branch ? storyOfBranch(branch) : null,
+      merged: Boolean(
+        branch &&
+        from &&
+        spawnSync('git', ['merge-base', '--is-ancestor', branch, from], { cwd: root }).status === 0,
+      ),
+      clean: status.status === 0 && !status.stdout.trim(),
+      report: report && existsSync(join(path, report)) ? report : null,
+    };
+  });
+}
+
+/** LEAN-6: releases a worktree: its report kept in the main checkout, the worktree removed, its branch kept. */
+function releaseWorktree(w) {
+  if (!w.clean)
+    die(
+      `${w.branch ?? w.path} has uncommitted changes; nothing was removed. Commit them on the branch, or have its agent do so, then release it.`,
+    );
+  if (w.report) {
+    mkdirSync(join(resolve('.'), '.claude/state/reports'), { recursive: true });
+    copyFileSync(join(w.path, w.report), join(resolve('.'), w.report));
+  }
+  const removed = spawnSync('git', ['worktree', 'remove', w.path], {
+    cwd: resolve('.'),
+    encoding: 'utf8',
+  });
+  if (removed.status !== 0) die(`git worktree remove failed: ${removed.stderr.trim()}`);
+  return `${w.branch ?? w.path}${w.report ? ` (its report kept at ${w.report})` : ''}`;
+}
+
+/**
+ * LEAN-6: `worktrees` lists the project's worktrees; `release <branch>` frees one for a fresh agent on the
+ * same story; `prune` releases every one whose branch is merged and that holds nothing uncommitted.
+ */
+function worktreesCommand() {
+  const { config } = load();
+  const list = worktreeList(config);
+  if (rest[0] === 'release') {
+    const w = list.find((x) => x.branch === rest[1] || x.path === rest[1]);
+    if (!w) die(`No worktree has ${rest[1] ?? '<branch>'} checked out.`);
+    return out(`Released ${releaseWorktree(w)}. The branch and its commits stay.`);
+  }
+  if (rest[0] === 'prune') {
+    const done = list.filter((w) => w.merged && w.clean);
+    if (!done.length) return out('No worktree is both merged and clean; nothing was removed.');
+    for (const w of done) out(`Released ${releaseWorktree(w)}.`);
+    return;
+  }
+  if (flag('--json')) return out(JSON.stringify(list, null, 2));
+  if (!list.length) return out('No worktrees besides the main checkout.');
+  for (const w of list)
+    out(
+      `  ${w.branch ?? '(detached)'}${w.story ? ` · ${w.story}` : ''}: ${w.merged ? 'merged' : 'not merged'}, ${w.clean ? 'clean' : 'uncommitted changes'}  ${w.path}`,
+    );
+  const prunable = list.filter((w) => w.merged && w.clean).length;
+  if (prunable)
+    out(
+      `\n${prunable} merged and clean: \`code-kit worktrees prune\` removes them, keeping their reports.`,
+    );
+}
+
 const commands = {
   check,
+  worktrees: worktreesCommand,
   instructions: instructionsCommand,
   loop: loopCommand,
   approve: () => (rest.length ? approve(rest) : usage()),
@@ -1970,6 +2047,7 @@ function usage() {
       '              | security [--base ref] [--branch name] [--json]\n' +
       '              | next [--base ref] [--json] | adapters | trace <path>... [--json]\n' +
       '              | instructions [--write] [--json] | instructions show lead|lane\n' +
+      '              | worktrees [--json] | worktrees release <branch> | worktrees prune\n' +
       '              | approve <name>... --reason "…" [--lane name]   [--config file]\n' +
       '              | merge <branch> --delegated|--person [--into branch] | requests [--json] | requests drop <n>|all\n' +
       '              | ask "<question>" [--story ST-n] [--blocks] [--why "…"] [--option "Label: effect"]... | ask [--json]\n' +
