@@ -2,6 +2,19 @@
 
 What changed in each release of code-kit, newest first. Versions follow the plugin manifest and the npm package `@warren-dean/code-kit`. Each release is also on [GitHub Releases](https://github.com/warrendeanlangeveldt/code-kit/releases).
 
+## 0.19.0 (2026-10-19)
+
+A build uses far fewer tokens. In two days of two builds, output was under 1% of the tokens: nearly all of it was agents rereading large contexts on every request.
+
+- Each lane agent builds one story. A send-back, or a story carried on, goes to a fresh agent, never to the one that built it. Lane agents had reached 900k to 970k tokens of context over hundreds of requests.
+- A lane agent past `agents.lanes.contextLimit` (250,000 tokens by default) is told to finish its step, commit, write its report and hand back. The loop then has the lead carry the story on with a fresh agent that reads that report first.
+- `code-kit worktrees` lists the project's worktrees. `worktrees release <branch>` frees one for a fresh agent, keeping the branch's commits and moving its report to the main checkout, and `worktrees prune` removes every one that's merged and clean. One project had 11 such leftovers, about 4.5 GB; `code-kit next` now points them out.
+- The lead's context is compacted between turns once it's past `compact.at` (40% of its window by default), without asking. Waiting for a milestone wasn't enough: one lead reached 968k tokens first.
+- The loop reads the lead's replies with Sonnet, from the reply itself. Before, it forked the lead's whole conversation on the lead's own model at the end of every turn.
+- Lane agents read every file they change in full, but of its imports and callers only what the change needs; a fresh Context Graph card counts as reading a file. They run the narrowest tests with failures only in the output, and the full suite once before committing. The lead's review starts from the lane's report, the reviewer's findings and the diff's summary.
+- `agents.reviewer.model` now defaults to Sonnet and covers the security reviewer too, unless its agent file names a model.
+- The lane rules changed, so `code-kit next` asks the lead to bring code-kit's instructions up to date.
+
 ## 0.18.0 (2026-10-17)
 
 code-kit's instructions to your agents now keep up with code-kit, it tells you when something needs you, and the fixes found by checking two live builds.
