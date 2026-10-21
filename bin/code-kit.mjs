@@ -52,10 +52,12 @@ import { BASELINE_FILE, loadBaseline } from '../hooks/lib/baseline.mjs';
 import { matchesAny } from '../hooks/lib/glob.mjs';
 import {
   CONFIG_FILE,
+  approvalSettings,
   committedConfig,
   effectiveConfig,
   mergeDelegation,
   validate,
+  withApprovalSetting,
 } from '../hooks/lib/config.mjs';
 import { diffConfigs, ownershipMoves } from '../hooks/lib/diff.mjs';
 import { CODE, importsOf, layerOf, layerProblems, targetOf } from '../hooks/lib/layers.mjs';
@@ -1021,7 +1023,7 @@ function requests() {
   const open = openRequests(resolve('.')).map((r, i) => ({
     ...r,
     n: i + 1,
-    by: decidedBy(r.names, config),
+    by: decidedBy(r.names, config, r.lane ? { kind: 'lane', lane: r.lane } : { kind: 'lead' }),
   }));
   const granted = approvalsInForce(resolve('.'));
   // CARD-6: every approval given, newest first.
@@ -1056,33 +1058,50 @@ function settings() {
     const [, key, value] = rest;
     if (!key || value === undefined)
       die('code-kit settings set <key> <value> --reason "<why>" [--via pane]');
-    if (!(key in SETTINGS))
-      die(`${key} isn't a harness setting. They are: ${Object.keys(SETTINGS).join(', ')}.`);
+    const approvalKey = key.startsWith('approvals.');
+    if (!(key in SETTINGS) && !approvalKey)
+      die(
+        `${key} isn't a setting. They are: ${Object.keys(SETTINGS).join(', ')}, and approvals.<name> (see code-kit settings).`,
+      );
     if (!reason?.trim()) die('Give a reason with --reason "…": the approval log keeps it.');
-    const changed = withSetting(raw, key, parseSetting(key, value));
+    // WHO-3: who decides an approval is the person's setting too, written out in full.
+    const changed = approvalKey
+      ? withApprovalSetting(raw, config, key, value)
+      : withSetting(raw, key, parseSetting(key, value));
+    if (!changed)
+      die(
+        `${key} isn't an approval setting, or ${JSON.stringify(value)} isn't one of its values. See code-kit settings.`,
+      );
     const problems = validate(changed);
     if (problems.length) die(`Nothing changed: ${problems.join('; ')}`);
     writeFileSync(resolve(file), `${JSON.stringify(changed, null, 2)}\n`);
     const mark =
       via === 'pane' ? '(changed in the code-kit pane)' : '(changed with code-kit settings)';
     grantApprovals(resolve('.'), ['kit'], null, reason, { kit: mark });
+    const now = approvalKey
+      ? approvalSettings(effectiveConfig(changed, resolve('.'))).find((r) => r.key === key)?.value
+      : settingOf(changed.harness, key);
     return out(
-      `Set harness.${key} to ${JSON.stringify(settingOf(changed.harness, key))}. Commit ${file} to keep it; the approval log will carry your reason.`,
+      `Set ${approvalKey ? key : `harness.${key}`} to ${JSON.stringify(now)}. Commit ${file} to keep it; the approval log will carry your reason.`,
     );
   }
   if (rest.length) die('code-kit settings [--json] | settings set <key> <value> --reason "<why>"');
-  const rows = Object.entries(SETTINGS).map(([key, s]) => ({
-    key,
-    value: settingOf(config.harness, key),
-    default: s.default,
-    about: s.about,
-    // Chosen in the config, or the default standing in.
-    set: settingOf(raw.harness, key) !== undefined,
-  }));
+  const rows = [
+    ...Object.entries(SETTINGS).map(([key, s]) => ({
+      key,
+      value: settingOf(config.harness, key),
+      default: s.default,
+      about: s.about,
+      section: 'Harness',
+      // Chosen in the config, or the default standing in.
+      set: settingOf(raw.harness, key) !== undefined,
+    })),
+    ...approvalSettings(config),
+  ];
   if (flag('--json')) return out(JSON.stringify(rows, null, 2));
   for (const r of rows)
     out(
-      `${r.key.padEnd(26)} ${JSON.stringify(r.value).padEnd(14)} ${r.value === r.default ? '' : `(default ${JSON.stringify(r.default)}) `}${r.about}`,
+      `${r.key.padEnd(44)} ${JSON.stringify(r.value).padEnd(14)} ${r.value === r.default ? '' : `(default ${JSON.stringify(r.default)}) `}${r.about}`,
     );
 }
 
@@ -1404,7 +1423,7 @@ async function approve(given) {
     const rules = config.approvals.delegate;
     if (!rules)
       die(
-        'This project delegates no approvals to the lead ("approvals.delegate" isn\'t set). Ask the person.',
+        'This project keeps every approval for the person ("approvals.delegate" is false). Ask the person.',
       );
     // HELM-3: the lead approves a package for a story it has read, not by default.
     const packages = names.filter((n) => n.startsWith(DEPENDENCY_APPROVAL));
@@ -1421,8 +1440,16 @@ async function approve(given) {
       : null;
     const outside = [];
     for (const name of names) {
+      // WHO-2: a weakened test on a lane's branch, after the lead's review; on its own, the person's.
       if (name === TESTS_APPROVAL) {
-        outside.push(`${name}: weakening a test is the person's to allow, and is never delegated`);
+        if (!rules.tests) outside.push(`${name}: weakened tests aren't delegated`);
+        else if (!laneName)
+          outside.push(
+            `${name}: on your own branch a weakened test is the person's; you approve one only for a lane, with --lane`,
+          );
+        else if (!storyGiven)
+          outside.push(`${name}: name the story whose branch weakens the test, with --story ST-n`);
+        else marks[name] = delegatedMark(`tests, reviewed by the lead, for ${story.id}`);
         continue;
       }
       if (name.startsWith(DEPENDENCY_APPROVAL)) {

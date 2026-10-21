@@ -1204,6 +1204,57 @@ test('SET-2 a number is typed; one the CLI refuses shows why and changes nothing
   await ui.unmount();
 });
 
+test("WHO-3 the Approvals section says who decides each, and a change is the person's, with a reason", async ($, on) => {
+  const w = project();
+  w.settings.push(
+    {
+      key: 'approvals.schema',
+      value: 'lead',
+      default: 'lead',
+      about: 'Who approves a lane\'s change to what\'s protected as "schema"',
+      section: 'Approvals',
+      choices: ['lead', 'person'],
+    },
+    {
+      key: 'approvals.merge',
+      value: 'lead',
+      default: 'lead',
+      about: 'Who merges a reviewed branch into the base',
+      section: 'Approvals',
+      choices: ['lead', 'person'],
+    },
+  );
+  await start($, on, w);
+  await harness($);
+  const ui = await pane($, SETTINGS);
+  expect(await ui.find({ type: 'Text', text: 'APPROVALS' })).toBeDefined();
+  expect(await ui.find({ type: 'Text', text: 'schema' })).toBeDefined();
+  expect((await ui.find({ key: 'set-approvals.schema' }))?.props.value).toBe('lead');
+  await $.ui.select({
+    plugin: 'code-kit',
+    key: 'set-approvals.schema',
+    value: 'person',
+    requestId: SETTINGS,
+  });
+  expect(await ui.find({ type: 'Text', text: /Set approvals\.schema to you\?/ })).toBeDefined();
+  expect(w.acts).toEqual([]);
+  await $.ui.input({ plugin: 'code-kit', key: 'settings-reason', text: 'I review schema changes' });
+  expect(w.acts).toEqual([
+    [
+      'settings',
+      'set',
+      'approvals.schema',
+      'person',
+      '--reason',
+      'I review schema changes',
+      '--via',
+      'pane',
+    ],
+  ]);
+  expect((await ui.find({ key: 'set-approvals.schema' }))?.props.value).toBe('person');
+  await ui.unmount();
+});
+
 test("SET-2 the reviewer's model can go back to the session's", async ($, on) => {
   const w = project();
   w.settings[3].value = 'haiku';
@@ -2172,31 +2223,32 @@ test("LOOP-1 review and the lead's own stories are prompted with their skill", a
   expect(w.prompts[1]).toMatch(/^Build ST-6 yourself.*lead\/st-6/);
 });
 
-test('LOOP-8 a step the lead was asked for twice and that is still next goes to the person, while lanes keep committing', async ($, on) => {
+test('LOOP-8 and WHO-4 a step the lead was asked for three times and that is still next is a note, while lanes keep committing', async ($, on) => {
   const w = project();
   w.next = { step: 'merge', args: 'lead/st-1', then: [] };
   const clock = await start($, on, w);
-  for (const [i, turn] of ['t-1', 't-2', 't-3', 't-4'].entries()) {
+  for (const [i, turn] of ['t-1', 't-2', 't-3', 't-4', 't-5'].entries()) {
     // A lane commits between the lead's turns: the project moves, but not this step.
     w.refs += ` c${i} refs/heads/core/st-${i}\n`;
     await leadTurn($, turn);
     await settle(clock);
   }
-  expect(w.prompts).toHaveLength(2);
+  expect(w.prompts).toHaveLength(3);
   expect(w.prompts.every((p: string) => p.startsWith('Merge lead/st-1'))).toBe(true);
+  expect(w.asked).toEqual([]);
   const ui = await bandUi($);
   expect(
     await ui.find({
       type: 'Text',
-      text: 'Merge lead/st-1: still next after 2 prompts. Ask the lead again?',
+      text: 'Merge lead/st-1: still next after 3 prompts to the lead',
     }),
   ).toBeDefined();
   await press($, 'band-go');
   await ui.unmount();
-  expect(w.prompts).toHaveLength(3);
+  expect(w.prompts).toHaveLength(4);
   // Once the step changes, the loop goes on by itself.
   w.next = { step: 'dispatch', args: 'ST-9', then: [] };
-  await leadTurn($, 't-5');
+  await leadTurn($, 't-6');
   await settle(clock);
   expect(w.prompts.at(-1)).toBe('Dispatch ST-9: run /code-kit:dispatch ST-9.');
 });
@@ -2277,7 +2329,7 @@ test('LOOP-6 the pause is recorded for other tools, and a new session starts wit
 // It steps the clock through tens of minutes of the mod's 2-second refresh, each tick a real round of
 // stubbed CLI runs: about 1.5 to 3 seconds locally, and more on a shared CI runner.
 test(
-  'LOOP-3 a quiet lane agent is nudged at 5 minutes, restarted through the lead at 10, and flagged after 2 restarts',
+  'LOOP-3 and WHO-4 a quiet lane agent is nudged at 5 minutes, restarted through the lead at 10, and handed to the lead after 2 restarts',
   { timeoutMs: 30000 },
   async ($, on) => {
     const w = project();
@@ -2312,10 +2364,20 @@ test(
       ];
       await clock.advance(10 * 60000 + 2000);
     }
-    expect(w.prompts).toHaveLength(2);
+    // WHO-4: past its restarts, the lead is asked how the story goes on; the person sees a note.
+    expect(w.prompts).toHaveLength(3);
+    expect(w.prompts[2]).toMatch(
+      /^web-engineer \(agent a3\) on ST-4 has stalled again after 2 restarts.*split ST-4 into smaller stories/,
+    );
     const band = await bandUi($);
-    expect(await band.find({ type: 'Text', text: 'web stalled 3 times on ST-4' })).toBeDefined();
-    expect(await band.find({ key: 'band-resumeStall' })).toBeDefined();
+    expect(
+      await band.find({
+        type: 'Text',
+        text: 'web stalled 3 times on ST-4: the lead decides how it goes on',
+      }),
+    ).toBeDefined();
+    expect(await band.find({ key: 'band-resumeStall' })).toBeUndefined();
+    expect(w.asked).toEqual([]);
     await band.unmount();
   },
 );
@@ -2783,7 +2845,7 @@ test('LOOP-11 a turn the person stopped holds the loop, with no dialog, until th
   expect(w.prompts.at(-1)).toBe('Review ST-4: run /code-kit:review ST-4.');
 });
 
-test("LOOP-11 a step the lead didn't take waits with its reason; Ask again prompts it, and a new step goes on", async ($, on) => {
+test("LOOP-11 and WHO-4 a step the lead didn't take is a note with its reason; Ask again prompts it, and a new step goes on", async ($, on) => {
   const w = project();
   w.next = { step: 'merge', args: 'lead/st-1', then: [] };
   w.sideReply = unread;
@@ -2804,8 +2866,8 @@ test("LOOP-11 a step the lead didn't take waits with its reason; Ask again promp
   await leadTurn($, 't-3');
   await settle(clock);
   expect(w.prompts).toHaveLength(1);
-  expect(w.asked.at(-1)?.options).toEqual(['Ask again', 'Not now']);
-  expect(w.asked.at(-1)?.question).toMatch(/the lead didn't take it.*Ask the lead again\?$/);
+  // WHO-4: it's a note, not a decision: nothing is asked in the dialog.
+  expect(w.asked.some((a: any) => /didn't take it/.test(a.question))).toBe(false);
   const ui = await bandUi($);
   expect(
     await ui.find({

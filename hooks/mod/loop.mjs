@@ -218,6 +218,14 @@ export function restartPrompt({ type, id, story, minutes }) {
   return `${type} (agent ${id}) on ${story} has made no tool call for ${minutes} minutes. Stop it with TaskStop, then dispatch ${story} again with the same brief on the same branch: /code-kit:dispatch ${story}`;
 }
 
+/**
+ * WHO-4: a lane stalled past its restarts is the lead's to sort out, not the person's: what it tried,
+ * and the lead's three ways on (a narrower brief, smaller stories, or the story handed back).
+ */
+export function stalledPrompt({ type, id, lane, story, restarts, last = null }) {
+  return `${type} (agent ${id}) on ${story} has stalled again after ${restarts} restart${restarts === 1 ? '' : 's'}${last ? `; its last call was ${last}` : ''}. Stop it with TaskStop, read its report and what it committed on its branch, then decide: dispatch ${story} again with a brief that names what it got stuck on, split ${story} into smaller stories in the plan, or hand it back to the ${lane} lane's queue with the reason. Ask the person only if the story needs a product decision.`;
+}
+
 /** The message a quiet agent gets (LOOP-3). */
 export const nudgeText = (minutes) =>
   `No tool call for ${minutes} minutes: report where you are, or carry on.`;

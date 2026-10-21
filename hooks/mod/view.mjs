@@ -773,16 +773,13 @@ export function bandLines({
       ],
     });
   }
-  // LOOP-3: a lane stalled past its restarts waits for the person.
+  // LOOP-3, WHO-4: a lane stalled past its restarts is the lead's to sort out; the person sees a note.
   for (const f of loop?.flagged ?? [])
     lines.push({
       kind: 'stalled',
-      text: `${f.lane} stalled ${f.count} times on ${f.story}`,
+      text: `${f.lane} stalled ${f.count} times on ${f.story}: the lead decides how it goes on`,
       stall: f,
-      actions: [
-        { id: 'lanes', label: 'Lanes' },
-        { id: 'resumeStall', label: 'Resume' },
-      ],
+      actions: [{ id: 'lanes', label: 'Lanes' }],
     });
   // LOOP-5: under autonomy propose, each step waits for Go.
   if (loop?.proposal?.first)
@@ -797,15 +794,20 @@ export function bandLines({
         { id: 'loopOff', label: 'Off' },
       ],
     });
+  else if (loop?.proposal?.repeated)
+    // LOOP-8, WHO-4: a step the lead was asked for three times and didn't take is a note, not a decision.
+    lines.push({
+      kind: 'stuck',
+      text: `${loop.proposal.label}: still next after ${loop.proposal.repeated} prompts to the lead`,
+      proposal: loop.proposal,
+      actions: [{ id: 'go', label: 'Ask again' }],
+    });
   else if (loop?.proposal)
     lines.push({
       kind: 'proposal',
-      // LOOP-8: a step the lead was asked for and didn't take waits for the person to ask again.
-      text: loop.proposal.repeated
-        ? `${loop.proposal.label}: still next after ${loop.proposal.repeated} prompts. Ask the lead again?`
-        : `${loop.proposal.label}?`,
+      text: `${loop.proposal.label}?`,
       proposal: loop.proposal,
-      actions: [{ id: 'go', label: loop.proposal.repeated ? 'Ask again' : 'Go' }],
+      actions: [{ id: 'go', label: 'Go' }],
     });
   // LOOP-11, LOOP-12: what the loop read in the lead's reply holds it until the person says.
   const waitingLine = waitingOf(loop?.waiting);
@@ -969,9 +971,10 @@ export function waitingOf(waiting) {
       waiting,
       actions: [{ id: 'carryOn', label: 'Carry on' }],
     };
+  // WHO-4: a step the lead said it couldn't take is a note: the loop asks again once the project moves.
   if (waiting.kind === 'blocked')
     return {
-      kind: 'waiting',
+      kind: 'stuck',
       text: `${waiting.label}: the lead didn't take it${waiting.reason ? `: ${waiting.reason}` : ''}`,
       waiting,
       actions: [{ id: 'askAgain', label: 'Ask again' }],
@@ -1008,6 +1011,7 @@ export function band(lines, { Box, Text, Button }, onAction) {
     brief: 'cyan',
     denied: 'red',
     report: 'magenta',
+    stuck: 'yellow',
   };
   const LIVE = { quiet: 'yellow', stalled: 'red' };
   const LABEL = 8;
@@ -1516,7 +1520,17 @@ const CHOICES = {
   'compact.milestone': ['ask', 'auto', 'off'],
 };
 const shown = (v) =>
-  v === null || v === '' ? "the session's" : v === true ? 'on' : v === false ? 'off' : String(v);
+  v === null || v === ''
+    ? "the session's"
+    : v === true
+      ? 'on'
+      : v === false
+        ? 'off'
+        : v === 'lead'
+          ? 'the lead'
+          : v === 'person'
+            ? 'you'
+            : String(v);
 
 /**
  * The Settings view: each setting from `code-kit settings --json` with a control, and, once one is
@@ -1524,7 +1538,8 @@ const shown = (v) =>
  */
 export function settingsView(rows, pending, { Box, Text, Select, Input, Button }, handlers) {
   const control = (r) => {
-    const listed = CHOICES[r.key] ?? (typeof r.default === 'boolean' ? [true, false] : null);
+    const listed =
+      r.choices ?? CHOICES[r.key] ?? (typeof r.default === 'boolean' ? [true, false] : null);
     // A value the list doesn't name (a model given by its id) is still shown, as the one chosen.
     const choices =
       listed && !listed.map(String).includes(String(r.value ?? '')) ? [...listed, r.value] : listed;
@@ -1544,7 +1559,7 @@ export function settingsView(rows, pending, { Box, Text, Select, Input, Button }
       onSubmit: (v) => handlers.onChoose(r.key, v.trim()),
     });
   };
-  const rowsView = rows.map((r) =>
+  const rowView = (r) =>
     Box({
       key: `setting-${r.key}`,
       flexDirection: 'column',
@@ -1553,7 +1568,15 @@ export function settingsView(rows, pending, { Box, Text, Select, Input, Button }
           flexDirection: 'row',
           columnGap: 2,
           children: [
-            Box({ width: 28, children: [Text({ bold: true, children: [r.key] })] }),
+            Box({
+              width: 34,
+              children: [
+                Text({
+                  bold: true,
+                  children: [r.section === 'Approvals' ? r.key.replace(/^approvals\./, '') : r.key],
+                }),
+              ],
+            }),
             control(r),
             ...(r.value !== r.default
               ? [Text({ dimColor: true, children: [`default ${shown(r.default)}`] })]
@@ -1570,8 +1593,26 @@ export function settingsView(rows, pending, { Box, Text, Select, Input, Button }
         }),
         Text({ dimColor: true, children: [`  ${r.about}`] }),
       ],
-    }),
-  );
+    });
+  // WHO-3: the harness, then who decides each approval.
+  const section = (name) => rows.filter((r) => (r.section ?? 'Harness') === name);
+  const approvals = section('Approvals');
+  const rowsView = [
+    ...section('Harness').map(rowView),
+    ...(approvals.length
+      ? [
+          Text({ key: 'approvals-heading', bold: true, color: 'cyan', children: ['APPROVALS'] }),
+          Text({
+            key: 'approvals-about',
+            dimColor: true,
+            children: [
+              "Who decides what a lane can't do on its own. The lead decides what's technical; you keep product, design, CI and the kit.",
+            ],
+          }),
+          ...approvals.map(rowView),
+        ]
+      : []),
+  ];
   const confirm = pending
     ? [
         Box({
@@ -1627,7 +1668,9 @@ export function settingsView(rows, pending, { Box, Text, Select, Input, Button }
       Box({ flexDirection: 'column', children: rowsView }),
       Text({
         dimColor: true,
-        children: ['Lanes, paths, layers and protected paths change through /code-kit:init.'],
+        children: [
+          'Lanes, paths, layers and which paths are protected change through /code-kit:init.',
+        ],
       }),
     ],
   });

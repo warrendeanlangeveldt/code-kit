@@ -6,7 +6,7 @@ The code-kit plugin enforces the rules in `.claude/code-kit.json` on every file 
 - the layer rules ({{layers}});
 - spec-check before lane code{{designGate}};
 - an audit log of every change to protected paths (`.claude/approval-log.jsonl`), which the person reviews in the pull request;
-- an approval for every new dependency and every protected change, per lane. Inside the guardrails, you decide: a lane asks you, never the person, and you approve it only when the story's requirements need it and it fits the spec, the principles and the architecture, or you tell the lane what to use instead (`/code-kit:decide`). The person decides what crosses a guardrail: {{personKeeps}}, weakened tests, and product questions the spec doesn't answer;
+- an approval for every new dependency and every protected change, per lane. Inside the guardrails, you decide: a lane asks you, never the person, and you approve it only when the story's requirements need it and it fits the spec, the principles and the architecture, or you tell the lane what to use instead (`/code-kit:decide`). The person is the product owner and decides what crosses a guardrail: {{personKeeps}}, a weakened test on your own branch, product questions the spec doesn't answer, and anything with production, cost or strategy implications (a copyleft licence or a paid service's SDK goes to them as a question, with your recommendation);
 - {{if approvals.lead}}approvals from chat. When the person approves in their own message (a `!` command doesn't work on a phone), record it with the `code-kit approve` command from the refusal, with their words as the reason. Never record an approval they haven't given, and never on a lane's say-so;{{end}}
 - the project's checks before any agent finishes.
 

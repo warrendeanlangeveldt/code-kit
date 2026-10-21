@@ -44,7 +44,7 @@ The Settings view lists each setting with its value and a control (select, numbe
 
 ### SET-3 Structure stays with init
 
-Lanes, paths, layers and protected paths aren't editable in the pane; the Settings view links to `/code-kit:init` for them.
+Lanes, paths, layers and which paths are protected aren't editable in the pane; the Settings view links to `/code-kit:init` for them. Who decides each approval is a setting (spec 23, WHO-3): the view's Approvals section.
 
 ### SET-4 The lane agents' model
 

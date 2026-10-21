@@ -8,7 +8,6 @@ import { approvalLabel, askWords, commandItself } from './view.mjs';
 export const DECISION_KINDS = new Set([
   'held',
   'approvals',
-  'stalled',
   'proposal',
   'queue',
   'review',
@@ -391,7 +390,7 @@ export function contextOf(card) {
 }
 
 /** DECIDE-4: the kinds of decision settled with a choice, asked in Claude Code's own question dialog. */
-export const NATIVE_KINDS = new Set(['proposal', 'stalled', 'teamStale', 'question', 'waiting']);
+export const NATIVE_KINDS = new Set(['proposal', 'teamStale', 'question', 'waiting']);
 
 /** One sentence ended as a question asks. */
 const asked = (text, question) => `${String(text).replace(/[.\s]+$/, '')}. ${question}`;

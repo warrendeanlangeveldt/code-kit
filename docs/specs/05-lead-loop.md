@@ -66,7 +66,7 @@ The loop doesn't cap how many lanes run. It dispatches what `next` reports ready
 
 ### LOOP-3 Stalls: nudge, restart, flag
 
-A lane agent with no tool call for 5 minutes is messaged: "No tool call for 5 minutes: report where you are, or carry on." At 10 minutes it's stopped and its story dispatched again with the same brief on the same branch, by prompting the lead. After 2 restarts on one story, the lane is flagged in the band for the person and not restarted again. An agent waiting on a held call (06) or running a long command is never counted as quiet while that call is open. Nor is an agent whose work is done: it has handed back, or its story is in review, in the merge queue or merged. Until the person has chosen how hands-off the loop is (and under propose), a restart is offered in the band like any other step, not taken.
+A lane agent with no tool call for 5 minutes is messaged: "No tool call for 5 minutes: report where you are, or carry on." At 10 minutes it's stopped and its story dispatched again with the same brief on the same branch, by prompting the lead. After 2 restarts on one story, the lead is prompted to decide how the story goes on (a narrower brief, smaller stories, or handing it back), and the band shows a note (spec 23, WHO-4). An agent waiting on a held call (06) or running a long command is never counted as quiet while that call is open. Nor is an agent whose work is done: it has handed back, or its story is in review, in the merge queue or merged. Until the person has chosen how hands-off the loop is (and under propose), a restart is offered in the band like any other step, not taken.
 
 - **Errors:** a message that can't be delivered counts as a nudge; the restart follows at 10 minutes.
 
@@ -74,7 +74,7 @@ A lane agent with no tool call for 5 minutes is messaged: "No tool call for 5 mi
 
 - Given a lane agent silent for 5 minutes, when the loop ticks, then the agent receives the nudge and the pane shows `nudged`.
 - Given it is still silent at 10 minutes, then it's stopped and the lead is prompted to dispatch its story again; the pane shows `restarted 1/2`.
-- Given a third stall on the same story, then the band shows "web stalled 3 times on ST-4" with Lanes and Resume buttons, and nothing restarts it.
+- Given a third stall on the same story, then the lead is prompted with the story, its restarts and the agent's last call, and the band shows "web stalled 3 times on ST-4: the lead decides how it goes on" with Lanes, as a note, not a decision.
 
 ### LOOP-4 Reviews and merges in sequence
 
@@ -109,13 +109,13 @@ The band shows the loop's state ("loop on", "loop paused") with a Pause or Resum
 
 When every story in the plan is done, the loop stops and the band reads "Milestone done: N stories merged" until dismissed.
 
-### LOOP-8 A step that doesn't take goes to the person
+### LOOP-8 A step that doesn't take is a note
 
-The lead is prompted with one step at most twice in a row. A step still next after that didn't take (the lead couldn't, or wouldn't), and lanes committing elsewhere don't make a third prompt useful: the band offers it instead, "Merge lead/st-1: still next after 2 prompts. Ask the lead again?", with Go. A different step, or none for the lead, starts the count again.
+The lead is prompted with one step at most three times in a row (spec 23, WHO-4). A step still next after that didn't take (the lead couldn't, or wouldn't), and lanes committing elsewhere don't make a fourth prompt useful: the band shows it as a note, "Merge lead/st-1: still next after 3 prompts to the lead", with Ask again. It isn't a decision: nothing is asked in the dialog. A different step, or none for the lead, starts the count again.
 
 **Acceptance**
 
-- Given `next` reporting the same merge after each of four lead turns while lanes commit, then the lead is prompted twice, the band offers the third, and Go submits it.
+- Given `next` reporting the same merge after each of five lead turns while lanes commit, then the lead is prompted three times, the band shows the note, and Ask again submits it.
 
 ### LOOP-9 Never a story already in flight
 
@@ -143,7 +143,7 @@ Only one session in a project prompts its lead. The first session whose loop act
 Before prompting the lead again, the loop reads the lead's last reply: with a side call over the lead's own conversation (which shares its prompt cache and adds nothing to it), it asks where the reply left things, as `done`, `started`, `needs-person` (with the question and up to four answers) or `blocked` (with why). The step's record keeps that outcome.
 
 - A reply that waits on the person, a question the lead asked in the turn through `code-kit ask`, or a turn the person stopped holds the loop: nothing is prompted until the person speaks to the lead, answers, or presses **Carry on**. The band says what the lead waits on ("The lead waits on you: …"), and its question is asked in Claude Code's own dialog (DECIDE-4); an answer there, or in the Decisions tab, goes to the lead as "The person answered what you asked (…): …. Carry on with it."
-- A step the lead didn't take (`blocked`) waits in the band with its reason and **Ask again**, while it's still next; a different step goes on.
+- A step the lead didn't take (`blocked`) shows in the band as a note with its reason and **Ask again**, while it's still next; it isn't a decision (spec 23, WHO-4), and a different step goes on.
 - A reply that can't be read leaves the loop as before (LOOP-8 still counts the prompts).
 
 **Acceptance**

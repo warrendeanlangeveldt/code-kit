@@ -698,37 +698,38 @@ test('LOOP-12 a design step is held once all its stories were handed to the lead
   assert.equal(designHandedOver({ step: 'dispatch', args: 'ST-21' }, handed), false);
 });
 
-test("LOOP-8 and DECIDE-4 a repeated step's card says why it's the person's, and the dialog asks it", async () => {
-  const { decisionCards, nativeChoice } = await import('../hooks/mod/decisions.mjs');
+test("LOOP-8 and WHO-4 a step the lead didn't take is a note in the band, not a decision", async () => {
+  const { decisionCards } = await import('../hooks/mod/decisions.mjs');
   const check = { exists: true, valid: true, problems: [], lanes: {} };
   const state = projectState(check, { problems: [], stories: [] }, null, new Set());
   const loop = {
     state: 'running',
-    proposal: { label: 'Design ST-21, ST-22', prompt: 'p', repeated: 2 },
+    proposal: { label: 'Design ST-21, ST-22', prompt: 'p', repeated: 3 },
   };
-  const [card] = decisionCards(bandLines({ state, requests: { open: [] }, stops: [], loop }), {
-    state,
-  });
-  assert.equal(
-    card.why,
-    "The lead was asked to do this 2 times and it's still the next step, so something stopped it.",
-  );
+  const lines = bandLines({ state, requests: { open: [] }, stops: [], loop });
+  const stuck = lines.find((l) => l.kind === 'stuck');
+  assert.equal(stuck.text, 'Design ST-21, ST-22: still next after 3 prompts to the lead');
   assert.deepEqual(
-    card.options.map((o) => o.label),
+    stuck.actions.map((a) => a.label),
     ['Ask again'],
   );
-  const choice = nativeChoice(card);
-  assert.equal(
-    choice.question,
-    "The lead was asked to do this 2 times and it's still the next step, so something stopped it. Design ST-21, ST-22: still next after 2 prompts. Ask the lead again?",
+  assert.deepEqual(decisionCards(lines, { state }), []);
+  // A lane stalled past its restarts, and a step the lead said it couldn't take, are notes too.
+  const notes = bandLines({
+    state,
+    requests: { open: [] },
+    stops: [],
+    loop: {
+      state: 'running',
+      flagged: [{ lane: 'web', story: 'ST-4', count: 3 }],
+      waiting: { kind: 'blocked', label: 'Review ST-4', reason: 'CI is down' },
+    },
+  });
+  assert.deepEqual(decisionCards(notes, { state }), []);
+  assert.ok(
+    notes.some((l) => l.text === 'web stalled 3 times on ST-4: the lead decides how it goes on'),
   );
-  assert.deepEqual(
-    choice.options.map((o) => [o.label, o.act]),
-    [
-      ['Ask again', 'go'],
-      ['Not now', null],
-    ],
-  );
+  const { nativeChoice } = await import('../hooks/mod/decisions.mjs');
   // What the person stopped, or a reply with no question in it, isn't asked over their typing.
   for (const waiting of [{ kind: 'stopped' }, { kind: 'person', reason: 'r' }]) {
     const [c] = decisionCards(

@@ -39,6 +39,7 @@ import {
   delegatedMark,
   dependencyChange,
   dependencyGrants,
+  leadDecides,
   useApproval,
   owns,
   protectedEntry,
@@ -282,7 +283,7 @@ if (delegatedMerge && !config.approvals.delegate?.merge)
 const delegating = /\s--delegated\b/.test(cmd);
 if (approves && delegating && !config.approvals.delegate)
   block(
-    `Blocked: this project doesn't delegate approvals to the lead ("approvals.delegate" isn't set). Ask the person to approve it with the \`!\` command from the refusal.\nCommand: ${cmd}`,
+    `Blocked: this project keeps every approval for the person ("approvals.delegate" is false). Ask the person to approve it with the \`!\` command from the refusal.\nCommand: ${cmd}`,
   );
 if (approves && !delegating && !forPerson)
   block(
@@ -311,7 +312,9 @@ if (packages.length) {
     // HELM-2, HELM-3: a lane asks the lead, which judges the package on its merits where it decides.
     const names = unapproved.map(dependencyApproval);
     const whose =
-      decidedBy(names, config) === 'lead' ? "is the lead's decision" : "needs a person's approval";
+      decidedBy(names, config, actor) === 'lead'
+        ? "is the lead's decision"
+        : "needs a person's approval";
     block(
       `Blocked: a new dependency (${unapproved.join(', ')}) ${whose}. ${askHowTo(names, actor, sessionIn ?? project, config, { allows: 'installing it, and the manifest and lockfile changes that makes,' })}\nCommand: ${cmd}`,
     );
@@ -520,7 +523,7 @@ function recordApprovals() {
     if (entry && !granted && actor.kind !== 'lead' && !byDependency) {
       recordRequest(root, actor, entry.approval, file, entry.why);
       block(
-        `Blocked: ${file} is ${entry.why}; committing it needs ${decidedBy(entry.approval, config) === 'lead' ? "the lead's" : "a person's"} approval in force.${noteFor(root, config, { kind: 'protected', name: entry.approval, glob: entry.glob })} ${askHowTo(entry.approval, actor, root, config)}`,
+        `Blocked: ${file} is ${entry.why}; committing it needs ${decidedBy(entry.approval, config, actor) === 'lead' ? "the lead's" : "a person's"} approval in force.${noteFor(root, config, { kind: 'protected', name: entry.approval, glob: entry.glob })} ${askHowTo(entry.approval, actor, root, config)}`,
       );
     }
     if (granted)
@@ -545,8 +548,9 @@ function recordApprovals() {
         grantedAt: null,
       });
   }
-  // REG-2: a commit that weakens a test waits for the person's `tests` approval, which nobody else can
-  // give; it's recorded in the log, so verify accepts the branch, and used up by this commit.
+  // REG-2: a commit that weakens a test waits for a `tests` approval: WHO-2, the lead's on a lane's
+  // branch where tests are delegated, otherwise the person's (always on the lead's own). It's recorded in
+  // the log, so verify accepts the branch, and used up by this commit.
   const weakened = commitWeakenings(
     root,
     files.filter((f) => !arrivesWithMerge(root, f, { staged: true })),
@@ -558,16 +562,20 @@ function recordApprovals() {
     if (!granted) {
       const [w, ...more] = weakened;
       recordRequest(root, actor, TESTS_APPROVAL, w.file, `A weakened test: ${said(w)}.`);
+      const leads = leadDecides(TESTS_APPROVAL, config, actor);
       const personOnly = { ...config, approvals: { ...config.approvals, delegate: null } };
       block(
-        `Blocked: ${w.file} is a weakened test (${said(w)}); committing it needs a person's approval in force.
+        `Blocked: ${w.file} is a weakened test (${said(w)}); committing it needs ${leads ? "the lead's" : "a person's"} approval in force.
 ` +
           (more.length
             ? `Also weakened: ${more.map((x) => `${x.file} (${said(x)})`).join('; ')}.
 `
             : '') +
-          `A weakened test can hide a regression. Fix the code so the test passes as it was. If the test itself is wrong, ask the person: neither the lead nor a lane can approve it. They run
-${approvalHowTo(TESTS_APPROVAL, actor, root, 'weakening tests in one commit', personOnly)}`,
+          `A weakened test can hide a regression. Fix the code so the test passes as it was. ` +
+          (leads
+            ? `If the test itself is wrong, the lead decides after reviewing it: ${askHowTo(TESTS_APPROVAL, actor, root, config, { allows: 'weakening tests in one commit', need: 'the test, what you weakened and why the test was wrong, and the story' })}`
+            : `If the test itself is wrong, ask the person: ${actor.kind === 'lead' ? "on your own branch nobody else reviews it, so you can't approve it." : "the lead can't approve it here."} They run
+${approvalHowTo(TESTS_APPROVAL, actor, root, 'weakening tests in one commit', personOnly)}`),
       );
     }
     for (const w of weakened)

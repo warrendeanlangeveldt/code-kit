@@ -22,8 +22,15 @@ import { holdable } from '../hooks/mod/hold.mjs';
 const here = dirname(fileURLToPath(import.meta.url));
 const hooks = join(here, '..', 'hooks');
 const fixture = readFileSync(join(here, 'fixture.json'), 'utf8');
-// The same rules, with the lead allowed to record approvals the person gives in chat.
-const relayFixture = JSON.stringify({ ...JSON.parse(fixture), approvals: { lead: true } });
+// The fixture keeps every approval for the person (`approvals.delegate: false`), as code-kit did before
+// WHO-1; `leadFixture` has no `approvals`, so the lead decides by default. The same rules, with the lead
+// allowed to record approvals the person gives in chat:
+const relayFixture = JSON.stringify({
+  ...JSON.parse(fixture),
+  approvals: { lead: true, delegate: false },
+});
+const { approvals: _kept, ...leadDefaults } = JSON.parse(fixture);
+const leadFixture = JSON.stringify(leadDefaults);
 const delegateFixture = JSON.stringify({
   ...JSON.parse(fixture),
   approvals: { delegate: { protected: ['design'], dependencies: {} } },
@@ -1296,10 +1303,10 @@ try {
     put('.claude/code-kit.json', fixture);
     const delegateGood = `node "${kitCli}" approve dep-good-pkg --lane web --delegated --reason "x"`;
     expect(
-      'without approvals.delegate the lead may not approve on its own',
+      'with approvals.delegate false the lead may not approve on its own',
       bash(delegateGood),
       2,
-      '"approvals.delegate" isn\'t set',
+      '"approvals.delegate" is false',
     );
     expect('nor does the command', delegate('good-pkg', '--lane', 'web', '--reason', 'x'), 1);
     put('.claude/code-kit.json', delegateFixture);
@@ -1504,6 +1511,75 @@ try {
         JSON.stringify(logLines()),
       ),
       0,
+    );
+    // WHO-1: with no approvals.delegate, technical decisions are the lead's by default.
+    put('.claude/code-kit.json', leadFixture);
+    rmSync(join(repo, '.claude/approvals'), { recursive: true, force: true });
+    rmSync(join(repo, '.claude/state/requests.jsonl'), { force: true });
+    const leadsInstall = bash('pnpm --filter office add dayjs', 'web-engineer');
+    expect(
+      'WHO-1 with no approvals.delegate, a lane installing a package is told to ask the lead, and it is not held',
+      truth(
+        leadsInstall.status === 2 &&
+          leadsInstall.stderr.includes("is the lead's decision") &&
+          !leadsInstall.stderr.includes('! echo') &&
+          holdable(leadsInstall.stderr) === null,
+        leadsInstall.stderr,
+      ),
+      0,
+    );
+    expect(
+      "WHO-1 and the request is the lead's, so the person's band doesn't change",
+      truth(
+        JSON.parse(kit('requests', '--json').stdout).open.every(
+          (r) => !r.names.includes('dep-dayjs') || r.by === 'lead',
+        ),
+      ),
+      0,
+    );
+    expect(
+      "WHO-1 the person keeps the screens' designs",
+      truth(
+        (() => {
+          const r = write('design/approved-screens.json', 'web-engineer');
+          return r.status === 2 && r.stderr.includes("needs a person's approval");
+        })(),
+      ),
+      0,
+    );
+    expect(
+      'WHO-1 and the kit: the lead may not approve it',
+      delegate('kit', '--reason', 'x'),
+      1,
+      'not among the delegated approvals',
+    );
+    // WHO-2: a weakened test on a lane's branch is the lead's, after review, for a story.
+    expect(
+      "WHO-2 the lead approves a weakened test for a lane's story",
+      truth(
+        delegate(
+          'tests',
+          '--lane',
+          'web',
+          '--story',
+          'ST-4',
+          '--reason',
+          'the old case tested removed behaviour',
+        ).status === 0 && approved('web/tests'),
+      ),
+      0,
+    );
+    expect(
+      "WHO-2 but not on its own branch: there it is the person's",
+      delegate('tests', '--story', 'ST-4', '--reason', 'x'),
+      1,
+      "on your own branch a weakened test is the person's",
+    );
+    expect(
+      'WHO-2 nor without the story it reviewed',
+      delegate('tests', '--lane', 'qa', '--reason', 'x'),
+      1,
+      'name the story',
     );
   } finally {
     registry.kill();
@@ -4002,6 +4078,113 @@ else process.exit(2);
     );
     expect('but listing them is fine', sBash('code-kit settings --json'), 0);
 
+    // WHO-3: who decides each approval is a setting the person changes, like the harness's.
+    {
+      const sWrite = (rel, agent) =>
+        spawnSync('node', [join(hooks, 'guard-paths.mjs')], {
+          input: JSON.stringify({
+            cwd: s.dir,
+            tool_input: { file_path: join(s.dir, rel) },
+            ...(agent ? { agent_type: agent } : {}),
+          }),
+          env: { ...process.env, CLAUDE_PROJECT_DIR: s.dir },
+          encoding: 'utf8',
+        });
+      const leadRules = JSON.parse(leadFixture);
+      writeFileSync(
+        join(s.dir, '.claude/code-kit.json'),
+        JSON.stringify({
+          ...leadRules,
+          protected: [
+            { glob: 'supabase/migrations/**', approval: 'schema', why: 'the database schema' },
+            ...leadRules.protected,
+          ],
+        }),
+      );
+      rmSync(join(s.dir, '.claude/approvals'), { recursive: true, force: true });
+      const rows = JSON.parse(sCli('settings', '--json').stdout).filter(
+        (r) => r.section === 'Approvals',
+      );
+      expect(
+        'WHO-3 settings lists who decides each approval: schema, dependencies, merges and tests the lead, the design the person',
+        truth(
+          [
+            'approvals.schema',
+            'approvals.dependencies',
+            'approvals.merge',
+            'approvals.tests',
+          ].every((k) => rows.find((r) => r.key === k)?.value === 'lead') &&
+            rows.find((r) => r.key === 'approvals.design')?.value === 'person' &&
+            !rows.some((r) => r.key === 'approvals.kit'),
+          JSON.stringify(rows),
+        ),
+        0,
+      );
+      expect(
+        "WHO-3 before the change, a lane's migration is the lead's to approve",
+        sWrite('supabase/migrations/001_init.sql', 'db-engineer'),
+        2,
+        "needs the lead's approval",
+      );
+      const moved = sCli(
+        'settings',
+        'set',
+        'approvals.schema',
+        'person',
+        '--reason',
+        'I review schema changes myself',
+        '--via',
+        'pane',
+      );
+      const rules = JSON.parse(readFileSync(join(s.dir, '.claude/code-kit.json'), 'utf8'));
+      expect(
+        'WHO-3 the person moves schema to themselves: approvals.delegate no longer lists it, written out in full',
+        truth(
+          moved.status === 0 &&
+            !rules.approvals.delegate.protected.includes('schema') &&
+            rules.approvals.delegate.merge === true &&
+            rules.approvals.delegate.tests === true &&
+            Boolean(rules.approvals.delegate.dependencies),
+          moved.stdout + moved.stderr + JSON.stringify(rules.approvals),
+        ),
+        0,
+      );
+      expect(
+        "WHO-3 with the person's reason in the kit approval the commit logs",
+        truth(
+          readFileSync(join(s.dir, '.claude/approvals/kit'), 'utf8').includes(
+            'I review schema changes myself (changed in the code-kit pane)',
+          ),
+        ),
+        0,
+      );
+      const after = sWrite('supabase/migrations/001_init.sql', 'db-engineer');
+      expect(
+        "WHO-3 and the lane's next migration needs the person's approval",
+        truth(
+          after.status === 2 &&
+            after.stderr.includes("needs a person's approval") &&
+            holdable(after.stderr)?.names.includes('schema'),
+          after.stderr,
+        ),
+        0,
+      );
+      expect(
+        "WHO-3 a value that isn't the lead or the person changes nothing",
+        sCli('settings', 'set', 'approvals.merge', 'maybe', '--reason', 'x'),
+        1,
+        "isn't one of its values",
+      );
+      expect(
+        'WHO-3 nor may an agent change who decides',
+        sBash('code-kit settings set approvals.merge lead --reason x'),
+        2,
+        "the person's own act",
+      );
+      writeFileSync(join(s.dir, '.claude/code-kit.json'), fixture);
+      rmSync(join(s.dir, '.claude/approvals'), { recursive: true, force: true });
+    }
+
     // HOLD-3, HOLD-4: a held call waits in `code-kit hold` until the band answers, or the hold time ends.
     const waiting = (id, minutes) =>
       new Promise((done) => {
@@ -5078,6 +5261,23 @@ else process.exit(1);
     truth(nextIn(v.dir).step !== 'merge'),
     0,
   );
+  // WHO-1: a base whose rules say nothing about approvals lets the lead merge: merging isn't releasing.
+  {
+    const { approvals: _none, ...silent } = JSON.parse(vConfig);
+    writeFileSync(join(v.dir, '.claude/code-kit.json'), JSON.stringify(silent));
+    v.git('commit', '-q', '-am', 'no approvals section');
+    const step = nextIn(v.dir);
+    expect(
+      'WHO-1 with no approvals.delegate on the base, the lead merges the head under autonomous',
+      truth(
+        step.step === 'merge' &&
+          step.args === 'web/st-2' &&
+          !step.attention.some((a) => a.includes('waits for the person')),
+        JSON.stringify(step),
+      ),
+      0,
+    );
+  }
   writeFileSync(join(v.dir, '.claude/code-kit.json'), vConfig);
   v.git('commit', '-q', '-am', 'stop delegating merges');
   vCli('queue', 'drop', 'web/st-2');
@@ -5394,10 +5594,10 @@ else process.exit(1);
     );
     gConfig({ approvals: { delegate: { protected: ['design'] } } });
     expect(
-      'REG-2 the lead may not approve it within delegated rules',
+      "REG-2 the lead may not approve it where weakened tests aren't delegated",
       gCli('approve', 'tests', '--delegated', '--reason', 'flaky'),
       1,
-      "weakening a test is the person's to allow",
+      "weakened tests aren't delegated",
     );
     gConfig();
     gPut('.claude/approvals/web/tests', 'The keeps-order test is wrong until ST-9');
@@ -5429,6 +5629,85 @@ else process.exit(1);
       truth(!said(res).includes('Weakened tests'), said(res)),
       0,
     );
+
+    // WHO-2: with no approvals.delegate, a weakened test on a lane's branch is the lead's after review.
+    g.git('checkout', '-q', 'main');
+    gConfig({ approvals: undefined });
+    gCommit('the lead decides by default');
+    g.git('checkout', '-q', '-b', 'web/st-60');
+    gPut(
+      'apps/office/old.test.mjs',
+      twoCases.replace("test('lists slots'", "test.skip('lists slots'"),
+    );
+    res = gBash('git add -A && git commit -m skip', 'web-engineer');
+    expect(
+      "WHO-2 a lane's weakened test is the lead's decision, and isn't held for the person",
+      truth(
+        res.status === 2 &&
+          res.stderr.includes("needs the lead's approval") &&
+          res.stderr.includes('the lead decides after reviewing it') &&
+          !res.stderr.includes('! echo') &&
+          holdable(res.stderr) === null,
+        res.stderr,
+      ),
+      0,
+    );
+    const leadOk = gCli(
+      'approve',
+      'tests',
+      '--lane',
+      'web',
+      '--delegated',
+      '--story',
+      'ST-3',
+      '--reason',
+      'lists slots covered a removed filter',
+    );
+    res = gBash('git add -A && git commit -m skip', 'web-engineer');
+    const leadLogged = readFileSync(join(g.dir, '.claude/approval-log.jsonl'), 'utf8')
+      .split('\n')
+      .filter(Boolean)
+      .map((l) => JSON.parse(l));
+    expect(
+      "WHO-2 with the lead's approval the lane commits it, logged as the lead's",
+      truth(
+        leadOk.status === 0 &&
+          res.status === 0 &&
+          leadLogged.some(
+            (e) =>
+              e.approval === 'tests' &&
+              e.branch === 'web/st-60' &&
+              e.reason.includes('approved by the lead within the delegated rules'),
+          ),
+        leadOk.stderr + res.stderr,
+      ),
+      0,
+    );
+    g.git('commit', '-q', '-m', 'ST-3 skip with the lead');
+    // From that commit, so the file the lead weakens is one its branch already has.
+    g.git('checkout', '-q', '-b', 'lead/st-90');
+    gPut(
+      'apps/office/old.test.mjs',
+      twoCases
+        .replace("test('lists slots'", "test.skip('lists slots'")
+        .replace("test('keeps order'", "test.skip('keeps order'"),
+    );
+    res = gBash('git add -A && git commit -m skip');
+    expect(
+      "WHO-2 the same weakening on the lead's own branch is the person's",
+      truth(
+        res.status === 2 &&
+          res.stderr.includes("needs a person's approval") &&
+          res.stderr.includes('nobody else reviews it'),
+        res.stderr,
+      ),
+      0,
+    );
+    g.git('reset', '-q');
+    g.git('checkout', '-q', '--', '.');
+    g.git('checkout', '-q', 'main');
+    gConfig();
+    gCommit('the person keeps every approval again');
 
     // REG-2: verify catches what was weakened outside Claude Code.
     g.git('checkout', '-q', 'main');

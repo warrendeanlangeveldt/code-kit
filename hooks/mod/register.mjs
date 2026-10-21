@@ -70,6 +70,7 @@ import {
   parkWatch,
   readOutcome,
   restartPrompt,
+  stalledPrompt,
   stallDue,
   stepKey,
   stepLabel,
@@ -152,8 +153,8 @@ const offered = new Set();
 let offering = false;
 // NOTIFY-1: the decisions waiting at the last look, by key; null until the first look.
 let notified = null;
-/** LOOP-8: the times in a row the lead is prompted with one step before the person is asked. */
-const ASK_LIMIT = 2;
+/** LOOP-8, WHO-4: the times in a row the lead is prompted with one step before it shows as a note. */
+const ASK_LIMIT = 3;
 let leadTurn = null; // the lead's running turn, if any
 const activity = new Map(); // agent id → { at, inFlight, nudged, stopped, lane, story }
 const restarts = new Map(); // story → times the loop restarted it
@@ -1532,8 +1533,9 @@ export function register(on) {
         if (key === loop.lastKey && print === loop.lastPrint) return;
         loop.lastKey = key;
         loop.lastPrint = print;
-        // LOOP-8: a step the lead was asked for twice and that is still next didn't take: the project
-        // moving elsewhere (lanes committing) doesn't make a third prompt useful. The person decides.
+        // LOOP-8, WHO-4: a step the lead was asked for three times and that is still next didn't take:
+        // the project moving elsewhere (lanes committing) doesn't make a fourth prompt useful. It shows
+        // as a note; the person may ask again.
         if (loop.asked.times >= ASK_LIMIT) {
           if (loop.proposal?.label !== label) {
             loop.proposal = { prompt, label, kind, target, key, repeated: loop.asked.times };
@@ -1642,6 +1644,12 @@ export function register(on) {
           const a = activityOf(agent.id, now);
           a.lane = lane;
           a.story = attribution(agent.id, agent, model.check, model.state).story ?? lane;
+          // WHO-4: the lead dispatched the stalled story again: a new agent on it ends the note.
+          const flag = flagged.get(a.story);
+          if (flag && flag.agentId !== agent.id) {
+            flagged.delete(a.story);
+            restarts.set(a.story, 0);
+          }
           // A held call, or a long command still running, isn't quiet.
           if (a.inFlight > 0 || waitingOnPerson.has(agent.id)) {
             a.at = now;
@@ -1677,7 +1685,20 @@ export function register(on) {
             await act.record('restart', `${lane} · ${a.story} (${n}/${h.stall.maxRestarts})`);
           } else if (due === 'flag') {
             a.stopped = true;
-            flagged.set(a.story, { lane, story: a.story, count: (restarts.get(a.story) ?? 0) + 1 });
+            const count = (restarts.get(a.story) ?? 0) + 1;
+            flagged.set(a.story, { lane, story: a.story, count, agentId: agent.id });
+            // WHO-4: the lead sorts it out; the person sees a note.
+            loop.pending.push({
+              story: a.story,
+              prompt: stalledPrompt({
+                type: agent.type,
+                id: agent.id,
+                lane,
+                story: a.story,
+                restarts: restarts.get(a.story) ?? 0,
+                last: a.tool ?? null,
+              }),
+            });
             await act.record('flag', `${lane} · ${a.story}`);
           }
           if (due) $.ui.invalidate('ui.render');

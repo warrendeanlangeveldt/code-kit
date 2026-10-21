@@ -1,6 +1,7 @@
 // Regression (docs/specs/18-regression.md). REG-1: a fix comes with a test that fails without it, as the
 // bug, and passes with it. REG-2: a test isn't weakened (deleted, skipped, cut down, its snapshot
-// rewritten) without the person's `tests` approval, which the lead can't delegate. The commit hook
+// rewritten) without a `tests` approval: the lead's on a lane's branch where tests are delegated (spec 23,
+// WHO-2), the person's otherwise and always on the lead's own. The commit hook
 // refuses a weakening commit; verify finds what a branch weakened, from git.
 import { execFileSync, spawnSync } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync } from 'node:fs';

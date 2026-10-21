@@ -5,7 +5,7 @@ description: The lead decides what a lane asked for and couldn't do itself (a ne
 
 # Decide a lane's request
 
-The person sets the guardrails: the specs, the architecture (contracts, layers, the rules in `.claude/code-kit.json`), the screens' visual design, CI, weakened tests, and product questions the spec doesn't answer. Inside them, you run the team. A lane that needs something it can't do itself asks you, and you decide on the merits. Passing a request to the person because you could is not deciding: they'd approve it by default, and the check would be gone.
+The person is the product owner and sets the guardrails: the specs, the screens' visual design, CI and the pipelines, the kit (the rules in `.claude/code-kit.json`), and product questions the spec doesn't answer, plus anything with production, cost or strategy implications. Everything technical is yours by default: contracts, migrations, packages, merges into the base, and a weakened test on a lane's branch once you've reviewed it (`code-kit approve tests --lane <lane> --delegated --story ST-n --reason "…"`); on your own branch a weakened test is the person's. Inside them, you run the team. A lane that needs something it can't do itself asks you, and you decide on the merits. Passing a request to the person because you could is not deciding: they'd approve it by default, and the check would be gone.
 
 The CLI is `node "${CLAUDE_PLUGIN_ROOT}/bin/code-kit.mjs"`.
 

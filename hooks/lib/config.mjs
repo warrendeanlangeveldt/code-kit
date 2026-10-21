@@ -96,20 +96,38 @@ export function withDefaults(c) {
     tests: c.tests ?? [],
     regression: { prepare: c.regression?.prepare ?? null },
     branches: { protected: c.branches?.protected ?? ['main', 'master'] },
-    approvals: { lead: c.approvals?.lead === true, delegate: delegateRules(c.approvals?.delegate) },
+    approvals: {
+      lead: c.approvals?.lead === true,
+      delegate: delegateRules(c.approvals?.delegate, c.protected ?? []),
+    },
     harness: harnessSettings(c.harness),
   };
 }
 
+/** WHO-1: the approvals the person keeps when the config says nothing: product, design, CI and the kit. */
+export const PERSON_KEEPS = ['spec', 'design', 'ci', 'kit'];
+
 /**
  * The rules within which the lead approves on its own (`approvals.delegate`), or null when it may not:
- * the protected approvals it may grant, and the dependency rule packages must meet.
+ * the protected approvals it may grant, the dependency rule packages must meet, merges, and weakened
+ * tests on a lane's branch. WHO-1: with no `approvals.delegate`, the lead decides everything technical:
+ * every protected approval but the person's (PERSON_KEEPS), dependencies within the registry's
+ * defaults, merges and weakened tests. `false` keeps everything for the person.
  */
-function delegateRules(d) {
-  if (!d) return null;
+function delegateRules(given, protectedPaths = []) {
+  if (given === false) return null;
+  const d = given ?? {
+    protected: [...new Set(protectedPaths.map((p) => p.approval))].filter(
+      (a) => a && !PERSON_KEEPS.includes(a),
+    ),
+    merge: true,
+    tests: true,
+    dependencies: {},
+  };
   return {
     protected: d.protected ?? [],
     merge: d.merge === true,
+    tests: d.tests === true,
     dependencies: d.dependencies
       ? {
           licences: d.dependencies.licences ?? [
@@ -149,6 +167,129 @@ const isRegExp = (v) => {
  * security reviewer (ONB-7, spec 17). A project set up before (no `setup`, or a lower one) is told what
  * re-running init adds.
  */
+/**
+ * WHO-3: who decides each approval, as the Settings tab's Approvals rows: one per protected approval
+ * (but the kit, which is always the person's), dependencies with the registry's rules, merges and
+ * weakened tests. Each row: { key, value, default, about, choices?, section: 'Approvals' }.
+ */
+export function approvalSettings(config) {
+  const rules = config.approvals.delegate;
+  const who = (lead) => (lead ? 'lead' : 'person');
+  const names = [...new Set(config.protected.map((p) => p.approval))].filter((n) => n !== 'kit');
+  const fallback = delegateRules(undefined, config.protected) ?? {};
+  const deps = rules?.dependencies ?? delegateRules({ dependencies: {} }).dependencies;
+  const row = (key, value, dflt, about, choices) => ({
+    key,
+    value,
+    default: dflt,
+    about,
+    section: 'Approvals',
+    ...(choices ? { choices } : {}),
+  });
+  return [
+    ...names.map((n) =>
+      row(
+        `approvals.${n}`,
+        who(rules?.protected.includes(n)),
+        who(fallback.protected?.includes(n)),
+        `Who approves a lane's change to what's protected as "${n}"`,
+        ['lead', 'person'],
+      ),
+    ),
+    row(
+      'approvals.dependencies',
+      who(Boolean(rules?.dependencies)),
+      'lead',
+      "Who approves a lane's new package: the lead within the registry's rules, or you",
+      ['lead', 'person'],
+    ),
+    row(
+      'approvals.dependencies.licences',
+      deps.licences.join(','),
+      'MIT,Apache-2.0,BSD-2-Clause,BSD-3-Clause,ISC',
+      'The licences a package the lead approves may have, comma-separated',
+    ),
+    row(
+      'approvals.dependencies.minWeeklyDownloads',
+      deps.minWeeklyDownloads,
+      10_000,
+      'The weekly downloads a package the lead approves must have, at least',
+    ),
+    row(
+      'approvals.dependencies.maxMonthsSinceRelease',
+      deps.maxMonthsSinceRelease,
+      18,
+      "Months since a package's last release, at most, for the lead to approve it",
+    ),
+    row(
+      'approvals.dependencies.allowInstallScripts',
+      Array.isArray(deps.allowInstallScripts)
+        ? deps.allowInstallScripts.join(',')
+        : deps.allowInstallScripts,
+      false,
+      'Install scripts a package the lead approves may run: true, false, or kinds (binary, build, other)',
+    ),
+    row(
+      'approvals.merge',
+      who(Boolean(rules?.merge)),
+      'lead',
+      'Who merges a reviewed branch into the base: merging is not releasing',
+      ['lead', 'person'],
+    ),
+    row(
+      'approvals.tests',
+      who(Boolean(rules?.tests)),
+      'lead',
+      "Who approves a weakened test on a lane's branch, after review; on the lead's own branches it is always you",
+      ['lead', 'person'],
+    ),
+  ];
+}
+
+/** WHO-3: the raw config with one approval setting changed (a copy), the rules written out in full. */
+export function withApprovalSetting(raw, config, key, text) {
+  const rules = config.approvals.delegate;
+  const deps = rules?.dependencies ?? null;
+  const delegate = {
+    protected: [...(rules?.protected ?? [])],
+    merge: Boolean(rules?.merge),
+    tests: Boolean(rules?.tests),
+    ...(deps ? { dependencies: { ...deps } } : {}),
+  };
+  const lead = text === 'lead' ? true : text === 'person' ? false : null;
+  const rule = key.replace(/^approvals\./, '');
+  const depRule = rule.startsWith('dependencies.') ? rule.slice('dependencies.'.length) : null;
+  if (depRule) {
+    const base = delegate.dependencies ?? delegateRules({ dependencies: {} }).dependencies;
+    const list = String(text)
+      .split(',')
+      .map((x) => x.trim())
+      .filter(Boolean);
+    const value =
+      depRule === 'licences'
+        ? list
+        : depRule === 'allowInstallScripts'
+          ? text === 'true' || (text === 'false' ? false : list)
+          : /^\d+$/.test(text)
+            ? Number(text)
+            : text;
+    delegate.dependencies = { ...base, [depRule]: value };
+  } else if (lead === null) return null;
+  else if (rule === 'dependencies')
+    lead
+      ? (delegate.dependencies = deps ?? delegateRules({ dependencies: {} }).dependencies)
+      : delete delegate.dependencies;
+  else if (rule === 'merge' || rule === 'tests') delegate[rule] = lead;
+  else if (config.protected.some((p) => p.approval === rule) && rule !== 'kit')
+    delegate.protected = lead
+      ? [...new Set([...delegate.protected, rule])]
+      : delegate.protected.filter((n) => n !== rule);
+  else return null;
+  const copy = structuredClone(raw);
+  copy.approvals = { ...(copy.approvals ?? {}), delegate };
+  return copy;
+}
+
 export const SETUP_VERSION = 3;
 
 /** Every problem with a parsed config, as readable sentences; empty when it is valid. */
@@ -236,9 +377,11 @@ export function validate(c) {
   const isCount = (v) => v === undefined || (Number.isInteger(v) && v >= 0);
   need(
     d === undefined ||
+      d === false ||
       (isObj(d) &&
         (d.protected === undefined || isList(d.protected)) &&
         [undefined, true, false].includes(d.merge) &&
+        [undefined, true, false].includes(d.tests) &&
         (dep === undefined ||
           (isObj(dep) &&
             (dep.licences === undefined || isList(dep.licences)) &&
@@ -247,7 +390,7 @@ export function validate(c) {
             ([undefined, true, false].includes(dep.allowInstallScripts) ||
               (isList(dep.allowInstallScripts) &&
                 dep.allowInstallScripts.every((k) => ['binary', 'build', 'other'].includes(k))))))),
-    '"approvals.delegate" must be { protected?: [approval names], merge?: true|false, dependencies?: { licences?, minWeeklyDownloads?, maxMonthsSinceRelease?, allowInstallScripts?: true|false|["binary","build","other"] } }',
+    '"approvals.delegate" must be false, or { protected?: [approval names], merge?: true|false, tests?: true|false, dependencies?: { licences?, minWeeklyDownloads?, maxMonthsSinceRelease?, allowInstallScripts?: true|false|["binary","build","other"] } }',
   );
   need(
     c.branches === undefined || isList(c.branches?.protected),

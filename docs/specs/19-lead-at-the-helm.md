@@ -24,7 +24,7 @@ Found running code-kit on a project of 138 stories. The person gave 26 approvals
 
 ## Data
 
-`approvals.delegate`, as before: `protected` lists the approvals the lead grants, and `dependencies` (an object, empty for the defaults) lets it approve packages. What isn't delegated stays the person's. `tests` is never delegated.
+`approvals.delegate`, as before: `protected` lists the approvals the lead grants, and `dependencies` (an object, empty for the defaults) lets it approve packages. What isn't delegated stays the person's. Spec 23 (WHO-1, WHO-2) makes the lead's split the default when the config has no `approvals.delegate`, and lets `tests` be delegated for lanes' branches.
 
 Each open request in `code-kit requests --json` gains `by`: `lead` when the lead may grant every approval it names, otherwise `person`.
 
@@ -32,7 +32,7 @@ Each open request in `code-kit requests --json` gains `by`: `lead` when the lead
 
 ### HELM-1 Who decides what
 
-The person decides what crosses the guardrails: changes to the specs, the contracts and the architecture's rules, the screens' visual design, CI, weakened tests, and product questions the spec doesn't answer. The lead decides everything else. `/code-kit:init` proposes `approvals.delegate` that way: `protected` lists every protected approval except those guarding the specs, contracts, designs and CI, and `dependencies` is on. The person can keep more for themselves, or give the lead more.
+The person decides what crosses the guardrails: changes to the specs, the contracts and the architecture's rules, the screens' visual design, CI, weakened tests, and product questions the spec doesn't answer. The lead decides everything else. `/code-kit:init` proposes `approvals.delegate` that way: `protected` lists every protected approval except those guarding the specs, contracts, designs and CI, and `dependencies` is on. The person can keep more for themselves, or give the lead more. (Spec 23, WHO-1: with no `approvals.delegate`, this split is the default, and contracts and the architecture's rules are the lead's too.)
 
 **Acceptance**
 

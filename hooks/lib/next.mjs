@@ -280,7 +280,9 @@ export function nextStep(root, base) {
   }
   // HELM-4: a lane waiting on something the lead decides goes first: the lane can't go on without it.
   const forLeadToDecide = openRequests(root).flatMap((r, i) =>
-    r.lane && decidedBy(r.names, config) === 'lead' ? [{ ...r, n: i + 1 }] : [],
+    r.lane && decidedBy(r.names, config, { kind: 'lane', lane: r.lane }) === 'lead'
+      ? [{ ...r, n: i + 1 }]
+      : [],
   );
   if (forLeadToDecide.length)
     return result(
