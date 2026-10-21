@@ -2,6 +2,18 @@
 
 What changed in each release of code-kit, newest first. Versions follow the plugin manifest and the npm package `@warren-dean/code-kit`. Each release is also on [GitHub Releases](https://github.com/warrendeanlangeveldt/code-kit/releases).
 
+## 0.21.0 (2026-10-21)
+
+A project can keep its engineering rules as named standards, and code-kit applies each as firmly as it can.
+
+- `docs/standards.md` holds the project's standards, each with a category (principles, patterns, architecture, conventions or policies), a level (required or recommended) and how it's applied: enforced by a rule the project already has, checked in review, or given to agents as advice. `code-kit standards` says what's wrong with the file.
+- `/code-kit:init` suggests standards after the layers: from the specs, citing where each came from, or from the code, with its evidence ("41 of 43 modules"). A pattern the code follows only partly is put to you as a choice. Nothing is written until you approve each one. An existing project gets the step on its next init.
+- Each lane agent is given the standards for its own layers, one line each, and the lead sees them all. Engineering rules move out of `docs/principles.md` into the standards; principles keeps the definition of done, the commands and the privacy targets.
+- A refusal from a rule a standard names now names the standard. Reviews send back a branch that breaks a required checked standard, citing its id.
+- `docs/standards.md` is protected. Adding a recommended standard can be left to the lead, but removing one or weakening a required one always needs your approval, and `verify` checks it.
+- A team provider can supply an organisation's standards. A project can extend or tighten them, and weaken one only with a waiver the provider confirms.
+- Reports to a team provider now carry the project's standards (report version 2).
+
 ## 0.20.0 (2026-10-21)
 
 A team provider can now receive a report of a project's facts, and a hosted provider's adapter is in preview.
