@@ -55,3 +55,14 @@ export function layerProblems(rel, source, config) {
   }
   return problems;
 }
+
+/**
+ * The rule a layer problem broke, read back from its sentence (as layerProblems words it):
+ * { kind: 'layers', from, to } or { kind: 'layers', from, package }. Null for any other text.
+ */
+export function brokenLayerRule(problem) {
+  const pkg = String(problem).match(/ \(([^()]+)\) may not import the package (\S+)\.$/);
+  if (pkg) return { kind: 'layers', from: pkg[1], package: pkg[2] };
+  const layer = String(problem).match(/ \(([^()]+)\) imports \S+ \(([^()]+)\); /);
+  return layer ? { kind: 'layers', from: layer[1], to: layer[2] } : null;
+}

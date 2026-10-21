@@ -10,6 +10,7 @@ import { CONFIG_FILE } from './config.mjs';
 import { isDependencyFile } from './dependencies.mjs';
 import { matchesAny } from './glob.mjs';
 import { layerProblems } from './layers.mjs';
+import { STANDARDS_APPROVAL, standardsFile, standardsWeakenings } from './standards.mjs';
 import { TESTS_APPROVAL, branchWeakenings, fixOf, proveFix } from './regression.mjs';
 import {
   APPROVAL_LOG,
@@ -165,7 +166,7 @@ function currentBranchOf(root) {
 
 /**
  * The files changed, every problem with the branch, grouped as { ownership, protected, layers,
- * baseline, design, tests, regression, checks }, and the checks `skipped` because a tool isn't
+ * baseline, design, tests, regression, standards, checks }, and the checks `skipped` because a tool isn't
  * installed. `lane` holds the branch to that lane's paths; `checks: false` leaves the project's
  * checks to CI's own steps. `fixes` runs a fix's tests without the fix (REG-1; with the
  * checks unless said); `branch` names the branch when the checkout is detached.
@@ -191,6 +192,7 @@ export function verifyBranch({
     design: [],
     tests: [],
     regression: [],
+    standards: [],
     checks: [],
   };
   const { entries, problems: logProblems } = logEntries(root, from);
@@ -271,6 +273,26 @@ export function verifyBranch({
     if (!approved)
       found.tests.push(
         `${w.file} ${w.reasons.join(', and ')}. A weakened test can hide a regression, so it needs the person's tests approval, which the commit records in ${APPROVAL_LOG}. Restore the test and fix the code, or ask the person.`,
+      );
+  }
+
+  // STD-5: removing a standard, or weakening a required one, needs the person's standards approval,
+  // which the commit records in the log (the lead's own, delegated or not, doesn't count).
+  const stdFile = standardsFile(config);
+  if (changed.includes(stdFile)) {
+    const weakened = standardsWeakenings(
+      showAt(root, from, stdFile) ?? '',
+      showAt(root, 'HEAD', stdFile) ?? '',
+    );
+    const approved = entries.some(
+      (e) =>
+        e.file === stdFile &&
+        e.approval === STANDARDS_APPROVAL &&
+        !String(e.reason ?? '').includes('approved by the lead within the delegated rules'),
+    );
+    if (weakened.length && !approved)
+      found.standards.push(
+        `${stdFile}: ${weakened.join('; ')}. Removing a standard, or weakening a required one, needs the person's standards approval, which the commit records in ${APPROVAL_LOG}. Restore it, or ask the person.`,
       );
   }
 

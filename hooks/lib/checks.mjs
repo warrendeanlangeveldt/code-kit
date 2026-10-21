@@ -16,13 +16,14 @@ function directories(check, files, root) {
 }
 
 /**
- * The first failure as { title, output }, or null. `actor` decides `owners`; the lead always may. A
+ * The first failure as { check, title, output }, or null. `actor` decides `owners`; the lead always may. A
  * command that isn't installed skips the rest of the check, unless `ifMissing` is "fail", and is
  * added to `skipped` as { check, command, where }, so a pass never hides a check that didn't run.
  */
 function runCheck(check, files, root, actor, skipped) {
   if (check.owners && !(actor.kind === 'lead' || check.owners.includes(actor.lane))) {
     return {
+      check: check.name,
       title: `The ${actor.label} changed ${check.name} files it does not own:`,
       output: files.join('\n'),
     };
@@ -39,6 +40,7 @@ function runCheck(check, files, root, actor, skipped) {
       if (res.status === 127) {
         if (check.ifMissing === 'fail')
           return {
+            check: check.name,
             title: `${check.name}: \`${command}\` is not installed${where}. Install it so the check can run.`,
           };
         skipped.push({ check: check.name, command, where: where.replace(/^ in /, '') || null });
@@ -46,10 +48,12 @@ function runCheck(check, files, root, actor, skipped) {
       }
       if (res.error || res.status === null)
         return {
+          check: check.name,
           title: `${check.name}: \`${command}\` did not finish${where} (${res.error?.code ?? res.signal}).`,
         };
       if (res.status !== 0)
         return {
+          check: check.name,
           title: `${check.name}: \`${command}\` fails${where}. Fix it:`,
           output: res.stdout + res.stderr,
         };

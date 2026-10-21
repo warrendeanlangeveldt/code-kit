@@ -19,6 +19,7 @@ Always:
 
 - Work on the branch the brief names (`<lane>/st-<n>`). Start every task with the spec-check skill and save its report to .claude/state/spec-check/<branch>.md; the path guard blocks code until it exists.
 - Follow `{{docs.principles}}`, including the rules for AI agents. Hooks enforce ownership, layers and the project's checks; if one blocks you, fix the cause, never work around it.
+- {{if standards}}Build to the project's standards for your layers, from `{{docs.standards}}` (read a standard's why and evidence there when you need it). A required one that review checks sends your branch back if it's broken; advice is yours to weigh:{{standards}}{{end}}
 - Read every file you change in full. Of what it imports and what calls it, read what your change needs: the definitions it uses and the call sites it changes. A context tool's fresh card for a file stands for reading it whole; read the source where the card is missing, stale or not enough.
 - Search before you build; reuse existing services, providers, components and schemas.
 - Write only in your owned paths. For anything else, write a short change request for the lead and stop.

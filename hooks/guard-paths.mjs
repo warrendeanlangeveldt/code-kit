@@ -6,7 +6,8 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { loadBaseline, newProblems } from './lib/baseline.mjs';
 import { CONFIG_FILE } from './lib/config.mjs';
-import { layerProblems } from './lib/layers.mjs';
+import { brokenLayerRule, layerProblems } from './lib/layers.mjs';
+import { noteFor } from './lib/standards.mjs';
 import { block, start } from './lib/hook.mjs';
 import { teamOf, teamProvider, teamRefusal, whoami } from './lib/team.mjs';
 import { spawnSync } from 'node:child_process';
@@ -83,7 +84,7 @@ if (after !== null) {
   );
   if (added.length)
     block(
-      `Blocked: this edit would break the layer rules (.claude/code-kit.json › layers):\n  ${added.join('\n  ')}\nDepend only on the layers listed, or ask the lead to change the rule.`,
+      `Blocked: this edit would break the layer rules (.claude/code-kit.json › layers):\n  ${added.join('\n  ')}\nDepend only on the layers listed, or ask the lead to change the rule.${noteFor(root, config, added.map(brokenLayerRule))}`,
     );
 }
 process.exit(0);

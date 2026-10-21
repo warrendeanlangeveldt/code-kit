@@ -1,11 +1,11 @@
 ---
 name: spec-design
-description: Turn an idea into a buildable specification by working it through with the person. Frames the problem, explores options, asks the questions that decide scope and behaviour, and writes the brief, specs, architecture, principles and plan that code-kit init and spec-check work from. Use when someone starts a new product or feature with an idea rather than a spec, wants to ideate or shape requirements, or runs /code-kit:spec-design [idea or docs path]. Also use to resume or extend specs it wrote earlier.
+description: Turn an idea into a buildable specification by working it through with the person. Frames the problem, explores options, asks the questions that decide scope and behaviour, and writes the brief, specs, architecture, standards, principles and plan that code-kit init and spec-check work from. Use when someone starts a new product or feature with an idea rather than a spec, wants to ideate or shape requirements, or runs /code-kit:spec-design [idea or docs path]. Also use to resume or extend specs it wrote earlier.
 ---
 
 # Spec design
 
-The argument is either the idea itself, in a sentence or a paragraph, or the path to the docs folder to write to (default `docs/`). If `.claude/code-kit.json` exists, use its `docs.specs`, `docs.principles` and `docs.plan` paths instead of the defaults.
+The argument is either the idea itself, in a sentence or a paragraph, or the path to the docs folder to write to (default `docs/`). If `.claude/code-kit.json` exists, use its `docs.specs`, `docs.standards`, `docs.principles` and `docs.plan` paths instead of the defaults.
 
 The job is to think the idea through **with** the person, not for them. You propose, question and push back; they decide. Every decision ends up in a document, so the build never depends on a conversation nobody can read later.
 
@@ -16,7 +16,8 @@ The output is what the rest of code-kit runs on:
 | `docs/brief.md`           | Problem, users, outcomes, scope, non-goals, the decision log and the open questions (`${CLAUDE_PLUGIN_ROOT}/templates/brief.md`) | Everyone; where a resumed session starts  |
 | `docs/specs/NN-<area>.md` | One capability area each, with numbered requirements (`${CLAUDE_PLUGIN_ROOT}/templates/spec.md`)                                 | `spec-check`, lane agents                 |
 | `docs/architecture.md`    | Components, layers and which way they depend, contracts, integrations, quality targets                                           | `init` (layers, lanes, protected paths)   |
-| `docs/principles.md`      | Engineering rules, what counts as a contract, the definition of done, commands                                                   | `init` (checks, shell rules), lane agents |
+| `docs/principles.md`      | What counts as a contract, the definition of done, the privacy and residency targets, commands                                   | `init` (checks, shell rules), lane agents |
+| `docs/standards.md`       | The engineering rules, each a named standard: graded, and how firmly code-kit applies it (spec 22)                               | `init` (enforced rules), lanes, reviews   |
 | `docs/plan.md`            | Milestones, stories that cite requirement IDs, the work split into lanes, sequencing                                             | `init` (lanes), the lead delegating work  |
 
 ## Which situation
@@ -91,7 +92,7 @@ Each requirement gets an ID (`<AREA>-<n>`, for example `BOOK-4`) and its own hea
 
 A spec answers what and why, not how: no framework, file or function names unless the person requires them. Anything still undecided goes in the spec's open questions and the brief's, never into a requirement. `Status: specified`.
 
-## 5. Architecture, principles and plan
+## 5. Architecture, standards, principles and plan
 
 These are what `/code-kit:init` turns into enforced rules, so be concrete.
 
@@ -105,7 +106,8 @@ These are what `/code-kit:init` turns into enforced rules, so be concrete.
   - **recipes**: under `## Recipes`, a `### <recipe-name>` for each layer's common addition (a new screen, endpoint, migration, domain service, job): the steps in order, the files each step creates or changes, and how it's tested. Each becomes a project skill when init sets up the lanes, so every lane agent builds the same thing the same way;
   - the **design tool** for screens, when there are any: the one the person uses (Paper, Figma, Pencil), or design files under `design/` when they have none.
     Propose the architecture from the specs and constraints, explain the choices, and ask about the ones that matter. Record each in the decision log.
-- **`docs/principles.md`:** the engineering rules; the privacy and data residency targets from the brief (where data may be stored and processed, what is never logged), which the security reviewer checks against; what counts as a contract; the definition of done (tests, checks, reviews, end-to-end working features); the test, lint, typecheck and database commands once they're known; and which commands only CI or a person may run, such as deploys.
+- **`docs/standards.md`:** the engineering rules, each a `### <id> <title>` heading with `level` (required or recommended), `applied` (enforced, checked or advice), `layers`, `why` and `source` lines, the id's prefix its category: `PRI-` principles, `PAT-` patterns, `ARC-` architecture, `CON-` conventions, `POL-` policies. Draw them from the architecture (an `ARC-` standard for each layer rule, `enforced by: layers (<layer> may not import <layer>)`), the threat models (a `POL-` standard for what must never happen to sensitive data), and the decisions; cite each one's source. Propose them and ask about each: a standard is a guardrail, so the person decides it. Init checks the file and protects it.
+- **`docs/principles.md`:** the privacy and data residency targets from the brief (where data may be stored and processed, what is never logged), which the security reviewer checks against; what counts as a contract; the definition of done (tests, checks, reviews, end-to-end working features); the test, lint, typecheck and database commands once they're known; and which commands only CI or a person may run, such as deploys.
 - **`docs/plan.md`**, from `${CLAUDE_PLUGIN_ROOT}/templates/plan.md`:
   - the **work split**: lanes (for example web, api, data), the paths each will own, the agent name for it and the command that proves its work, so work can run in parallel without overlap. Each lane writes and runs the unit tests for its own code;
   - a **QA lane** (`qa`, agent `test-engineer`) whenever the product has screens or journeys that cross lanes: it owns the end-to-end suites (for example `e2e/**` or `apps/*/e2e/**`), in the runner that suits each surface (Playwright for web, Maestro or Detox for mobile), and its command runs them. Nobody else owns these tests, so without it nothing proves a journey works across the lanes;
@@ -133,7 +135,7 @@ Fix what you can. Put the rest to the person as a last round of questions. Then 
 1. what was written, file by file, in one line each;
 2. the open questions that still block building, with who owns each;
 3. the next steps:
-   - `/code-kit:init docs/` turns the architecture, principles and plan into enforced lanes and layers. If the project already runs code-kit, `/code-kit:init` updates it.
+   - `/code-kit:init docs/` turns the architecture, standards, principles and plan into enforced lanes, layers and standards. If the project already runs code-kit, `/code-kit:init` updates it.
    - `/code-kit:dispatch next` starts the ready stories on their lanes. Each lane spec-checks its story against these specs before writing code.
    - `/code-kit:review` checks each finished branch against its requirements before it merges.
    - `/code-kit:status` shows where the build stands against the spec.

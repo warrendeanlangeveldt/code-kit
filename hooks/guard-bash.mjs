@@ -22,6 +22,12 @@ import { matchesAny } from './lib/glob.mjs';
 import { noteBefore } from './lane-audit.mjs';
 import { TESTS_APPROVAL, commitWeakenings } from './lib/regression.mjs';
 import {
+  STANDARDS_APPROVAL,
+  noteFor,
+  standardsFile,
+  standardsWeakenings,
+} from './lib/standards.mjs';
+import {
   APPROVAL_LOG,
   actorFor,
   arrivesWithMerge,
@@ -30,6 +36,7 @@ import {
   askHowTo,
   currentBranch,
   decidedBy,
+  delegatedMark,
   dependencyChange,
   dependencyGrants,
   useApproval,
@@ -176,7 +183,9 @@ for (const { pattern, why, person, command } of config.shell.block) {
     person && actor.kind === 'lead'
       ? '\nTo let the lead run it when the person says so in chat, a person sets "approvals": { "lead": true } in the config.'
       : '';
-  block(`Blocked: ${why}${hint}\nCommand: ${cmd}`);
+  block(
+    `Blocked: ${why}${noteFor(project, config, { kind: 'shell', name: why })}${hint}\nCommand: ${cmd}`,
+  );
 }
 
 if (approves && actor.kind !== 'lead')
@@ -471,16 +480,47 @@ function recordApprovals() {
         session: input.session_id ?? null,
       }),
     );
+  // STD-5: removing a standard, or weakening a required one, is the person's own call, never the lead's,
+  // delegated or not. The commit waits for their `standards` approval, which records what it weakened.
+  const stdFile = standardsFile(config);
+  const stdWeak =
+    files.includes(stdFile) && !arrivesWithMerge(root, stdFile, { staged: true })
+      ? standardsWeakenings(
+          git('show', `HEAD:${stdFile}`),
+          existsSync(join(root, stdFile)) ? readFileSync(join(root, stdFile), 'utf8') : '',
+        )
+      : [];
+  if (stdWeak.length) {
+    const granted = approval(root, STANDARDS_APPROVAL, actor);
+    if (!granted || granted.reason.includes(delegatedMark('').slice(0, -1))) {
+      recordRequest(
+        root,
+        actor,
+        STANDARDS_APPROVAL,
+        stdFile,
+        `Standards weakened: ${stdWeak.join('; ')}.`,
+      );
+      const personOnly = { ...config, approvals: { ...config.approvals, delegate: null } };
+      block(
+        `Blocked: this commit weakens the project's standards in ${stdFile}: ${stdWeak.join('; ')}. Removing a standard, or weakening a required one, is the person's call, never the lead's. Ask them, with what the standard costs the project and your recommendation; they approve it with\n${approvalHowTo(STANDARDS_APPROVAL, actor, root, 'weakening the standards in one commit', personOnly)}`,
+      );
+    }
+  }
   for (const file of files) {
     // Concluding a merge: what arrives as the other branch has it was logged there, with its approvals.
     if (arrivesWithMerge(root, file, { staged: true })) continue;
-    const entry = protectedEntry(file, config);
+    // A weakened standards file is the person's even where the config doesn't protect it.
+    const entry =
+      protectedEntry(file, config) ??
+      (file === stdFile && stdWeak.length
+        ? { approval: STANDARDS_APPROVAL, why: "the project's standards" }
+        : null);
     const granted = entry && approval(root, entry.approval, actor);
     const byDependency = actor.kind === 'lane' && dependencyChange(actor, file, root, config);
     if (entry && !granted && actor.kind !== 'lead' && !byDependency) {
       recordRequest(root, actor, entry.approval, file, entry.why);
       block(
-        `Blocked: ${file} is ${entry.why}; committing it needs ${decidedBy(entry.approval, config) === 'lead' ? "the lead's" : "a person's"} approval in force. ${askHowTo(entry.approval, actor, root, config)}`,
+        `Blocked: ${file} is ${entry.why}; committing it needs ${decidedBy(entry.approval, config) === 'lead' ? "the lead's" : "a person's"} approval in force.${noteFor(root, config, { kind: 'protected', name: entry.approval, glob: entry.glob })} ${askHowTo(entry.approval, actor, root, config)}`,
       );
     }
     if (granted)
@@ -488,6 +528,7 @@ function recordApprovals() {
         approval: entry.approval,
         reason: granted.reason,
         grantedAt: granted.grantedAt,
+        ...(file === stdFile && stdWeak.length ? { weakened: stdWeak } : {}),
       });
     else if (byDependency && (entry || !owns(actor, file, config))) {
       const grants = dependencyGrants(root, actor);
@@ -538,6 +579,7 @@ ${approvalHowTo(TESTS_APPROVAL, actor, root, 'weakening tests in one commit', pe
       });
     useApproval(root, TESTS_APPROVAL, actor);
   }
+  if (stdWeak.length) useApproval(root, STANDARDS_APPROVAL, actor);
   // A dependency approval is used up by the commit that adds its package to a manifest or lockfile.
   const manifests = files.filter((f) => isDependencyFile(f));
   if (manifests.length && actor.kind !== 'readonly') {

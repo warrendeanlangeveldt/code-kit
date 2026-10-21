@@ -7,7 +7,8 @@ import { join } from 'node:path';
 import { matchesAny } from './lib/glob.mjs';
 import { loadBaseline, newProblems } from './lib/baseline.mjs';
 import { block, start } from './lib/hook.mjs';
-import { layerProblems } from './lib/layers.mjs';
+import { brokenLayerRule, layerProblems } from './lib/layers.mjs';
+import { noteFor } from './lib/standards.mjs';
 import { projectWorktrees, relativeTo, worktreeRoot } from './lib/rules.mjs';
 
 const { input, project, config, error } = start();
@@ -23,6 +24,9 @@ if (!existsSync(join(root, rel))) process.exit(0);
 // Violations recorded in the baseline (brownfield code as it was adopted) don't block; new ones do.
 const layers = layerProblems(rel, readFileSync(join(root, rel), 'utf8'), config);
 const problems = newProblems(rel, layers, loadBaseline(project));
+// STD-4: a layer rule a project standard names says which standard it is.
+const note = problems.length ? noteFor(root, config, problems.map(brokenLayerRule)) : '';
+if (note) problems.push(note.trim());
 const quoted = `'${rel.replace(/'/g, `'\\''`)}'`;
 for (const check of config.postEdit) {
   if (!matchesAny(rel, check.files) || matchesAny(rel, check.exclude)) continue;

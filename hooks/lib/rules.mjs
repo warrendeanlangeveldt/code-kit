@@ -31,6 +31,7 @@ import { basename, dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DEPENDENCY_APPROVAL, isDependencyFile } from './dependencies.mjs';
 import { globToRegExp, matchesAny } from './glob.mjs';
+import { noteFor } from './standards.mjs';
 
 export const APPROVAL_LOG = '.claude/approval-log.jsonl';
 export const APPROVALS_DIR = '.claude/approvals';
@@ -763,7 +764,7 @@ export function writeProblem(actor, rel, root, config) {
       decidedBy(guarded.approval, config) === 'lead'
         ? "the lead's approval"
         : "a person's approval";
-    return `${rel} is ${guarded.why} and needs ${who}. ${askHowTo(guarded.approval, actor, root, config)}`;
+    return `${rel} is ${guarded.why} and needs ${who}.${noteFor(root, config, { kind: 'protected', name: guarded.approval, glob: guarded.glob })} ${askHowTo(guarded.approval, actor, root, config)}`;
   }
   if (matchesAny(rel, config.anyActor)) return null;
   if (actor.kind === 'readonly') return readonlyProblem(actor, rel);

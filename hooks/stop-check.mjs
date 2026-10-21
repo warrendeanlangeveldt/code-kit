@@ -7,7 +7,8 @@ import { join } from 'node:path';
 import { loadBaseline, newProblems } from './lib/baseline.mjs';
 import { runChecks } from './lib/checks.mjs';
 import { block, start } from './lib/hook.mjs';
-import { layerProblems } from './lib/layers.mjs';
+import { brokenLayerRule, layerProblems } from './lib/layers.mjs';
+import { noteFor } from './lib/standards.mjs';
 import { actorFor, actorRoot, currentBranch, reportPath } from './lib/rules.mjs';
 import { storyOfBranch } from './lib/teamfacts.mjs';
 import { auditProblems, changedFiles } from './lane-audit.mjs';
@@ -84,10 +85,17 @@ const layers = changed
     newProblems(f, layerProblems(f, readFileSync(join(root, f), 'utf8'), config), baseline),
   );
 if (layers.length)
-  fail('Imports break the layer rules (.claude/code-kit.json › layers):', layers.join('\n'));
+  fail(
+    `Imports break the layer rules (.claude/code-kit.json › layers):${noteFor(root, config, layers.map(brokenLayerRule))}`,
+    layers.join('\n'),
+  );
 
 const { failure } = runChecks(config, changed, root, actor);
-if (failure) fail(failure.title, failure.output);
+if (failure)
+  fail(
+    `${failure.title}${noteFor(root, config, { kind: 'check', name: failure.check })}`,
+    failure.output,
+  );
 
 // A lane hands back committed work on its own branch; the lead reviews and merges it.
 if (actor.kind === 'lane' && changed.length) {

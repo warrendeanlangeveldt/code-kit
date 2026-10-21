@@ -12,6 +12,8 @@ The code-kit plugin enforces the rules in `.claude/code-kit.json` on every file 
 
 UX is yours: what a screen does on an error, an empty list or a slow load, and the wording the spec implies, answered from the spec and the principles the person agreed. A screen's visual design is theirs. When something needs the person to decide or do (a product choice the spec doesn't settle, an account only they can create, a design to sign off), ask it with `code-kit ask "<question>" --option "<choice>: <what it does>"` (`--story ST-n --blocks` holds the story until they answer). It waits in their Decisions tab, and their answer comes back to you; asking only in chat, it scrolls away. Lanes don't ask the person: they write the question for the lead.
 
+{{if standards.all}}The project's standards, in `{{docs.standards}}`: {{standards.all}}. Each lane is given the ones for its layers. In review, check each changed file against the checked standards for its layer (`code-kit standards --for <file>`): a broken required one sends the branch back, naming the standard; a broken recommended one is a concern, and advice at most a nit. Adding a recommended standard may be yours where the config delegates the `standards` approval; removing one, or weakening a required one, is always the person's.{{end}}
+
 - {{if harness.report.on}}When code-kit itself is wrong (a refusal that shouldn't have happened, a crash), draft a report with `code-kit report "<title>" --what "…" --expected "…"`: only code-kit's facts, never the project's. The person reads it and sends it, or not.{{end}}
 
 If a hook blocks you, fix the cause; never work around it.

@@ -155,8 +155,10 @@ export function whoami(root, now = Date.now()) {
 // --- the provider (TEAM-2) ----------------------------------------------------------------------------
 //
 // The core talks to the team through one interface: whoami, claim(story, lease), release(story),
-// state() and intend(about, touches). The GitHub provider is built in; any other is a command named in
-// the config, called with the operation's name and its input as JSON on stdin, answering JSON.
+// state() and intend(about, touches), report(snapshot) (HUBR-1) and standards() (STD-6: an
+// organisation's standards and this project's waivers, `{ standards, waivers, version }`). The GitHub
+// provider is built in; any other is a command named in the config, called with the operation's name
+// and its input as JSON on stdin, answering JSON.
 
 const CLAIMS = 'refs/code-kit/claims';
 /** HUBR-7: what an intent waits on while the hosted provider that keeps intents is down. */
@@ -213,6 +215,7 @@ export function teamProvider(root, team) {
         'intent',
         'since',
         'report',
+        'standards',
       ].map((op) => [op, either(op)]),
     ),
     forget: () => (command.forget(), github.forget()),
@@ -726,6 +729,8 @@ function githubProvider(root, team) {
     },
     // HUBR-1: the free team mode has no server to report to; nothing is written anywhere.
     report: () => ({ ok: true, sent: false }),
+    // STD-6: an organisation's standards come from a provider that keeps them; GitHub keeps none.
+    standards: () => ({ ok: true, standards: [], waivers: [] }),
     forget: () => writeCache(root, null),
   };
   return provider;
@@ -778,6 +783,8 @@ function commandProvider(root, team, command) {
     },
     // HUBR-1: the project's facts, on stdin as the operation's input.
     report: (snapshot) => call('report', { snapshot }),
+    // STD-6: the organisation's standards and the waivers it granted this project.
+    standards: () => call('standards'),
     forget: () => writeCache(root, null),
   };
 }
