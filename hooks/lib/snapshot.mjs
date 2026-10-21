@@ -24,8 +24,10 @@ import {
   sourceOf,
 } from './standards.mjs';
 
-/** 2 adds the project's standards (code-kit spec 22). */
-export const SNAPSHOT_VERSION = 2;
+import { slicesOf } from './schedule.mjs';
+
+/** 2 adds the project's standards (code-kit spec 22); 3 the plan's slices (spec 23, SCHED-2). */
+export const SNAPSHOT_VERSION = 3;
 
 /** A story's stage, as a report names it. */
 export const STAGES = [
@@ -52,6 +54,8 @@ export const SNAPSHOT_SCHEMA = {
   version: 'count',
   project: { repository: 'name?', base: 'name', codeKit: 'name', at: 'ms' },
   milestones: [{ name: 'name', target: 'date?', stories: ['id'] }],
+  // SCHED-2: each slice in plan order, whether it's open or done, and its stories. Added in version 3.
+  slices: [{ name: 'name', open: 'bool', done: 'bool', stories: ['id'] }],
   stories: [
     {
       id: 'id',
@@ -117,7 +121,7 @@ export const SNAPSHOT_SCHEMA = {
 };
 
 /** Parts a report from an older code-kit doesn't have yet: valid when missing, checked when there. */
-export const LATER_PARTS = ['standards'];
+export const LATER_PARTS = ['standards', 'slices'];
 
 const ONE_LINE = (max) => (v) => typeof v === 'string' && v.length <= max && !/[\r\n]/.test(v);
 const KINDS = {
@@ -170,6 +174,7 @@ export function snapshotHash(snapshot, parts = null) {
 /** The parts whose change is sent at once (HUBR-3); usage alone waits for the ten minutes. */
 export const EVENT_PARTS = [
   'milestones',
+  'slices',
   'stories',
   'sendBacks',
   'requirements',
@@ -363,6 +368,7 @@ export function buildSnapshot({
       at: now,
     },
     milestones,
+    slices: slicesOf(status.stories).map((sl) => ({ ...sl, name: line(sl.name).slice(0, 120) })),
     stories,
     sendBacks: sendBackList,
     requirements,

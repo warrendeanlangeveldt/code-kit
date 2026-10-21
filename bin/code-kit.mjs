@@ -34,6 +34,8 @@
 //   settings [--json] | settings set <key> <value> --reason … [--via pane]
 //                                    the harness settings; set is the person's own change
 //                         record approvals a person gave in chat (with approvals.lead on, the lead runs it)
+//   lanes [--json] | lanes release <lane>
+//                                    the lanes running a story now, one each across sessions (spec 23)
 // --config <file> reads a draft (.claude/code-kit.draft.json) instead of .claude/code-kit.json.
 import { execFileSync, spawnSync } from 'node:child_process';
 import {
@@ -135,6 +137,8 @@ import { dependencyRuleProblems, npmFacts, packageOf } from '../hooks/lib/regist
 import { heldTo, laneOfBranch, verifyBranch } from '../hooks/lib/verify.mjs';
 import { skippedLine } from '../hooks/lib/checks.mjs';
 import { TESTS_APPROVAL } from '../hooks/lib/regression.mjs';
+import { laneClaim, laneClaims, releaseLane, shortSession } from '../hooks/lib/laneclaims.mjs';
+import { slicesOf } from '../hooks/lib/schedule.mjs';
 import {
   appliesTo,
   projectStandards,
@@ -1048,6 +1052,34 @@ function requests() {
 }
 
 /**
+ * SCHED-1: the lanes claimed now, one story each across every session, or one lane released: for an
+ * agent the lead saw stop without finishing, so its lane can take the next story.
+ */
+function lanesCommand() {
+  const { config } = load();
+  const root = resolve('.');
+  if (rest[0] === 'release') {
+    const lane = rest[1];
+    if (!lane || rest.length !== 2) die('code-kit lanes release <lane>');
+    if (!config.lanes[lane])
+      die(`There is no lane "${lane}". Lanes: ${Object.keys(config.lanes).join(', ')}.`);
+    const held = laneClaim(root, lane);
+    if (!releaseLane(root, lane)) return out(`The ${lane} lane isn't claimed.`);
+    return out(
+      `Released the ${lane} lane${held.story ? ` (it was running ${held.story})` : ''}. Its next story can start.`,
+    );
+  }
+  if (rest.length) die('code-kit lanes [--json] | lanes release <lane>');
+  const claims = laneClaims(root);
+  if (flag('--json')) return out(JSON.stringify(claims, null, 2));
+  if (!claims.length) return out('No lane is running a story.');
+  for (const c of claims)
+    out(
+      `${c.lane.padEnd(12)} ${(c.story ?? 'a story').padEnd(8)} session ${shortSession(c.session) ?? '?'}, since ${c.since.slice(0, 16).replace('T', ' ')} UTC${c.stale ? ' (stale: no agent seen to finish in 12 hours)' : ''}`,
+    );
+}
+
+/**
  * The harness settings (`harness` in the config): listed, or one changed as the person's own act. The
  * change is written to the config and given a kit approval with the person's reason, so the commit that
  * keeps it logs their reason. The hooks refuse `settings set` from every agent.
@@ -1283,7 +1315,14 @@ function status() {
   if (flag('--json')) {
     out(
       JSON.stringify(
-        { base: from, stories, requirements: byRequirement, problems, drift },
+        {
+          base: from,
+          stories,
+          slices: slicesOf(stories),
+          requirements: byRequirement,
+          problems,
+          drift,
+        },
         null,
         2,
       ),
@@ -1301,8 +1340,17 @@ function status() {
             ? s.branch
             : '';
     out(
-      `  ${pad(s.id, 7)} ${pad(s.state, 12)} ${pad(s.lane || '-', 10)} ${pad(s.requirements.join(', '), 24)} ${detail}`.trimEnd(),
+      `  ${pad(s.id, 7)} ${pad(s.state, 12)} ${pad(s.lane || '-', 10)} ${pad(s.requirements.join(', '), 24)} ${detail}${s.slice ? `${detail ? ' · ' : ''}slice ${s.slice}` : ''}`.trimEnd(),
     );
+  }
+  // SCHED-2: the slices, in plan order, and which are open.
+  const slices = slicesOf(stories);
+  if (slices.length) {
+    out('\nSlices:');
+    for (const sl of slices)
+      out(
+        `  ${pad(sl.name, 24)} ${pad(sl.done ? 'done' : sl.open ? 'open' : 'not started', 12)} ${sl.stories.join(', ')}`,
+      );
   }
   out('\nRequirements:');
   for (const r of byRequirement) {
@@ -2274,6 +2322,7 @@ const commands = {
   requests,
   stops,
   settings,
+  lanes: lanesCommand,
   hold: () => (rest.length === 1 ? hold(rest[0]) : usage()),
   queue,
   team: teamCommand,
@@ -2315,6 +2364,7 @@ function usage() {
       '              | report [--json] | report send|discard <id>\n' +
       '              | stops [--session id] [--json] | sent-back <branch> [--reason "…"]\n' +
       '              | settings [--json] | settings set <key> <value> --reason "…" [--via pane]\n' +
+      '              | lanes [--json] | lanes release <lane>\n' +
       '              | hold <id> [--minutes N] | hold <id> --answer approved|refused\n' +
       '              | queue [--json] | queue add|drop <branch> | queue rules | queue merge --delegated|--person\n' +
       '              | loop [--json] | loop pause|resume | loop lead|release --session id [--take]\n' +

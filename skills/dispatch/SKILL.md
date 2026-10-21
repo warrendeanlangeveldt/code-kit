@@ -1,6 +1,6 @@
 ---
 name: dispatch
-description: Hand stories from the plan to their lane agents, as many at once as can safely run in parallel. Picks the ready stories, checks each is buildable, briefs each lane agent with its story, requirements and acceptance criteria, and starts it on its own branch and worktree. Use when the lead is ready to start building, asks what to work on next, or runs /code-kit:dispatch [story IDs, a milestone, or "next"].
+description: Hand stories from the plan to their lane agents, one per lane, every free lane at once. Picks the ready stories, checks each is buildable, briefs each lane agent with its story, requirements and acceptance criteria, and starts it on its own branch and worktree. Use when the lead is ready to start building, asks what to work on next, or runs /code-kit:dispatch [story IDs, a milestone, or "next"].
 ---
 
 # Dispatch stories to lanes
@@ -34,7 +34,7 @@ Then check:
 - **No open question blocks it.** If a spec's open questions touch a cited requirement, don't dispatch the story; list the question for the person.
 - **The contracts exist.** If the story needs an API schema, event or database contract that isn't written yet, that's the lead's work first. Write it (the lead owns contracts), commit it on the lead's branch, then dispatch. A lane never invents a contract.
 - **The lane is right.** Run `who` on the paths the story will touch. If they belong to two lanes, split the story or sequence it; don't hand one lane another's files.
-- **Nothing overlaps.** At most one story per lane at a time, unless two stories touch disjoint folders. Two lanes may run in parallel; that's the point of lanes.
+- **One story per lane.** A lane runs one story at a time across the whole project, every session included: two agents in one lane build on the same files in their worktrees and conflict at merge. Different lanes run in parallel; that's what the plan's dependencies are for. `code-kit next` offers at most one story for each free lane, the open slice's first (`**Slice:**`), and starting a second agent for a lane that's running one is refused, naming the story and the session that has it. `code-kit lanes` lists what each lane is running. If a lane's agent stopped without finishing (it was stopped, or its session ended), `code-kit lanes release <lane>` frees the lane for its next story.
 
 Commit everything the lanes need first. Each lane branches from the lead's branch as committed, so uncommitted work isn't there.
 

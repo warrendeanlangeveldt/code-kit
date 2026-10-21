@@ -155,6 +155,9 @@ let offering = false;
 let notified = null;
 /** LOOP-8, WHO-4: the times in a row the lead is prompted with one step before it shows as a note. */
 const ASK_LIMIT = 3;
+/** SCHED-1: how often, and how long after its claim, a lane with no agent running is freed. */
+const LANES_FREE_MS = 60000;
+let lanesFreed = -Infinity;
 let leadTurn = null; // the lead's running turn, if any
 const activity = new Map(); // agent id → { at, inFlight, nudged, stopped, lane, story }
 const restarts = new Map(); // story → times the loop restarted it
@@ -1629,6 +1632,28 @@ export function register(on) {
         await act.record('resume', story);
         $.ui.invalidate('ui.render');
       },
+      // SCHED-1: a lane this session's agent claimed, with no agent of that lane still running here for a
+      // minute (stopped with TaskStop, or gone without its finish), is released for its next story.
+      freeLanes: async () => {
+        const at = await $.clock.now();
+        // The first look only starts the clock: a session's first minute frees nothing.
+        if (lanesFreed === -Infinity) lanesFreed = at;
+        if (at - lanesFreed < LANES_FREE_MS || model.state?.kind !== 'ok') return;
+        lanesFreed = at;
+        const claims = ((await json('lanes')) ?? []).filter((c) => c.session === session);
+        if (!claims.length) return;
+        const running = new Set(
+          ((await $.agent.list().catch(() => [])) ?? [])
+            .filter((a) => a.status === 'running')
+            .map((a) => a.type),
+        );
+        for (const c of claims) {
+          const type = model.check?.lanes?.[c.lane]?.agent;
+          if (!type || running.has(type) || at - Date.parse(c.since) < LANES_FREE_MS) continue;
+          await $.process.run(['node', cli, 'lanes', 'release', c.lane], { cwd }).catch(() => {});
+          await act.record('free', `${c.lane}${c.story ? ` · ${c.story}` : ''}`);
+        }
+      },
       // LOOP-3: each lane agent at work, by the time since its last tool call.
       stalls: async () => {
         const h = harness();
@@ -1896,6 +1921,7 @@ export function register(on) {
         if (!leadTurn) act.offer().catch(() => {});
         await act.notifyNew().catch(() => {});
         await act.stalls();
+        await act.freeLanes().catch(() => {});
         await act.animate();
         const now = await act.fingerprint();
         const paneOpen = (await $.ui.panes()).some((p) => [PANE_ID, TEAM_ID].includes(p.id));

@@ -87,6 +87,7 @@ function project() {
     acts: [] as string[][],
     pulses: [] as any[],
     runs: 0,
+    laneClaims: [] as any[],
     settings: [
       {
         key: 'autonomy',
@@ -226,6 +227,12 @@ function stub(on: any, w: World) {
     if (sub === 'verify')
       return ran(w.verifyExit, w.verifyExit ? '' : w.verifyOut, w.verifyExit ? w.verifyOut : '');
     if (sub === 'stops') return ran(0, JSON.stringify(w.stops));
+    if (sub === 'lanes' && argv[3] === 'release') {
+      w.acts.push([...argv.slice(2)]);
+      w.laneClaims = w.laneClaims.filter((c: any) => c.lane !== argv[4]);
+      return ran(0, `Released the ${argv[4]} lane.`);
+    }
+    if (sub === 'lanes') return ran(0, JSON.stringify(w.laneClaims));
     if (sub === 'story') return ran(0, JSON.stringify(w.story));
     if (sub === 'adapters') return ran(0, JSON.stringify(w.adapters));
     if (sub === 'timeline')
@@ -2381,6 +2388,33 @@ test(
     await band.unmount();
   },
 );
+
+test('SCHED-1 a lane this session claimed, with no agent of it running, is freed after a minute', async ($, on) => {
+  const w = project();
+  w.next = { step: 'wait', args: '', then: [] };
+  const since = new Date(0).toISOString();
+  w.laneClaims = [
+    { lane: 'web', story: 'ST-4', session: 's1', since },
+    { lane: 'api', story: 'ST-8', session: 'someone-else', since },
+  ];
+  w.agents = [];
+  const clock = await start($, on, w);
+  await clock.advance(64000);
+  // Its own claim only: another session's lane is that session's to free.
+  expect(w.acts.filter((a: string[]) => a[0] === 'lanes')).toEqual([['lanes', 'release', 'web']]);
+});
+
+test('SCHED-1 a lane whose agent still runs keeps its claim', async ($, on) => {
+  const w = project();
+  w.next = { step: 'wait', args: '', then: [] };
+  w.laneClaims = [{ lane: 'web', story: 'ST-4', session: 's1', since: new Date(0).toISOString() }];
+  w.agents = [
+    { id: 'a1', type: 'web-engineer', description: 'ST-4 booking form', status: 'running' },
+  ];
+  const clock = await start($, on, w);
+  await clock.advance(64000);
+  expect(w.acts.filter((a: string[]) => a[0] === 'lanes')).toEqual([]);
+});
 
 test('LEAN-5 a lane agent past its context limit is told to wrap up, and its story goes on with a fresh agent', async ($, on) => {
   const w = project();

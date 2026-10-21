@@ -951,6 +951,48 @@ test('HOLD-1 and HELM-6 a protected file refused at commit is holdable, one the 
   assert.equal(holdable('some other failure'), null);
 });
 
+test('SCHED-1 and SCHED-2 one story per free lane, the open slice first, then the next, then ahead', async () => {
+  const { pickPerLane, slicesOf } = await import('../hooks/lib/schedule.mjs');
+  const st = (id, lane, state, slice) => ({ id, lane, state, slice: slice ?? null });
+  const stories = [
+    st('ST-1', 'api', 'done', 'Book a class'),
+    st('ST-2', 'api', 'ready', 'Book a class'),
+    st('ST-3', 'web', 'review', 'Book a class'),
+    st('ST-4', 'web', 'ready', 'Pay for a class'),
+    st('ST-5', 'web', 'ready', 'Pay for a class'),
+    st('ST-6', 'mobile', 'ready', 'Pay for a class'),
+    st('ST-7', 'api', 'ready', 'Pay for a class'),
+  ];
+  assert.deepEqual(
+    slicesOf(stories).map((s) => [s.name, s.open, s.done]),
+    [
+      ['Book a class', true, false],
+      ['Pay for a class', false, false],
+    ],
+  );
+  const ready = ['ST-2', 'ST-4', 'ST-5', 'ST-6', 'ST-7'];
+  const one = pickPerLane(stories, { ready, open: 1 });
+  // The api lane takes the open slice's story before the next slice's; web and mobile have none in it.
+  assert.deepEqual(one.pick, ['ST-2', 'ST-4', 'ST-6']);
+  assert.deepEqual(one.ahead, [
+    { id: 'ST-4', slice: 'Pay for a class' },
+    { id: 'ST-6', slice: 'Pay for a class' },
+  ]);
+  assert.deepEqual(one.waiting, ['ST-5', 'ST-7']);
+  // With room for a second slice, the next one opens instead of being ahead.
+  const two = pickPerLane(stories, { ready, open: 2 });
+  assert.deepEqual(two.ahead, []);
+  assert.deepEqual(two.opened, ['Pay for a class']);
+  // A busy lane takes nothing; a sent-back story goes first in its lane.
+  const busy = pickPerLane(stories, {
+    ready,
+    fixes: ['ST-3'],
+    busy: new Set(['api']),
+    open: 1,
+  });
+  assert.deepEqual(busy.pick, ['ST-3', 'ST-6']);
+});
+
 test('SET-1 the harness settings: defaults, validation and typed values', async () => {
   const { harnessSettings, harnessProblems, parseSetting } =
     await import('../hooks/lib/harness.mjs');
@@ -962,6 +1004,7 @@ test('SET-1 the harness settings: defaults, validation and typed values', async 
       reviewer: { on: false, model: 'sonnet' },
       lanes: { model: null, contextLimit: 250000 },
     },
+    slices: { open: 1 },
     background: { pauseAtPercent: 80 },
     compact: { at: 40, milestone: 'ask' },
     notify: { on: true },

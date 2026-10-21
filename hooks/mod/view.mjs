@@ -256,7 +256,7 @@ export function lanesPane(
             : l.branch
               ? ` · ${l.branch}`
               : ''
-        }`
+        }${l.story.slice ? ` · slice ${l.story.slice}` : ''}`
       : l.name === LEAD
         ? 'the main session'
         : (l.agent ?? '');

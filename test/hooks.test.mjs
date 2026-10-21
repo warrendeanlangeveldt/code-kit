@@ -5143,6 +5143,240 @@ else process.exit(1);
     );
     return n;
   };
+  // --- SCHED-1, SCHED-2: one story per lane across sessions, and slices -----------------------------
+  {
+    const q = newRepo();
+    cleanups.push(q.dir);
+    const qPut = (rel, body = '') => {
+      mkdirSync(dirname(join(q.dir, rel)), { recursive: true });
+      writeFileSync(join(q.dir, rel), body);
+    };
+    const qCommit = (m) => {
+      q.git('add', '-A');
+      q.git('commit', '-q', '-m', m);
+    };
+    const qHook = (name, input, args = []) =>
+      spawnSync('node', [join(hooks, name), ...args], {
+        input: JSON.stringify({ cwd: q.dir, ...input }),
+        env: { ...process.env, CLAUDE_PROJECT_DIR: q.dir },
+        encoding: 'utf8',
+      });
+    const qCli = (...args) =>
+      spawnSync('node', [join(here, '..', 'bin', 'code-kit.mjs'), ...args], {
+        cwd: q.dir,
+        encoding: 'utf8',
+      });
+    const story = (id, lane, req, slice) =>
+      `### ${id} Story ${id}\n\n**Lane:** ${lane}\n**Requirements:** ${req}\n**Depends on:** none\n${slice ? `**Slice:** ${slice}\n` : ''}**Status:** todo\n\n`;
+    qPut(
+      'docs/spec/01-classes.md',
+      '# 01. Classes\n\n### CLS-1 Book\n\n### CLS-2 Cancel\n\n### CLS-3 Pay\n\n### CLS-4 Receipt\n\n### CLS-5 Refund\n',
+    );
+    qPut(
+      'docs/spec/plan.md',
+      `# Plan\n\n## Milestone 1: Classes\n\n${story('ST-3', 'web', 'CLS-1')}${story('ST-4', 'web', 'CLS-2')}`,
+    );
+    qPut('design/approved-screens.json', JSON.stringify({ screens: [] }));
+    qCommit('plan');
+    const first = nextIs(
+      'SCHED-1 with two ready stories for the web lane, next offers the first only',
+      q.dir,
+      'dispatch',
+      'ST-3',
+    );
+    expect(
+      'SCHED-1 and says the second waits for its lane',
+      truth(
+        first.attention.some((a) => a.includes('ST-4 waits for its lane')),
+        JSON.stringify(first),
+      ),
+      0,
+    );
+    const startAgent = (id, session, type = 'web-engineer') =>
+      qHook('guard-agent.mjs', {
+        session_id: session,
+        tool_name: 'Agent',
+        tool_input: { subagent_type: type, description: `${id} booking form`, prompt: 'brief' },
+      });
+    expect(
+      "SCHED-1 starting the web lane's agent claims the lane",
+      startAgent('ST-3', 'aaaa1111-s'),
+      0,
+    );
+    const second = startAgent('ST-7', 'bbbb2222-s');
+    expect(
+      'SCHED-1 another session starting a web agent is refused, naming ST-3 and the session running it',
+      truth(
+        second.status === 2 &&
+          second.stderr.includes(
+            'the web lane is already running ST-3 in another session (aaaa1111)',
+          ) &&
+          second.stderr.includes('lanes release web'),
+        second.stderr,
+      ),
+      0,
+    );
+    expect(
+      'SCHED-1 the same session starting ST-3 again (a restart) may',
+      startAgent('ST-3', 'aaaa1111-s'),
+      0,
+    );
+    expect(
+      "SCHED-1 an agent that isn't a lane's starts as before",
+      startAgent('ST-7', 'bbbb2222-s', 'Explore'),
+      0,
+    );
+    expect(
+      'SCHED-1 another lane runs alongside',
+      startAgent('ST-9', 'bbbb2222-s', 'backend-engineer'),
+      0,
+    );
+    expect(
+      'SCHED-1 lanes lists each lane running a story, with its session',
+      truth(
+        JSON.parse(qCli('lanes', '--json').stdout)
+          .map((c) => `${c.lane} ${c.story} ${c.session}`)
+          .join() === 'backend ST-9 bbbb2222-s,web ST-3 aaaa1111-s',
+      ),
+      0,
+    );
+    const waiting = nextIn(q.dir);
+    expect(
+      'SCHED-1 while the web lane runs, next offers neither web story',
+      truth(
+        waiting.step === 'wait' && waiting.why.includes('a lane runs one story at a time'),
+        JSON.stringify(waiting),
+      ),
+      0,
+    );
+    // ST-3's agent commits its work and finishes: its finish frees the lane.
+    q.git('checkout', '-q', '-b', 'web/st-3');
+    qPut('apps/office/book.ts', 'export const book = 1;\n');
+    qCommit('ST-3 book');
+    const finish = () =>
+      qHook('stop-check.mjs', {
+        session_id: 'aaaa1111-s',
+        agent_id: 'agent-3',
+        agent_type: 'web-engineer',
+        hook_event_name: 'SubagentStop',
+      });
+    const refusedFinish = finish();
+    expect(
+      'SCHED-1 a finish the stop check refuses keeps the lane: the agent carries on',
+      truth(
+        refusedFinish.status === 2 &&
+          JSON.parse(qCli('lanes', '--json').stdout).some((c) => c.lane === 'web'),
+        refusedFinish.stderr,
+      ),
+      0,
+    );
+    qPut('.claude/state/reports/web_st-3.md', '# ST-3\n\nDone: booking, CLS-1.\n');
+    const finished = finish();
+    q.git('checkout', '-q', 'main');
+    expect(
+      "SCHED-1 the agent's finish frees its lane",
+      truth(
+        finished.status === 0 &&
+          !JSON.parse(qCli('lanes', '--json').stdout).some((c) => c.lane === 'web'),
+        finished.stderr,
+      ),
+      0,
+    );
+    const after = nextIn(q.dir);
+    expect(
+      'SCHED-1 with ST-3 in review and its lane free, ST-4 is offered next',
+      truth(
+        after.step === 'review' &&
+          after.args === 'ST-3' &&
+          after.then.some((t) => t.step === 'dispatch' && t.args === 'ST-4'),
+        JSON.stringify(after),
+      ),
+      0,
+    );
+    expect(
+      'SCHED-1 a session that ends frees the lanes its agents held',
+      truth(
+        qHook('session.mjs', { session_id: 'bbbb2222-s' }, ['end']).status === 0 &&
+          !JSON.parse(qCli('lanes', '--json').stdout).length,
+      ),
+      0,
+    );
+    startAgent('ST-4', 'cccc3333-s');
+    const released = qCli('lanes', 'release', 'web');
+    expect(
+      'SCHED-1 the lead releases a lane whose agent stopped without finishing',
+      truth(
+        released.status === 0 &&
+          released.stdout.includes('it was running ST-4') &&
+          startAgent('ST-4', 'dddd4444-s').status === 0,
+        released.stdout + released.stderr,
+      ),
+      0,
+    );
+    qCli('lanes', 'release', 'web');
+    // SCHED-2: the open slice first; a lane with nothing in it takes the next slice's story, ahead of it.
+    q.git('branch', '-q', '-D', 'web/st-3');
+    qPut(
+      'docs/spec/plan.md',
+      `# Plan\n\n## Milestone 1: Classes\n\n${story('ST-1', 'backend', 'CLS-1', 'Book a class').replace('todo', 'in progress')}${story('ST-2', 'backend', 'CLS-2', 'Book a class')}${story('ST-5', 'web', 'CLS-3', 'Pay for a class')}${story('ST-6', 'backend', 'CLS-4', 'Pay for a class')}${story('ST-7', 'web', 'CLS-5')}`.replace(
+        '**Lane:** backend\n**Requirements:** CLS-2\n**Depends on:** none',
+        '**Lane:** backend\n**Requirements:** CLS-2\n**Depends on:** none',
+      ),
+    );
+    qCommit('slices');
+    q.git('branch', '-q', 'backend/st-1');
+    const sliced = nextIn(q.dir);
+    expect(
+      'SCHED-2 the backend lane, running the open slice, takes nothing; the web lane takes its story outside a slice first',
+      truth(sliced.step === 'dispatch' && sliced.args === 'ST-7', JSON.stringify(sliced)),
+      0,
+    );
+    qPut(
+      'docs/spec/plan.md',
+      readFileSync(join(q.dir, 'docs/spec/plan.md'), 'utf8').replace(/### ST-7[\s\S]*$/, ''),
+    );
+    qCommit('no ST-7');
+    const aheadOf = nextIn(q.dir);
+    expect(
+      "SCHED-2 with nothing ready in the open slice for the web lane, it takes the next slice's story, marked ahead of its slice",
+      truth(
+        aheadOf.step === 'dispatch' &&
+          aheadOf.args === 'ST-5' &&
+          aheadOf.attention.some((a) => a.includes('ST-5 is ahead of its slice (Pay for a class)')),
+        JSON.stringify(aheadOf),
+      ),
+      0,
+    );
+    const statusJson = JSON.parse(qCli('status', '--json').stdout);
+    expect(
+      'SCHED-2 status shows each slice, and whether it is open',
+      truth(
+        statusJson.slices.map((sl) => `${sl.name}:${sl.open}`).join() ===
+          'Book a class:true,Pay for a class:false' &&
+          statusJson.stories.find((x) => x.id === 'ST-5').slice === 'Pay for a class',
+        JSON.stringify(statusJson.slices),
+      ),
+      0,
+    );
+    const withTeam = { ...JSON.parse(fixture), team: { techLead: 'kim-builds' } };
+    writeFileSync(join(q.dir, '.claude/code-kit.json'), JSON.stringify(withTeam));
+    const reported = JSON.parse(qCli('team', 'report', '--dry-run').stdout || '{}');
+    writeFileSync(join(q.dir, '.claude/code-kit.json'), fixture);
+    const { snapshotProblems: reportProblems } = await import('../hooks/lib/snapshot.mjs');
+    expect(
+      'SCHED-2 and the report carries the slices, and still passes its allow-list',
+      truth(
+        reported.version === 3 &&
+          reported.slices?.some(
+            (sl) => sl.name === 'Book a class' && sl.open && sl.stories.join() === 'ST-1,ST-2',
+          ) &&
+          !reportProblems(reported).length,
+        JSON.stringify(reported.slices) + reportProblems(reported).join('; '),
+      ),
+      0,
+    );
+  }
+
   const blank = mkdtempSync(join(tmpdir(), 'code-kit-blank-'));
   cleanups.push(blank);
   const blankNext = nextIs('next: a blank folder starts with spec-design', blank, 'spec-design');
