@@ -49,6 +49,7 @@ Read the story and every requirement it cites. Then start from what's already be
 - **The spec-check report matches:** its table has no row still `missing` or `conflicts` without an answer, and its questions were answered, not guessed.
 - **Only the story:** changes beyond the story (refactors elsewhere, other stories' requirements) are sent back, or split into their own story. A new dependency is yours to judge, as in `/code-kit:decide`: the story's requirements need it, nothing the project has does the job, and it fits the principles and the layer. Only what crosses a guardrail (the spec, a contract, the architecture) is the person's call.
 - **Contracts respected:** the code uses the contracts as written. A lane that needed a contract change should have asked, not worked around it.
+- **Standards kept:** `code-kit standards --for <changed files>` lists the project's standards for those files' layers. Check each changed file against the ones marked `checked` (the hooks already refuse what an `enforced` one names). A broken required standard sends the branch back, naming the standard's id and where; a broken recommended one is a concern; advice is at most a nit.
 
 ## 4. The security review
 
@@ -78,7 +79,7 @@ Report the table, `verify`'s result, the security review's findings (or that non
 
   Branches merge from the queue one at a time, in the order their reviews passed, each verified against the base as it is then. Where `approvals.delegate.merge` is on and the harness's autonomy is `autonomous`, you merge the head: `code-kit queue merge --delegated` (code-kit's loop asks you when it's its turn). Otherwise the person merges it, with Merge in the code-kit band or `code-kit queue merge --person`. The queue records the commit your review passed and merges exactly that commit. A branch that moves on after your review leaves the queue: review it again, then queue it again. A head that no longer merges cleanly, or fails verify against the moved base, is sent back to its lane on its own; dispatch the fix as for any send-back. When the branch is merged, remove its worktree.
 
-- **Send back.** List each problem, where it is, and what "fixed" looks like. Record the send-back, so `status` and `next` read the branch as waiting for its fix rather than finished:
+- **Send back.** List each problem, where it is, and what "fixed" looks like, with the requirement or the standard's id it breaks. Record the send-back, so `status` and `next` read the branch as waiting for its fix rather than finished:
 
   ```bash
   node "${CLAUDE_PLUGIN_ROOT}/bin/code-kit.mjs" sent-back <branch> --reason "<the problems, in one line>"

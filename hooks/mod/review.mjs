@@ -22,6 +22,7 @@ export function reviewerSpec({ cli, checklist, model }) {
       `1. Run \`node "${cli}" verify --branch <branch>\` from the branch's worktree if it has one (\`git worktree list\`), otherwise in a throwaway worktree (\`git worktree add .claude/worktrees/reviewer-<n> <branch>\`, removed when you're done). A failing verify is always a blocker.`,
       `2. Read ${checklist} and apply its review checklist to the branch's changes against its base, and to the story's requirements. Skip its steps that act (recording a send-back, merging): those are the lead's.`,
       "3. Run the project's test commands that cover the changed files.",
+      `4. Check the changed files against the project's standards for their layers: \`node "${cli}" standards --json --for <changed files>\`. Look for breaches of each one marked checked (an enforced one, the hooks already refuse). A broken required standard is a blocker, a broken recommended one a concern, advice at most a nit; cite the standard's id as the rule.`,
       '',
       'Grade each finding: blocker (it must not merge as it is: a failing check, a requirement not met, a rule broken), concern (worth fixing; the lead decides), nit (small). Say where (path:line), what is wrong and what fixed looks like, and the requirement or rule it cites.',
       '',

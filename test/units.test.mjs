@@ -2260,3 +2260,262 @@ test('REG-2 the pane asks for a weakened test in words', () => {
     'Approve a weakened test for the web lane: apps/office/old.test.mjs',
   );
 });
+
+// --- spec 22: project standards -----------------------------------------------------------------
+
+const STANDARDS_TEXT = `# Standards
+
+### ARC-2 Domain code doesn't import infrastructure
+
+- **Level:** required
+- **Applied:** enforced
+- **Layers:** domain
+- **Enforced by:** \`layers (domain may not import infrastructure)\`
+- **Why:** The domain is tested without a database.
+- **Source:** docs/architecture.md
+
+### PAT-1 Data access goes through repositories
+level: required
+applied: checked
+layers: application, domain
+source: the code: 41 of 43 modules
+
+## Notes
+
+Prose between standards isn't a field.
+`;
+const STD_CONFIG = {
+  layers: [
+    { name: 'domain', paths: ['src/domain/**'], mayImport: [], denyPackages: ['pg'] },
+    { name: 'application', paths: ['src/app/**'], mayImport: ['domain'] },
+    { name: 'infrastructure', paths: ['src/infra/**'], mayImport: ['domain'] },
+    { name: 'web', paths: ['src/web/**'], mayImport: ['application'] },
+  ],
+  protected: [{ glob: 'docs/specs/**', approval: 'specs', why: 'the specs' }],
+  checks: [{ name: 'lint', files: ['**'], run: ['eslint .'] }],
+  shell: { block: [{ pattern: 'fly deploy', why: 'Deploying is done by CI.' }] },
+};
+
+test('STD-1 the standards file: headings, fields in either form, and its problems', async () => {
+  const { parseStandards, standardsProblems, sourceOf } =
+    await import('../hooks/lib/standards.mjs');
+  const { standards } = parseStandards(STANDARDS_TEXT);
+  assert.deepEqual(
+    standards.map((s) => [s.id, s.level, s.applied, s.layers.join('+')]),
+    [
+      ['ARC-2', 'required', 'enforced', 'domain'],
+      ['PAT-1', 'required', 'checked', 'application+domain'],
+    ],
+  );
+  assert.equal(standards[0].why, 'The domain is tested without a database.');
+  assert.deepEqual(sourceOf(standards[1].source), { kind: 'code', count: 41, of: 43 });
+  assert.equal(sourceOf('the threat model in docs/specs/03-payments.md').kind, 'threat-model');
+  assert.deepEqual(standardsProblems(standards, STD_CONFIG), []);
+  const bad = parseStandards(`### PRI-2 One reason to change
+level: required
+applied: enforced
+### XYZ-1 Something
+level: sometimes
+applied: checked
+### ARC-3 Web goes through the application
+level: required
+applied: enforced
+enforced by: layers (web may not import application)
+layers: ui
+### ARC-3 Again
+level: required
+applied: advice
+### POL-1 Nothing deploys from a laptop
+level: required
+applied: enforced
+enforced by: shell (CI)
+### CON-1 Lint passes
+level: required
+applied: enforced
+enforced by: check (prettier)
+`).standards;
+  const problems = standardsProblems(bad, STD_CONFIG);
+  assert.match(
+    problems.join('\n'),
+    /PRI-2 is a principle, and a principle can't be enforced, only checked or advised/,
+  );
+  assert.match(problems.join('\n'), /XYZ-1 has an unknown category/);
+  assert.match(problems.join('\n'), /XYZ-1 needs a level: required or recommended/);
+  assert.match(
+    problems.join('\n'),
+    /ARC-3 is enforced by "layers \(web may not import application\)", but web may import application in the config/,
+  );
+  assert.match(problems.join('\n'), /ARC-3 names the layer "ui", which the config doesn't have/);
+  assert.match(problems.join('\n'), /ARC-3 appears twice/);
+  assert.match(problems.join('\n'), /CON-1 .*no check is named "prettier"/);
+  assert.ok(!problems.some((p) => p.startsWith('POL-1')), 'a shell rule matched by its why');
+  // Without a config (an organisation's files), only the standards themselves are checked.
+  assert.ok(standardsProblems(bad).every((p) => !/config/.test(p)));
+});
+
+test('STD-3 a lane gets the standards for its layers only, one line each', async () => {
+  const { appliesTo, laneLayers, standardLine, parseStandards } =
+    await import('../hooks/lib/standards.mjs');
+  const [arc2, pat1] = parseStandards(STANDARDS_TEXT).standards;
+  const api = laneLayers({ paths: ['src/app/**'] }, STD_CONFIG);
+  assert.deepEqual(api, ['application']);
+  assert.equal(appliesTo(arc2, api), false);
+  assert.equal(appliesTo(pat1, api), true);
+  assert.equal(
+    appliesTo({ layers: [] }, api),
+    true,
+    'a standard for all layers applies everywhere',
+  );
+  assert.equal(
+    standardLine(pat1),
+    'PAT-1 Data access goes through repositories (required, checked)',
+  );
+});
+
+test('STD-4 a refusal from the rule an enforced standard names says which standard it is', async () => {
+  const { standardsNote, parseStandards, ruleOf } = await import('../hooks/lib/standards.mjs');
+  const { brokenLayerRule } = await import('../hooks/lib/layers.mjs');
+  const standards = parseStandards(STANDARDS_TEXT).standards;
+  assert.deepEqual(ruleOf('layers (domain may not import the package pg)'), {
+    kind: 'layers',
+    from: 'domain',
+    package: 'pg',
+  });
+  assert.deepEqual(ruleOf('protected (specs)'), { kind: 'protected', name: 'specs' });
+  assert.equal(ruleOf('the reviewer'), null);
+  const problems = layerProblems(
+    'src/domain/order.ts',
+    "import { db } from '../infra/db';\nimport pg from 'pg';\n",
+    { ...STD_CONFIG, importAliases: {} },
+  );
+  assert.deepEqual(problems.map(brokenLayerRule), [
+    { kind: 'layers', from: 'domain', to: 'infrastructure' },
+    { kind: 'layers', from: 'domain', package: 'pg' },
+  ]);
+  assert.equal(
+    standardsNote(standards, problems.map(brokenLayerRule)),
+    " This is the project's standard ARC-2: Domain code doesn't import infrastructure.",
+  );
+  // A checked standard names no rule, so no refusal claims it.
+  assert.equal(standardsNote(standards, { kind: 'check', name: 'lint' }), '');
+  const lint = parseStandards(
+    '### CON-1 Lint passes\nlevel: required\napplied: enforced\nenforced by: check (lint)\n',
+  ).standards;
+  assert.match(standardsNote(lint, { kind: 'check', name: 'lint' }), /CON-1: Lint passes/);
+  const specs = parseStandards(
+    '### POL-2 Specs change by the person\nlevel: required\napplied: enforced\nenforced by: protected (specs)\n',
+  ).standards;
+  assert.match(
+    standardsNote(specs, { kind: 'protected', name: 'specs', glob: 'docs/specs/**' }),
+    /POL-2/,
+  );
+});
+
+test('STD-5 removing a standard, or weakening a required one, is a weakening; adding one is not', async () => {
+  const { standardsWeakenings } = await import('../hooks/lib/standards.mjs');
+  assert.deepEqual(standardsWeakenings(STANDARDS_TEXT, STANDARDS_TEXT), []);
+  const removed = STANDARDS_TEXT.replace(/### PAT-1[\s\S]*?(?=## Notes)/, '');
+  assert.deepEqual(standardsWeakenings(STANDARDS_TEXT, removed), [
+    'PAT-1 (Data access goes through repositories) is removed',
+  ]);
+  const softer = STANDARDS_TEXT.replace('applied: checked', 'applied: advice');
+  assert.match(
+    standardsWeakenings(STANDARDS_TEXT, softer)[0],
+    /^PAT-1 goes from required and checked .* to required and advice/,
+  );
+  const fewer = STANDARDS_TEXT.replace('layers: application, domain', 'layers: domain');
+  assert.equal(standardsWeakenings(STANDARDS_TEXT, fewer).length, 1);
+  const added = `${STANDARDS_TEXT}\n### CON-3 Tests sit beside their code\nlevel: recommended\napplied: advice\n`;
+  assert.deepEqual(standardsWeakenings(STANDARDS_TEXT, added), []);
+});
+
+test('STD-6 an organisation’s standards: inherited, extended, tightened, and weakened only by a waiver', async () => {
+  const { mergeStandards } = await import('../hooks/lib/standards.mjs');
+  const org = (id, level, applied, layers = []) => ({ id, title: id, level, applied, layers });
+  const own = (id, level, applied, layers = []) => ({
+    id,
+    title: `${id} here`,
+    level,
+    applied,
+    layers,
+  });
+  const { standards, problems } = mergeStandards(
+    [
+      own('ARC-2', 'recommended', 'checked'),
+      own('PAT-1', 'required', 'checked'),
+      own('CON-1', 'recommended', 'advice', ['web']),
+      own('POL-9', 'required', 'checked'),
+    ],
+    [
+      org('ARC-2', 'required', 'checked'),
+      org('PAT-1', 'recommended', 'advice'),
+      org('CON-1', 'recommended', 'advice', ['domain']),
+      org('POL-3', 'required', 'checked'),
+    ],
+  );
+  const by = Object.fromEntries(standards.map((s) => [s.id, s]));
+  assert.match(
+    problems[0],
+    /^ARC-2 can't be weakened without a waiver: the organisation has it required and checked, and this project marks it recommended and checked/,
+  );
+  assert.equal(by['ARC-2'].level, 'required');
+  assert.equal(by['ARC-2'].origin, 'inherited');
+  assert.equal(by['PAT-1'].origin, 'tightened');
+  assert.equal(by['PAT-1'].level, 'required');
+  assert.equal(by['CON-1'].origin, 'extended');
+  assert.deepEqual(by['CON-1'].layers, ['domain', 'web']);
+  assert.equal(by['POL-3'].origin, 'inherited');
+  assert.equal(by['POL-9'].origin, 'own');
+
+  const waived = mergeStandards(
+    [own('ARC-2', 'recommended', 'checked')],
+    [org('ARC-2', 'required', 'checked')],
+    [{ standard: 'ARC-2', paths: [], expires: '2099-01-01', approvedBy: 'hana' }],
+  );
+  assert.deepEqual(waived.problems, []);
+  assert.equal(waived.standards[0].level, 'recommended');
+  assert.equal(waived.standards[0].origin, 'waived');
+  // A waiver for some paths leaves the standard in full everywhere else.
+  const some = mergeStandards(
+    [own('ARC-2', 'recommended', 'checked')],
+    [org('ARC-2', 'required', 'checked')],
+    [{ standard: 'ARC-2', paths: ['migrations/**'], expires: '2099-01-01' }],
+  );
+  assert.equal(some.standards[0].level, 'required');
+  assert.deepEqual(some.standards[0].waiver.paths, ['migrations/**']);
+  // An expired waiver allows nothing.
+  const expired = mergeStandards(
+    [own('ARC-2', 'recommended', 'checked')],
+    [org('ARC-2', 'required', 'checked')],
+    [{ standard: 'ARC-2', paths: [], expires: '2020-01-01' }],
+  );
+  assert.equal(expired.problems.length, 1);
+});
+
+test('spec 22 a report carries the standards, its why in one line at most; an older report without them is still valid', async () => {
+  const { snapshotProblems, SNAPSHOT_SCHEMA, LATER_PARTS } =
+    await import('../hooks/lib/snapshot.mjs');
+  assert.ok(LATER_PARTS.includes('standards') && 'standards' in SNAPSHOT_SCHEMA);
+  const standard = {
+    id: 'PAT-1',
+    title: 'Data access goes through repositories',
+    category: 'patterns',
+    level: 'required',
+    applied: 'checked',
+    layers: ['domain'],
+    source: 'code',
+    evidenceCount: 41,
+    evidenceOf: 43,
+    origin: 'own',
+    why: 'One place for queries.',
+  };
+  const shape = (standards) =>
+    snapshotProblems(standards, SNAPSHOT_SCHEMA.standards, 'snapshot.standards');
+  assert.deepEqual(shape([standard]), []);
+  assert.match(shape([{ ...standard, why: 'line one\nline two' }])[0], /why: not a line/);
+  assert.match(
+    shape([{ ...standard, evidence: 'the 41 files' }])[0],
+    /evidence: not a field a report may hold/,
+  );
+  assert.match(shape([{ ...standard, category: 'style' }])[0], /category: not one of/);
+});

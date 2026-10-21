@@ -40,6 +40,7 @@ const OPS = [
   'intent',
   'since',
   'report',
+  'standards',
 ];
 /** What to run again to sign in: code-kit's own command for the client. */
 const SIGN_IN = 'code-kit team provider signin';
@@ -158,6 +159,20 @@ export async function provide(op, input, root = process.cwd()) {
   }
   const { team: _team, ...body } = input;
   try {
+    // STD-6: the organisation's standards are read, not posted. A hub without them answers none.
+    if (op === 'standards') {
+      const { status, json } = await hub('GET', `/v1/repos/${repo}/standards`);
+      markUp(root);
+      if (status === 401) return unreachable(json.why ?? `Sign in to the hub again: ${SIGN_IN}.`);
+      if (status === 404 || status === 405 || !Array.isArray(json?.standards))
+        return { ok: true, standards: [], waivers: [] };
+      return {
+        ok: true,
+        version: json.version ?? null,
+        standards: json.standards,
+        waivers: Array.isArray(json.waivers) ? json.waivers : [],
+      };
+    }
     const { status, json } = await hub('POST', `/v1/repos/${repo}/${op}`, body);
     markUp(root);
     if (status === 401) return unreachable(json.why ?? `Sign in to the hub again: ${SIGN_IN}.`);

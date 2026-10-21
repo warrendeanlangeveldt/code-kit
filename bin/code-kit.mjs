@@ -29,6 +29,8 @@
 //   report [--json] | report send|discard <id>   the person sends a draft to code-kit's GitHub, or not
 //   stops [--session id] [--json]     finish checks that refused an agent's last stop, still failing
 //   sent-back <branch> [--reason …]   records that a review sent the branch back at its current commit
+//   standards [--json] [--for <path>...]
+//                                    the project's standards, with an organisation's, and their problems
 //   settings [--json] | settings set <key> <value> --reason … [--via pane]
 //                                    the harness settings; set is the person's own change
 //                         record approvals a person gave in chat (with approvals.lead on, the lead runs it)
@@ -131,6 +133,13 @@ import { dependencyRuleProblems, npmFacts, packageOf } from '../hooks/lib/regist
 import { heldTo, laneOfBranch, verifyBranch } from '../hooks/lib/verify.mjs';
 import { skippedLine } from '../hooks/lib/checks.mjs';
 import { TESTS_APPROVAL } from '../hooks/lib/regression.mjs';
+import {
+  appliesTo,
+  projectStandards,
+  readInherited,
+  standardLine,
+  writeInherited,
+} from '../hooks/lib/standards.mjs';
 
 const out = (s) => process.stdout.write(`${s}\n`);
 // Piped into `head` and the like: stop quietly when the reader closes.
@@ -187,6 +196,7 @@ const FLAGS = [
   '--blocks',
   '--take',
   '--dry-run',
+  '--for',
 ];
 const flag = (name) => args.includes(name);
 const writeBaseline = flag('--write');
@@ -427,6 +437,7 @@ const VERIFY_GROUPS = {
   design: 'Designs before screens',
   tests: 'Weakened tests',
   regression: 'Fixes and their tests',
+  standards: 'Standards',
   checks: 'Checks',
 };
 
@@ -1725,6 +1736,12 @@ async function pulseCommand(raw, team, provider) {
       `${JSON.stringify({ at: Date.now(), entries: input.usage })}\n`,
     );
   }
+  // STD-6: the organisation's standards, for the hooks and instructions, read every ten minutes.
+  const inherited = readInherited(root);
+  if (!inherited.at || Date.now() - Date.parse(inherited.at) >= REPORT_MINUTES * 60_000) {
+    const r = provider.standards();
+    if (r && r.ok !== false && Array.isArray(r.standards)) writeInherited(root, r);
+  }
   // Building the snapshot reads git: at most once a minute.
   const built = join(mainCheckout(root), '.claude/state/report-built.json');
   let at = 0;
@@ -2041,8 +2058,11 @@ function instructionsCommand() {
   const { config } = load();
   const root = resolve('.');
   if (rest[0] === 'show') {
-    if (!['lead', 'lane'].includes(rest[1])) die('code-kit instructions show lead|lane');
-    return out(rest[1] === 'lead' ? leadSection(root, config) : agentRules(root, config));
+    if (!['lead', 'lane'].includes(rest[1])) die('code-kit instructions show lead|lane [<lane>]');
+    if (rest[2] && !config.lanes[rest[2]])
+      die(`No lane is called ${rest[2]}: ${Object.keys(config.lanes).join(', ') || 'none'}.`);
+    // A named lane's rules carry the standards for its layers (spec 22, STD-3).
+    return out(rest[1] === 'lead' ? leadSection(root, config) : agentRules(root, config, rest[2]));
   }
   const changed = flag('--write') ? writeInstructions(root, config) : [];
   const files = instructionsState(root, config);
@@ -2068,7 +2088,7 @@ function instructionsCommand() {
   for (const f of files) out(`  ${f.file}: ${said[f.state]}`);
   if (files.some((f) => f.state === 'legacy'))
     out(
-      '\nTo merge one: replace its old code-kit part (in CLAUDE.md from `## Enforced, not advised` to the line about changing the rules; in an agent file from `Always:` to the end of its list) with what `code-kit instructions show lead` or `show lane` prints. Keep every line the project wrote itself (its own rules, its layer order, its docs) outside the markers, under a heading of its own, so a later refresh never touches them.',
+      '\nTo merge one: replace its old code-kit part (in CLAUDE.md from `## Enforced, not advised` to the line about changing the rules; in an agent file from `Always:` to the end of its list) with what `code-kit instructions show lead` or `show lane <lane>` prints. Keep every line the project wrote itself (its own rules, its layer order, its docs) outside the markers, under a heading of its own, so a later refresh never touches them.',
     );
 }
 
@@ -2147,8 +2167,78 @@ function worktreesCommand() {
     );
 }
 
+/**
+ * Spec 22: `standards` lists the standards that apply (the project's file, merged with what an
+ * organisation's team provider supplies) and what's wrong with them (STD-1, STD-6); `--for <path>...`
+ * keeps the ones for those files' layers, as a review reads them (STD-4). Exits 1 on a problem.
+ */
+function standardsCommand() {
+  const { raw, config } = load();
+  const root = resolve('.');
+  const team = teamOf(raw);
+  let fetched = null;
+  if (team && team.provider !== 'github') {
+    const r = teamProvider(root, team).standards();
+    if (r && r.ok !== false && Array.isArray(r.standards)) writeInherited(root, r);
+    else fetched = r?.why ?? "The team provider didn't answer.";
+  }
+  const found = projectStandards(root, config);
+  const { waivers } = readInherited(root);
+  const files = flag('--for') ? rest : [];
+  const layersOf = (f) =>
+    config.layers.length ? [layerOf(f, config.layers)?.name].filter(Boolean) : null;
+  const standards = files.length
+    ? found.standards.filter((s) => files.some((f) => appliesTo(s, layersOf(f))))
+    : found.standards;
+  if (flag('--json')) {
+    out(
+      JSON.stringify(
+        {
+          file: found.file,
+          exists: found.exists,
+          version: found.version,
+          ...(files.length ? { for: files } : {}),
+          standards,
+          waivers,
+          problems: found.problems,
+          ...(fetched ? { provider: fetched } : {}),
+        },
+        null,
+        2,
+      ),
+    );
+    if (found.problems.length) process.exit(1);
+    return;
+  }
+  if (!found.exists && !found.standards.length)
+    return out(
+      `This project has no standards yet: ${found.file} doesn't exist. /code-kit:init suggests them from the specs or the code, and the person approves each.`,
+    );
+  if (fetched)
+    out(`The organisation's standards weren't refreshed (${fetched}); using the last ones read.`);
+  const inherited = found.standards.filter((s) => s.origin !== 'own').length;
+  out(
+    `${found.standards.length} standard${found.standards.length === 1 ? '' : 's'} apply${files.length ? `; ${standards.length} to ${files.join(', ')}` : ''}: ${found.standards.length - inherited} from ${found.file}${inherited ? `, ${inherited} from the organisation${found.version ? ` (version ${found.version})` : ''}` : ''}.`,
+  );
+  for (const s of standards) {
+    const rule = s.applied === 'enforced' && s.enforcedBy ? ` · enforced by ${s.enforcedBy}` : '';
+    const where = s.layers?.length ? ` · ${s.layers.join(', ')}` : '';
+    const origin = s.origin === 'own' ? '' : ` · ${s.origin}`;
+    out(`  ${standardLine({ ...s, origin: 'own', waiver: null })}${where}${rule}${origin}`);
+    if (s.waiver)
+      out(
+        `    waived${s.waiver.paths?.length ? ` for ${s.waiver.paths.join(', ')}` : ''}${s.waiver.expires ? ` until ${s.waiver.expires}` : ''}${s.waiver.approvedBy ? `, approved by ${s.waiver.approvedBy}` : ''}${s.waiver.reason ? `: ${s.waiver.reason}` : ''}`,
+      );
+  }
+  if (!found.problems.length) return;
+  out(`\nProblems:`);
+  for (const p of found.problems) out(`  ${p}`);
+  process.exit(1);
+}
+
 const commands = {
   check,
+  standards: standardsCommand,
   worktrees: worktreesCommand,
   instructions: instructionsCommand,
   loop: loopCommand,
@@ -2187,7 +2277,8 @@ function usage() {
       '              | verify [--base ref] [--branch name] [--no-checks] | status [--base ref] [--json]\n' +
       '              | security [--base ref] [--branch name] [--json]\n' +
       '              | next [--base ref] [--json] | adapters | trace <path>... [--json]\n' +
-      '              | instructions [--write] [--json] | instructions show lead|lane\n' +
+      '              | instructions [--write] [--json] | instructions show lead|lane [<lane>]\n' +
+      '              | standards [--json] [--for <path>...]\n' +
       '              | worktrees [--json] | worktrees release <branch> | worktrees prune\n' +
       '              | approve <name>... --reason "…" [--lane name]   [--config file]\n' +
       '              | merge <branch> --delegated|--person [--into branch] | requests [--json] | requests drop <n>|all\n' +

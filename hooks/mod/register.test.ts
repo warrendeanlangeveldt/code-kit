@@ -3000,6 +3000,10 @@ test('REVW-1 with the reviewer on, a finished branch has the lead start one in t
     name: 'reviewer',
     tools: ['Read', 'Grep', 'Glob', 'Bash'],
   });
+  // STD-4: it checks the changed files against the project's standards, grading what each costs.
+  expect(w.registered[0].prompt).toMatch(
+    /standards --json --for <changed files>.*A broken required standard is a blocker, a broken recommended one a concern, advice at most a nit; cite the standard's id as the rule/,
+  );
   await leadTurn($);
   await settle(clock);
   expect(w.prompts[0]).toMatch(

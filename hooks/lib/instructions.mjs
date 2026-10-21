@@ -5,9 +5,16 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import {
+  appliesTo,
+  laneLayers,
+  projectStandards,
+  standardLine,
+  standardsFile,
+} from './standards.mjs';
 
 /** The version of code-kit's instructions: raised whenever the templates' rules change. */
-export const INSTRUCTIONS_VERSION = 5;
+export const INSTRUCTIONS_VERSION = 6;
 
 const TEMPLATES = fileURLToPath(new URL('../../templates/', import.meta.url));
 const BEGIN = (v) => `<!-- code-kit:begin v${v} -->`;
@@ -25,8 +32,20 @@ function fill(text, facts) {
     .replace(/\n{3,}/g, '\n\n');
 }
 
-/** What the templates need from the project: everything the config and the repository say. */
-function factsOf(root, config) {
+/** The standards that apply (spec 22), or none when the file can't be read. */
+function standardsOf(root, config) {
+  try {
+    return projectStandards(root, config).standards;
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * What the templates need from the project: everything the config and the repository say. With `lane`,
+ * the standards are the ones for that lane's layers (STD-3).
+ */
+function factsOf(root, config, lane = null) {
   const delegated = new Set(config.approvals?.delegate?.protected ?? []);
   const kept = [];
   for (const p of config.protected ?? []) {
@@ -45,7 +64,22 @@ function factsOf(root, config) {
     'docs.specs': config.docs?.specs ?? 'the specs',
     'docs.plan': config.docs?.plan ?? 'the plan',
     'docs.principles': config.docs?.principles ?? "the project's principles",
+    'docs.standards': standardsFile(config),
+    standards: laneStandards(root, config, lane),
+    'standards.all': standardsOf(root, config)
+      .map((s) => `${s.id} ${s.title}`)
+      .join('; '),
   };
+}
+
+/** A lane's standards as the lines of a nested list, or '' when none apply. */
+function laneStandards(root, config, lane) {
+  if (!lane) return '';
+  const layers = (config.layers ?? []).length ? laneLayers(config.lanes?.[lane], config) : null;
+  const lines = standardsOf(root, config)
+    .filter((s) => appliesTo(s, layers))
+    .map((s) => `\n  - ${standardLine(s)}`);
+  return lines.join('');
 }
 
 const marked = (body) => `${BEGIN(INSTRUCTIONS_VERSION)}\n${body.trim()}\n${END}`;
@@ -55,10 +89,10 @@ export function leadSection(root, config) {
   return marked(fill(readFileSync(join(TEMPLATES, 'claude-md.md'), 'utf8'), factsOf(root, config)));
 }
 
-/** A lane agent's "Always:" rules, between their markers. */
-export function agentRules(root, config) {
+/** A lane agent's "Always:" rules, between their markers: with `lane`, its layers' standards too. */
+export function agentRules(root, config, lane = null) {
   const template = readFileSync(join(TEMPLATES, 'agent.md'), 'utf8');
-  return marked(fill(template.slice(template.indexOf('Always:')), factsOf(root, config)));
+  return marked(fill(template.slice(template.indexOf('Always:')), factsOf(root, config, lane)));
 }
 
 /** Whether two renderings say the same, whatever their whitespace and list indentation. */
@@ -87,17 +121,16 @@ function stateOf(text, block, legacy) {
  */
 export function instructionsState(root, config) {
   const lead = leadSection(root, config);
-  const rules = agentRules(root, config);
   const files = [
     { file: 'CLAUDE.md', kind: 'lead', block: lead, legacy: LEAD_LEGACY },
-    ...[...new Set(Object.values(config.lanes ?? {}).map((l) => l.agent))]
-      .map((agent) => ({
-        file: `.claude/agents/${agent}.md`,
+    ...Object.entries(config.lanes ?? {})
+      .filter(([, l]) => existsSync(join(root, `.claude/agents/${l.agent}.md`)))
+      .map(([name, l]) => ({
+        file: `.claude/agents/${l.agent}.md`,
         kind: 'lane',
-        block: rules,
+        block: agentRules(root, config, name),
         legacy: AGENT_LEGACY,
-      }))
-      .filter((f) => existsSync(join(root, f.file))),
+      })),
   ];
   return files.map(({ file, kind, block, legacy }) => {
     const path = join(root, file);

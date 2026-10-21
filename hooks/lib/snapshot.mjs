@@ -14,8 +14,18 @@ import { sendBacks } from './reviews.mjs';
 import { readMilestones, specCheckRows } from './plan.mjs';
 import { storyTimes } from './timeline.mjs';
 import { trail } from './storymap.mjs';
+import {
+  APPLIED,
+  CATEGORIES,
+  LEVELS,
+  ORIGINS,
+  SOURCES,
+  projectStandards,
+  sourceOf,
+} from './standards.mjs';
 
-export const SNAPSHOT_VERSION = 1;
+/** 2 adds the project's standards (code-kit spec 22). */
+export const SNAPSHOT_VERSION = 2;
 
 /** A story's stage, as a report names it. */
 export const STAGES = [
@@ -87,7 +97,27 @@ export const SNAPSHOT_SCHEMA = {
     delegated: { protected: ['name'], dependencies: 'bool', merge: 'bool' },
     designGate: 'bool',
   },
+  // Spec 22: each standard that applies, by id and title, how it's applied and where it came from;
+  // its why in one line at most, and its evidence only as counts.
+  standards: [
+    {
+      id: 'id',
+      title: 'title',
+      category: `enum:${Object.values(CATEGORIES).join('|')}`,
+      level: `enum:${LEVELS.join('|')}`,
+      applied: `enum:${APPLIED.join('|')}`,
+      layers: ['name'],
+      source: `enum:${SOURCES.join('|')}`,
+      evidenceCount: 'count?',
+      evidenceOf: 'count?',
+      origin: `enum:${ORIGINS.join('|')}`,
+      why: 'line?',
+    },
+  ],
 };
+
+/** Parts a report from an older code-kit doesn't have yet: valid when missing, checked when there. */
+export const LATER_PARTS = ['standards'];
 
 const ONE_LINE = (max) => (v) => typeof v === 'string' && v.length <= max && !/[\r\n]/.test(v);
 const KINDS = {
@@ -122,7 +152,9 @@ export function snapshotProblems(value, shape = SNAPSHOT_SCHEMA, at = 'snapshot'
   const extra = Object.keys(value).filter((k) => !(k in shape));
   return [
     ...extra.map((k) => `${at}.${k}: not a field a report may hold`),
-    ...Object.entries(shape).flatMap(([k, s]) => snapshotProblems(value[k], s, `${at}.${k}`)),
+    ...Object.entries(shape)
+      .filter(([k]) => !(shape === SNAPSHOT_SCHEMA && LATER_PARTS.includes(k) && !(k in value)))
+      .flatMap(([k, s]) => snapshotProblems(value[k], s, `${at}.${k}`)),
   ];
 }
 
@@ -143,6 +175,7 @@ export const EVENT_PARTS = [
   'requirements',
   'approvals',
   'rules',
+  'standards',
 ];
 
 const git = (root, ...args) => {
@@ -347,6 +380,45 @@ export function buildSnapshot({
       },
       designGate: Boolean(config.designGate),
     },
+    standards: reportedStandards(root, config, line),
   };
   return snapshot;
+}
+
+/**
+ * Spec 22: the standards that apply, as a report holds them. One that the file can't make sense of (an
+ * unknown category, no level) is left out: `code-kit standards` tells the project what's wrong with it.
+ */
+function reportedStandards(root, config, line) {
+  let all = [];
+  try {
+    all = projectStandards(root, config).standards;
+  } catch {
+    return [];
+  }
+  return all
+    .filter(
+      (s) =>
+        KINDS.id(s.id) &&
+        CATEGORIES[s.id.split('-')[0]] &&
+        LEVELS.includes(s.level) &&
+        APPLIED.includes(s.applied) &&
+        KINDS.title(line(s.title) ?? ''),
+    )
+    .map((s) => {
+      const source = s.origin === 'inherited' ? { kind: 'organisation' } : sourceOf(s.source);
+      return {
+        id: s.id,
+        title: line(s.title),
+        category: CATEGORIES[s.id.split('-')[0]],
+        level: s.level,
+        applied: s.applied,
+        layers: (s.layers ?? []).filter((l) => KINDS.name(l)),
+        source: source.kind,
+        evidenceCount: source.count ?? null,
+        evidenceOf: source.of ?? null,
+        origin: ORIGINS.includes(s.origin) ? s.origin : 'own',
+        why: line(s.why),
+      };
+    });
 }

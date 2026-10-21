@@ -60,13 +60,14 @@ http.createServer((req, res) => {
 const HUB_SERVER = `
 const http = require('node:http');
 const calls = [], reports = [], streams = new Set();
-let claims = [], id = 0;
+let claims = [], id = 0, org = null;
 const send = (res, code, obj) => { res.writeHead(code, { 'content-type': 'application/json' }); res.end(JSON.stringify(obj)); };
 http.createServer((req, res) => {
   let body = '';
   req.on('data', (d) => (body += d)).on('end', () => {
     const p = new URL(req.url, 'http://x').pathname;
     if (p === '/test/seen') return send(res, 200, { calls, reports });
+    if (p === '/test/standards') { org = JSON.parse(body); return send(res, 200, { ok: true }); }
     if (p === '/test/event') {
       const e = { id: ++id, kind: 'claim', text: 'sam claimed ST-5', at: new Date().toISOString() };
       claims.push({ story: 'ST-5', by: 'sam', at: e.at, lease: [] });
@@ -100,6 +101,7 @@ http.createServer((req, res) => {
     if (op === 'state')
       return send(res, 200, { hub: true, at: new Date().toISOString(), reachable: true, github: true, me: 'kim', techLead: 'lead', owners: {}, staleDays: 3, claims, intents: [], pulls: [], setup: [], sessions: [] });
     if (op === 'report') { reports.push(input.snapshot); return send(res, 200, { ok: true }); }
+    if (op === 'standards' && org) return send(res, 200, org);
     if (op === 'presence' || op === 'leave') return send(res, 200, { ok: true });
     return send(res, 404, { ok: false, why: 'No such operation.' });
   });
@@ -5694,6 +5696,223 @@ else process.exit(1);
     );
   }
 
+  // --- spec 22: project standards ---------------------------------------------------------------
+  {
+    const s = newRepo();
+    cleanups.push(s.dir);
+    const sKit = (...args) =>
+      spawnSync('node', [kitCli, ...args], {
+        cwd: s.dir,
+        encoding: 'utf8',
+        env: { ...process.env, CLAUDE_PROJECT_DIR: s.dir },
+      });
+    const sHook = (name, input) =>
+      spawnSync('node', [join(hooks, name)], {
+        input: JSON.stringify({ cwd: s.dir, ...input }),
+        env: { ...process.env, CLAUDE_PROJECT_DIR: s.dir },
+        encoding: 'utf8',
+      });
+    const standardsMd = (pat1Level = 'required', pri2 = 'enforced') =>
+      [
+        '# Standards',
+        '',
+        '### ARC-2 Schemas don’t depend on the domain',
+        '',
+        '- **Level:** required',
+        '- **Applied:** enforced',
+        '- **Layers:** schemas',
+        '- **Enforced by:** layers (schemas may not import domain)',
+        '- **Why:** Schemas are shared by every app; the domain changes with the product.',
+        '- **Source:** docs/spec/architecture.md',
+        '',
+        '### PAT-1 Data access goes through repositories',
+        '',
+        `level: ${pat1Level}`,
+        'applied: checked',
+        'layers: domain',
+        'source: the code: 41 of 43 modules',
+        '',
+        '### PRI-2 One reason to change',
+        '',
+        'level: recommended',
+        `applied: ${pri2}`,
+        '',
+      ].join('\n');
+
+    expect(
+      'STD-1 a project without a standards file is told how it gets one',
+      truth(/no standards yet/.test(sKit('standards').stdout)),
+      0,
+    );
+    mkdirSync(join(s.dir, 'docs'), { recursive: true });
+    writeFileSync(join(s.dir, 'docs/standards.md'), standardsMd());
+    expect(
+      'STD-1 a principle marked enforced is reported: it can only be checked or advised',
+      sKit('standards'),
+      1,
+      '',
+    );
+    const reported = sKit('standards');
+    expect(
+      '… in those words, and exits 1',
+      truth(
+        /PRI-2 is a principle, and a principle can't be enforced, only checked or advised/.test(
+          reported.stdout,
+        ),
+        reported.stdout,
+      ),
+      0,
+    );
+    writeFileSync(join(s.dir, 'docs/standards.md'), standardsMd('required', 'checked'));
+    const clean = sKit('standards');
+    expect(
+      'STD-1 an enforced standard naming a layer rule the config has reports nothing',
+      truth(
+        clean.status === 0 &&
+          /ARC-2 .*enforced by layers \(schemas may not import domain\)/.test(clean.stdout),
+        clean.stdout + clean.stderr,
+      ),
+      0,
+    );
+    writeFileSync(
+      join(s.dir, 'docs/standards.md'),
+      `${standardsMd('required', 'checked')}\n### ARC-9 Every migration is reversible\n\nlevel: required\napplied: enforced\nenforced by: check (migrations)\n`,
+    );
+    const unknownRule = sKit('standards');
+    expect(
+      "STD-1 an enforced standard whose rule the config doesn't have is reported",
+      truth(
+        unknownRule.status === 1 &&
+          /ARC-9 .*no check is named "migrations"/.test(unknownRule.stdout),
+        unknownRule.stdout,
+      ),
+      0,
+    );
+    writeFileSync(join(s.dir, 'docs/standards.md'), standardsMd('required', 'checked'));
+    const forDomain = JSON.parse(
+      sKit('standards', '--json', '--for', 'packages/domain/src/rule.ts').stdout || '{}',
+    );
+    expect(
+      "STD-4 standards --for keeps the ones for that file's layer (a review's list)",
+      truth(
+        forDomain.standards?.map((x) => x.id).join() === 'PAT-1,PRI-2',
+        JSON.stringify(forDomain.standards?.map((x) => x.id)),
+      ),
+      0,
+    );
+
+    // STD-3: each lane's rules carry its layers' standards, one line each; the lead's lists them all.
+    const ai = sKit('instructions', 'show', 'lane', 'ai').stdout;
+    expect(
+      "STD-3 a lane's rules list its layers' standards, one line each, and not another layer's",
+      truth(
+        ai.includes('PAT-1 Data access goes through repositories (required, checked)') &&
+          ai.includes('PRI-2 One reason to change (recommended, checked)') &&
+          !ai.includes('ARC-2'),
+        ai,
+      ),
+      0,
+    );
+    expect(
+      "STD-3 the lead's section lists every standard by id and title",
+      truth(
+        /ARC-2 Schemas don’t depend on the domain; PAT-1 Data access goes through repositories; PRI-2 One reason to change/.test(
+          sKit('instructions', 'show', 'lead').stdout,
+        ),
+      ),
+      0,
+    );
+
+    // STD-4: the layer rule ARC-2 names refuses the import, and the refusal names ARC-2.
+    const refused = sHook('guard-paths.mjs', {
+      tool_name: 'Write',
+      tool_input: {
+        file_path: join(s.dir, 'packages/schemas/src/order.ts'),
+        content: "import { rule } from '../../domain/src/rule';\nexport type Order = {};\n",
+      },
+    });
+    expect(
+      'STD-4 a refusal from the rule an enforced standard names says which standard it is',
+      refused,
+      2,
+      "This is the project's standard ARC-2: Schemas don’t depend on the domain.",
+    );
+
+    // STD-5: removing a standard, or weakening a required one, waits for the person, never the lead.
+    s.git('add', '-A');
+    s.git('commit', '-q', '-m', 'standards');
+    s.git('checkout', '-q', '-b', 'lead/standards');
+    writeFileSync(join(s.dir, 'docs/standards.md'), standardsMd('recommended', 'checked'));
+    const commit = () =>
+      sHook('guard-bash.mjs', { tool_input: { command: 'git commit -am "PAT-1 is advice now"' } });
+    expect(
+      'STD-5 the lead weakening a required standard is refused, and told it is the person’s call',
+      commit(),
+      2,
+      'PAT-1 goes from required and checked for domain to recommended and checked for domain',
+    );
+    mkdirSync(join(s.dir, '.claude/approvals'), { recursive: true });
+    writeFileSync(
+      join(s.dir, '.claude/approvals/standards'),
+      'Repositories on new code only (approved by the lead within the delegated rules: standards)',
+    );
+    expect(
+      "STD-5 the lead's own delegated approval doesn't make it the lead's",
+      commit(),
+      2,
+      "is the person's call",
+    );
+    writeFileSync(
+      join(s.dir, '.claude/approvals/standards'),
+      'Legacy modules first; required again in Q1',
+    );
+    expect('STD-5 the person’s approval lets the commit through', commit(), 0);
+    const logged = readFileSync(join(s.dir, '.claude/approval-log.jsonl'), 'utf8')
+      .split('\n')
+      .filter(Boolean)
+      .map((l) => JSON.parse(l))
+      .find((e) => e.file === 'docs/standards.md');
+    expect(
+      '… and the log records the person’s reason and what it weakened',
+      truth(
+        logged?.approval === 'standards' &&
+          logged.reason === 'Legacy modules first; required again in Q1' &&
+          /PAT-1 goes from required/.test(logged.weakened?.[0] ?? ''),
+        JSON.stringify(logged),
+      ),
+      0,
+    );
+    s.git('reset', '-q', '--hard');
+    rmSync(join(s.dir, '.claude/approval-log.jsonl'), { force: true });
+    // The commit used the approval up.
+    expect(
+      '… and uses the approval up',
+      truth(!existsSync(join(s.dir, '.claude/approvals/standards'))),
+      0,
+    );
+    writeFileSync(
+      join(s.dir, 'docs/standards.md'),
+      `${standardsMd('required', 'checked')}\n### CON-3 Test files sit beside their code\n\nlevel: recommended\napplied: advice\n`,
+    );
+    expect('STD-5 adding a recommended standard is the lead’s to commit', commit(), 0);
+
+    // STD-5 in verify: a branch that weakens a standard with no approval of the person's fails.
+    s.git('reset', '-q', '--hard');
+    writeFileSync(join(s.dir, 'docs/standards.md'), standardsMd('recommended', 'checked'));
+    s.git('commit', '-q', '-am', 'PAT-1 recommended');
+    const verified = sKit('verify', '--base', 'main', '--no-checks');
+    expect(
+      'STD-5 verify refuses a branch that weakened a standard without the person',
+      truth(
+        verified.status === 1 &&
+          /Standards:\n\s+docs\/standards\.md: PAT-1 goes from required/.test(verified.stdout),
+        verified.stdout + verified.stderr,
+      ),
+      0,
+    );
+    s.git('checkout', '-q', 'main');
+  }
+
   // --- HUBR-1 to HUBR-8: a hosted team provider, through its adapter in code-kit -------------------
   {
     const root = mkdtempSync(join(tmpdir(), 'ck-hub-'));
@@ -5947,6 +6166,114 @@ else process.exit(1);
         ),
         0,
       );
+
+      // STD-6: an organisation's standards, from the hosted provider. One without them answers none.
+      const none = kit('standards', '--json');
+      expect(
+        'STD-6 a hub that keeps no standards answers none, and code-kit carries on',
+        truth(
+          none.status === 0 &&
+            JSON.parse(none.stdout).standards.length === 0 &&
+            seen().calls.some((c) => c.op === 'standards'),
+          none.stdout + none.stderr,
+        ),
+        0,
+      );
+      const setOrg = (o) =>
+        execFileSync('curl', [
+          '-s',
+          '-X',
+          'POST',
+          '-d',
+          JSON.stringify(o),
+          `${hubUrl}/test/standards`,
+        ]);
+      const arc2 = {
+        id: 'ARC-2',
+        title: "Domain code doesn't import infrastructure",
+        level: 'required',
+        applied: 'checked',
+        layers: [],
+        why: 'The domain is tested without a database.',
+        source: 'the organisation',
+      };
+      setOrg({ version: 'v14', standards: [arc2], waivers: [] });
+      writeFileSync(
+        join(repo, 'docs/standards.md'),
+        "### ARC-2 Domain code doesn't import infrastructure\n\nlevel: recommended\napplied: checked\n",
+      );
+      const weakened = kit('standards');
+      const weakenedJson = JSON.parse(kit('standards', '--json').stdout || '{}');
+      expect(
+        "STD-6 a project can't weaken an inherited required standard without a waiver: it applies as required",
+        truth(
+          weakened.status === 1 &&
+            /ARC-2 can't be weakened without a waiver/.test(weakened.stdout) &&
+            weakenedJson.standards?.find((x) => x.id === 'ARC-2')?.level === 'required' &&
+            weakenedJson.standards.find((x) => x.id === 'ARC-2').origin === 'inherited',
+          weakened.stdout,
+        ),
+        0,
+      );
+      setOrg({
+        version: 'v14',
+        standards: [arc2],
+        waivers: [
+          {
+            standard: 'ARC-2',
+            paths: [],
+            expires: '2099-01-01',
+            reason: 'legacy importers',
+            approvedBy: 'hana',
+          },
+        ],
+      });
+      const waived = kit('standards');
+      expect(
+        'STD-6 with the waiver the provider confirms, the weakening stands, and says which waiver allows it',
+        truth(
+          waived.status === 0 &&
+            /ARC-2 .*\(recommended, checked\).* · waived/.test(waived.stdout) &&
+            /waived until 2099-01-01, approved by hana: legacy importers/.test(waived.stdout),
+          waived.stdout + waived.stderr,
+        ),
+        0,
+      );
+      setOrg({
+        version: 'v15',
+        standards: [
+          arc2,
+          { ...arc2, id: 'POL-3', title: 'Secrets come from the environment', layers: [] },
+        ],
+        waivers: [],
+      });
+      writeFileSync(join(repo, 'docs/standards.md'), '');
+      kit('standards');
+      const lane = kit('instructions', 'show', 'lane', 'web').stdout;
+      expect(
+        'STD-6 inherited standards reach each lane as if in the file, marked as the organisation’s',
+        truth(
+          lane.includes(
+            'POL-3 Secrets come from the environment (required, checked, from the organisation)',
+          ),
+          lane,
+        ),
+        0,
+      );
+      const withStandards = JSON.parse(kit('team', 'report', '--dry-run').stdout || '{}');
+      const pol3 = withStandards.standards?.find((x) => x.id === 'POL-3');
+      expect(
+        'and the report carries them: id, title, category, level, how applied and where they came from',
+        truth(
+          pol3?.category === 'policies' &&
+            pol3.origin === 'inherited' &&
+            pol3.source === 'organisation' &&
+            pol3.why === 'The domain is tested without a database.',
+          JSON.stringify(withStandards.standards),
+        ),
+        0,
+      );
+      rmSync(join(repo, 'docs/standards.md'));
 
       // HUBR-6: connect adds the hub's MCP server for every teammate, and leaves the provider as it is.
       const connected = kit('team', 'provider', 'connect');
