@@ -280,19 +280,21 @@ export function currentBranch(root) {
 
 /** Who is acting: { kind: 'lead' | 'lane' | 'readonly', lane?, label }. */
 export function actorFor(input, root, config) {
+  // OWN-1: the session it acts in, whose decisions what it's refused become.
+  const session = input.session_id ?? null;
   const agent = input.agent_type;
   if (agent) {
     const lane = Object.keys(config.lanes).find((l) => config.lanes[l].agent === agent);
     return lane
-      ? { kind: 'lane', lane, label: `${agent} (${lane} lane)` }
-      : { kind: 'readonly', label: agent };
+      ? { kind: 'lane', lane, label: `${agent} (${lane} lane)`, session }
+      : { kind: 'readonly', label: agent, session };
   }
   const laneFile = join(root, LANE_FILE);
   if (existsSync(laneFile)) {
     const lane = readFileSync(laneFile, 'utf8').trim();
-    return { kind: 'lane', lane, label: `${lane} lane worktree` };
+    return { kind: 'lane', lane, label: `${lane} lane worktree`, session };
   }
-  return { kind: 'lead', label: 'lead session' };
+  return { kind: 'lead', label: 'lead session', session };
 }
 
 /** Where approvals live: the main checkout's approvals folder, shared by all of its worktrees. */
@@ -360,6 +362,7 @@ export function useApproval(root, name, actor) {
 const requestsFile = (root) => join(projectWorktrees(root)[0] ?? root, REQUESTS_FILE);
 const sameRequest = (a, b) =>
   a.actor === b.actor &&
+  (a.session ?? null) === (b.session ?? null) &&
   a.what === b.what &&
   [...a.names].sort().join() === [...b.names].sort().join();
 
@@ -425,6 +428,7 @@ export function recordRequest(root, actor, names, what, why, now = Date.now(), e
       at: new Date(now).toISOString(),
       actor: actor?.label ?? 'unknown',
       ...(actor?.kind === 'lane' ? { lane: actor.lane } : {}),
+      ...(actor?.session ? { session: actor.session } : {}),
       names: [names].flat(),
       what: String(what).slice(0, 200),
       why: String(why).slice(0, 300),

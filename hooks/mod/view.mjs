@@ -728,10 +728,10 @@ export function bandLines({
   team = null,
   questions = [],
   brief = [],
-  denied = [],
   reports = [],
   working = false,
   task = null,
+  elsewhere = [],
 }) {
   const lines = [];
   // MISSION-1: the goal, now, next and the agents at work, above what needs the person. SESS-3: a working
@@ -770,21 +770,8 @@ export function bandLines({
       ],
     });
   }
-  // PERM-1: Claude Code's own permission check refused a call only the person can let through.
-  if (denied.length) {
-    const [d] = denied;
-    lines.push({
-      kind: 'denied',
-      text: `${denied.length > 1 ? `${denied.length} calls refused by Claude Code: ` : 'Claude Code refused '}${d.who}'s ${d.what}`,
-      denial: d,
-      denials: denied,
-      actions: [
-        ...(d.command ? [{ id: 'runDenied', label: 'Put it in the prompt' }] : []),
-        { id: 'deniedDone', label: 'Done it' },
-        { id: 'deniedNo', label: 'Not now' },
-      ],
-    });
-  }
+  // OWN-2: a call Claude Code's own permission check refused is the Lanes pane's activity, not a
+  // decision: the agent finds another way, or the lead asks the person (`code-kit ask`).
   // LOOP-3, WHO-4: a lane stalled past its restarts is the lead's to sort out; the person sees a note.
   for (const f of loop?.flagged ?? [])
     lines.push({
@@ -954,6 +941,13 @@ export function bandLines({
       text: `loop on${loop.last ? ` · last: ${loop.last}` : ''}`,
       actions: [{ id: 'pause', label: 'Pause' }],
     });
+  // OWN-1: another session's decisions are answered there: here, only how many.
+  for (const e of elsewhere)
+    lines.push({
+      kind: 'elsewhere',
+      text: `${plural(e.count, 'decision', 'decisions')} in session ${e.member}, answered there`,
+      actions: [],
+    });
   // BAND-4: a digit for every action, in the order they're drawn.
   let digit = 0;
   for (const line of lines)
@@ -1024,7 +1018,6 @@ export function band(lines, { Box, Text, Button }, onAction) {
     facts: 'yellow',
     question: 'cyan',
     brief: 'cyan',
-    denied: 'red',
     report: 'magenta',
     stuck: 'yellow',
   };

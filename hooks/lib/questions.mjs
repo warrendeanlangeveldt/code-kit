@@ -35,16 +35,25 @@ function append(root, record) {
 }
 
 /**
- * Every question, oldest first: { id, at, by, question, why, story, blocks, options: [{ label, effect }],
+ * Every question, oldest first: { id, at, by, session, count, question, why, story, blocks, options: [{ label, effect }],
  * state: 'open' | 'answered' | 'withdrawn', answer: { text, at, by, via } | null, withdrawn: { at, reason } | null }.
  */
 export function readQuestions(root) {
   const byId = new Map();
   for (const r of records(root)) {
     if (r.kind === 'ask')
-      byId.set(r.id, { ...r, kind: undefined, state: 'open', answer: null, withdrawn: null });
+      byId.set(r.id, {
+        ...r,
+        kind: undefined,
+        session: r.session ?? null,
+        count: 1,
+        state: 'open',
+        answer: null,
+        withdrawn: null,
+      });
     const q = byId.get(r.id);
     if (!q || q.state !== 'open') continue;
+    if (r.kind === 'again') q.count += 1;
     if (r.kind === 'answer') {
       q.state = 'answered';
       q.answer = { text: r.answer, at: r.at, by: r.by, via: r.via };
@@ -73,20 +82,29 @@ export function parseOption(text) {
  */
 export function askQuestion(
   root,
-  { by, question, why = null, story = null, blocks = false, options = [] },
+  { by, question, why = null, story = null, blocks = false, options = [], session = null },
   now = Date.now(),
 ) {
   const text = String(question).trim();
+  // OWN-3: the same question still open in the same session is one decision, asked again.
   const open = openQuestions(root).find(
-    (q) => q.question === text && (q.story ?? null) === (story ?? null),
+    (q) =>
+      q.question === text &&
+      (q.story ?? null) === (story ?? null) &&
+      (q.session ?? null) === (session ?? null),
   );
-  if (open) return { question: open, existed: true };
+  if (open) {
+    append(root, { kind: 'again', id: open.id, at: new Date(now).toISOString() });
+    return { question: readQuestions(root).find((q) => q.id === open.id), existed: true };
+  }
   const n = readQuestions(root).length + 1;
   const record = {
     kind: 'ask',
     id: `Q-${n}`,
     at: new Date(now).toISOString(),
     by,
+    // OWN-1: the session that asked it: it's asked, answered and heard there only.
+    session: session ?? null,
     question: text,
     why: why?.trim() || null,
     story: story ?? null,

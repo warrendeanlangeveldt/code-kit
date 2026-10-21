@@ -42,6 +42,8 @@ While the loop is on (autonomous or propose), a lane's finished work never waits
 
 ### DECIDE-2 Each decision with its lineage
 
+Spec 23 (OWN-1 to OWN-5) adds that a decision belongs to the session that raised it: it's shown, asked and answered only there, read from `code-kit decisions`.
+
 Each band line that needs the person (a held call, an approval waiting, a stalled agent, the loop's first or repeated step, a merge only they may make, a review with the loop off, the lead's questions and the brief's, a call Claude Code refused, a report to send) says which story it's for: "for ST-4 Booking form (BOOK-1)". As a card it carries:
 
 - **You asked for**: the brief's request and the milestone being built;
@@ -60,6 +62,8 @@ Usage, the plan's pause, finish checks and "all done" are notes: labelled "note"
 
 ### DECIDE-3 The Decisions tab
 
+Spec 23 (OWN-1 to OWN-5) adds that a decision belongs to the session that raised it: it's shown, asked and answered only there, read from `code-kit decisions`.
+
 `d` in the band ("Why, and what each choice does") opens the Lanes pane on the Decisions tab (2), on the first decision. It lists every decision when there's more than one, shows the selected one as a card, and its options answer exactly as the band's buttons do. With none, it says nothing needs the person.
 
 **Acceptance**
@@ -67,6 +71,8 @@ Usage, the plan's pause, finish checks and "all done" are notes: labelled "note"
 - Given a held call, when the person presses `d` then Refuse on the card, then the call is refused and the band no longer offers Why.
 
 ### DECIDE-4 A choice is asked in Claude Code's own dialog
+
+Spec 23 (OWN-1 to OWN-5) adds that a decision belongs to the session that raised it: it's shown, asked and answered only there, read from `code-kit decisions`.
 
 A decision settled by choosing (the loop's first offer of how hands-off it is, a step under `propose`, a step still next after two prompts or one the lead didn't take, a lane stalled past its restarts, a stale claim of the person's, and a question from the lead with two to four answers) is asked in Claude Code's own question dialog, while the lead is idle and nothing is typed in the prompt, one at a time. Each answer acts as its button does; words typed under Other answer a question from the lead as the person's own. A decision with one choice offers Not now beside it. Each is asked once a session: dismissed, it stays in the band and the Decisions tab. What needs a reason or words typed (an approval, a send-back, a setting, a question with no answers offered) stays in the pane, and a turn the person stopped, or a reply with no question in it, opens no dialog. Nothing is asked in a session another one runs the loop for (LOOP-10), nor where nobody can be asked (`claude -p`).
 
@@ -120,6 +126,8 @@ A question can be terse ("Product domain (for the inbound email address…)"). I
 - Given a brief question owned by Lead, then `next --json` doesn't list it.
 
 ### PERM-1 What Claude Code itself refused
+
+Replaced by spec 23 (OWN-2): such a call is the Lanes pane's activity, not a decision; the lead asks the person with `code-kit ask` only when there's no other way. As it was:
 
 A call Claude Code's own permission check refuses (its auto mode, a deny rule), which code-kit can't approve past, waits in the band for the person: "Claude Code refused the lead's `pnpm db:generate`", with Put it in the prompt (a shell command goes in the prompt after `!`, for them to run), Done it (the lead is told they ran it or allowed it) and Not now (the lead is told to carry on with other work and not get round it). The card says what Claude Code said. A refused call that later goes through, the same tool from the same agent (for a shell command, the same command), no longer waits: it was retried or allowed, and nothing is left for the person to do.
 

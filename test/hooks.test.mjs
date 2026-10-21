@@ -5616,6 +5616,107 @@ else process.exit(1);
       0,
     );
     rmSync(join(t.dir, 'docs/notes.md'), { force: true });
+
+    // OWN-1 to OWN-4: a decision belongs to the session that raised it.
+    const owned = (session) =>
+      JSON.parse(tCli(null, 'decisions', '--json', '--session', session).stdout);
+    tCli(C, 'ask', 'Which payment provider?', '--option', 'Stripe: cards and wallets');
+    expect(
+      "OWN-1 a question the lead asks in one session is that session's",
+      truth(
+        owned(C).mine.some((d) => d.kind === 'answer' && d.what === 'Which payment provider?') &&
+          !owned(D).mine.some((d) => d.what === 'Which payment provider?'),
+        JSON.stringify(owned(D)),
+      ),
+      0,
+    );
+    expect(
+      'OWN-1 another live session sees only a count',
+      truth(
+        owned(D).elsewhere.some(
+          (e) => e.session === C && e.count === 1 && /\/cccc0003$/.test(e.member),
+        ),
+        JSON.stringify(owned(D).elsewhere),
+      ),
+      0,
+    );
+    tCli(C, 'ask', 'Which payment provider?');
+    expect(
+      'OWN-3 the same question asked again in the session is one decision, counted',
+      truth(
+        owned(C).mine.filter((d) => d.what === 'Which payment provider?').length === 1 &&
+          owned(C).mine.find((d) => d.what === 'Which payment provider?').count === 2,
+      ),
+      0,
+    );
+    tCli(D, 'ask', 'Which payment provider?');
+    expect(
+      "OWN-3 but the same words from another session are that session's own decision",
+      truth(owned(D).mine.some((d) => d.what === 'Which payment provider?')),
+      0,
+    );
+    const refused = tHook('guard-paths.mjs', {
+      session_id: C,
+      agent_type: 'web-engineer',
+      tool_input: { file_path: join(t.dir, 'design/approved-screens.json') },
+    });
+    expect(
+      "OWN-1 an approval a lane's refusal asks for is its session's decision",
+      truth(
+        refused.status === 2 &&
+          owned(C).mine.some(
+            (d) => d.kind === 'approve' && d.what === 'design/approved-screens.json',
+          ) &&
+          !owned(D).mine.some((d) => d.kind === 'approve'),
+        refused.stderr + JSON.stringify(owned(C).mine.map((d) => d.what)),
+      ),
+      0,
+    );
+    // A question from before sessions were recorded belongs to none, and shows in any.
+    appendFileSync(
+      join(t.dir, '.claude/state/questions.jsonl'),
+      `${JSON.stringify({ kind: 'ask', id: 'Q-90', at: new Date().toISOString(), by: 'lead', question: 'An old one?', story: null, blocks: false, options: [] })}\n`,
+    );
+    expect(
+      'OWN-1 a decision from before sessions were recorded shows in any session',
+      truth(
+        owned(C).mine.some((d) => d.id === 'Q-90') && owned(D).mine.some((d) => d.id === 'Q-90'),
+      ),
+      0,
+    );
+    // OWN-4: a question about a story that's done has lost its cause.
+    tCli(C, 'ask', 'Round prices up?', '--story', 'ST-1');
+    tPut(
+      'docs/spec/plan.md',
+      readFileSync(join(t.dir, 'docs/spec/plan.md'), 'utf8').replace(
+        '**Status:** todo',
+        '**Status:** done',
+      ),
+    );
+    expect(
+      "OWN-4 a question about a story that's done closes",
+      truth(!owned(C).mine.some((d) => d.what === 'Round prices up?')),
+      0,
+    );
+    // OWN-4: a session that ends keeps its decisions; they aren't handed to another lead.
+    tCli(D, 'task', 'Payments', '--touches', 'workers/payments/**');
+    finish(D);
+    expect(
+      "OWN-4 an ended session's decisions go to no other session",
+      truth(
+        !owned(C).mine.some((d) => d.session === D) &&
+          !owned(C).elsewhere.some((e) => e.session === D),
+      ),
+      0,
+    );
+    const E = 'eeee0005-picks-up';
+    begin(E);
+    tCli(E, 'task', 'take', 'dddd0004');
+    expect(
+      'OWN-4 taking over its task brings its decisions to the session that took it',
+      truth(owned(E).mine.some((d) => d.session === D && d.what === 'Which payment provider?')),
+      0,
+    );
   }
 
   const blank = mkdtempSync(join(tmpdir(), 'code-kit-blank-'));

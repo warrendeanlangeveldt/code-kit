@@ -163,7 +163,12 @@ export function takeTask(root, from, taker, now = Date.now()) {
       why: `Session ${shortSession(source.id)} is still working on it; ask it to finish with \`code-kit task done\` first.`,
     };
   write(root, { ...strip(source), task: null });
-  setTask(root, taker, source.task, now);
+  const took = setTask(root, taker, source.task, now);
+  // OWN-4: the task's decisions come with it.
+  write(root, {
+    ...took,
+    took: [...new Set([...(took.took ?? []), source.id, ...(source.took ?? [])])],
+  });
   return { ok: true, task: source.task, from: source };
 }
 

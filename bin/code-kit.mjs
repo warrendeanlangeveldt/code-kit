@@ -34,6 +34,7 @@
 //   settings [--json] | settings set <key> <value> --reason … [--via pane]
 //                                    the harness settings; set is the person's own change
 //                         record approvals a person gave in chat (with approvals.lead on, the lead runs it)
+//   decisions [--json] [--all]       what waits on the person in this session, and a count of each other's
 //   who                              which session this is, whether it leads, and its task (spec 23)
 //   sessions [--json] | sessions lead the sessions working the project; make this one the lead
 //   task "<what>" --touches globs | task done | task take <session>
@@ -154,6 +155,7 @@ import {
   takeTask,
 } from '../hooks/lib/sessions.mjs';
 import { globsOverlap } from '../hooks/lib/teamfacts.mjs';
+import { decisionsFor, openDecisions } from '../hooks/lib/decisionstore.mjs';
 import {
   appliesTo,
   projectStandards,
@@ -1083,6 +1085,37 @@ function requests() {
     out(
       `  ${h.at.slice(0, 16).replace('T', ' ')}  ${h.name} for ${h.lane ? `the ${h.lane} lane` : 'any agent'}, by ${h.by}${h.files.length ? ` · ${h.files.length} file${h.files.length === 1 ? '' : 's'}${h.branches.length ? ` on ${h.branches.join(', ')}` : ''}` : ''}: ${h.reason}`,
     );
+}
+
+/**
+ * OWN-1: the decisions waiting on the person in this session (the lead's questions, the approvals its
+ * refusals asked for), and a count of those in each other session; `--all` lists every session's.
+ */
+function decisionsCommand() {
+  const { config } = load();
+  const root = resolve('.');
+  if (rest.length) die('code-kit decisions [--json] [--all]');
+  const stories =
+    config.docs?.specs && config.docs?.plan
+      ? buildStatus('.', config, base(config, false), tracked()).stories
+      : [];
+  if (flag('--all')) {
+    const all = openDecisions(root, { stories });
+    if (flag('--json')) return out(JSON.stringify(all, null, 2));
+    if (!all.length) return out('Nothing waits on the person.');
+    for (const d of all)
+      out(
+        `${pad(d.member ?? 'any session', 30)} ${pad(d.kind, 8)} ${d.what}${d.count > 1 ? ` (asked ${d.count} times)` : ''}`,
+      );
+    return;
+  }
+  const r = decisionsFor(root, callerSession, { stories });
+  if (flag('--json')) return out(JSON.stringify(r, null, 2));
+  if (!r.mine.length) out('Nothing waits on the person in this session.');
+  for (const d of r.mine)
+    out(`${pad(d.kind, 8)} ${d.what}${d.count > 1 ? ` (asked ${d.count} times)` : ''}`);
+  for (const e of r.elsewhere)
+    out(`${e.count} decision${e.count === 1 ? '' : 's'} in session ${e.member}, answered there.`);
 }
 
 /**
@@ -2146,6 +2179,7 @@ function askCommand() {
   if (flag('--blocks') && !storyGiven) die('--blocks holds a story: name it with --story ST-n.');
   const r = askQuestion(root, {
     by: 'lead',
+    session: callerSession,
     question,
     why: whyGiven ?? null,
     story: storyGiven ?? null,
@@ -2456,6 +2490,7 @@ const commands = {
   settings,
   lanes: lanesCommand,
   sessions: sessionsCommand,
+  decisions: decisionsCommand,
   task: taskCommand,
   hold: () => (rest.length === 1 ? hold(rest[0]) : usage()),
   queue,
@@ -2500,6 +2535,7 @@ function usage() {
       '              | settings [--json] | settings set <key> <value> --reason "…" [--via pane]\n' +
       '              | lanes [--json] | lanes release <lane> | sessions [--json] | sessions lead\n' +
       '              | who | task "<what>" --touches globs | task done | task take <session>\n' +
+      '              | decisions [--json] [--all]\n' +
       '              | hold <id> [--minutes N] | hold <id> --answer approved|refused\n' +
       '              | queue [--json] | queue add|drop <branch> | queue rules | queue merge --delegated|--person\n' +
       '              | loop [--json] | loop pause|resume | loop lead|release --session id [--take]\n' +

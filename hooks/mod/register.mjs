@@ -162,6 +162,8 @@ let offering = false;
 let notified = null;
 /** LOOP-8, WHO-4: the times in a row the lead is prompted with one step before it shows as a note. */
 const ASK_LIMIT = 3;
+/** OWN-2: the calls Claude Code refused that the Lanes pane remembers. */
+const DENIED_KEPT = 20;
 /** SCHED-1: how often, and how long after its claim, a lane with no agent running is freed. */
 const LANES_FREE_MS = 60000;
 let lanesFreed = -Infinity;
@@ -300,9 +302,18 @@ export function register(on) {
         const status = valid ? await json('status') : null;
         const nextStep = valid ? await json('next') : null;
         const all = valid ? await json('requests') : null;
+        // OWN-1: this session's decisions, and how many wait in each other session; null from a code-kit
+        // that can't say, where every open decision shows.
+        const owned = valid
+          ? await json('decisions', '--session', session).catch(() => null)
+          : null;
+        const mine = (kind) =>
+          (owned?.mine ?? []).filter((d) => d.kind === kind).map((d) => d.source);
+        const ownRequest = (r) =>
+          !owned || mine('approve').some((o) => o.at === r.at && o.what === r.what);
         // HELM-6: the person sees only their own decisions; the lead decides the rest.
         const requests = all
-          ? { ...all, open: (all.open ?? []).filter((r) => r.by !== 'lead') }
+          ? { ...all, open: (all.open ?? []).filter((r) => r.by !== 'lead' && ownRequest(r)) }
           : null;
         const stops = valid ? ((await json('stops', '--session', session)) ?? []) : [];
         const queue = valid ? ((await json('queue')) ?? []) : [];
@@ -316,9 +327,11 @@ export function register(on) {
         // TEAM-7: the team's claims, intents and pull requests, where the project is a team's.
         const team = valid && check.team ? await json('team') : null;
         // ASK-2: the lead's questions waiting for the person; REPORT-3: bug reports waiting to be sent.
-        const questions = valid
-          ? ((await json('ask')) ?? []).filter((q) => q.state === 'open')
-          : [];
+        const questions = !valid
+          ? []
+          : owned
+            ? mine('answer')
+            : ((await json('ask')) ?? []).filter((q) => q.state === 'open');
         const reports = valid
           ? ((await json('report')) ?? []).filter((r) => r.state === 'draft')
           : [];
@@ -361,6 +374,8 @@ export function register(on) {
           // SESS-3, SESS-4: a working session's band holds its own, and its task.
           working: role === 'working',
           task,
+          // OWN-1: what waits in the other sessions, as counts.
+          elsewhere: owned?.elsewhere ?? [],
         };
         if (model.state.kind === 'ok') await act.registerReviewer();
         await act.readMaps();
@@ -727,28 +742,6 @@ export function register(on) {
           .catch(() => {});
         await act.reload();
         return true;
-      },
-      // PERM-1: a call Claude Code refused, which only the person can run or allow.
-      runDenied: async (line) => {
-        await $.prompt.fill({ text: `! ${line.denial.command}`, mode: 'replace' }).catch(() => {});
-      },
-      deniedDone: async (line) => {
-        denied.delete(line.denial.id);
-        $.ui.invalidate('ui.render');
-        $.prompt
-          .submit({
-            text: `The person ran it themselves, or allowed it: ${line.denial.command ?? line.denial.what} (Claude Code had refused it for ${line.denial.who}). Check it worked, and carry on.`,
-          })
-          .catch(() => {});
-      },
-      deniedNo: async (line) => {
-        denied.delete(line.denial.id);
-        $.ui.invalidate('ui.render');
-        $.prompt
-          .submit({
-            text: `The person won't run ${line.denial.command ?? line.denial.what} now (Claude Code refused it for ${line.denial.who}). Don't try to get around it: carry on with other work, and if a story can't go on without it, ask with code-kit ask --blocks.`,
-          })
-          .catch(() => {});
       },
       // REPORT-3: the person sends a drafted report to code-kit's GitHub, or discards it.
       sendReport: async (line) => {
@@ -1416,7 +1409,9 @@ export function register(on) {
         const first = notified === null;
         notified = new Set(cards.map(decisionKey));
         if (first || !fresh.length || harness().notify?.on === false) return;
-        if (standingBy()) return;
+        // OWN-5: a working session raises its own decisions, which are all its band holds; a session
+        // another one leads raises none of the project's.
+        if (standingBy() && role !== 'working') return;
         const one =
           fresh.length === 1
             ? fresh[0]
@@ -1430,7 +1425,7 @@ export function register(on) {
       },
       offer: async () => {
         if (offering || leadTurn || loop.sent || !where.interactive) return;
-        if (standingBy()) return;
+        if (standingBy() && role !== 'working') return;
         const now = await $.clock.now();
         const choice = cardsNow(now)
           .map((card) => ({ card, choice: nativeChoice(card) }))
@@ -2020,6 +2015,8 @@ export function register(on) {
       e.tool_name === 'Bash' && typeof input.command === 'string' ? input.command : null;
     const path = input.file_path ?? input.notebook_path ?? null;
     const lane = e.agent_id ? activity.get(e.agent_id)?.lane : null;
+    // OWN-2: only the latest few are kept: each is activity, not something waiting on the person.
+    if (denied.size >= DENIED_KEPT) denied.delete(denied.keys().next().value);
     denied.set(e.tool_use_id ?? `${e.tool_name}-${denied.size}`, {
       id: e.tool_use_id ?? `${e.tool_name}-${denied.size}`,
       agentId: e.agent_id ?? null,
@@ -2332,6 +2329,11 @@ export function register(on) {
               ? 'paused'
               : 'running';
     const laneNotes = {};
+    // OWN-2: the latest call Claude Code refused in each lane, as its activity.
+    for (const d of denied.values()) {
+      const lane = d.agentId ? (activity.get(d.agentId)?.lane ?? null) : 'lead';
+      if (lane) laneNotes[lane] = `Claude Code refused ${d.what}`;
+    }
     for (const a of activity.values()) {
       if (!a.lane) continue;
       const n = restarts.get(a.story) ?? 0;
@@ -2539,7 +2541,6 @@ export function register(on) {
       nextStep: loop.nextStep,
       combined: combinedNow(),
       team: model.team ?? null,
-      denied: [...denied.values()],
     });
 
   on('ui.render', { component: 'Pane', requestId: PANE_ID }, async ($, e) => {

@@ -90,6 +90,7 @@ function project() {
     laneClaims: [] as any[],
     role: null as string | null, // SESS-2: this session's role, as `loop --json --session` says
     task: null as any, // SESS-4: a working session's task
+    decisions: null as any, // OWN-1: `decisions --json --session`: { mine, elsewhere }
     settings: [
       {
         key: 'autonomy',
@@ -230,6 +231,8 @@ function stub(on: any, w: World) {
       return ran(w.verifyExit, w.verifyExit ? '' : w.verifyOut, w.verifyExit ? w.verifyOut : '');
     if (sub === 'stops') return ran(0, JSON.stringify(w.stops));
     if (sub === 'task') return ran(0, JSON.stringify(w.task));
+    if (sub === 'decisions')
+      return w.decisions ? ran(0, JSON.stringify(w.decisions)) : ran(1, '', 'unexpected decisions');
     if (sub === 'sessions') {
       w.acts.push([...argv.slice(2)]);
       return ran(0, 'Seen.');
@@ -640,7 +643,8 @@ test('PANE-4 with nothing changed it reads the project every 10 seconds while th
   // The fifth reads it all (check, status, next, requests, stops, queue, timeline, the lead's questions,
   // the reports waiting, and which session runs the loop, while this one doesn't) between two looks at git.
   await clock.advance(2000);
-  expect(w.runs - before).toBe(16);
+  // OWN-1: and this session's decisions.
+  expect(w.runs - before).toBe(17);
 });
 
 test('CARD-4 outside a code-kit project, /lanes says so, opens nothing, and there is no band', async ($, on) => {
@@ -1777,70 +1781,30 @@ test('ASK-2 and ASK-4 an answer closes its decision at once, though the lead hea
   await ui.unmount();
 });
 
-test("PERM-1 a call Claude Code's own permission check refused waits for the person, who runs it or says not now", async ($, on) => {
+test('OWN-2 sixty calls Claude Code refused, each followed by the lead finding another way, are no decisions: the Lanes pane shows the latest as activity', async ($, on) => {
   const w = project();
-  await start($, on, w);
-  await $.classic.PermissionDenied({
-    tool_name: 'Bash',
-    tool_input: { command: 'pnpm db:generate && pnpm db:migrate' },
-    tool_use_id: 'tu-1',
-    reason: 'Permission for this action was denied by the Claude Code auto mode classifier.',
-  });
-  const band = await bandUi($);
-  expect(
-    await band.find({ type: 'Text', text: "Claude Code refused the lead's `pnpm db:generate`" }),
-  ).toBeDefined();
-  await press($, 'band-runDenied');
-  expect(w.fills).toEqual(['! pnpm db:generate && pnpm db:migrate']);
-  await press($, 'band-decide');
-  await band.unmount();
-  const ui = await pane($, PANE);
-  expect(
-    await ui.find({
-      type: 'Text',
-      text: /^Claude Code's own permission check refused it \(Permission for this action/,
-    }),
-  ).toBeDefined();
-  await press($, 'decide-deniedDone', PANE);
-  expect(w.prompts.at(-1)).toMatch(
-    /^The person ran it themselves, or allowed it: pnpm db:generate && pnpm db:migrate/,
-  );
-  await ui.unmount();
-  const after = await bandUi($);
-  expect(await after.find({ type: 'Text', text: /Claude Code refused/ })).toBeUndefined();
-  await after.unmount();
-});
-
-test('PERM-1 a refused call that later goes through no longer waits for the person', async ($, on) => {
-  const w = project();
-  await start($, on, w);
-  const refused = (id: string, command: string) =>
-    $.classic.PermissionDenied({
+  const clock = await start($, on, w);
+  for (let i = 1; i <= 60; i++) {
+    await $.classic.PermissionDenied({
       tool_name: 'Bash',
-      tool_input: { command },
-      tool_use_id: id,
+      tool_input: { command: `pnpm db:migrate --step ${i}` },
+      tool_use_id: `tu-${i}`,
       reason: 'Permission for this action was denied by the Claude Code auto mode classifier.',
     });
-  await refused('tu-1', 'pnpm db:generate');
-  await refused('tu-2', 'pnpm db:migrate');
-  // another command going through leaves both waiting
-  await $.tool.call({ tool: 'Bash', tool_use_id: 'tu-3', command: 'pnpm test' } as any);
-  let band = await bandUi($);
-  expect(await band.find({ type: 'Text', text: /^2 calls refused by Claude Code/ })).toBeDefined();
+    await $.tool.call({ tool: 'Bash', tool_use_id: `ok-${i}`, command: 'pnpm test' } as any);
+  }
+  await settle(clock);
+  const band = await bandUi($);
+  expect(await band.find({ type: 'Text', text: /refused/ })).toBeUndefined();
+  expect(await band.find({ key: 'band-decide' })).toBeUndefined();
   await band.unmount();
-  // the lead retries one and it goes through: only the other still waits
-  await $.tool.call({ tool: 'Bash', tool_use_id: 'tu-4', command: 'pnpm db:generate' } as any);
-  band = await bandUi($);
-  expect(
-    await band.find({ type: 'Text', text: "Claude Code refused the lead's `pnpm db:migrate`" }),
-  ).toBeDefined();
-  await band.unmount();
-  await $.tool.call({ tool: 'Bash', tool_use_id: 'tu-5', command: 'pnpm db:migrate' } as any);
-  band = await bandUi($);
-  expect(
-    await band.find({ type: 'Text', text: /Claude Code refused|refused by Claude Code/ }),
-  ).toBeUndefined();
-  await band.unmount();
+  expect(w.asked).toEqual([]);
+  await lanes($);
+  const ui = await pane($, PANE);
+  expect((await ui.find({ key: 'lane-lead' }))?.text).toMatch(
+    /Claude Code refused `pnpm db:migrate/,
+  );
+  await ui.unmount();
 });
 
 test('CARD-8 two approvals waiting are two decisions, each approved or dropped on its own', async ($, on) => {
@@ -3055,6 +3019,56 @@ test("DECIDE-4 the lead's question is asked in the dialog: an option answers it,
     await ui.find({ type: 'Text', text: /^The lead asks: Which weather provider/ }),
   ).toBeDefined();
   await ui.unmount();
+});
+
+test("OWN-1 a question another session's lead asked isn't shown, asked or answered here: only a count", async ($, on) => {
+  const w = project();
+  const theirs = { ...question(), id: 'Q-2', session: 's-other' };
+  w.questions = [theirs];
+  w.decisions = { mine: [], elsewhere: [{ session: 's-other', member: 'kim/s-other', count: 1 }] };
+  w.next = { step: 'wait', args: '', then: [] };
+  const clock = await start($, on, w);
+  await clock.advance(4000);
+  expect(w.asked).toEqual([]);
+  expect(w.notified).toEqual([]);
+  const ui = await bandUi($);
+  expect(await ui.find({ type: 'Text', text: /Which weather provider/ })).toBeUndefined();
+  expect(
+    await ui.find({ type: 'Text', text: '1 decision in session kim/s-other, answered there' }),
+  ).toBeDefined();
+  await ui.unmount();
+});
+
+test("OWN-1 and OWN-5 this session's own question is asked in its dialog, and the answer goes to its own lead", async ($, on) => {
+  const w = project();
+  const mine = { ...question(), session: 's1' };
+  w.questions = [mine];
+  w.decisions = {
+    mine: [{ id: mine.id, kind: 'answer', session: 's1', source: mine }],
+    elsewhere: [],
+  };
+  w.next = { step: 'wait', args: '', then: [] };
+  const clock = await start($, on, w);
+  await clock.advance(4000);
+  expect(w.asked).toHaveLength(1);
+  expect(w.asked[0].question).toMatch(/^Which weather provider/);
+});
+
+test('OWN-5 a working session asks its own question in its dialog, though another session leads', async ($, on) => {
+  const w = project();
+  w.role = 'working';
+  w.leadSession = 's-lead';
+  const mine = { ...question(), session: 's1' };
+  w.questions = [mine];
+  w.decisions = {
+    mine: [{ id: mine.id, kind: 'answer', session: 's1', source: mine }],
+    elsewhere: [],
+  };
+  w.next = { step: 'wait', args: '', then: [] };
+  const clock = await start($, on, w);
+  await clock.advance(4000);
+  expect(w.prompts).toEqual([]);
+  expect(w.asked).toHaveLength(1);
 });
 
 test("DECIDE-4 an option chosen in the dialog, or the person's own words typed there, answer the lead's question", async ($, on) => {
