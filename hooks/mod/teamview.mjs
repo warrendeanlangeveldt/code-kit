@@ -582,12 +582,18 @@ function setupTab(team, config, { Box, Text, Button }, on) {
   const rows = [
     ['Tech lead', team.techLead],
     ['Stale after', `${team.staleDays ?? t.staleDays ?? 3} working days without a push`],
-    ['Intents', `discussions in "${t.intents ?? 'Intents'}"`],
+    // HUBR-7: a hosted provider keeps intents, in Discussions too only when the team mirrors them.
+    [
+      'Intents',
+      typeof t.provider === 'object' && !t.provider.command && !t.intents
+        ? `kept by ${team.provider?.name ?? 'the provider'}`
+        : `discussions in "${t.intents ?? 'Intents'}"`,
+    ],
     [
       'Provider',
       team.provider?.name ?? (typeof t.provider === 'object' ? t.provider.command : 'GitHub'),
     ],
-    ...(typeof t.provider === 'object' && t.provider.fallback
+    ...(typeof t.provider === 'object' && (t.provider.fallback || !t.provider.command)
       ? [['Fallback', 'GitHub, while the provider is down']]
       : []),
     ...(t.board ? [['Board', `${t.board.owner}/${t.board.number}`]] : []),

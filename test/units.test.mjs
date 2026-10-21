@@ -1660,6 +1660,7 @@ test('TEAM-1 the team in the config: a tech lead, owners on lanes, and the defau
       staleDays: 3,
       intents: 'Intents',
       board: null,
+      report: true,
       provider: 'github',
       owners: { web: ['sam'] },
     },
@@ -1667,6 +1668,196 @@ test('TEAM-1 the team in the config: a tech lead, owners on lanes, and the defau
   assert.equal(teamOf({ lanes: {} }), null);
   for (const h of ['sam', 'a-b', 'A1']) assert.ok(isHandle(h), h);
   for (const h of ['-sam', 'sam-', 'a--b', 'x'.repeat(40), '']) assert.ok(!isHandle(h), h);
+});
+
+test('HUBR-6 and HUBR-7 a hosted provider in the config: its address, its command, and intents kept by it', async () => {
+  const { teamProblems, teamOf } = await import('../hooks/lib/team.mjs');
+  const { providerAdapterOf } = await import('../hooks/lib/adapters/index.mjs');
+  assert.deepEqual(
+    teamProblems({ team: { techLead: 'alex', provider: { hub: 'https://h.example' } } }),
+    [],
+  );
+  for (const bad of [
+    { hub: 'not an address' },
+    { hub: 'https://h.example', fallback: 'gitlab' },
+    { hub: 'https://h.example', command: 'x' },
+  ])
+    assert.equal(
+      teamProblems({ team: { techLead: 'alex', provider: bad } }).length,
+      1,
+      JSON.stringify(bad),
+    );
+  assert.equal(teamProblems({ team: { techLead: 'alex', report: 'yes' } }).length, 1);
+  assert.equal(providerAdapterOf('github'), null);
+  assert.equal(providerAdapterOf({ command: 'x' }), null);
+  const team = teamOf({ team: { techLead: 'alex', provider: { hub: 'https://h.example/' } } });
+  assert.equal(team.intents, null, 'a hosted provider keeps intents');
+  assert.equal(team.provider.fallback, 'github');
+  assert.equal(team.provider.url, 'https://h.example');
+  assert.match(team.provider.command, /client\.mjs' --url 'https:\/\/h\.example'$/);
+  assert.equal(
+    teamOf({ team: { techLead: 'alex', intents: 'Ideas', provider: { hub: 'https://h.example' } } })
+      .intents,
+    'Ideas',
+    'mirrored to Discussions when the team says where',
+  );
+  assert.equal(teamOf({ team: { techLead: 'alex', report: false } }).report, false);
+});
+
+test('HUBR-2 a report holds only the fields its allow-list names', async () => {
+  const { snapshotProblems, snapshotHash, EVENT_PARTS } = await import('../hooks/lib/snapshot.mjs');
+  const good = {
+    version: 1,
+    project: { repository: 'o/r', base: 'main', codeKit: '0.19.0', at: 1_700_000_000_000 },
+    milestones: [{ name: 'Milestone 1: Booking', target: '2026-11-30', stories: ['ST-4'] }],
+    stories: [
+      {
+        id: 'ST-4',
+        title: 'Booking list',
+        lane: 'web',
+        milestone: 'Milestone 1: Booking',
+        requirements: ['BOOK-1'],
+        dependsOn: [],
+        stage: 'review',
+        since: {
+          building: 1_700_000_000_000,
+          review: 1_700_000_100_000,
+          sentBack: null,
+          queued: null,
+          merged: null,
+        },
+        claimedBy: 'sam',
+      },
+    ],
+    sendBacks: [{ story: 'ST-4', at: 1_700_000_050_000, reason: 'The empty state is missing.' }],
+    requirements: [
+      {
+        id: 'BOOK-1',
+        stories: ['ST-4'],
+        built: ['apps/web/list.tsx'],
+        tested: ['apps/web/list.test.tsx'],
+        check: 'done',
+      },
+    ],
+    approvals: [
+      {
+        what: 'dep-zod',
+        path: 'package.json',
+        who: 'lead',
+        at: 1_700_000_060_000,
+        branch: 'web/st-4',
+      },
+    ],
+    usage: [{ story: 'ST-4', kind: 'lane', input: 1200, output: 300, cache: 40 }],
+    rules: {
+      layers: [{ name: 'web', mayImport: ['core'] }],
+      protected: [{ glob: 'docs/specs/**', approval: 'specs' }],
+      delegated: { protected: [], dependencies: true, merge: false },
+      designGate: false,
+    },
+  };
+  assert.deepEqual(snapshotProblems(good), []);
+  // Nowhere for code, a diff or a prompt to go.
+  const withDiff = structuredClone(good);
+  withDiff.stories[0].diff = '--- a/x\n+++ b/x';
+  assert.match(snapshotProblems(withDiff)[0], /stories\[0\]\.diff: not a field a report may hold/);
+  const withPrompt = structuredClone(good);
+  withPrompt.prompt = 'Build the booking list';
+  assert.match(snapshotProblems(withPrompt)[0], /snapshot\.prompt: not a field/);
+  const withContents = structuredClone(good);
+  withContents.stories[0].title = 'export function list() {\n  return db.query();\n}';
+  assert.match(snapshotProblems(withContents)[0], /title: not a title/);
+  const longReason = structuredClone(good);
+  longReason.sendBacks[0].reason = 'x'.repeat(201);
+  assert.match(snapshotProblems(longReason)[0], /reason: not a line/);
+  const badStage = structuredClone(good);
+  badStage.stories[0].stage = 'shipped';
+  assert.match(snapshotProblems(badStage)[0], /stage: not one of/);
+  // The same facts at another moment are the same report; a stage change is news, usage alone isn't.
+  const later = structuredClone(good);
+  later.project.at += 60_000;
+  assert.equal(snapshotHash(later), snapshotHash(good));
+  const used = structuredClone(good);
+  used.usage[0].input += 1;
+  assert.equal(snapshotHash(used, EVENT_PARTS), snapshotHash(good, EVENT_PARTS));
+  assert.notEqual(snapshotHash(used), snapshotHash(good));
+  const moved = structuredClone(good);
+  moved.stories[0].stage = 'queued';
+  assert.notEqual(snapshotHash(moved, EVENT_PARTS), snapshotHash(good, EVENT_PARTS));
+});
+
+test('HUBR-5 a milestone target in the plan', async () => {
+  const { readMilestones } = await import('../hooks/lib/plan.mjs');
+  const dir = mkdtempSync(join(tmpdir(), 'ck-plan-'));
+  writeFileSync(
+    join(dir, 'plan.md'),
+    '# Plan\n\n## Milestone 1: Booking\n\n**Target:** 2026-11-30\n\n### ST-1 List\n\n**Target:** 2027-01-01\n\n## Milestone 2: Payments\n\n### ST-2 Pay\n',
+  );
+  // A target line under a story belongs to the story, not the milestone.
+  assert.deepEqual(readMilestones(dir, 'plan.md'), [
+    { name: 'Milestone 1: Booking', target: '2026-11-30' },
+    { name: 'Milestone 2: Payments', target: null },
+  ]);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test('HUBR-2 and HUBR-6 usage by kind of agent, and an agent present by tool and branch', async () => {
+  const { usageForReport, presenceOf } = await import('../hooks/mod/view.mjs');
+  const ledger = {
+    'lead|': {
+      key: 'lead',
+      lane: 'lead',
+      story: null,
+      background: false,
+      input: 10,
+      output: 2,
+      cache: 1,
+    },
+    'a1|ST-4': {
+      key: 'a1',
+      lane: 'web',
+      story: 'ST-4',
+      background: false,
+      input: 100,
+      output: 20,
+      cache: 5,
+    },
+    'a2|ST-4': {
+      key: 'a2',
+      lane: null,
+      story: 'ST-4',
+      background: true,
+      input: 30,
+      output: 3,
+      cache: 0,
+    },
+    'a3|': { key: 'a3', lane: null, story: null, background: true, input: 7, output: 1, cache: 0 },
+    'a4|': { key: 'a4', lane: null, story: null, background: true, input: 5, output: 1, cache: 0 },
+  };
+  const types = { a2: 'code-kit:reviewer', a3: 'security-reviewer', a4: 'ctx-card-writer' };
+  const usage = usageForReport(ledger, (k) => types[k] ?? null);
+  assert.deepEqual(
+    Object.values(usage).map((u) => u.kind),
+    ['lead', 'lane', 'reviewer', 'security-reviewer', 'background'],
+  );
+  assert.deepEqual(usage['a1|ST-4'], {
+    story: 'ST-4',
+    kind: 'lane',
+    input: 100,
+    output: 20,
+    cache: 5,
+  });
+  const lanes = [{ name: 'web', branch: 'web/st-4' }];
+  assert.deepEqual(
+    presenceOf({ agentId: 'a1', type: 'web-engineer', tool: 'Edit', lane: 'web', lanes, at: 5 }),
+    {
+      type: 'web-engineer',
+      tool: 'Edit',
+      branch: 'web/st-4',
+      at: 5,
+    },
+  );
+  assert.equal(presenceOf({ agentId: null, tool: 'Read', at: 5 }).type, 'lead');
 });
 
 test('TEAM-2 story ids a claim ref can carry, and the paths an intent touches', async () => {
@@ -1826,6 +2017,38 @@ test('TEAM-10 a decision record holds only what the discussion says', async () =
   assert.equal(
     text,
     '# Split the report format\n\n**Status:** agreed\n**Date:** 2026-10-11\n**Raised by:** @sam · **Agreed by:** @alex\n**Discussion:** u\n\n## What changes, and why\n\nReports differ per site.\n\n## What it touches\n\n- `docs/reports/**`\n\n## Agreed\n\nper site now\n',
+  );
+  // A hosted provider says who settled it: here kim, who owns the paths it touches, not the tech lead.
+  const byOwner = decisionRecord(
+    {
+      title: 'Version the schema',
+      body: 'Touches: packages/schemas/**\n\nTwo clients read it.',
+      url: 'h',
+      author: { login: 'sam' },
+      createdAt: '2026-10-10T01:00:00Z',
+      closedAt: '2026-10-11T02:00:00Z',
+      settledBy: 'kim',
+      why: 'fine, version it',
+      comments: [
+        { author: { login: 'alex' }, body: 'Agreed by @alex, the tech lead: not this one' },
+      ],
+    },
+    'alex',
+  );
+  assert.match(byOwner, /\*\*Agreed by:\*\* @kim$/m);
+  assert.match(byOwner, /## Agreed\n\nfine, version it\n$/);
+  assert.equal(
+    decisionRecord(
+      {
+        ...{ title: 't', body: '', url: 'h', createdAt: '2026-10-10' },
+        settled_by: 'kim',
+        comments: [
+          { author: { login: 'kim' }, body: 'Agreed by @kim, owner of packages/schemas/**: yes' },
+        ],
+      },
+      'alex',
+    ).includes('## Agreed\n\nyes\n'),
+    true,
   );
 });
 

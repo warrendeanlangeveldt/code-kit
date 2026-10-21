@@ -86,6 +86,30 @@ export function readStories(root, planPath) {
   return stories;
 }
 
+/**
+ * HUBR-5: each milestone in the plan, in order: [{ name, target }], `name` the `## ` heading a story sits
+ * under, `target` the date a `**Target:** YYYY-MM-DD` line under that heading gives, before its first
+ * story, or null.
+ */
+export function readMilestones(root, planPath) {
+  const found = [];
+  for (const file of markdownFiles(root, planPath)) {
+    let current = null;
+    for (const line of readFileSync(join(root, file), 'utf8').split('\n')) {
+      const heading = line.match(/^##\s+(.+?)\s*$/);
+      if (heading) {
+        current = { name: heading[1], target: null, open: true };
+        found.push(current);
+        continue;
+      }
+      if (/^###\s/.test(line) && current) current.open = false;
+      const target = line.match(/^\*\*Target:\*\*\s*(\d{4}-\d{2}-\d{2})\s*$/i);
+      if (target && current?.open && !current.target) current.target = target[1];
+    }
+  }
+  return found.map(({ name, target }) => ({ name, target }));
+}
+
 export const storyBranch = (story) => `${story.lane}/${story.id.toLowerCase()}`;
 
 /** Requirement IDs each tracked test file names: { id: [file, ...] }. */

@@ -2,6 +2,16 @@
 
 What changed in each release of code-kit, newest first. Versions follow the plugin manifest and the npm package `@warren-dean/code-kit`. Each release is also on [GitHub Releases](https://github.com/warrendeanlangeveldt/code-kit/releases).
 
+## 0.20.0 (2026-10-21)
+
+A team provider can now receive a report of a project's facts, and a hosted provider's adapter is in preview.
+
+- A team provider can receive a report of the project: each story's stage and when it changed, milestones and their targets, send-backs, the requirement trail, approvals, token use by kind of agent, and the project's rules. A report never holds code, diffs or prompts; its fields are a fixed list, and anything else is refused before it's sent. With GitHub as the provider, nothing is sent anywhere.
+- `code-kit team report --dry-run` shows exactly what would be sent, and `team.report: false` turns reports off.
+- A milestone in the plan can have a target date: `**Target:** 2026-11-30` under its heading.
+- A hosted provider's adapter is in preview. It runs only for a project whose config names one, connects through code-kit's own hooks with GitHub as its fallback, and doesn't need a Discussions category for intents.
+- A decision record now names whoever agreed the intent, not always the tech lead.
+
 ## 0.19.0 (2026-10-19)
 
 A build uses far fewer tokens. In two days of two builds, output was under 1% of the tokens: nearly all of it was agents rereading large contexts on every request.

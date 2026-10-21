@@ -55,6 +55,56 @@ http.createServer((req, res) => {
   res.end(JSON.stringify({ 'dist-tags': { latest: '1.0.0' }, time: { '1.0.0': released }, versions: { '1.0.0': { license: p.license, scripts: p.scripts } } }));
 }).listen(0, '127.0.0.1', function () { console.log(this.address().port); });
 `;
+// A stand-in for a hosted team provider (code-kit spec 21): its API, its event stream, and what it was
+// sent, so the hub adapter is tested through its real HTTP path without the network.
+const HUB_SERVER = `
+const http = require('node:http');
+const calls = [], reports = [], streams = new Set();
+let claims = [], id = 0;
+const send = (res, code, obj) => { res.writeHead(code, { 'content-type': 'application/json' }); res.end(JSON.stringify(obj)); };
+http.createServer((req, res) => {
+  let body = '';
+  req.on('data', (d) => (body += d)).on('end', () => {
+    const p = new URL(req.url, 'http://x').pathname;
+    if (p === '/test/seen') return send(res, 200, { calls, reports });
+    if (p === '/test/event') {
+      const e = { id: ++id, kind: 'claim', text: 'sam claimed ST-5', at: new Date().toISOString() };
+      claims.push({ story: 'ST-5', by: 'sam', at: e.at, lease: [] });
+      for (const s of streams) s.write('id: ' + e.id + '\\ndata: ' + JSON.stringify(e) + '\\n\\n');
+      return send(res, 200, { ok: true });
+    }
+    if (req.headers.authorization !== 'Bearer tok-kim') return send(res, 401, { ok: false, why: 'Sign in again.' });
+    const m = p.match(/^\\/v1\\/repos\\/([^/]+\\/[^/]+)\\/([\\w-]+)$/);
+    if (!m) return send(res, 404, { ok: false });
+    const op = m[2], input = body ? JSON.parse(body) : {};
+    calls.push({ op, repo: m[1], input });
+    if (op === 'stream') {
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      res.write(': open\\n\\n');
+      streams.add(res);
+      return res.on('close', () => streams.delete(res));
+    }
+    if (op === 'whoami') return send(res, 200, { login: 'kim' });
+    if (op === 'claim') {
+      const held = claims.find((c) => c.story === input.story);
+      if (held) return send(res, 200, { ok: false, holder: held });
+      const c = { story: input.story, by: 'kim', at: new Date().toISOString(), lease: input.lease ?? [] };
+      claims.push(c);
+      return send(res, 200, { ok: true, claim: c });
+    }
+    if (op === 'release') {
+      const c = claims.find((x) => x.story === input.story);
+      claims = claims.filter((x) => x !== c);
+      return send(res, 200, { ok: true, released: Boolean(c), claim: c });
+    }
+    if (op === 'state')
+      return send(res, 200, { hub: true, at: new Date().toISOString(), reachable: true, github: true, me: 'kim', techLead: 'lead', owners: {}, staleDays: 3, claims, intents: [], pulls: [], setup: [], sessions: [] });
+    if (op === 'report') { reports.push(input.snapshot); return send(res, 200, { ok: true }); }
+    if (op === 'presence' || op === 'leave') return send(res, 200, { ok: true });
+    return send(res, 404, { ok: false, why: 'No such operation.' });
+  });
+}).listen(0, '127.0.0.1', function () { console.log(this.address().port); });
+`;
 const kitCli = join(here, '..', 'bin', 'code-kit.mjs');
 
 function newRepo(withConfig = true) {
@@ -5641,6 +5691,325 @@ else process.exit(1);
       }),
       2,
       "the lead's to update",
+    );
+  }
+
+  // --- HUBR-1 to HUBR-8: a hosted team provider, through its adapter in code-kit -------------------
+  {
+    const root = mkdtempSync(join(tmpdir(), 'ck-hub-'));
+    cleanups.push(root);
+    const hubServer = spawn('node', ['-e', HUB_SERVER]);
+    const hubPort = await new Promise((r) =>
+      hubServer.stdout.once('data', (d) => r(String(d).trim())),
+    );
+    const hubUrl = `http://127.0.0.1:${hubPort}`;
+    const seen = () =>
+      JSON.parse(execFileSync('curl', ['-s', `${hubUrl}/test/seen`], { encoding: 'utf8' }));
+    const pause = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+    const waitUntil = (pred, ms = 6000) => {
+      for (const until = Date.now() + ms; Date.now() < until; pause(100)) if (pred()) return true;
+      return false;
+    };
+    // The origin is GitHub's address, served from a local bare repository.
+    const bare = join(root, 'origin.git');
+    const repo = join(root, 'repo');
+    const home = join(root, 'home');
+    execFileSync('git', ['init', '-q', '--bare', '-b', 'main', bare]);
+    const gitConfig = join(root, 'gitconfig');
+    writeFileSync(
+      gitConfig,
+      `[url "${bare}"]\n\tinsteadOf = https://github.com/acme/booking.git\n[user]\n\tname = kim\n\temail = kim@users.noreply.github.com\n`,
+    );
+    const env = {
+      ...process.env,
+      HOME: home,
+      GIT_CONFIG_GLOBAL: gitConfig,
+      CLAUDE_PROJECT_DIR: repo,
+    };
+    const g = (...args) => execFileSync('git', ['-C', repo, ...args], { encoding: 'utf8', env });
+    execFileSync('git', ['init', '-q', '-b', 'main', repo]);
+    g('remote', 'add', 'origin', 'https://github.com/acme/booking.git');
+    const hubConfig = (team) =>
+      JSON.stringify({ ...JSON.parse(fixture), team: { techLead: 'lead', ...team } }, null, 2);
+    mkdirSync(join(repo, '.claude/state'), { recursive: true });
+    mkdirSync(join(repo, 'docs/spec'), { recursive: true });
+    writeFileSync(join(repo, '.claude/code-kit.json'), hubConfig({ provider: { hub: hubUrl } }));
+    writeFileSync(join(repo, '.gitignore'), '.claude/state/\n.claude/approvals/\n');
+    writeFileSync(
+      join(repo, 'docs/spec/booking.md'),
+      '# Booking\n\n### BOOK-1 The booking list\n\nText.\n',
+    );
+    writeFileSync(
+      join(repo, 'docs/spec/plan.md'),
+      '# Plan\n\n## Milestone 1: Booking\n\n**Target:** 2026-11-30\n\n### ST-4 Booking list\n\n**Lane:** web\n**Requirements:** BOOK-1\n**Status:** todo\n',
+    );
+    g('add', '-A');
+    g('commit', '-q', '-m', 'init');
+    g('push', '-q', 'origin', 'main');
+    // kim is signed in to the hub on this machine, and known to code-kit for its GitHub fallback.
+    mkdirSync(join(home, '.config/code-kit-hub'), { recursive: true });
+    writeFileSync(
+      join(home, '.config/code-kit-hub/credentials.json'),
+      JSON.stringify({ url: hubUrl, login: 'kim', token: 'tok-kim' }),
+    );
+    writeFileSync(
+      join(repo, '.claude/state/whoami.json'),
+      JSON.stringify({ login: 'kim', at: new Date().toISOString() }),
+    );
+    const kit = (...args) =>
+      spawnSync('node', [kitCli, ...args], { cwd: repo, encoding: 'utf8', env });
+    const kitIn = (input, ...args) =>
+      spawnSync('node', [kitCli, ...args], { cwd: repo, encoding: 'utf8', env, input });
+    try {
+      expect('HUBR-6 a hosted provider named by its address is a valid config', kit('check'), 0);
+      const checked = kit('check');
+      expect(
+        'and check names it, with GitHub as its fallback',
+        truth(checked.stdout.includes('provider code-kit hub'), checked.stdout),
+        0,
+      );
+      const claimed = kit('team', 'claim', 'ST-4', '--lease', 'apps/web/**');
+      const ref = execFileSync(
+        'git',
+        ['-C', bare, 'for-each-ref', '--format=%(contents)', 'refs/code-kit/claims/ST-4'],
+        { encoding: 'utf8' },
+      ).trim();
+      expect(
+        'HUBR-6 a claim goes through the hub, and is mirrored as a claim ref for the fallback',
+        truth(
+          claimed.status === 0 &&
+            seen().calls.some((c) => c.op === 'claim' && c.repo === 'acme/booking') &&
+            JSON.parse(ref || '{}').by === 'kim',
+          claimed.stdout + claimed.stderr + ref,
+        ),
+        0,
+      );
+      const state = JSON.parse(kit('team', '--json', '--fresh').stdout || '{}');
+      expect(
+        "and the team's state names the hub, signed in as kim",
+        truth(
+          state.provider?.name === 'code-kit hub' &&
+            state.provider.account === 'kim' &&
+            state.claims?.some((c) => c.story === 'ST-4'),
+          JSON.stringify(state),
+        ),
+        0,
+      );
+
+      // HUBR-2, HUBR-4: what a report holds, shown before anything is sent.
+      const dry = kit('team', 'report', '--dry-run');
+      const snapshot = JSON.parse(dry.stdout || '{}');
+      const { snapshotProblems } = await import('../hooks/lib/snapshot.mjs');
+      expect(
+        'HUBR-4 --dry-run prints the report, and sends nothing',
+        truth(
+          dry.status === 0 &&
+            snapshot.project?.repository === 'acme/booking' &&
+            !seen().reports.length,
+          dry.stdout + dry.stderr,
+        ),
+        0,
+      );
+      expect(
+        'HUBR-2 it holds only what its allow-list names: the story claimed, its milestone target, the rules',
+        truth(
+          snapshotProblems(snapshot).length === 0 &&
+            snapshot.stories[0].stage === 'claimed' &&
+            snapshot.stories[0].claimedBy === 'kim' &&
+            snapshot.milestones[0].target === '2026-11-30' &&
+            snapshot.requirements[0].id === 'BOOK-1' &&
+            snapshot.rules.layers.length > 0 &&
+            !/diff|prompt|contents/.test(Object.keys(snapshot).join()),
+          JSON.stringify(snapshotProblems(snapshot)) + dry.stdout.slice(0, 400),
+        ),
+        0,
+      );
+      const sent = JSON.parse(kit('team', 'report', '--json').stdout || '{}');
+      expect(
+        'HUBR-3 team report sends it to the hub',
+        truth(sent.sent === true && seen().reports.length === 1, JSON.stringify(sent)),
+        0,
+      );
+      // The mod's pulse: nothing new is not sent again; a story's stage moving is sent at once.
+      const pulse = () => {
+        rmSync(join(repo, '.claude/state/report-built.json'), { force: true });
+        return kitIn('{}', 'team', 'pulse', '--session', 's1');
+      };
+      pulse();
+      expect(
+        'HUBR-3 a report that matches the last one sent is not sent again',
+        truth(seen().reports.length === 1, String(seen().reports.length)),
+        0,
+      );
+      g('switch', '-q', '-c', 'web/st-4');
+      pulse();
+      const reports = seen().reports;
+      expect(
+        "a story's stage moving is sent at once",
+        truth(
+          reports.length === 2 && reports[1].stories[0].stage === 'building',
+          JSON.stringify(reports.map((r) => r.stories[0].stage)),
+        ),
+        0,
+      );
+      g('switch', '-q', 'main');
+      writeFileSync(
+        join(repo, '.claude/code-kit.json'),
+        hubConfig({ provider: { hub: hubUrl }, report: false }),
+      );
+      const off = JSON.parse(kit('team', 'report', '--json').stdout || '{}');
+      expect(
+        'HUBR-4 with team.report false, nothing is reported',
+        truth(
+          off.sent === false &&
+            /team\.report is false/.test(off.why) &&
+            seen().reports.length === 2,
+          JSON.stringify(off),
+        ),
+        0,
+      );
+      writeFileSync(join(repo, '.claude/code-kit.json'), hubConfig({ provider: { hub: hubUrl } }));
+
+      // HUBR-6: code-kit's own session hooks hold the live link; the mod's pulse carries presence.
+      kitIn(
+        JSON.stringify({
+          agents: { main: { type: 'lead', tool: 'Bash', branch: null, at: Date.now() } },
+        }),
+        'team',
+        'pulse',
+        '--session',
+        's1',
+      );
+      const sessionHook = (event) =>
+        spawnSync('node', [join(hooks, 'team-session.mjs'), event], {
+          input: JSON.stringify({ session_id: 's1', cwd: repo }),
+          env,
+          encoding: 'utf8',
+        });
+      expect('HUBR-6 the session hook starts the live link', sessionHook('start'), 0);
+      const stream = () => {
+        try {
+          return JSON.parse(readFileSync(join(repo, '.claude/state/hub-stream.json'), 'utf8'));
+        } catch {
+          return {};
+        }
+      };
+      expect(
+        'and holds the event stream',
+        truth(
+          waitUntil(() => stream().connected === true),
+          JSON.stringify(stream()),
+        ),
+        0,
+      );
+      expect(
+        "and reports the session's agents, by type, tool and branch only",
+        truth(
+          waitUntil(() =>
+            seen().calls.some(
+              (c) =>
+                c.op === 'presence' &&
+                c.input.session === 's1' &&
+                c.input.agents?.[0]?.type === 'lead',
+            ),
+          ),
+          JSON.stringify(seen().calls.filter((c) => c.op === 'presence')),
+        ),
+        0,
+      );
+      execFileSync('curl', ['-s', '-X', 'POST', `${hubUrl}/test/event`]);
+      const events = () => {
+        try {
+          return readFileSync(join(repo, '.claude/state/team-events.jsonl'), 'utf8');
+        } catch {
+          return '';
+        }
+      };
+      expect(
+        "each event is written for the mod, and the team's state kept on disk",
+        truth(
+          waitUntil(
+            () =>
+              events().includes('sam claimed ST-5') &&
+              (
+                JSON.parse(readFileSync(join(repo, '.claude/state/team.json'), 'utf8')).claims ?? []
+              ).some((c) => c.story === 'ST-5'),
+          ),
+          events(),
+        ),
+        0,
+      );
+      sessionHook('end');
+      expect(
+        'the session hook ends it, and the hub hears the session leave',
+        truth(
+          waitUntil(() => seen().calls.some((c) => c.op === 'leave' && c.input.session === 's1')),
+        ),
+        0,
+      );
+
+      // HUBR-6: connect adds the hub's MCP server for every teammate, and leaves the provider as it is.
+      const connected = kit('team', 'provider', 'connect');
+      const mcp = JSON.parse(readFileSync(join(repo, '.mcp.json'), 'utf8'));
+      expect(
+        'team provider connect adds the MCP server, through the adapter',
+        truth(
+          connected.status === 0 &&
+            mcp.mcpServers['code-kit-hub']?.url === `${hubUrl}/mcp` &&
+            JSON.parse(readFileSync(join(repo, '.claude/code-kit.json'), 'utf8')).team.provider
+              .hub === hubUrl,
+          connected.stdout + connected.stderr,
+        ),
+        0,
+      );
+      expect(
+        'team provider status says who this machine is signed in as',
+        truth(kit('team', 'provider', 'status').stdout.includes('as kim')),
+        0,
+      );
+
+      // TEAM-8 and HUBR-7: the hub gone, claims go through GitHub, and intents wait for the hub.
+      hubServer.kill();
+      pause(200);
+      const fellBack = JSON.parse(kit('team', '--json', '--fresh').stdout || '{}');
+      expect(
+        'with the hub gone, the state comes through GitHub, with the mirrored claim, and asks for no Discussions',
+        truth(
+          /can't be reached/.test(fellBack.fallback ?? '') &&
+            fellBack.claims?.some((c) => c.story === 'ST-4' && c.by === 'kim') &&
+            !(fellBack.setup ?? []).some((x) => /Discussions|discussion category/.test(x)),
+          JSON.stringify(fellBack),
+        ),
+        0,
+      );
+      expect(
+        'HUBR-7 an intent waits for the hub that keeps intents',
+        kit('intend', 'Move reports to the data lane'),
+        1,
+        'kept by its hosted provider',
+      );
+    } finally {
+      hubServer.kill();
+    }
+
+    // HUBR-1, HUBR-8: GitHub keeps no reports, and a project that names no hosted provider hears of none.
+    writeFileSync(join(repo, '.claude/code-kit.json'), hubConfig({}));
+    const viaGitHub = JSON.parse(kit('team', 'report', '--json').stdout || '{}');
+    expect(
+      'HUBR-1 with GitHub as the provider, a report is sent nowhere',
+      truth(
+        viaGitHub.sent === false && /GitHub keeps no reports/.test(viaGitHub.why),
+        JSON.stringify(viaGitHub),
+      ),
+      0,
+    );
+    const plain = [kit('check'), kit('team', 'provider', 'status')]
+      .map((r) => r.stdout + r.stderr)
+      .join('\n');
+    expect(
+      'HUBR-8 nothing code-kit prints names the hub when the config names none',
+      truth(!/hub/i.test(plain.replace(/github/gi, '')), plain),
+      0,
     );
   }
 } finally {

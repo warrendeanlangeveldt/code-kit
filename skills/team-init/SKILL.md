@@ -1,6 +1,6 @@
 ---
 name: team-init
-description: Set up a code-kit project for a team of developers, change its team setup, or make it one developer's again. Asks who the tech lead is, who owns which lanes, when a claim goes stale and where intents go, shows the team section before writing it, checks GitHub is ready (gh signed in, the shared repository, the intents' discussion category), and offers CODEOWNERS, the Project board and a hosted team provider. Use when the person says they work in a team, wants teammates to share the project, wants to change the tech lead or lane owners, wants to stop working as a team, or runs /code-kit:team-init. Not every developer works in a team: never set one up unasked.
+description: Set up a code-kit project for a team of developers, change its team setup, or make it one developer's again. Asks who the tech lead is, who owns which lanes, when a claim goes stale and where intents go, shows the team section before writing it, checks GitHub is ready (gh signed in, the shared repository, the intents' discussion category), offers CODEOWNERS and the Project board, and connects a hosted team provider only when the config already names one. Use when the person says they work in a team, wants teammates to share the project, wants to change the tech lead or lane owners, wants to stop working as a team, or runs /code-kit:team-init. Not every developer works in a team: never set one up unasked.
 ---
 
 # Set up the team
@@ -25,7 +25,7 @@ Ask only what the config can't answer, with the current value as the default on 
 - **Tech lead:** whose GitHub handle owns the plan, specs, contracts and principles, agrees or drops intents, and may release or reassign anyone's claim. Default: `me`.
 - **Lane owners:** for each lane, whose sessions build its stories (GitHub handles), or nobody, in which case whoever claims a story first builds it. `git log --format='%an' -- <lane paths> | sort | uniq -c` and CODEOWNERS suggest people, but ask for handles: names in commits aren't handles.
 - **Stale after:** how many working days without a push before a claim is stale (default 3).
-- **Intents category:** the GitHub Discussions category intents go in (default `Intents`).
+- **Intents category:** the GitHub Discussions category intents go in (default `Intents`). Skip it when the config's `team.provider` names a hosted provider (`{ "<name>": "<https address>" }`) and `team.intents` isn't set: that provider keeps the intents.
 - **Back to one developer:** confirm that claims, owners and intents stop applying, and that teammates' sessions lose them too once it's merged.
 
 ## 3. Show, then write
@@ -48,7 +48,7 @@ Each is optional; ask, and do only what they want:
 
 - **CODEOWNERS** (TEAM-11): `team codeowners --write` writes `.github/CODEOWNERS` from the config, so GitHub asks the tech lead and lane owners to review. Then they require code owners' review in a ruleset on the protected branch.
 - **A Project board** (TEAM-12): with a GitHub Project's owner and number, add `"board": { "owner": "<user or organisation>", "number": <n> }` to `team` in the config; the mod then mirrors the plan onto it.
-- **A hosted team provider:** if a plugin for one is installed (its connect skill is in your skills list, such as `/code-kit-teams:connect`), offer it: it makes claims, leases and intents live, shows who's at work where, and checks each push for drift. Its connect skill sets `team.provider`, with GitHub as the fallback. If none is installed, don't mention one.
+- **A hosted team provider, only when the config already names one:** hosted providers are in preview, so never offer or suggest one. When `team.provider` is `{ "<name>": "<https address>" }` (set by hand), connect this machine: run `team provider status`; if it isn't signed in, run `team provider signin` in the background, give the person the code and the GitHub address it prints, and wait (they enter the code in their browser; never ask for a password or token); then `team provider connect`, which checks the provider can see the repository and adds its MCP server to `.mcp.json`. Commit `.mcp.json` with the config.
 
 ## 5. Finish
 

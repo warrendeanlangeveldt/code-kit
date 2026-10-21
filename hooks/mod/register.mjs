@@ -36,6 +36,8 @@ import {
   resultPane,
   settingsView,
   usageSummary,
+  usageForReport,
+  presenceOf,
   withUsage,
 } from './view.mjs';
 import { holdable } from './hold.mjs';
@@ -109,6 +111,7 @@ let pendingSetting = null; // a change waiting for the person's reason: { key, v
 let ledger = {}; // the session's tokens by agent and story (USE-1)
 let rateLimits = []; // the session's limits, as session.measure last gave them
 const agentsSeen = new Map(); // agent id → its $.agent.list() entry, kept once it leaves the list
+const present = new Map(); // agent id (or 'main') → its presence for a hosted team provider (HUBR-6)
 const held = new Map(); // tool_use_id → a call held for the person (HOLD-2)
 const denied = new Map(); // tool_use_id → a call Claude Code's own permission check refused (PERM-1)
 const briefLater = new Set(); // the brief's questions the person put off this session (ASK-4)
@@ -1891,6 +1894,26 @@ export function register(on) {
     $.clock.every(1000, () => {
       if (held.size) $.ui.invalidate('ui.render');
     });
+    // HUBR-3, HUBR-6: with a hosted team provider, the session's agents and its token ledger go to it
+    // every 30 seconds, and the project reports what's new. Nothing runs for a team on GitHub.
+    let pulsing = false;
+    $.clock.every(30_000, async () => {
+      if (pulsing || !model.check?.team?.provider?.adapter) return;
+      pulsing = true;
+      try {
+        const now = await $.clock.now();
+        for (const [k, a] of present) if (now - a.at > 10 * 60_000) present.delete(k);
+        const usage = usageForReport(ledger, (key) => agentsSeen.get(key)?.type ?? null);
+        await $.process.run(['node', cli, 'team', 'pulse', '--session', session], {
+          cwd,
+          stdin: JSON.stringify({ agents: Object.fromEntries(present), usage }),
+        });
+      } catch {
+        // tried again in 30 seconds
+      } finally {
+        pulsing = false;
+      }
+    });
     return next(e);
   });
 
@@ -1957,6 +1980,18 @@ export function register(on) {
       busy.tool = toolLine(e);
       busy.at = calledAt;
     } else if (!e.agentId) leadLast = { tool: toolLine(e), at: calledAt };
+    if (model.check?.team?.provider?.adapter)
+      present.set(
+        e.agentId ?? 'main',
+        presenceOf({
+          agentId: e.agentId,
+          type: agentsSeen.get(e.agentId)?.type,
+          tool: e.tool,
+          lane: busy?.lane,
+          lanes: model.state?.lanes,
+          at: calledAt,
+        }),
+      );
     // MAP-2: the file the call reads or edits glows in the code map, in its lane's colour. An agent
     // first seen on this call has its lane found by its type.
     const touch = touchOf(e, where?.cwd);

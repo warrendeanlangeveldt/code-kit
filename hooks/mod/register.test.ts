@@ -85,6 +85,7 @@ function project() {
     closed: [] as string[],
     prompts: [] as string[],
     acts: [] as string[][],
+    pulses: [] as any[],
     runs: 0,
     settings: [
       {
@@ -235,6 +236,11 @@ function stub(on: any, w: World) {
     if (sub === 'team' && argv[3] === 'since') {
       w.acts.push([...argv.slice(2)]);
       return ran(0, JSON.stringify(w.teamSince));
+    }
+    if (sub === 'team' && argv[3] === 'pulse') {
+      w.acts.push([...argv.slice(2)]);
+      w.pulses.push(JSON.parse(e.init?.stdin ?? '{}'));
+      return ran(0, '');
     }
     if (sub === 'team' && ['keep', 'release', 'board', 'reassign'].includes(argv[3])) {
       w.acts.push([...argv.slice(2)]);
@@ -4430,7 +4436,7 @@ test('a live provider says so in the Team pane, by its own name, and has a Drift
   w.team = {
     ...teamOf('kim'),
     provider: {
-      name: 'the code-kit teams hub',
+      name: 'code-kit hub',
       live: true,
       account: 'kim',
       detail: 'claims, leases and intents as they happen',
@@ -4442,7 +4448,7 @@ test('a live provider says so in the Team pane, by its own name, and has a Drift
   await teamCmd($);
   const ui = await pane($, TEAM);
   expect((await ui.find({ key: 'team-provider' }))?.text).toBe(
-    'Through the code-kit teams hub · live · signed in as kim: claims, leases and intents as they happen',
+    'Through code-kit hub · live · signed in as kim: claims, leases and intents as they happen',
   );
   await press($, 'team-tab-drift', TEAM);
   expect(
@@ -4456,7 +4462,7 @@ test("with a live provider (the hub), the band says when it fell back to GitHub,
   const at = new Date().toISOString();
   w.team = {
     ...teamOf('kim'),
-    fallback: "The code-kit teams hub can't be reached.",
+    fallback: "code-kit hub can't be reached.",
     sessions: [
       {
         login: 'kim',
@@ -4506,7 +4512,7 @@ test("with a live provider (the hub), the band says when it fell back to GitHub,
   expect(w.opened).toEqual([TEAM]);
   const ui = await pane($, TEAM);
   expect((await ui.find({ key: 'team-provider' }))?.text).toMatch(
-    /can't be reached \(The code-kit teams hub can't be reached\.\): claims are checked through GitHub/,
+    /can't be reached \(code-kit hub can't be reached\.\): claims are checked through GitHub/,
   );
   expect((await ui.find({ key: 'team-drift-web/st-9' }))?.text).toMatch(
     /web\/st-9 · kim[\s\S]*blocker · spec docs\/specs\/02-booking\.md: BOOK-2 now holds prices in cents\./,
@@ -4530,6 +4536,41 @@ test('TEAM-12 with a board, the mod syncs it in the background, at most every 10
   expect(syncs()).toBe(1);
   await clock.advance(10 * 60000);
   expect(syncs()).toBe(2);
+});
+
+test('HUBR-6 with a hosted provider, the mod sends the session agents and token use every 30 seconds', async ($, on) => {
+  const w = project();
+  w.team = teamOf('sam');
+  (w.check as any).team = {
+    techLead: 'alex',
+    provider: {
+      command: 'x',
+      fallback: 'github',
+      adapter: 'hub',
+      url: 'https://h.example',
+      name: 'a hosted provider',
+    },
+  };
+  const clock = await start($, on, w);
+  await $.tool.call({ tool: 'Bash', tool_use_id: 'tu-p', command: 'cat secrets.txt' } as any);
+  await clock.advance(30000);
+  const pulses = () => w.acts.filter((a) => a[0] === 'team' && a[1] === 'pulse');
+  expect(pulses().length).toBe(1);
+  expect(pulses()[0]).toContain('--session');
+  expect(w.pulses[0].agents.main).toMatchObject({ type: 'lead', tool: 'Bash' });
+  // By tool name only: never what the call read or ran.
+  expect(JSON.stringify(w.pulses[0])).not.toMatch(/secrets/);
+  expect(typeof w.pulses[0].usage).toBe('object');
+});
+
+test('HUBR-6 a team on GitHub sends no pulse', async ($, on) => {
+  const w = project();
+  w.team = teamOf('sam');
+  (w.check as any).team = { techLead: 'alex', provider: 'github' };
+  const clock = await start($, on, w);
+  await $.tool.call({ tool: 'Bash', tool_use_id: 'tu-q', command: 'ls' } as any);
+  await clock.advance(60000);
+  expect(w.acts.some((a) => a[0] === 'team' && a[1] === 'pulse')).toBe(false);
 });
 
 test('TRACE-2 a project with more requirements than a list holds still draws its trail', async ($, on) => {

@@ -18,9 +18,44 @@
 //             files(root, paths) → { [path]: { rules } }, open: { command } (its view of a file) }
 //
 // The core only ever calls applyAdapters() and activeAdapters(); it never names a tool.
+//
+// Team provider adapters (HUBR-6) are the other kind: a hosted team provider's client, chosen when the
+// config's `team.provider` names it, as `{ "<key>": "<its https address>" }`. Each says:
+//
+//   key       the provider's key in `team.provider`
+//   label     what code-kit calls it, only when a config names it (HUBR-8)
+//   command   (url) => the provider command code-kit runs for each operation (TEAM-2)
+//   session   { start(root, session, watch, url), end(root, session) }: the session's live link
+//   presence  (root, session, agents) => void: the session's agents, for the provider
+//   run       (args, url) => exit code: the client's own commands (sign in, connect, status), for
+//             `code-kit team provider …`
+//
+// The core only ever calls providerAdapterOf(); it never names a provider.
 import contextGraph from './context-graph.mjs';
+import hub from './hub/index.mjs';
 
 export const ADAPTERS = [contextGraph];
+export const PROVIDERS = [hub];
+
+const isAddress = (v) => typeof v === 'string' && /^https?:\/\/[^\s]+$/.test(v);
+
+/**
+ * The team provider adapter `team.provider` names, with its address: { adapter, url }, or null when the
+ * provider isn't an adapter's (GitHub, or a command). `{ problem }` when it names one wrongly.
+ */
+export function providerAdapterOf(provider) {
+  if (provider === null || typeof provider !== 'object' || Array.isArray(provider)) return null;
+  const adapter = PROVIDERS.find((p) => p.key in provider);
+  if (!adapter) return null;
+  const extra = Object.keys(provider).filter((k) => k !== adapter.key && k !== 'fallback');
+  if (
+    !isAddress(provider[adapter.key]) ||
+    extra.length ||
+    ![undefined, 'github'].includes(provider.fallback)
+  )
+    return { problem: true };
+  return { adapter, url: provider[adapter.key].replace(/\/$/, '') };
+}
 
 /** Adapters detected in `root` and not switched off by the config's `adapters` map. */
 export function activeAdapters(raw, root) {

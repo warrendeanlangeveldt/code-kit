@@ -57,7 +57,20 @@ import {
 } from '../hooks/lib/config.mjs';
 import { diffConfigs, ownershipMoves } from '../hooks/lib/diff.mjs';
 import { CODE, importsOf, layerOf, layerProblems, targetOf } from '../hooks/lib/layers.mjs';
-import { ADAPTERS, activeAdapters, adapterFacts } from '../hooks/lib/adapters/index.mjs';
+import {
+  ADAPTERS,
+  activeAdapters,
+  adapterFacts,
+  providerAdapterOf,
+} from '../hooks/lib/adapters/index.mjs';
+import {
+  EVENT_PARTS,
+  USAGE_DIR,
+  buildSnapshot,
+  mainCheckout,
+  snapshotHash,
+  snapshotProblems,
+} from '../hooks/lib/snapshot.mjs';
 import { nextStep } from '../hooks/lib/next.mjs';
 import { discardReport, draftReport, readReports, sendReport } from '../hooks/lib/report.mjs';
 import {
@@ -92,6 +105,7 @@ import {
   claimChanges,
   storyOfBranch,
   syncBoard,
+  readCache,
   teamOf,
   teamProvider,
   whoami,
@@ -172,6 +186,7 @@ const FLAGS = [
   '--off',
   '--blocks',
   '--take',
+  '--dry-run',
 ];
 const flag = (name) => args.includes(name);
 const writeBaseline = flag('--write');
@@ -242,7 +257,7 @@ function check() {
   if (team) {
     const me = whoami(resolve('.'));
     out(
-      `Team: ${team.techLead} is the tech lead; a claim is stale after ${team.staleDays} working day${team.staleDays === 1 ? '' : 's'} without a push; provider ${team.provider === 'github' ? 'GitHub' : team.provider.command}.`,
+      `Team: ${team.techLead} is the tech lead; a claim is stale after ${team.staleDays} working day${team.staleDays === 1 ? '' : 's'} without a push; provider ${team.provider === 'github' ? 'GitHub' : (team.provider.name ?? team.provider.command)}.`,
     );
     for (const [lane, owners] of Object.entries(team.owners))
       out(`Lane ${lane} is owned by ${owners.join(', ')}`);
@@ -1461,8 +1476,12 @@ function teamCommand() {
     die(
       'This project has no "team" in its config, so it has no claims or owners. Add "team": { "techLead": "<GitHub handle>" } to share them.',
     );
+  // HUBR-6: a hosted provider's own commands (sign in, connect, status), through its adapter.
+  if (rest[0] === 'provider') return providerCommand(raw);
   const provider = teamProvider(resolve('.'), team);
   const [sub, story] = rest;
+  if (sub === 'report') return teamReport(team, provider);
+  if (sub === 'pulse') return pulseCommand(raw, team, provider);
   const holderWords = (h) =>
     `${h.story} is claimed by ${h.by} (${ago(h.at)}). Ask them, or the tech lead (${team.techLead}), to release it.`;
   if (sub === 'claim') {
@@ -1577,7 +1596,7 @@ function teamCommand() {
   }
   if (sub !== undefined)
     die(
-      'code-kit team [--json] [--fresh] | team init … | team since [--json] [--peek] | team claim|keep|release <story> | team reassign <story> <handle>',
+      'code-kit team [--json] [--fresh] | team init … | team since [--json] [--peek] | team claim|keep|release <story> | team reassign <story> <handle> | team report [--dry-run] [--json]',
     );
   const state = provider.state({ fresh: flag('--fresh') });
   if (flag('--json')) return out(JSON.stringify(state, null, 2));
@@ -1606,6 +1625,128 @@ function teamCommand() {
   if (state.pulls.length) out('Open pull requests:');
   for (const p of state.pulls)
     out(`  #${p.number} ${p.title} (${p.by}, ${p.branch}${p.draft ? ', draft' : ''})`);
+}
+
+// --- what a project reports (docs/specs/21-hub-adapter-and-reports.md) ----------------------------
+
+const REPORT_SENT = '.claude/state/report-sent.json';
+const REPORT_MINUTES = 10;
+
+/** HUBR-2: the snapshot, from what status, timeline, trail, the journal and the config already know. */
+function snapshotNow(team) {
+  const { config } = load();
+  if (!config.docs?.specs || !config.docs?.plan) return null;
+  const from = base(config, false);
+  const status = buildStatus('.', config, from, tracked());
+  const claims = (readCache(resolve('.')) ?? {}).claims ?? [];
+  return buildSnapshot({
+    root: resolve('.'),
+    config,
+    status,
+    base: from,
+    claims,
+    version: JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version,
+  });
+}
+
+/**
+ * HUBR-3: sends the snapshot when what happened changed (stages, approvals, send-backs, merges), or when
+ * only usage changed and ten minutes have passed; never the same snapshot twice. A provider that can't
+ * be reached is tried again with the next change. `{ sent, why }`.
+ */
+function sendSnapshot(team, provider, snapshot, { force = false } = {}) {
+  if (team.provider === 'github') return { sent: false, why: 'GitHub keeps no reports.' };
+  if (!team.report) return { sent: false, why: 'team.report is false.' };
+  const problems = snapshotProblems(snapshot);
+  if (problems.length) return { sent: false, why: `The report isn't valid: ${problems[0]}.` };
+  const file = join(mainCheckout(resolve('.')), REPORT_SENT);
+  let last = {};
+  try {
+    last = JSON.parse(readFileSync(file, 'utf8'));
+  } catch {
+    // nothing sent yet
+  }
+  const events = snapshotHash(snapshot, EVENT_PARTS);
+  const all = snapshotHash(snapshot);
+  const due =
+    force ||
+    events !== last.events ||
+    (all !== last.all && Date.now() - (last.at ?? 0) >= REPORT_MINUTES * 60_000);
+  if (!due) return { sent: false, why: 'Nothing new to report.' };
+  const r = provider.report(snapshot);
+  if (!r || r.ok === false)
+    return { sent: false, why: r?.why ?? 'The provider refused the report.' };
+  mkdirSync(join(mainCheckout(resolve('.')), '.claude/state'), { recursive: true });
+  writeFileSync(file, `${JSON.stringify({ events, all, at: Date.now() })}\n`);
+  return { sent: true };
+}
+
+/** HUBR-2, HUBR-4: `team report` sends what's new; `--dry-run` prints exactly what would be sent. */
+function teamReport(team, provider) {
+  const snapshot = snapshotNow(team);
+  if (!snapshot)
+    die(
+      'A report needs docs.specs and docs.plan in the config. The spec-design skill writes both.',
+    );
+  if (flag('--dry-run')) return out(JSON.stringify(snapshot, null, 2));
+  const r = sendSnapshot(team, provider, snapshot, { force: true });
+  if (flag('--json')) return out(JSON.stringify(r, null, 2));
+  out(
+    r.sent
+      ? `Reported this project's facts to ${team.provider.name ?? 'the team provider'}.`
+      : r.why,
+  );
+}
+
+/**
+ * The mod's pulse (HUBR-3, HUBR-6), every 30 seconds while a session runs, only for a hosted provider:
+ * stdin is `{ agents, usage }`, the session's agents by tool and branch and its token ledger (USE-1).
+ * Keeps both for the provider's client and the report, and reports when something new happened.
+ */
+async function pulseCommand(raw, team, provider) {
+  const hosted = providerAdapterOf(raw.team?.provider);
+  if (!hosted || hosted.problem || !sessionId) return;
+  let input = {};
+  try {
+    let raw = '';
+    for await (const chunk of process.stdin) raw += chunk;
+    input = raw.trim() ? JSON.parse(raw) : {};
+  } catch {
+    input = {};
+  }
+  const root = resolve('.');
+  const id = sessionId.replace(/[^\w-]/g, '');
+  if (input.agents) hosted.adapter.presence(root, id, input.agents);
+  if (input.usage && typeof input.usage === 'object') {
+    const dir = join(mainCheckout(root), USAGE_DIR);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      join(dir, `${id}.json`),
+      `${JSON.stringify({ at: Date.now(), entries: input.usage })}\n`,
+    );
+  }
+  // Building the snapshot reads git: at most once a minute.
+  const built = join(mainCheckout(root), '.claude/state/report-built.json');
+  let at = 0;
+  try {
+    at = JSON.parse(readFileSync(built, 'utf8')).at ?? 0;
+  } catch {
+    // never built
+  }
+  if (Date.now() - at < 60_000) return;
+  writeFileSync(built, `${JSON.stringify({ at: Date.now() })}\n`);
+  const snapshot = snapshotNow(team);
+  if (snapshot) sendSnapshot(team, provider, snapshot);
+}
+
+/** HUBR-6: `team provider signin|signout|status|connect|drift-model …`, run by the provider's client. */
+function providerCommand(raw) {
+  const hosted = providerAdapterOf(raw.team?.provider);
+  if (!hosted || hosted.problem)
+    die(
+      "This team's provider isn't a hosted one: claims and intents go through GitHub, and there's nothing to sign in to.",
+    );
+  process.exit(hosted.adapter.run(rest.slice(1), hosted.url));
 }
 
 /**
@@ -1671,7 +1812,7 @@ function teamInit(raw) {
   if (flag('--json'))
     return out(JSON.stringify({ written: true, ...section, me: state.me ?? null, setup }, null, 2));
   out(
-    `Wrote the team to ${file}: ${team.techLead} is the tech lead; a claim is stale after ${team.staleDays} working day${team.staleDays === 1 ? '' : 's'} without a push; intents go in "${team.intents}".`,
+    `Wrote the team to ${file}: ${team.techLead} is the tech lead; a claim is stale after ${team.staleDays} working day${team.staleDays === 1 ? '' : 's'} without a push; ${team.intents ? `intents go in "${team.intents}"` : `${team.provider.name ?? 'the provider'} keeps intents`}.`,
   );
   for (const [lane, owners] of Object.entries(team.owners))
     out(`Lane ${lane}: ${owners.join(', ')}`);
