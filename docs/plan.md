@@ -237,7 +237,7 @@ With Context Graph installed: understanding, cards owed and rules per lane.
 
 ## Milestone 7: teams
 
-Several people in one repository, each with their own agents, coordinated through GitHub with no server (spec 16). The hub (code-kit-teams, private) plugs in later through the provider command.
+Several people in one repository, each with their own agents, coordinated through GitHub with no server (spec 16). code-kit hub (private) plugs in later through the provider command.
 
 ### ST-24 The team in the config
 

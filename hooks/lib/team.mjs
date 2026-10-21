@@ -4,6 +4,7 @@ import { spawnSync } from 'node:child_process';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { matchesAny } from './glob.mjs';
+import { providerAdapterOf } from './adapters/index.mjs';
 import {
   isHandle,
   isStoryId,
@@ -57,19 +58,24 @@ export function teamProblems(c) {
       );
     if (t.intents !== undefined && !(typeof t.intents === 'string' && t.intents.trim()))
       p.push('"team.intents" must name the discussion category intents go in');
+    const adapter = providerAdapterOf(t.provider);
     if (
       t.provider !== undefined &&
       t.provider !== 'github' &&
+      !(adapter && !adapter.problem) &&
       !(
         isObj(t.provider) &&
+        !adapter &&
         typeof t.provider.command === 'string' &&
         t.provider.command.trim() &&
         (t.provider.fallback === undefined || t.provider.fallback === 'github')
       )
     )
       p.push(
-        '"team.provider" must be "github" or { "command": "<the provider\'s command>", "fallback"?: "github" }',
+        '"team.provider" must be "github" or { "command": "<the provider\'s command>", "fallback"?: "github" }, or a hosted provider in preview: { "<its name>": "<its https address>" }',
       );
+    if (t.report !== undefined && typeof t.report !== 'boolean')
+      p.push('"team.report" must be true or false');
   }
   for (const [name, lane] of Object.entries(isObj(c.lanes) ? c.lanes : {})) {
     if (!isObj(lane) || lane.owners === undefined) continue;
@@ -86,12 +92,26 @@ export function teamProblems(c) {
  */
 export function teamOf(raw) {
   if (!isObj(raw?.team)) return null;
+  // HUBR-6: a hosted provider's adapter runs as a command, with GitHub as its fallback.
+  const adapter = providerAdapterOf(raw.team.provider);
+  const hosted = adapter && !adapter.problem ? adapter : null;
   return {
     techLead: raw.team.techLead,
     staleDays: raw.team.staleDays ?? 3,
-    intents: raw.team.intents ?? 'Intents',
+    // HUBR-7: a hosted provider keeps intents; Discussions only when the team mirrors them there.
+    intents: raw.team.intents ?? (hosted ? null : 'Intents'),
     board: raw.team.board ?? null,
-    provider: raw.team.provider ?? 'github',
+    // HUBR-4: whether the project reports its facts to a provider that isn't GitHub.
+    report: raw.team.report !== false,
+    provider: hosted
+      ? {
+          command: hosted.adapter.command(hosted.url),
+          fallback: 'github',
+          adapter: hosted.adapter.key,
+          url: hosted.url,
+          name: hosted.adapter.label,
+        }
+      : (raw.team.provider ?? 'github'),
     owners: Object.fromEntries(
       Object.entries(raw.lanes ?? {})
         .filter(([, l]) => Array.isArray(l?.owners))
@@ -139,6 +159,9 @@ export function whoami(root, now = Date.now()) {
 // the config, called with the operation's name and its input as JSON on stdin, answering JSON.
 
 const CLAIMS = 'refs/code-kit/claims';
+/** HUBR-7: what an intent waits on while the hosted provider that keeps intents is down. */
+const KEPT =
+  "This team's intents are kept by its hosted provider, which can't be reached: raise or settle it again when it's back, or set team.intents to mirror intents to a GitHub Discussions category.";
 const SEEN = 'refs/code-kit/seen-claims';
 const TEAM_STATE = '.claude/state/team.json';
 const STATE_SECONDS = 60;
@@ -157,7 +180,7 @@ function claimOf(message) {
 
 /**
  * The provider for this project's team: GitHub's, or the config's command. A command with
- * `fallback: "github"` (a hosted provider, such as the code-kit teams hub) hands each operation it
+ * `fallback: "github"` (a hosted provider, such as code-kit hub) hands each operation it
  * can't reach to the GitHub provider, so claims are still checked while it's down (TEAM-8).
  */
 export function teamProvider(root, team) {
@@ -189,6 +212,7 @@ export function teamProvider(root, team) {
         'reassign',
         'intent',
         'since',
+        'report',
       ].map((op) => [op, either(op)]),
     ),
     forget: () => (command.forget(), github.forget()),
@@ -223,8 +247,14 @@ function githubProvider(root, team) {
       return null;
     }
   };
-  /** The repository's discussions, the Intents category among its categories: null when unreadable. */
+  /**
+   * The repository's discussions, the Intents category among its categories: null when unreadable.
+   * HUBR-7: a team whose hosted provider keeps its intents, and that mirrors none to Discussions, has
+   * none here to read (`kept`).
+   */
   const discussions = () => {
+    if (!team.intents)
+      return { repoId: null, enabled: false, category: null, intents: [], kept: true };
     const d = graphql(
       `
         query ($owner: String!, $name: String!) {
@@ -452,13 +482,15 @@ function githubProvider(root, team) {
         provider: {
           name: 'GitHub',
           live: false,
-          detail: `claims are refs on origin, intents are discussions in "${team.intents}"`,
+          detail: team.intents
+            ? `claims are refs on origin, intents are discussions in "${team.intents}"`
+            : 'claims are refs on origin; intents wait for the hosted provider',
         },
         // TEAM-13: what the team still needs set up for its claims and intents to work.
         setup: [
           ...(who ? [] : ["gh isn't signed in on this machine: run gh auth login."]),
           ...(claims ? [] : ["The shared repository (origin) can't be reached."]),
-          ...(found && !found.category
+          ...(found && !found.category && !found.kept
             ? [noCategory(found).replace(/, then raise the intent again\.$/, '.')]
             : []),
         ],
@@ -489,6 +521,7 @@ function githubProvider(root, team) {
       if (!by) return { ok: false, why: 'Sign in to GitHub first (gh auth login).' };
       const found = discussions();
       if (!found) return unreachable("GitHub can't be reached, so the intent wasn't raised.");
+      if (found.kept) return unreachable(KEPT);
       if (!found.category) return { ok: false, why: noCategory(found) };
       const body = `${touches.length ? `Touches: ${touches.join(', ')}\n\n` : ''}Raised with code-kit by @${by} before any code, so the team sees it first. The tech lead agrees, drops or marks it a duplicate here.`;
       const made = graphql(
@@ -585,6 +618,7 @@ function githubProvider(root, team) {
     },
     /** TEAM-10: one intent with its comments, for its decision record; null when unreadable. */
     intent(id) {
+      if (!team.intents) return null;
       const d = graphql(
         `
           query ($owner: String!, $name: String!, $number: Int!) {
@@ -627,6 +661,7 @@ function githubProvider(root, team) {
     },
     /** TEAM-5: the tech lead agrees an intent (resolved), drops it (outdated) or marks it a duplicate. */
     settle(id, outcome, why = '') {
+      if (!team.intents) return unreachable(KEPT);
       const by = me();
       if (by !== team.techLead)
         return {
@@ -689,6 +724,8 @@ function githubProvider(root, team) {
       provider.forget();
       return { ok: true, id: Number(id), outcome };
     },
+    // HUBR-1: the free team mode has no server to report to; nothing is written anywhere.
+    report: () => ({ ok: true, sent: false }),
     forget: () => writeCache(root, null),
   };
   return provider;
@@ -739,6 +776,8 @@ function commandProvider(root, team, command) {
       const r = call('since', { at });
       return Array.isArray(r) ? r : null;
     },
+    // HUBR-1: the project's facts, on stdin as the operation's input.
+    report: (snapshot) => call('report', { snapshot }),
     forget: () => writeCache(root, null),
   };
 }

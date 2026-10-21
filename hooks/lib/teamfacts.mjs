@@ -122,17 +122,21 @@ export function decisionRecord(d, techLead) {
     .replace(/^Touches:.*$/m, '')
     .replace(/Raised with code-kit by @\S+ before any code[^\n]*/, '')
     .trim();
-  const agreed = (d.comments ?? [])
-    .filter((c) => c.author?.login === techLead && /^Agreed by @/.test(c.body))
-    .at(-1)
-    ?.body.replace(/^Agreed by @\S+, the tech lead(: |\.)?/, '')
-    .trim();
+  // Who settled it: the provider says (a lane owner whose paths it touches may agree it with a hosted
+  // provider), or the tech lead, who alone settles intents through GitHub.
+  const by = d.settledBy ?? d.settled_by ?? techLead;
+  const agreed =
+    (d.comments ?? [])
+      .filter((c) => c.author?.login === by && /^Agreed by @/.test(c.body))
+      .at(-1)
+      ?.body.replace(/^Agreed by @[\w-]+(?:, [^:.]*)?(: |\.)?/, '')
+      .trim() || (typeof d.why === 'string' ? d.why.trim() : '');
   return [
     `# ${d.title}`,
     '',
     '**Status:** agreed',
     `**Date:** ${date}`,
-    `**Raised by:** @${d.author?.login ?? 'someone'} · **Agreed by:** @${techLead}`,
+    `**Raised by:** @${d.author?.login ?? 'someone'} · **Agreed by:** @${by}`,
     `**Discussion:** ${d.url}`,
     '',
     '## What changes, and why',

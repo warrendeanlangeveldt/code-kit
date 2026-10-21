@@ -1676,6 +1676,42 @@ export function withUsage(ledger, who, usage) {
   };
 }
 
+/**
+ * HUBR-2: the ledger as a report carries it: [{ story, kind, input, output, cache }], each entry's kind
+ * (lead, lane, reviewer, security-reviewer or background) from who made it and `typeOf(key)`, the agent's
+ * type. Tokens only: no prompt, no message.
+ */
+export function usageForReport(ledger, typeOf = () => null) {
+  return Object.fromEntries(
+    Object.entries(ledger).map(([id, e]) => {
+      const type = e.key === 'lead' ? null : typeOf(e.key);
+      const kind =
+        e.key === 'lead'
+          ? 'lead'
+          : e.lane
+            ? 'lane'
+            : type === 'security-reviewer'
+              ? 'security-reviewer'
+              : /(^|:)reviewer$/.test(type ?? '')
+                ? 'reviewer'
+                : 'background';
+      return [
+        id,
+        { story: e.story ?? null, kind, input: e.input, output: e.output, cache: e.cache },
+      ];
+    }),
+  );
+}
+
+/**
+ * HUBR-6: an agent's presence, by tool name and the branch its lane works on (never what it reads or
+ * writes): { type, tool, branch, at }.
+ */
+export function presenceOf({ agentId, type, tool, lane, lanes, at }) {
+  const branch = lane ? (lanes?.find((l) => l.name === lane)?.branch ?? null) : null;
+  return { type: agentId ? (type ?? null) : 'lead', tool: tool ?? null, branch, at };
+}
+
 const total = (e) => e.input + e.output + e.cache;
 const median = (xs) => {
   const s = [...xs].sort((a, b) => a - b);

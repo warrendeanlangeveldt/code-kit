@@ -2,10 +2,10 @@
 
 **Status:** draft
 **Outcome:** Several people, each with their own Claude Code session and agents, build in one repository without their agents colliding or drifting from what the team agreed, and without someone reviewing every branch by hand to find out.
-**Actors:** each developer (owns lanes or claims stories, approves what they own); their lead and lane agents; teammates who don't use code-kit (seen through git and GitHub); a team provider (GitHub-only here, or the code-kit teams hub)
+**Actors:** each developer (owns lanes or claims stories, approves what they own); their lead and lane agents; teammates who don't use code-kit (seen through git and GitHub); a team provider (GitHub-only here, or code-kit hub)
 **Depends on:** 09-merge-queue, 15-decisions-and-journal
 
-code-kit was built for one person with many agents. In a team, the same repository has several people, each with a lead and lanes. What's missing is shared: who owns what, who's working on what right now, what was agreed, and what changed while you weren't looking. This spec adds that to the free core, behind one interface, with a provider that needs nothing but GitHub. A hosted provider (the code-kit teams hub) plugs into the same interface and adds live updates.
+code-kit was built for one person with many agents. In a team, the same repository has several people, each with a lead and lanes. What's missing is shared: who owns what, who's working on what right now, what was agreed, and what changed while you weren't looking. This spec adds that to the free core, behind one interface, with a provider that needs nothing but GitHub. A hosted provider (code-kit hub) plugs into the same interface and adds live updates.
 
 ## In scope
 
@@ -20,7 +20,7 @@ code-kit was built for one person with many agents. In a team, the same reposito
 
 ## Out of scope
 
-- Live presence and push updates: the hub's (code-kit-teams).
+- Live presence and push updates: code-kit hub's.
 - The drift check (work built on a spec or decision that has since changed): the hub's, as an agent on every push.
 - Any host but GitHub.
 
