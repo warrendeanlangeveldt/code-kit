@@ -34,6 +34,10 @@
 //   settings [--json] | settings set <key> <value> --reason … [--via pane]
 //                                    the harness settings; set is the person's own change
 //                         record approvals a person gave in chat (with approvals.lead on, the lead runs it)
+//   who                              which session this is, whether it leads, and its task (spec 23)
+//   sessions [--json] | sessions lead the sessions working the project; make this one the lead
+//   task "<what>" --touches globs | task done | task take <session>
+//                                    a working session's ad hoc task and the paths it leases
 //   lanes [--json] | lanes release <lane>
 //                                    the lanes running a story now, one each across sessions (spec 23)
 // --config <file> reads a draft (.claude/code-kit.draft.json) instead of .claude/code-kit.json.
@@ -140,6 +144,17 @@ import { TESTS_APPROVAL } from '../hooks/lib/regression.mjs';
 import { laneClaim, laneClaims, releaseLane, shortSession } from '../hooks/lib/laneclaims.mjs';
 import { slicesOf } from '../hooks/lib/schedule.mjs';
 import {
+  leadSession,
+  makeLead,
+  memberOf,
+  readSession,
+  seeSession,
+  sessions,
+  setTask,
+  takeTask,
+} from '../hooks/lib/sessions.mjs';
+import { globsOverlap } from '../hooks/lib/teamfacts.mjs';
+import {
   appliesTo,
   projectStandards,
   readInherited,
@@ -172,6 +187,8 @@ const laneName = option('--lane');
 const intoName = option('--into');
 const via = option('--via');
 const sessionId = option('--session');
+// SESS-1: the session calling, as Claude Code tells every command an agent runs, unless --session says.
+const callerSession = sessionId ?? process.env.CLAUDE_CODE_SESSION_ID ?? null;
 const minutesGiven = option('--minutes');
 const answerGiven = option('--answer');
 const leaseGiven = option('--lease');
@@ -283,6 +300,23 @@ function check() {
         : "You aren't signed in to GitHub (gh auth login), so claims and owners can't be checked.",
     );
   }
+}
+
+/** SESS-1: which session the caller is, whether it leads the project, and its task. */
+function whoAmI() {
+  load();
+  const root = resolve('.');
+  const me = callerSession ? readSession(root, callerSession) : null;
+  if (!me)
+    return out(
+      callerSession
+        ? `Session ${shortSession(callerSession)}, which code-kit hasn't recorded yet.`
+        : 'Not run from a Claude Code session, so no member of the team.',
+    );
+  const lead = leadSession(root);
+  out(
+    `${memberOf(me)}: ${me.role === 'lead' ? 'the lead session' : `a working session${lead ? ` (${memberOf(lead)} leads)` : ' (no session leads now)'}`}${me.task ? `, working on "${me.task.title}"` : ''}.`,
+  );
 }
 
 function who(paths) {
@@ -1049,6 +1083,100 @@ function requests() {
     out(
       `  ${h.at.slice(0, 16).replace('T', ' ')}  ${h.name} for ${h.lane ? `the ${h.lane} lane` : 'any agent'}, by ${h.by}${h.files.length ? ` · ${h.files.length} file${h.files.length === 1 ? '' : 's'}${h.branches.length ? ` on ${h.branches.join(', ')}` : ''}` : ''}: ${h.reason}`,
     );
+}
+
+/**
+ * SESS-1, SESS-2: the sessions working the project, which one leads, and each one's task; `beat` (the mod,
+ * while a session is open) says the session is still there; `lead` makes the caller's session the lead.
+ */
+function sessionsCommand() {
+  load();
+  const root = resolve('.');
+  const [sub] = rest;
+  if (sub === 'beat' || sub === 'lead') {
+    if (!callerSession) die(`code-kit sessions ${sub} needs the session: --session <id>.`);
+    if (sub === 'beat') return seeSession(root, callerSession) && out('Seen.');
+    const was = leadSession(root);
+    makeLead(root, callerSession);
+    return out(
+      `This session (${shortSession(callerSession)}) leads the project now${was && was.id !== callerSession ? `; ${shortSession(was.id)} is a working session` : ''}.`,
+    );
+  }
+  if (sub !== undefined) die('code-kit sessions [--json] | sessions lead | sessions beat');
+  const all = sessions(root).filter((s) => s.live || s.task);
+  if (flag('--json'))
+    return out(
+      JSON.stringify(
+        all.map((s) => ({ ...s, member: memberOf(s) })),
+        null,
+        2,
+      ),
+    );
+  if (!all.length) return out('No session is working this project.');
+  for (const s of all)
+    out(
+      `${pad(memberOf(s), 30)} ${pad(s.live ? s.role : 'ended', 8)} ${s.task ? `${s.task.title}${s.task.paths?.length ? ` (${s.task.paths.join(', ')})` : ''}${s.live ? '' : ', stale'}` : '-'}${s.id === callerSession ? '  ← this session' : ''}`,
+    );
+}
+
+/**
+ * SESS-4: an ad hoc task, for a session working without a story: recorded with the paths it leases, so
+ * the other sessions' agents leave them alone; `done` ends it; `take <session>` moves a stale one here.
+ */
+function taskCommand() {
+  load();
+  const root = resolve('.');
+  const [sub] = rest;
+  if (!callerSession)
+    die(
+      'code-kit task needs the session: run it from Claude Code (CLAUDE_CODE_SESSION_ID), or pass --session <id>.',
+    );
+  if (sub === 'done') {
+    const had = readSession(root, callerSession)?.task;
+    if (!had) return out('This session has no task.');
+    setTask(root, callerSession, null);
+    return out(`Done: "${had.title}". Its paths are free for other sessions.`);
+  }
+  if (sub === 'take') {
+    if (rest.length !== 2) die('code-kit task take <session>');
+    const r = takeTask(root, rest[1], callerSession);
+    if (!r.ok) die(r.why);
+    return out(
+      `This session took over "${r.task.title}" from ${memberOf(r.from)}${r.task.paths?.length ? `, leasing ${r.task.paths.join(', ')}` : ''}.`,
+    );
+  }
+  if (sub === undefined) {
+    const s = readSession(root, callerSession);
+    if (flag('--json')) return out(JSON.stringify(s?.task ?? null));
+    return out(
+      s?.task
+        ? `"${s.task.title}"${s.task.paths?.length ? `, leasing ${s.task.paths.join(', ')}` : ''}.`
+        : 'This session has no task.',
+    );
+  }
+  if (rest.length !== 1)
+    die(
+      'code-kit task "<what you\'re doing>" --touches "<globs>" | task done | task take <session>',
+    );
+  const paths = (touchesGiven ?? '')
+    .split(',')
+    .map((g) => g.trim())
+    .filter(Boolean);
+  const clash = sessions(root).find(
+    (s) =>
+      s.live &&
+      s.id !== callerSession &&
+      s.task?.paths?.some((p) => paths.some((q) => globsOverlap(p, q))),
+  );
+  if (clash)
+    die(
+      `Another session (${memberOf(clash)}) is working on "${clash.task.title}", leasing ${clash.task.paths.join(', ')}. Pick paths it doesn't lease, or wait until it's done.`,
+    );
+  const branch = currentBranch(root) ?? null;
+  setTask(root, callerSession, { title: sub.trim(), paths, branch });
+  out(
+    `This session is working on "${sub.trim()}"${paths.length ? `, leasing ${paths.join(', ')}` : ''}. \`code-kit task done\` when it's finished.`,
+  );
 }
 
 /**
@@ -2109,7 +2237,9 @@ function loopCommand() {
     const r = claimLead(root, sessionId, { take: flag('--take') });
     if (!r.ok)
       die(
-        `Another session (${r.lead.session}, renewed ${r.lead.at}) runs the lead loop in this project. Leave it there, or take it over with --take.`,
+        r.lead
+          ? `Another session (${shortSession(r.lead.session)}, seen ${r.lead.at}) leads this project and runs its loop. Leave it there, or lead from here with --take.`
+          : 'No session leads this project now, and this is a working session: the loop runs only in the lead session. Lead from here with --take.',
       );
     return out('This session runs the lead loop.');
   }
@@ -2118,9 +2248,11 @@ function loopCommand() {
       'code-kit loop [--json] | loop pause | loop resume | loop lead --session <id> [--take] | loop release --session <id>',
     );
   const state = readLoop(root);
+  // SESS-2: with --session, whether that session leads the project or works in it.
+  const role = sessionId ? (readSession(root, sessionId)?.role ?? null) : null;
   out(
     flag('--json')
-      ? JSON.stringify(state)
+      ? JSON.stringify({ ...state, ...(sessionId ? { role } : {}) })
       : `${state.paused ? `The lead loop is paused (since ${state.at}).` : 'The lead loop is running.'}${state.lead ? ` Session ${state.lead.session} runs it.` : ''}`,
   );
 }
@@ -2323,6 +2455,8 @@ const commands = {
   stops,
   settings,
   lanes: lanesCommand,
+  sessions: sessionsCommand,
+  task: taskCommand,
   hold: () => (rest.length === 1 ? hold(rest[0]) : usage()),
   queue,
   team: teamCommand,
@@ -2345,7 +2479,7 @@ const commands = {
   diff,
   baseline,
   graph,
-  who: () => (rest.length ? who(rest) : usage()),
+  who: () => (rest.length ? who(rest) : whoAmI()),
 };
 function usage() {
   die(
@@ -2364,7 +2498,8 @@ function usage() {
       '              | report [--json] | report send|discard <id>\n' +
       '              | stops [--session id] [--json] | sent-back <branch> [--reason "…"]\n' +
       '              | settings [--json] | settings set <key> <value> --reason "…" [--via pane]\n' +
-      '              | lanes [--json] | lanes release <lane>\n' +
+      '              | lanes [--json] | lanes release <lane> | sessions [--json] | sessions lead\n' +
+      '              | who | task "<what>" --touches globs | task done | task take <session>\n' +
       '              | hold <id> [--minutes N] | hold <id> --answer approved|refused\n' +
       '              | queue [--json] | queue add|drop <branch> | queue rules | queue merge --delegated|--person\n' +
       '              | loop [--json] | loop pause|resume | loop lead|release --session id [--take]\n' +

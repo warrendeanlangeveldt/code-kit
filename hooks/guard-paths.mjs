@@ -10,6 +10,7 @@ import { brokenLayerRule, layerProblems } from './lib/layers.mjs';
 import { noteFor } from './lib/standards.mjs';
 import { block, start } from './lib/hook.mjs';
 import { teamOf, teamProvider, teamRefusal, whoami } from './lib/team.mjs';
+import { sessionWriteProblem } from './lib/sessions.mjs';
 import { spawnSync } from 'node:child_process';
 import {
   actorFor,
@@ -37,6 +38,16 @@ if (error) {
 
 const problem = writeProblem(actorFor(input, root, config), rel, root, config);
 if (problem) block(`Blocked: ${problem}`);
+
+// SESS-4, SESS-5: another session's task leases the path, or a working session writes where it shouldn't.
+const shared = sessionWriteProblem({
+  project,
+  root,
+  rel,
+  actor: actorFor(input, root, config),
+  session: input.session_id ?? null,
+});
+if (shared) block(`Blocked: ${shared}`);
 
 // TEAM-1, TEAM-4: in a team, the tech lead's paths, other people's lanes, claims and leases.
 const team = teamOf(config);

@@ -5,6 +5,7 @@
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { projectWorktrees } from './rules.mjs';
+import { leadSession, makeLead, readSession } from './sessions.mjs';
 
 export const LOOP_FILE = '.claude/state/loop.json';
 /** LOOP-10: a lead session renews its lease well within this; one not renewed for this long has ended. */
@@ -34,10 +35,19 @@ const liveLead = (state, now) => {
   return now - Date.parse(lead.at) < LEAD_LEASE_MS ? { session: lead.session, at: lead.at } : null;
 };
 
-/** { paused, at, lead }: not paused when nothing was recorded; `lead` is the live lead session or null. */
+/**
+ * { paused, at, lead }: not paused when nothing was recorded; `lead` is the live lead session or null.
+ * SESS-2: where sessions are recorded, the lead session is the lead; the lease is for a session code-kit's
+ * session hook never saw.
+ */
 export function readLoop(root, now = Date.now()) {
   const state = readRaw(root);
-  return { paused: state.paused === true, at: state.at ?? null, lead: liveLead(state, now) };
+  const lead = leadSession(root, now);
+  return {
+    paused: state.paused === true,
+    at: state.at ?? null,
+    lead: lead ? { session: lead.id, at: lead.seen } : liveLead(state, now),
+  };
 }
 
 export function writeLoop(root, paused, now = Date.now()) {
@@ -49,6 +59,14 @@ export function writeLoop(root, paused, now = Date.now()) {
  * person moved the loop here): { ok: true } or { ok: false, lead } naming the session that has it.
  */
 export function claimLead(root, session, { take = false } = {}, now = Date.now()) {
+  // SESS-2: the loop runs in the lead session; Lead from here (`take`) makes this session the lead.
+  if (readSession(root, session)) {
+    if (take) makeLead(root, session, now);
+    const lead = leadSession(root, now);
+    return lead?.id === session
+      ? { ok: true, lead: null }
+      : { ok: false, lead: lead ? { session: lead.id, at: lead.seen } : null };
+  }
   const state = readRaw(root);
   const lead = liveLead(state, now);
   if (lead && lead.session !== session && !take) return { ok: false, lead };

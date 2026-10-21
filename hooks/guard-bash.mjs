@@ -218,10 +218,14 @@ if (runs(cmd, new RegExp(String.raw`^${CODE_KIT}\s+loop\s+(pause|resume)\b`)))
   block(
     `Blocked: pausing or resuming the lead loop is the person's own act, from the code-kit band or their terminal. Ask them, and stop.\nCommand: ${cmd}`,
   );
-// LOOP-10: which session runs the loop is the mod's to record, and moving it the person's.
-if (runs(cmd, new RegExp(String.raw`^${CODE_KIT}\s+loop\s+(lead|release)\b`)))
+// LOOP-10, SESS-2: which session leads is recorded by code-kit's hooks and band, and choosing it is
+// the person's own act.
+if (
+  runs(cmd, new RegExp(String.raw`^${CODE_KIT}\s+loop\s+(lead|release)\b`)) ||
+  runs(cmd, new RegExp(String.raw`^${CODE_KIT}\s+sessions\s+(lead|beat)\b`))
+)
   block(
-    `Blocked: which session runs the lead loop is recorded by the code-kit band, and moving it is the person's own act (Lead from here, in the band). Carry on with your work.\nCommand: ${cmd}`,
+    `Blocked: which session leads the project is recorded by code-kit, and choosing it is the person's own act (Lead from here, in the code-kit band, or \`code-kit sessions lead\` in their terminal). Carry on with your work.\nCommand: ${cmd}`,
   );
 // TEAM-9: handing someone's claim to someone else is the tech lead's own decision too.
 if (runs(cmd, new RegExp(String.raw`^${CODE_KIT}\s+team\s+reassign\b`)))

@@ -88,6 +88,8 @@ function project() {
     pulses: [] as any[],
     runs: 0,
     laneClaims: [] as any[],
+    role: null as string | null, // SESS-2: this session's role, as `loop --json --session` says
+    task: null as any, // SESS-4: a working session's task
     settings: [
       {
         key: 'autonomy',
@@ -227,6 +229,11 @@ function stub(on: any, w: World) {
     if (sub === 'verify')
       return ran(w.verifyExit, w.verifyExit ? '' : w.verifyOut, w.verifyExit ? w.verifyOut : '');
     if (sub === 'stops') return ran(0, JSON.stringify(w.stops));
+    if (sub === 'task') return ran(0, JSON.stringify(w.task));
+    if (sub === 'sessions') {
+      w.acts.push([...argv.slice(2)]);
+      return ran(0, 'Seen.');
+    }
     if (sub === 'lanes' && argv[3] === 'release') {
       w.acts.push([...argv.slice(2)]);
       w.laneClaims = w.laneClaims.filter((c: any) => c.lane !== argv[4]);
@@ -265,6 +272,9 @@ function stub(on: any, w: World) {
     }
     if (sub === 'loop' && argv[3] === 'lead') {
       const session = argv[argv.indexOf('--session') + 1];
+      // SESS-2: a working session leads only when the person moves the loop to it.
+      if (w.role === 'working' && !argv.includes('--take'))
+        return ran(1, '', 'No session leads this project now, and this is a working session.');
       if (w.leadSession && w.leadSession !== session && !argv.includes('--take'))
         return ran(1, '', `Another session (${w.leadSession}) runs the lead loop in this project.`);
       w.leadSession = session;
@@ -283,6 +293,7 @@ function stub(on: any, w: World) {
           paused: w.loopPaused,
           at: null,
           lead: w.leadSession ? { session: w.leadSession, at: '2026-10-16T00:00:00.000Z' } : null,
+          ...(w.role ? { role: w.role } : {}),
         }),
       );
     if (sub === 'sent-back') {
@@ -2584,11 +2595,61 @@ test('LOOP-10 a second session opened in the project never prompts its lead; Lea
   await clock.advance(4000);
   expect(w.prompts).toEqual([]);
   const ui = await bandUi($);
-  expect(await ui.find({ type: 'Text', text: 'the loop runs in another session' })).toBeDefined();
+  expect(await ui.find({ type: 'Text', text: 'the lead is in another session' })).toBeDefined();
   await press($, 'band-leadHere');
   await ui.unmount();
   expect(w.leadSession).toBe('s1');
   expect(w.prompts).toEqual(['Dispatch ST-9: run /code-kit:dispatch ST-9.']);
+});
+
+test('SESS-2 and SESS-3 a working session never prompts its lead, asks nothing, and its band holds only its own, with its task', async ($, on) => {
+  const w = project();
+  w.leadSession = 's-lead';
+  w.role = 'working';
+  w.task = { title: 'Integration readiness', paths: ['src/integrations/**'] };
+  w.questions = [
+    { id: 'Q-1', question: 'Which payment provider?', state: 'open', options: [], story: null },
+  ];
+  w.queue = [{ branch: 'web/st-4', state: 'waiting' }];
+  const clock = await start($, on, w);
+  await leadTurn($);
+  await settle(clock);
+  await clock.advance(4000);
+  expect(w.prompts).toEqual([]);
+  expect(w.asked).toEqual([]);
+  const ui = await bandUi($);
+  expect(await ui.find({ type: 'Text', text: 'the lead is in another session' })).toBeDefined();
+  expect(
+    await ui.find({
+      type: 'Text',
+      text: 'your task: Integration readiness · leasing src/integrations/**',
+    }),
+  ).toBeDefined();
+  expect(await ui.find({ type: 'Text', text: /web\/st-4 is next to merge/ })).toBeUndefined();
+  await ui.unmount();
+});
+
+test('SESS-2 with no session leading, a working session says so and offers Lead from here', async ($, on) => {
+  const w = project();
+  w.role = 'working';
+  const clock = await start($, on, w);
+  await leadTurn($);
+  await settle(clock);
+  expect(w.prompts).toEqual([]);
+  const ui = await bandUi($);
+  expect(
+    await ui.find({ type: 'Text', text: 'no session leads the project: the loop waits for one' }),
+  ).toBeDefined();
+  expect(await ui.find({ key: 'band-leadHere' })).toBeDefined();
+  await ui.unmount();
+});
+
+test('SESS-1 the mod says the session is still there every minute', async ($, on) => {
+  const w = project();
+  w.next = { step: 'wait', args: '', then: [] };
+  const clock = await start($, on, w);
+  await clock.advance(64000);
+  expect(w.acts).toContainEqual(['sessions', 'beat', '--session', 's1']);
 });
 
 test("LOOP-10 a new session leaves a live lead session's pause alone", async ($, on) => {

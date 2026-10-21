@@ -144,6 +144,13 @@ const loop = {
 // LOOP-10: whether this session runs the loop, the session that does when another does, and when this
 // one last renewed its lease.
 const lease = { mine: false, other: null, renewed: -Infinity };
+// SESS-2: this session's role in the project, `lead` or `working`, or null where code-kit has no record.
+let role = null;
+/** SESS-3: a working session, or one another session leads, stands by: no loop, dialogs or notifications. */
+const standingBy = () => !lease.mine && (Boolean(lease.other) || role === 'working');
+/** SESS-1: how often the mod says the session is still there. */
+const BEAT_MS = 60000;
+let beaten = -Infinity;
 const LEASE_RENEW_MS = 30000;
 // LOOP-11: the lead's last reply, read once before the loop next prompts it: { turnId, text, aborted, sent, read }
 let lastReply = null;
@@ -263,7 +270,8 @@ export function register(on) {
     const firstLine = (ran) => (ran.stderr || ran.stdout).trim().split('\n')[0];
     // A session starts with the loop running: a pause recorded by an earlier one no longer holds. A pause
     // by a session that still runs the loop (LOOP-10) is that session's, and stays.
-    const recorded = await json('loop').catch(() => null);
+    const recorded = await json('loop', '--session', session).catch(() => null);
+    role = recorded?.role ?? null;
     if (recorded?.paused && (!recorded.lead || recorded.lead.session === session))
       await $.process.run(['node', cli, 'loop', 'resume'], { cwd }).catch(() => {});
     lease.other = recorded?.lead && recorded.lead.session !== session ? recorded.lead : null;
@@ -323,9 +331,16 @@ export function register(on) {
         }
         // LOOP-10: while another session runs the loop, whether it still does (its lease lapses as it ends).
         if (!lease.mine) {
-          const lead = (await json('loop').catch(() => null))?.lead ?? null;
+          const recorded = await json('loop', '--session', session).catch(() => null);
+          const lead = recorded?.lead ?? null;
           lease.other = lead && lead.session !== session ? lead : null;
+          role = recorded?.role ?? role;
         }
+        // SESS-4: a working session's own task, for its band.
+        const task =
+          valid && role === 'working'
+            ? await json('task', '--session', session).catch(() => null)
+            : null;
         // The agents at work; none where the session has none bound (claude -p before it mounts).
         const atWork = agentsAtWork(await $.agent.list().catch(() => []));
         model = {
@@ -343,6 +358,9 @@ export function register(on) {
           // ASK-4: the brief's open questions, less those put off this session.
           brief: (nextStep?.brief ?? []).filter((b) => !briefLater.has(b.question)),
           base: status?.base ?? null,
+          // SESS-3, SESS-4: a working session's band holds its own, and its task.
+          working: role === 'working',
+          task,
         };
         if (model.state.kind === 'ok') await act.registerReviewer();
         await act.readMaps();
@@ -1210,7 +1228,7 @@ export function register(on) {
         // LEAN-4: past compact.at, the lead's context is compacted between turns, milestone or not.
         if (!fresh.length) return act.compactAtThreshold();
         const mode = harness().compact?.milestone ?? 'ask';
-        if (mode === 'off' || offering || !where.interactive || (lease.other && !lease.mine)) {
+        if (mode === 'off' || offering || !where.interactive || standingBy()) {
           for (const m of fresh) loop.milestones.add(m);
           return act.compactAtThreshold();
         }
@@ -1250,7 +1268,7 @@ export function register(on) {
       // LEAN-4: the lead's context compacted at once when it's past compact.at; true when it took over.
       compactAtThreshold: async () => {
         const at = harness().compact?.at ?? 40;
-        if (!at || offering || !where.interactive || (lease.other && !lease.mine)) return false;
+        if (!at || offering || !where.interactive || standingBy()) return false;
         const percent = (await $.session.usage().catch(() => null))?.context?.percent ?? 0;
         if (percent < Math.max(at, COMPACT_FLOOR)) return false;
         const box = await $.prompt.read().catch(() => null);
@@ -1398,7 +1416,7 @@ export function register(on) {
         const first = notified === null;
         notified = new Set(cards.map(decisionKey));
         if (first || !fresh.length || harness().notify?.on === false) return;
-        if (lease.other && !lease.mine) return;
+        if (standingBy()) return;
         const one =
           fresh.length === 1
             ? fresh[0]
@@ -1412,7 +1430,7 @@ export function register(on) {
       },
       offer: async () => {
         if (offering || leadTurn || loop.sent || !where.interactive) return;
-        if (lease.other && !lease.mine) return;
+        if (standingBy()) return;
         const now = await $.clock.now();
         const choice = cardsNow(now)
           .map((card) => ({ card, choice: nativeChoice(card) }))
@@ -1631,6 +1649,14 @@ export function register(on) {
         for (const a of activity.values()) if (a.story === story) a.stopped = false;
         await act.record('resume', story);
         $.ui.invalidate('ui.render');
+      },
+      // SESS-1: the session is still there, while it's open: the other sessions see it live.
+      beat: async () => {
+        const at = await $.clock.now();
+        if (beaten === -Infinity) beaten = at;
+        if (at - beaten < BEAT_MS || model.state?.kind !== 'ok') return;
+        beaten = at;
+        await $.process.run(['node', cli, 'sessions', 'beat', '--session', session], { cwd });
       },
       // SCHED-1: a lane this session's agent claimed, with no agent of that lane still running here for a
       // minute (stopped with TaskStop, or gone without its finish), is released for its next story.
@@ -1920,6 +1946,7 @@ export function register(on) {
         if (lease.mine) await act.lead();
         if (!leadTurn) act.offer().catch(() => {});
         await act.notifyNew().catch(() => {});
+        await act.beat().catch(() => {});
         await act.stalls();
         await act.freeLanes().catch(() => {});
         await act.animate();
@@ -2295,8 +2322,10 @@ export function register(on) {
     const state =
       h.autonomy === 'off'
         ? 'off'
-        : lease.other && !lease.mine
-          ? 'elsewhere'
+        : standingBy()
+          ? lease.other
+            ? 'elsewhere'
+            : 'unled'
           : loop.done
             ? 'done'
             : loop.paused

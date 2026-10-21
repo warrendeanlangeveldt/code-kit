@@ -127,6 +127,8 @@ The lead is prompted with one step at most three times in a row (spec 23, WHO-4)
 
 ### LOOP-10 One session runs the loop
 
+Spec 23 (SESS-2) replaces the lease taken by whichever session acts first: where code-kit's session hook records the sessions, the loop runs in the lead session, chosen as the session that starts when no other leads, or by the person (Lead from here, or `code-kit sessions lead`), and a working session's band reads "the lead is in another session". The lease below still serves a session the hook never saw.
+
 Only one session in a project prompts its lead. The first session whose loop acts takes the lead lease (`code-kit loop lead --session <id>`) and renews it every 30 seconds while it runs; a lease not renewed for 90 seconds has lapsed, and as the session ends it releases it (`code-kit loop release`). Any other session opened in the project, for any reason, never prompts its lead and offers no step: its band reads "the loop runs in another session" with **Lead from here**, which takes the lease over (`--take`); the other session then stops prompting. Once the lease has lapsed, the next session whose loop acts takes it. The hooks refuse `loop lead` and `loop release` from every agent.
 
 - **Errors:** if the lease can't be read or written, the session doesn't run the loop.

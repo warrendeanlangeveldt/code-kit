@@ -79,6 +79,26 @@ function takeNote(input) {
   }
 }
 
+/**
+ * SESS-5: the files git said a command's checkout, merge or rebase would overwrite, when it refused for
+ * uncommitted work: [] when it didn't.
+ */
+export function overwrittenFiles(response) {
+  const text = typeof response === 'string' ? response : JSON.stringify(response ?? '');
+  const said = text.replace(/\\n/g, '\n').replace(/\\t/g, '\t');
+  const files = [];
+  for (const m of said.matchAll(
+    /(?:local changes to the following files|untracked working tree files) would be (?:overwritten|removed) by [\w-]+:\n((?:\t[^\n]+\n?)+)/g,
+  ))
+    files.push(
+      ...m[1]
+        .split('\n')
+        .map((l) => l.trim())
+        .filter(Boolean),
+    );
+  return [...new Set(files)];
+}
+
 export function auditProblems(input, config) {
   const root = actorRoot(input);
   if (!root) return [];
@@ -99,8 +119,25 @@ export function auditProblems(input, config) {
 
 if (import.meta.url === `file://${process.argv[1]}`) {
   const { block, start } = await import('./lib/hook.mjs');
-  const { input, config, error } = start();
+  const { input, project, config, error } = start();
   if (error) process.exit(0); // guard-paths and stop-check report an invalid config
+  // SESS-5: git refused because of uncommitted files another session wrote: say whose they are.
+  const overwritten = overwrittenFiles(input.tool_response);
+  if (overwritten.length) {
+    const { memberOf, writersOf } = await import('./lib/sessions.mjs');
+    const whose = Object.entries(writersOf(project, overwritten, input.session_id ?? null));
+    if (whose.length)
+      block(
+        `Git refused because of uncommitted files another session wrote in this checkout:\n  ${whose
+          .map(
+            ([f, w]) =>
+              `${f}: ${w.map((s) => `${memberOf(s)}${s.task ? `, working on "${s.task.title}"` : ''}${s.live ? '' : ' (ended)'}`).join('; ')}`,
+          )
+          .join(
+            '\n  ',
+          )}\nAsk that session to commit or stash them; don't stash or discard another session's work. Better, work in a worktree of your own, where no other session's files can block you.`,
+      );
+  }
   const problems = auditProblems(input, config);
   if (problems.length) {
     block(

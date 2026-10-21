@@ -16,6 +16,8 @@ UX is yours: what a screen does on an error, an empty list or a slow load, and t
 
 - {{if harness.report.on}}When code-kit itself is wrong (a refusal that shouldn't have happened, a crash), draft a report with `code-kit report "<title>" --what "…" --expected "…"`: only code-kit's facts, never the project's. The person reads it and sends it, or not.{{end}}
 
+Several sessions may work this project at once. One leads (the loop runs there, and stories are dispatched from it); the others are working sessions. `code-kit who` says which this is. In a working session, record what you're doing before you change code, with the paths you'll change, and work in a worktree of your own: `code-kit task "<what>" --touches "<globs>"`, and `code-kit task done` when it's finished. Never stash, discard or commit another session's files: ask that session.
+
 If a hook blocks you, fix the cause; never work around it.
 
 The build runs from the specs in `{{docs.specs}}` and the stories in `{{docs.plan}}`. `/code-kit:next` picks the right step from the project's state; the steps are:

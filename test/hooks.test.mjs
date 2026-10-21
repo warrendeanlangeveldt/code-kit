@@ -19,6 +19,9 @@ import { fileURLToPath } from 'node:url';
 import { refusalCard } from '../hooks/mod/view.mjs';
 import { holdable } from '../hooks/mod/hold.mjs';
 
+// SESS-1: the CLI reads the calling session from Claude Code's environment; these tests say it themselves.
+delete process.env.CLAUDE_CODE_SESSION_ID;
+
 const here = dirname(fileURLToPath(import.meta.url));
 const hooks = join(here, '..', 'hooks');
 const fixture = readFileSync(join(here, 'fixture.json'), 'utf8');
@@ -5208,8 +5211,8 @@ else process.exit(1);
       'SCHED-1 another session starting a web agent is refused, naming ST-3 and the session running it',
       truth(
         second.status === 2 &&
-          second.stderr.includes(
-            'the web lane is already running ST-3 in another session (aaaa1111)',
+          /the web lane is already running ST-3 in another session \([^)]*\/aaaa1111\)/.test(
+            second.stderr,
           ) &&
           second.stderr.includes('lanes release web'),
         second.stderr,
@@ -5375,6 +5378,244 @@ else process.exit(1);
       ),
       0,
     );
+  }
+
+  // --- SESS-1 to SESS-5: sessions as members of the team ------------------------------------------
+  {
+    const t = newRepo();
+    cleanups.push(t.dir);
+    const tPut = (rel, body = '') => {
+      mkdirSync(dirname(join(t.dir, rel)), { recursive: true });
+      writeFileSync(join(t.dir, rel), body);
+    };
+    const tHook = (name, input, args = []) =>
+      spawnSync('node', [join(hooks, name), ...args], {
+        input: JSON.stringify({ cwd: t.dir, ...input }),
+        env: { ...process.env, CLAUDE_PROJECT_DIR: t.dir },
+        encoding: 'utf8',
+      });
+    const tCli = (session, ...args) =>
+      spawnSync('node', [join(here, '..', 'bin', 'code-kit.mjs'), ...args], {
+        cwd: t.dir,
+        encoding: 'utf8',
+        env: { ...process.env, ...(session ? { CLAUDE_CODE_SESSION_ID: session } : {}) },
+      });
+    const A = 'aaaa0001-lead';
+    const B = 'bbbb0002-work';
+    const C = 'cccc0003-next';
+    const begin = (id) => tHook('session.mjs', { session_id: id }, ['start']);
+    const finish = (id) => tHook('session.mjs', { session_id: id }, ['end']);
+    const roleOf = (id) => JSON.parse(tCli(null, 'loop', '--json', '--session', id).stdout).role;
+    tPut('docs/spec/01-x.md', '# 01. X\n\n### X-1 One\n');
+    tPut(
+      'docs/spec/plan.md',
+      '# Plan\n\n## M1\n\n### ST-1 One\n\n**Lane:** web\n**Requirements:** X-1\n**Depends on:** none\n**Status:** todo\n',
+    );
+    t.git('add', '-A');
+    t.git('commit', '-q', '-m', 'plan');
+    begin(A);
+    begin(B);
+    expect(
+      'SESS-2 the first session to start leads; one started while it is live works',
+      truth(roleOf(A) === 'lead' && roleOf(B) === 'working', `${roleOf(A)} ${roleOf(B)}`),
+      0,
+    );
+    const notMine = tCli(null, 'loop', 'lead', '--session', B);
+    expect(
+      'SESS-2 the loop runs only in the lead session: a working session is refused, told who leads',
+      truth(
+        notMine.status === 1 &&
+          notMine.stderr.includes('aaaa0001') &&
+          notMine.stderr.includes('--take'),
+        notMine.stderr,
+      ),
+      0,
+    );
+    expect('SESS-2 and the lead session runs it', tCli(null, 'loop', 'lead', '--session', A), 0);
+    const whoB = tCli(B, 'who');
+    expect(
+      'SESS-1 code-kit who says which session the caller is, and who leads',
+      truth(
+        /\/bbbb0002: a working session \([^)]*\/aaaa0001 leads\)/.test(whoB.stdout),
+        whoB.stdout + whoB.stderr,
+      ),
+      0,
+    );
+    finish(A);
+    const unled = tCli(null, 'loop', 'lead', '--session', B);
+    expect(
+      'SESS-2 with the lead session ended, no working session takes the loop by itself',
+      truth(unled.status === 1 && unled.stderr.includes('No session leads'), unled.stderr),
+      0,
+    );
+    begin(C);
+    expect('SESS-2 the next session to start leads', truth(roleOf(C) === 'lead'), 0);
+    expect(
+      'SESS-2 Lead from here makes a working session the lead, and the old lead works',
+      truth(
+        tCli(B, 'sessions', 'lead').status === 0 && roleOf(B) === 'lead' && roleOf(C) === 'working',
+      ),
+      0,
+    );
+    tCli(C, 'sessions', 'lead');
+    expect(
+      "SESS-2 choosing the lead is the person's: an agent running sessions lead is refused",
+      tHook('guard-bash.mjs', {
+        session_id: B,
+        tool_input: { command: `node "${join(here, '..', 'bin', 'code-kit.mjs')}" sessions lead` },
+      }),
+      2,
+      "the person's own act",
+    );
+    // SESS-5: a working session's main agent writes in a worktree of its own, not the shared checkout.
+    const inMain = tHook('guard-paths.mjs', {
+      session_id: B,
+      tool_input: { file_path: join(t.dir, 'packages/schemas/integrations/client.ts') },
+    });
+    expect(
+      "SESS-5 a working session's write in the main checkout is refused, saying to use a worktree",
+      truth(
+        inMain.status === 2 &&
+          inMain.stderr.includes('main checkout, which every session shares') &&
+          inMain.stderr.includes('claude --worktree'),
+        inMain.stderr,
+      ),
+      0,
+    );
+    const wt = join(t.dir, '.claude/worktrees/integration');
+    t.git('worktree', 'add', '-q', wt, '-b', 'integration-readiness');
+    const inWorktree = (session, rel, agent) =>
+      tHook('guard-paths.mjs', {
+        cwd: wt,
+        session_id: session,
+        tool_input: { file_path: join(wt, rel) },
+        ...(agent ? { agent_type: agent } : {}),
+      });
+    const noTask = inWorktree(B, 'packages/schemas/integrations/client.ts');
+    expect(
+      "SESS-4 in its worktree, a working session's first write with no task is refused, with the command",
+      truth(
+        noTask.status === 2 &&
+          noTask.stderr.includes('record what you') &&
+          noTask.stderr.includes('task "'),
+        noTask.stderr,
+      ),
+      0,
+    );
+    const recorded = tCli(
+      B,
+      'task',
+      'Integration readiness',
+      '--touches',
+      'apps/office/integrations/**',
+    );
+    expect(
+      'SESS-4 code-kit task records the task and the paths it leases',
+      truth(
+        recorded.status === 0 && recorded.stdout.includes('leasing apps/office/integrations/**'),
+        recorded.stdout + recorded.stderr,
+      ),
+      0,
+    );
+    expect(
+      'SESS-4 with its task, the working session writes in its worktree',
+      inWorktree(B, 'packages/schemas/integrations/client.ts'),
+      0,
+    );
+    // The lane has read its spec (the path guard asks for it before lane code).
+    tPut(
+      '.claude/state/spec-check/main.md',
+      '# Spec check\n\n| Requirement | Status | Where | Note |\n| --- | --- | --- | --- |\n| X-1 One | missing | | |\n',
+    );
+    const leased = tHook('guard-paths.mjs', {
+      session_id: A === C ? A : C,
+      agent_type: 'web-engineer',
+      tool_input: { file_path: join(t.dir, 'apps/office/integrations/client.ts') },
+    });
+    expect(
+      "SESS-4 the lead's web lane writing a path a working session's task leases is refused, naming the session and its task",
+      truth(
+        leased.status === 2 &&
+          /leased by another session \([^)]*\/bbbb0002\), working on "Integration readiness"/.test(
+            leased.stderr,
+          ),
+        leased.stderr,
+      ),
+      0,
+    );
+    const listed = JSON.parse(tCli(null, 'sessions', '--json').stdout);
+    expect(
+      'SESS-4 sessions lists each with its role and task',
+      truth(
+        listed.some(
+          (x) => x.id === B && x.role === 'working' && x.task?.title === 'Integration readiness',
+        ) && listed.some((x) => x.id === C && x.role === 'lead'),
+        JSON.stringify(listed),
+      ),
+      0,
+    );
+    expect(
+      'SESS-4 another task may not lease the same paths',
+      tCli(C, 'task', 'Something else', '--touches', 'apps/office/**'),
+      1,
+      'Integration readiness',
+    );
+    finish(B);
+    const D = 'dddd0004-takeover';
+    begin(D);
+    const afterEnd = tHook('guard-paths.mjs', {
+      session_id: C,
+      agent_type: 'web-engineer',
+      tool_input: { file_path: join(t.dir, 'apps/office/integrations/client.ts') },
+    });
+    expect(
+      'SESS-4 a stale task leases nothing: once its session ended, the lane may write there',
+      truth(afterEnd.status === 0, afterEnd.stderr),
+      0,
+    );
+    const took = tCli(D, 'task', 'take', 'bbbb0002');
+    expect(
+      'SESS-4 task take moves a stale task to the session running it',
+      truth(
+        took.status === 0 &&
+          took.stdout.includes('took over "Integration readiness"') &&
+          JSON.parse(tCli(D, 'task', '--json').stdout)?.title === 'Integration readiness',
+        took.stdout + took.stderr,
+      ),
+      0,
+    );
+    expect(
+      'SESS-4 task done ends it',
+      truth(tCli(D, 'task', 'done').stdout.startsWith('Done:')),
+      0,
+    );
+    // SESS-5: a git command blocked by another session's uncommitted files names that session.
+    tCli(C, 'task', 'Docs pass', '--touches', 'docs/**');
+    tPut('docs/notes.md', 'draft\n');
+    tHook('post-edit-check.mjs', {
+      session_id: C,
+      tool_input: { file_path: join(t.dir, 'docs/notes.md') },
+    });
+    const blockedGit = tHook('lane-audit.mjs', {
+      session_id: D,
+      tool_input: { command: 'git checkout other' },
+      tool_response: {
+        stdout: '',
+        stderr:
+          'error: Your local changes to the following files would be overwritten by checkout:\n\tdocs/notes.md\nPlease commit your changes or stash them before you switch branches.\nAborting',
+      },
+    });
+    expect(
+      "SESS-5 git refused for another session's uncommitted file: the refusal names that session and its task",
+      truth(
+        blockedGit.status === 2 &&
+          /docs\/notes\.md: [^\n]*\/cccc0003, working on "Docs pass"/.test(blockedGit.stderr) &&
+          blockedGit.stderr.includes("don't stash or discard another session's work"),
+        blockedGit.stderr,
+      ),
+      0,
+    );
+    rmSync(join(t.dir, 'docs/notes.md'), { force: true });
   }
 
   const blank = mkdtempSync(join(tmpdir(), 'code-kit-blank-'));

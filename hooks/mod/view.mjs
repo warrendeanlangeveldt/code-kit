@@ -730,11 +730,23 @@ export function bandLines({
   brief = [],
   denied = [],
   reports = [],
+  working = false,
+  task = null,
 }) {
   const lines = [];
-  // MISSION-1: the goal, now, next and the agents at work, above what needs the person.
-  const mission = missionLines({ state, loop, leadBusy, live, nextStep, combined });
+  // MISSION-1: the goal, now, next and the agents at work, above what needs the person. SESS-3: a working
+  // session's band holds only its own: no mission, queue, reviews or team.
+  const mission = working ? [] : missionLines({ state, loop, leadBusy, live, nextStep, combined });
   lines.push(...mission);
+  // SESS-4: a working session's task, or that it records one before changing code.
+  if (working)
+    lines.push({
+      kind: 'task',
+      text: task
+        ? `your task: ${task.title}${task.paths?.length ? ` · leasing ${task.paths.join(', ')}` : ''}`
+        : 'a working session: record your task before changing code (code-kit task "…" --touches …)',
+      actions: [],
+    });
   if (notice)
     lines.push({ kind: 'notice', text: notice, actions: [{ id: 'dismiss', label: 'Dismiss' }] });
   if (!state || state.kind !== 'ok') return lines;
@@ -835,7 +847,7 @@ export function bandLines({
       actions: [{ id: 'openDecision', label: 'Answer…' }],
     });
   // ASK-4: the brief's open questions, the person's to answer.
-  if (brief.length)
+  if (brief.length && !working)
     lines.push({
       kind: 'brief',
       text: `${plural(brief.length, 'open question', 'open questions')} in your brief: ${brief[0].question}`,
@@ -850,7 +862,7 @@ export function bandLines({
   const inReview = loopOff
     ? state.lanes.filter((l) => l.state === 'in review').map((l) => l.story)
     : [];
-  if (inReview.length) {
+  if (inReview.length && !working) {
     const [story] = inReview;
     const ids = inReview.map((s) => s.id).join(', ');
     lines.push(
@@ -893,7 +905,7 @@ export function bandLines({
   const autonomous = (check?.harness?.autonomy ?? 'autonomous') === 'autonomous';
   // SETUP-2: with no rules on the base yet, the lead puts them there first and then merges.
   const leadMerges = autonomous && (check?.delegatesMerge || check?.firstMerge);
-  if (next && !leadMerges)
+  if (next && !leadMerges && !working)
     lines.push({
       kind: 'queue',
       text: `${next.branch} is next to merge`,
@@ -901,9 +913,9 @@ export function bandLines({
       actions: [{ id: 'mergeQueue', label: 'Merge' }],
     });
   // TEAM-7, TEAM-9: what of the team needs this person.
-  lines.push(...teamLines(team, check?.lanes ?? {}));
+  if (!working) lines.push(...teamLines(team, check?.lanes ?? {}));
   // REPORT-3: a bug report for code-kit an agent drafted, for the person to read and send, or not.
-  if (reports.length)
+  if (reports.length && !working)
     lines.push({
       kind: 'report',
       text: `${reports.length > 1 ? `${reports.length} bug reports for code-kit to send: ` : 'A bug report for code-kit to send: '}${reports[0].title}`,
@@ -924,11 +936,14 @@ export function bandLines({
   // With the mission rows drawn, the loop's state and its Pause or Resume are on the `now` row.
   else if (mission.length) {
     // nothing more
-  } else if (loop?.state === 'elsewhere')
-    // LOOP-10: another session in this project runs the loop; this one never prompts its lead.
+  } else if (loop?.state === 'elsewhere' || loop?.state === 'unled')
+    // SESS-2: another session leads the project, or none does; this one never prompts its lead.
     lines.push({
       kind: 'loop',
-      text: 'the loop runs in another session',
+      text:
+        loop.state === 'elsewhere'
+          ? 'the lead is in another session'
+          : 'no session leads the project: the loop waits for one',
       actions: [{ id: 'leadHere', label: 'Lead from here' }],
     });
   else if (loop?.state === 'paused')

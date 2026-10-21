@@ -5,6 +5,7 @@
 import { block, start } from './lib/hook.mjs';
 import { CLI } from './lib/rules.mjs';
 import { claimLane, shortSession } from './lib/laneclaims.mjs';
+import { memberOf, readSession } from './lib/sessions.mjs';
 
 const { input, project, config, error } = start();
 // A broken config is reported by the other hooks; it doesn't stop agents starting.
@@ -20,11 +21,13 @@ const session = input.session_id ?? null;
 const claimed = claimLane(project, { lane, story, session });
 if (!claimed.ok) {
   const c = claimed.claim;
+  // SESS-1: the session by its member and, where it has one, its task.
+  const holder = readSession(project, c.session);
   const where =
     c.session && c.session === session
       ? 'in this session'
       : c.session
-        ? `in another session (${shortSession(c.session)})`
+        ? `in another session (${holder ? memberOf(holder) : shortSession(c.session)}${holder?.task ? `, working on "${holder.task.title}"` : ''})`
         : 'here';
   block(
     `Blocked: the ${lane} lane is already running ${c.story ?? 'a story'} ${where}, since ${c.since.slice(11, 16)} UTC. A lane runs one story at a time across the project: two agents in one lane build on the same files in their worktrees and conflict at merge.\n` +
