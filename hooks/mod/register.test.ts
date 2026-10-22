@@ -87,6 +87,10 @@ function project() {
     acts: [] as string[][],
     pulses: [] as any[],
     runs: 0,
+    laneClaims: [] as any[],
+    role: null as string | null, // SESS-2: this session's role, as `loop --json --session` says
+    task: null as any, // SESS-4: a working session's task
+    decisions: null as any, // OWN-1: `decisions --json --session`: { mine, elsewhere }
     settings: [
       {
         key: 'autonomy',
@@ -226,6 +230,19 @@ function stub(on: any, w: World) {
     if (sub === 'verify')
       return ran(w.verifyExit, w.verifyExit ? '' : w.verifyOut, w.verifyExit ? w.verifyOut : '');
     if (sub === 'stops') return ran(0, JSON.stringify(w.stops));
+    if (sub === 'task') return ran(0, JSON.stringify(w.task));
+    if (sub === 'decisions')
+      return w.decisions ? ran(0, JSON.stringify(w.decisions)) : ran(1, '', 'unexpected decisions');
+    if (sub === 'sessions') {
+      w.acts.push([...argv.slice(2)]);
+      return ran(0, 'Seen.');
+    }
+    if (sub === 'lanes' && argv[3] === 'release') {
+      w.acts.push([...argv.slice(2)]);
+      w.laneClaims = w.laneClaims.filter((c: any) => c.lane !== argv[4]);
+      return ran(0, `Released the ${argv[4]} lane.`);
+    }
+    if (sub === 'lanes') return ran(0, JSON.stringify(w.laneClaims));
     if (sub === 'story') return ran(0, JSON.stringify(w.story));
     if (sub === 'adapters') return ran(0, JSON.stringify(w.adapters));
     if (sub === 'timeline')
@@ -258,6 +275,9 @@ function stub(on: any, w: World) {
     }
     if (sub === 'loop' && argv[3] === 'lead') {
       const session = argv[argv.indexOf('--session') + 1];
+      // SESS-2: a working session leads only when the person moves the loop to it.
+      if (w.role === 'working' && !argv.includes('--take'))
+        return ran(1, '', 'No session leads this project now, and this is a working session.');
       if (w.leadSession && w.leadSession !== session && !argv.includes('--take'))
         return ran(1, '', `Another session (${w.leadSession}) runs the lead loop in this project.`);
       w.leadSession = session;
@@ -276,6 +296,7 @@ function stub(on: any, w: World) {
           paused: w.loopPaused,
           at: null,
           lead: w.leadSession ? { session: w.leadSession, at: '2026-10-16T00:00:00.000Z' } : null,
+          ...(w.role ? { role: w.role } : {}),
         }),
       );
     if (sub === 'sent-back') {
@@ -622,7 +643,8 @@ test('PANE-4 with nothing changed it reads the project every 10 seconds while th
   // The fifth reads it all (check, status, next, requests, stops, queue, timeline, the lead's questions,
   // the reports waiting, and which session runs the loop, while this one doesn't) between two looks at git.
   await clock.advance(2000);
-  expect(w.runs - before).toBe(16);
+  // OWN-1: and this session's decisions.
+  expect(w.runs - before).toBe(17);
 });
 
 test('CARD-4 outside a code-kit project, /lanes says so, opens nothing, and there is no band', async ($, on) => {
@@ -1204,6 +1226,57 @@ test('SET-2 a number is typed; one the CLI refuses shows why and changes nothing
   await ui.unmount();
 });
 
+test("WHO-3 the Approvals section says who decides each, and a change is the person's, with a reason", async ($, on) => {
+  const w = project();
+  w.settings.push(
+    {
+      key: 'approvals.schema',
+      value: 'lead',
+      default: 'lead',
+      about: 'Who approves a lane\'s change to what\'s protected as "schema"',
+      section: 'Approvals',
+      choices: ['lead', 'person'],
+    },
+    {
+      key: 'approvals.merge',
+      value: 'lead',
+      default: 'lead',
+      about: 'Who merges a reviewed branch into the base',
+      section: 'Approvals',
+      choices: ['lead', 'person'],
+    },
+  );
+  await start($, on, w);
+  await harness($);
+  const ui = await pane($, SETTINGS);
+  expect(await ui.find({ type: 'Text', text: 'APPROVALS' })).toBeDefined();
+  expect(await ui.find({ type: 'Text', text: 'schema' })).toBeDefined();
+  expect((await ui.find({ key: 'set-approvals.schema' }))?.props.value).toBe('lead');
+  await $.ui.select({
+    plugin: 'code-kit',
+    key: 'set-approvals.schema',
+    value: 'person',
+    requestId: SETTINGS,
+  });
+  expect(await ui.find({ type: 'Text', text: /Set approvals\.schema to you\?/ })).toBeDefined();
+  expect(w.acts).toEqual([]);
+  await $.ui.input({ plugin: 'code-kit', key: 'settings-reason', text: 'I review schema changes' });
+  expect(w.acts).toEqual([
+    [
+      'settings',
+      'set',
+      'approvals.schema',
+      'person',
+      '--reason',
+      'I review schema changes',
+      '--via',
+      'pane',
+    ],
+  ]);
+  expect((await ui.find({ key: 'set-approvals.schema' }))?.props.value).toBe('person');
+  await ui.unmount();
+});
+
 test("SET-2 the reviewer's model can go back to the session's", async ($, on) => {
   const w = project();
   w.settings[3].value = 'haiku';
@@ -1708,70 +1781,30 @@ test('ASK-2 and ASK-4 an answer closes its decision at once, though the lead hea
   await ui.unmount();
 });
 
-test("PERM-1 a call Claude Code's own permission check refused waits for the person, who runs it or says not now", async ($, on) => {
+test('OWN-2 sixty calls Claude Code refused, each followed by the lead finding another way, are no decisions: the Lanes pane shows the latest as activity', async ($, on) => {
   const w = project();
-  await start($, on, w);
-  await $.classic.PermissionDenied({
-    tool_name: 'Bash',
-    tool_input: { command: 'pnpm db:generate && pnpm db:migrate' },
-    tool_use_id: 'tu-1',
-    reason: 'Permission for this action was denied by the Claude Code auto mode classifier.',
-  });
-  const band = await bandUi($);
-  expect(
-    await band.find({ type: 'Text', text: "Claude Code refused the lead's `pnpm db:generate`" }),
-  ).toBeDefined();
-  await press($, 'band-runDenied');
-  expect(w.fills).toEqual(['! pnpm db:generate && pnpm db:migrate']);
-  await press($, 'band-decide');
-  await band.unmount();
-  const ui = await pane($, PANE);
-  expect(
-    await ui.find({
-      type: 'Text',
-      text: /^Claude Code's own permission check refused it \(Permission for this action/,
-    }),
-  ).toBeDefined();
-  await press($, 'decide-deniedDone', PANE);
-  expect(w.prompts.at(-1)).toMatch(
-    /^The person ran it themselves, or allowed it: pnpm db:generate && pnpm db:migrate/,
-  );
-  await ui.unmount();
-  const after = await bandUi($);
-  expect(await after.find({ type: 'Text', text: /Claude Code refused/ })).toBeUndefined();
-  await after.unmount();
-});
-
-test('PERM-1 a refused call that later goes through no longer waits for the person', async ($, on) => {
-  const w = project();
-  await start($, on, w);
-  const refused = (id: string, command: string) =>
-    $.classic.PermissionDenied({
+  const clock = await start($, on, w);
+  for (let i = 1; i <= 60; i++) {
+    await $.classic.PermissionDenied({
       tool_name: 'Bash',
-      tool_input: { command },
-      tool_use_id: id,
+      tool_input: { command: `pnpm db:migrate --step ${i}` },
+      tool_use_id: `tu-${i}`,
       reason: 'Permission for this action was denied by the Claude Code auto mode classifier.',
     });
-  await refused('tu-1', 'pnpm db:generate');
-  await refused('tu-2', 'pnpm db:migrate');
-  // another command going through leaves both waiting
-  await $.tool.call({ tool: 'Bash', tool_use_id: 'tu-3', command: 'pnpm test' } as any);
-  let band = await bandUi($);
-  expect(await band.find({ type: 'Text', text: /^2 calls refused by Claude Code/ })).toBeDefined();
+    await $.tool.call({ tool: 'Bash', tool_use_id: `ok-${i}`, command: 'pnpm test' } as any);
+  }
+  await settle(clock);
+  const band = await bandUi($);
+  expect(await band.find({ type: 'Text', text: /refused/ })).toBeUndefined();
+  expect(await band.find({ key: 'band-decide' })).toBeUndefined();
   await band.unmount();
-  // the lead retries one and it goes through: only the other still waits
-  await $.tool.call({ tool: 'Bash', tool_use_id: 'tu-4', command: 'pnpm db:generate' } as any);
-  band = await bandUi($);
-  expect(
-    await band.find({ type: 'Text', text: "Claude Code refused the lead's `pnpm db:migrate`" }),
-  ).toBeDefined();
-  await band.unmount();
-  await $.tool.call({ tool: 'Bash', tool_use_id: 'tu-5', command: 'pnpm db:migrate' } as any);
-  band = await bandUi($);
-  expect(
-    await band.find({ type: 'Text', text: /Claude Code refused|refused by Claude Code/ }),
-  ).toBeUndefined();
-  await band.unmount();
+  expect(w.asked).toEqual([]);
+  await lanes($);
+  const ui = await pane($, PANE);
+  expect((await ui.find({ key: 'lane-lead' }))?.text).toMatch(
+    /Claude Code refused `pnpm db:migrate/,
+  );
+  await ui.unmount();
 });
 
 test('CARD-8 two approvals waiting are two decisions, each approved or dropped on its own', async ($, on) => {
@@ -2172,31 +2205,32 @@ test("LOOP-1 review and the lead's own stories are prompted with their skill", a
   expect(w.prompts[1]).toMatch(/^Build ST-6 yourself.*lead\/st-6/);
 });
 
-test('LOOP-8 a step the lead was asked for twice and that is still next goes to the person, while lanes keep committing', async ($, on) => {
+test('LOOP-8 and WHO-4 a step the lead was asked for three times and that is still next is a note, while lanes keep committing', async ($, on) => {
   const w = project();
   w.next = { step: 'merge', args: 'lead/st-1', then: [] };
   const clock = await start($, on, w);
-  for (const [i, turn] of ['t-1', 't-2', 't-3', 't-4'].entries()) {
+  for (const [i, turn] of ['t-1', 't-2', 't-3', 't-4', 't-5'].entries()) {
     // A lane commits between the lead's turns: the project moves, but not this step.
     w.refs += ` c${i} refs/heads/core/st-${i}\n`;
     await leadTurn($, turn);
     await settle(clock);
   }
-  expect(w.prompts).toHaveLength(2);
+  expect(w.prompts).toHaveLength(3);
   expect(w.prompts.every((p: string) => p.startsWith('Merge lead/st-1'))).toBe(true);
+  expect(w.asked).toEqual([]);
   const ui = await bandUi($);
   expect(
     await ui.find({
       type: 'Text',
-      text: 'Merge lead/st-1: still next after 2 prompts. Ask the lead again?',
+      text: 'Merge lead/st-1: still next after 3 prompts to the lead',
     }),
   ).toBeDefined();
   await press($, 'band-go');
   await ui.unmount();
-  expect(w.prompts).toHaveLength(3);
+  expect(w.prompts).toHaveLength(4);
   // Once the step changes, the loop goes on by itself.
   w.next = { step: 'dispatch', args: 'ST-9', then: [] };
-  await leadTurn($, 't-5');
+  await leadTurn($, 't-6');
   await settle(clock);
   expect(w.prompts.at(-1)).toBe('Dispatch ST-9: run /code-kit:dispatch ST-9.');
 });
@@ -2277,7 +2311,7 @@ test('LOOP-6 the pause is recorded for other tools, and a new session starts wit
 // It steps the clock through tens of minutes of the mod's 2-second refresh, each tick a real round of
 // stubbed CLI runs: about 1.5 to 3 seconds locally, and more on a shared CI runner.
 test(
-  'LOOP-3 a quiet lane agent is nudged at 5 minutes, restarted through the lead at 10, and flagged after 2 restarts',
+  'LOOP-3 and WHO-4 a quiet lane agent is nudged at 5 minutes, restarted through the lead at 10, and handed to the lead after 2 restarts',
   { timeoutMs: 30000 },
   async ($, on) => {
     const w = project();
@@ -2312,13 +2346,50 @@ test(
       ];
       await clock.advance(10 * 60000 + 2000);
     }
-    expect(w.prompts).toHaveLength(2);
+    // WHO-4: past its restarts, the lead is asked how the story goes on; the person sees a note.
+    expect(w.prompts).toHaveLength(3);
+    expect(w.prompts[2]).toMatch(
+      /^web-engineer \(agent a3\) on ST-4 has stalled again after 2 restarts.*split ST-4 into smaller stories/,
+    );
     const band = await bandUi($);
-    expect(await band.find({ type: 'Text', text: 'web stalled 3 times on ST-4' })).toBeDefined();
-    expect(await band.find({ key: 'band-resumeStall' })).toBeDefined();
+    expect(
+      await band.find({
+        type: 'Text',
+        text: 'web stalled 3 times on ST-4: the lead decides how it goes on',
+      }),
+    ).toBeDefined();
+    expect(await band.find({ key: 'band-resumeStall' })).toBeUndefined();
+    expect(w.asked).toEqual([]);
     await band.unmount();
   },
 );
+
+test('SCHED-1 a lane this session claimed, with no agent of it running, is freed after a minute', async ($, on) => {
+  const w = project();
+  w.next = { step: 'wait', args: '', then: [] };
+  const since = new Date(0).toISOString();
+  w.laneClaims = [
+    { lane: 'web', story: 'ST-4', session: 's1', since },
+    { lane: 'api', story: 'ST-8', session: 'someone-else', since },
+  ];
+  w.agents = [];
+  const clock = await start($, on, w);
+  await clock.advance(64000);
+  // Its own claim only: another session's lane is that session's to free.
+  expect(w.acts.filter((a: string[]) => a[0] === 'lanes')).toEqual([['lanes', 'release', 'web']]);
+});
+
+test('SCHED-1 a lane whose agent still runs keeps its claim', async ($, on) => {
+  const w = project();
+  w.next = { step: 'wait', args: '', then: [] };
+  w.laneClaims = [{ lane: 'web', story: 'ST-4', session: 's1', since: new Date(0).toISOString() }];
+  w.agents = [
+    { id: 'a1', type: 'web-engineer', description: 'ST-4 booking form', status: 'running' },
+  ];
+  const clock = await start($, on, w);
+  await clock.advance(64000);
+  expect(w.acts.filter((a: string[]) => a[0] === 'lanes')).toEqual([]);
+});
 
 test('LEAN-5 a lane agent past its context limit is told to wrap up, and its story goes on with a fresh agent', async ($, on) => {
   const w = project();
@@ -2488,11 +2559,61 @@ test('LOOP-10 a second session opened in the project never prompts its lead; Lea
   await clock.advance(4000);
   expect(w.prompts).toEqual([]);
   const ui = await bandUi($);
-  expect(await ui.find({ type: 'Text', text: 'the loop runs in another session' })).toBeDefined();
+  expect(await ui.find({ type: 'Text', text: 'the lead is in another session' })).toBeDefined();
   await press($, 'band-leadHere');
   await ui.unmount();
   expect(w.leadSession).toBe('s1');
   expect(w.prompts).toEqual(['Dispatch ST-9: run /code-kit:dispatch ST-9.']);
+});
+
+test('SESS-2 and SESS-3 a working session never prompts its lead, asks nothing, and its band holds only its own, with its task', async ($, on) => {
+  const w = project();
+  w.leadSession = 's-lead';
+  w.role = 'working';
+  w.task = { title: 'Integration readiness', paths: ['src/integrations/**'] };
+  w.questions = [
+    { id: 'Q-1', question: 'Which payment provider?', state: 'open', options: [], story: null },
+  ];
+  w.queue = [{ branch: 'web/st-4', state: 'waiting' }];
+  const clock = await start($, on, w);
+  await leadTurn($);
+  await settle(clock);
+  await clock.advance(4000);
+  expect(w.prompts).toEqual([]);
+  expect(w.asked).toEqual([]);
+  const ui = await bandUi($);
+  expect(await ui.find({ type: 'Text', text: 'the lead is in another session' })).toBeDefined();
+  expect(
+    await ui.find({
+      type: 'Text',
+      text: 'your task: Integration readiness · leasing src/integrations/**',
+    }),
+  ).toBeDefined();
+  expect(await ui.find({ type: 'Text', text: /web\/st-4 is next to merge/ })).toBeUndefined();
+  await ui.unmount();
+});
+
+test('SESS-2 with no session leading, a working session says so and offers Lead from here', async ($, on) => {
+  const w = project();
+  w.role = 'working';
+  const clock = await start($, on, w);
+  await leadTurn($);
+  await settle(clock);
+  expect(w.prompts).toEqual([]);
+  const ui = await bandUi($);
+  expect(
+    await ui.find({ type: 'Text', text: 'no session leads the project: the loop waits for one' }),
+  ).toBeDefined();
+  expect(await ui.find({ key: 'band-leadHere' })).toBeDefined();
+  await ui.unmount();
+});
+
+test('SESS-1 the mod says the session is still there every minute', async ($, on) => {
+  const w = project();
+  w.next = { step: 'wait', args: '', then: [] };
+  const clock = await start($, on, w);
+  await clock.advance(64000);
+  expect(w.acts).toContainEqual(['sessions', 'beat', '--session', 's1']);
 });
 
 test("LOOP-10 a new session leaves a live lead session's pause alone", async ($, on) => {
@@ -2783,7 +2904,7 @@ test('LOOP-11 a turn the person stopped holds the loop, with no dialog, until th
   expect(w.prompts.at(-1)).toBe('Review ST-4: run /code-kit:review ST-4.');
 });
 
-test("LOOP-11 a step the lead didn't take waits with its reason; Ask again prompts it, and a new step goes on", async ($, on) => {
+test("LOOP-11 and WHO-4 a step the lead didn't take is a note with its reason; Ask again prompts it, and a new step goes on", async ($, on) => {
   const w = project();
   w.next = { step: 'merge', args: 'lead/st-1', then: [] };
   w.sideReply = unread;
@@ -2804,8 +2925,8 @@ test("LOOP-11 a step the lead didn't take waits with its reason; Ask again promp
   await leadTurn($, 't-3');
   await settle(clock);
   expect(w.prompts).toHaveLength(1);
-  expect(w.asked.at(-1)?.options).toEqual(['Ask again', 'Not now']);
-  expect(w.asked.at(-1)?.question).toMatch(/the lead didn't take it.*Ask the lead again\?$/);
+  // WHO-4: it's a note, not a decision: nothing is asked in the dialog.
+  expect(w.asked.some((a: any) => /didn't take it/.test(a.question))).toBe(false);
   const ui = await bandUi($);
   expect(
     await ui.find({
@@ -2898,6 +3019,56 @@ test("DECIDE-4 the lead's question is asked in the dialog: an option answers it,
     await ui.find({ type: 'Text', text: /^The lead asks: Which weather provider/ }),
   ).toBeDefined();
   await ui.unmount();
+});
+
+test("OWN-1 a question another session's lead asked isn't shown, asked or answered here: only a count", async ($, on) => {
+  const w = project();
+  const theirs = { ...question(), id: 'Q-2', session: 's-other' };
+  w.questions = [theirs];
+  w.decisions = { mine: [], elsewhere: [{ session: 's-other', member: 'kim/s-other', count: 1 }] };
+  w.next = { step: 'wait', args: '', then: [] };
+  const clock = await start($, on, w);
+  await clock.advance(4000);
+  expect(w.asked).toEqual([]);
+  expect(w.notified).toEqual([]);
+  const ui = await bandUi($);
+  expect(await ui.find({ type: 'Text', text: /Which weather provider/ })).toBeUndefined();
+  expect(
+    await ui.find({ type: 'Text', text: '1 decision in session kim/s-other, answered there' }),
+  ).toBeDefined();
+  await ui.unmount();
+});
+
+test("OWN-1 and OWN-5 this session's own question is asked in its dialog, and the answer goes to its own lead", async ($, on) => {
+  const w = project();
+  const mine = { ...question(), session: 's1' };
+  w.questions = [mine];
+  w.decisions = {
+    mine: [{ id: mine.id, kind: 'answer', session: 's1', source: mine }],
+    elsewhere: [],
+  };
+  w.next = { step: 'wait', args: '', then: [] };
+  const clock = await start($, on, w);
+  await clock.advance(4000);
+  expect(w.asked).toHaveLength(1);
+  expect(w.asked[0].question).toMatch(/^Which weather provider/);
+});
+
+test('OWN-5 a working session asks its own question in its dialog, though another session leads', async ($, on) => {
+  const w = project();
+  w.role = 'working';
+  w.leadSession = 's-lead';
+  const mine = { ...question(), session: 's1' };
+  w.questions = [mine];
+  w.decisions = {
+    mine: [{ id: mine.id, kind: 'answer', session: 's1', source: mine }],
+    elsewhere: [],
+  };
+  w.next = { step: 'wait', args: '', then: [] };
+  const clock = await start($, on, w);
+  await clock.advance(4000);
+  expect(w.prompts).toEqual([]);
+  expect(w.asked).toHaveLength(1);
 });
 
 test("DECIDE-4 an option chosen in the dialog, or the person's own words typed there, answer the lead's question", async ($, on) => {

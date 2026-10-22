@@ -12,6 +12,8 @@ import { readQueue, waiting } from './queue.mjs';
 import { decidedBy, laneOf, openRequests } from './rules.mjs';
 import { instructionsState } from './instructions.mjs';
 import { SECURITY_AGENT_FILE } from './security.mjs';
+import { laneClaims } from './laneclaims.mjs';
+import { pickPerLane } from './schedule.mjs';
 
 export const DRAFT_FILE = '.claude/code-kit.draft.json';
 export const BRIEF_STATES = ['framed', 'explored', 'scoped', 'specified', 'planned', 'ready'];
@@ -280,7 +282,9 @@ export function nextStep(root, base) {
   }
   // HELM-4: a lane waiting on something the lead decides goes first: the lane can't go on without it.
   const forLeadToDecide = openRequests(root).flatMap((r, i) =>
-    r.lane && decidedBy(r.names, config) === 'lead' ? [{ ...r, n: i + 1 }] : [],
+    r.lane && decidedBy(r.names, config, { kind: 'lane', lane: r.lane }) === 'lead'
+      ? [{ ...r, n: i + 1 }]
+      : [],
   );
   if (forLeadToDecide.length)
     return result(
@@ -310,6 +314,29 @@ export function nextStep(root, base) {
       'merge',
       `${queued[0]} passed review and is next in the merge queue${queued.length > 1 ? ` (then ${queued.slice(1).join(', ')})` : ''}.`,
       { args: queued[0] },
+    );
+  // SCHED-1, SCHED-2: one story for each free lane, across every session; the open slice's first.
+  const busy = new Set([
+    ...laneClaims(root)
+      .filter((c) => !c.stale)
+      .map((c) => c.lane),
+    ...status.stories.filter((s) => s.state === 'in progress' && s.lane).map((s) => s.lane),
+  ]);
+  const sched = pickPerLane(status.stories, {
+    fixes,
+    ready,
+    busy,
+    open: config.harness.slices.open,
+  });
+  for (const list of [fixes, ready])
+    list.splice(0, list.length, ...list.filter((id) => sched.pick.includes(id)));
+  for (const a of sched.ahead)
+    attention.push(
+      `${a.id} is ahead of its slice (${a.slice}): its lane has nothing ready in the open slice.`,
+    );
+  if (sched.waiting.length)
+    attention.push(
+      `${sched.waiting.join(', ')} ${sched.waiting.length === 1 ? 'waits' : 'wait'} for ${sched.waiting.length === 1 ? 'its lane' : 'their lanes'}: a lane runs one story at a time.`,
     );
   const then = [];
   // A sent-back story goes back to its lane with the review's findings, before new work starts.
@@ -357,6 +384,12 @@ export function nextStep(root, base) {
     return result(
       'update',
       `${missingWords} Re-run /code-kit:init before the next story: it shows the person the difference before anything changes.`,
+    );
+  // SCHED-1: ready stories whose lanes are all running one.
+  if (!building.length && sched.waiting.length)
+    return result(
+      'wait',
+      `${sched.waiting.join(', ')} ${sched.waiting.length === 1 ? 'waits' : 'wait'} for ${sched.waiting.length === 1 ? 'its lane' : 'their lanes'}, running another story; a lane runs one story at a time.`,
     );
   if (building.length)
     return result(

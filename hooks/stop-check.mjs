@@ -11,9 +11,21 @@ import { brokenLayerRule, layerProblems } from './lib/layers.mjs';
 import { noteFor } from './lib/standards.mjs';
 import { actorFor, actorRoot, currentBranch, reportPath } from './lib/rules.mjs';
 import { storyOfBranch } from './lib/teamfacts.mjs';
+import { releaseLane } from './lib/laneclaims.mjs';
 import { auditProblems, changedFiles } from './lane-audit.mjs';
 
 const { input, project, config, error } = start();
+
+// SCHED-1: a lane agent whose finish goes through frees its lane for the next story. A refused finish
+// (exit 2) keeps it: the agent carries on.
+const finishingLane =
+  input.agent_id && config
+    ? Object.entries(config.lanes).find(([, l]) => l.agent === input.agent_type)?.[0]
+    : null;
+if (finishingLane)
+  process.on('exit', (code) => {
+    if (code === 0) releaseLane(project, finishingLane, { session: input.session_id ?? null });
+  });
 
 // Stop hooks share one `stop_hook_active` flag, so another plugin's block would make this check skip
 // itself. Instead this hook remembers its own last block per session and agent. The same problem

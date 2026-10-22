@@ -8,7 +8,6 @@ import { approvalLabel, askWords, commandItself } from './view.mjs';
 export const DECISION_KINDS = new Set([
   'held',
   'approvals',
-  'stalled',
   'proposal',
   'queue',
   'review',
@@ -20,7 +19,6 @@ export const DECISION_KINDS = new Set([
   'teamDrift',
   'question',
   'brief',
-  'denied',
   'report',
   'waiting',
 ]);
@@ -51,10 +49,6 @@ const EFFECT = {
   answer: 'Type your answer; the lead is told it and carries on.',
   answerBrief: "Type your answer; the lead records it in the brief's decisions and builds on it.",
   laterBrief: 'It waits; it comes back next session.',
-  runDenied:
-    'Puts it in your prompt after !, so you run it yourself; press Enter to run it, then Done it.',
-  deniedDone: 'The lead is told you ran it, or allowed it, and carries on.',
-  deniedNo: "The lead is told you won't run it now, and carries on with other work.",
   answerLead: 'The lead is told your answer and carries on.',
   answerLeadText: 'Type your answer; the lead is told it and carries on.',
   askAgain: 'The lead is asked to take this step again now.',
@@ -92,17 +86,6 @@ function eachDecision(line) {
       ...line,
       text: `From your brief: ${b.question}`,
       brief: b,
-    }));
-  if (line.kind === 'denied')
-    return (line.denials ?? [line.denial]).map((d) => ({
-      ...line,
-      text: `Claude Code refused ${d.who}'s ${d.what}`,
-      denial: d,
-      actions: [
-        ...(d.command ? [{ id: 'runDenied', label: 'Put it in the prompt' }] : []),
-        { id: 'deniedDone', label: 'Done it' },
-        { id: 'deniedNo', label: 'Not now' },
-      ],
     }));
   if (line.kind === 'report')
     return (line.reports ?? [line.report]).map((r) => ({ ...line, text: r.title, report: r }));
@@ -164,7 +147,6 @@ const TAG = {
   notice: 'notice',
   question: 'question',
   brief: 'your brief',
-  denied: 'refused',
   report: 'bug report',
   waiting: 'the lead',
 };
@@ -211,11 +193,6 @@ function headlineOf(line, story) {
       headline: line.brief.question,
       sub: `open in ${line.brief.path}${line.brief.blocks ? ` · holds up ${line.brief.blocks}` : ''}`,
     };
-  if (line.kind === 'denied')
-    return {
-      headline: `Claude Code refused ${line.denial.who}'s call`,
-      sub: clip(line.denial.command ?? line.denial.what, 80),
-    };
   if (line.kind === 'report')
     return { headline: line.report.title, sub: "drafted by an agent, for code-kit's GitHub" };
   if (line.kind === 'waiting' && line.waiting.question)
@@ -261,8 +238,6 @@ function whyOf(line, check) {
     );
   if (line.kind === 'brief')
     return `It's an open question in ${line.brief.path}, left for you: what gets built depends on your answer. Not sure what it means? Ask about it when you answer.`;
-  if (line.kind === 'denied')
-    return `Claude Code's own permission check refused it${line.denial.reason ? ` (${line.denial.reason})` : ''}, which code-kit can't approve past: only you can run it or allow it.`;
   if (line.kind === 'waiting' && line.waiting.kind === 'person')
     return "The lead's last reply waits on you, so the loop doesn't prompt it again until you answer, here or in the chat.";
   if (line.kind === 'waiting' && line.waiting.kind === 'stopped')
@@ -391,7 +366,7 @@ export function contextOf(card) {
 }
 
 /** DECIDE-4: the kinds of decision settled with a choice, asked in Claude Code's own question dialog. */
-export const NATIVE_KINDS = new Set(['proposal', 'stalled', 'teamStale', 'question', 'waiting']);
+export const NATIVE_KINDS = new Set(['proposal', 'teamStale', 'question', 'waiting']);
 
 /** One sentence ended as a question asks. */
 const asked = (text, question) => `${String(text).replace(/[.\s]+$/, '')}. ${question}`;
@@ -461,8 +436,6 @@ const NOTIFY_TITLE = {
   question: 'the lead asks you',
   brief: 'a question in your brief',
   waiting: 'the lead waits on you',
-  stalled: 'a lane stalled',
-  denied: 'Claude Code refused a call',
   proposal: 'a step to approve',
   queue: 'a merge for you',
 };

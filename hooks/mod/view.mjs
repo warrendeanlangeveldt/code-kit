@@ -256,7 +256,7 @@ export function lanesPane(
             : l.branch
               ? ` · ${l.branch}`
               : ''
-        }`
+        }${l.story.slice ? ` · slice ${l.story.slice}` : ''}`
       : l.name === LEAD
         ? 'the main session'
         : (l.agent ?? '');
@@ -728,13 +728,25 @@ export function bandLines({
   team = null,
   questions = [],
   brief = [],
-  denied = [],
   reports = [],
+  working = false,
+  task = null,
+  elsewhere = [],
 }) {
   const lines = [];
-  // MISSION-1: the goal, now, next and the agents at work, above what needs the person.
-  const mission = missionLines({ state, loop, leadBusy, live, nextStep, combined });
+  // MISSION-1: the goal, now, next and the agents at work, above what needs the person. SESS-3: a working
+  // session's band holds only its own: no mission, queue, reviews or team.
+  const mission = working ? [] : missionLines({ state, loop, leadBusy, live, nextStep, combined });
   lines.push(...mission);
+  // SESS-4: a working session's task, or that it records one before changing code.
+  if (working)
+    lines.push({
+      kind: 'task',
+      text: task
+        ? `your task: ${task.title}${task.paths?.length ? ` · leasing ${task.paths.join(', ')}` : ''}`
+        : 'a working session: record your task before changing code (code-kit task "…" --touches …)',
+      actions: [],
+    });
   if (notice)
     lines.push({ kind: 'notice', text: notice, actions: [{ id: 'dismiss', label: 'Dismiss' }] });
   if (!state || state.kind !== 'ok') return lines;
@@ -758,31 +770,15 @@ export function bandLines({
       ],
     });
   }
-  // PERM-1: Claude Code's own permission check refused a call only the person can let through.
-  if (denied.length) {
-    const [d] = denied;
-    lines.push({
-      kind: 'denied',
-      text: `${denied.length > 1 ? `${denied.length} calls refused by Claude Code: ` : 'Claude Code refused '}${d.who}'s ${d.what}`,
-      denial: d,
-      denials: denied,
-      actions: [
-        ...(d.command ? [{ id: 'runDenied', label: 'Put it in the prompt' }] : []),
-        { id: 'deniedDone', label: 'Done it' },
-        { id: 'deniedNo', label: 'Not now' },
-      ],
-    });
-  }
-  // LOOP-3: a lane stalled past its restarts waits for the person.
+  // OWN-2: a call Claude Code's own permission check refused is the Lanes pane's activity, not a
+  // decision: the agent finds another way, or the lead asks the person (`code-kit ask`).
+  // LOOP-3, WHO-4: a lane stalled past its restarts is the lead's to sort out; the person sees a note.
   for (const f of loop?.flagged ?? [])
     lines.push({
       kind: 'stalled',
-      text: `${f.lane} stalled ${f.count} times on ${f.story}`,
+      text: `${f.lane} stalled ${f.count} times on ${f.story}: the lead decides how it goes on`,
       stall: f,
-      actions: [
-        { id: 'lanes', label: 'Lanes' },
-        { id: 'resumeStall', label: 'Resume' },
-      ],
+      actions: [{ id: 'lanes', label: 'Lanes' }],
     });
   // LOOP-5: under autonomy propose, each step waits for Go.
   if (loop?.proposal?.first)
@@ -797,15 +793,20 @@ export function bandLines({
         { id: 'loopOff', label: 'Off' },
       ],
     });
+  else if (loop?.proposal?.repeated)
+    // LOOP-8, WHO-4: a step the lead was asked for three times and didn't take is a note, not a decision.
+    lines.push({
+      kind: 'stuck',
+      text: `${loop.proposal.label}: still next after ${loop.proposal.repeated} prompts to the lead`,
+      proposal: loop.proposal,
+      actions: [{ id: 'go', label: 'Ask again' }],
+    });
   else if (loop?.proposal)
     lines.push({
       kind: 'proposal',
-      // LOOP-8: a step the lead was asked for and didn't take waits for the person to ask again.
-      text: loop.proposal.repeated
-        ? `${loop.proposal.label}: still next after ${loop.proposal.repeated} prompts. Ask the lead again?`
-        : `${loop.proposal.label}?`,
+      text: `${loop.proposal.label}?`,
       proposal: loop.proposal,
-      actions: [{ id: 'go', label: loop.proposal.repeated ? 'Ask again' : 'Go' }],
+      actions: [{ id: 'go', label: 'Go' }],
     });
   // LOOP-11, LOOP-12: what the loop read in the lead's reply holds it until the person says.
   const waitingLine = waitingOf(loop?.waiting);
@@ -833,7 +834,7 @@ export function bandLines({
       actions: [{ id: 'openDecision', label: 'Answer…' }],
     });
   // ASK-4: the brief's open questions, the person's to answer.
-  if (brief.length)
+  if (brief.length && !working)
     lines.push({
       kind: 'brief',
       text: `${plural(brief.length, 'open question', 'open questions')} in your brief: ${brief[0].question}`,
@@ -848,7 +849,7 @@ export function bandLines({
   const inReview = loopOff
     ? state.lanes.filter((l) => l.state === 'in review').map((l) => l.story)
     : [];
-  if (inReview.length) {
+  if (inReview.length && !working) {
     const [story] = inReview;
     const ids = inReview.map((s) => s.id).join(', ');
     lines.push(
@@ -891,7 +892,7 @@ export function bandLines({
   const autonomous = (check?.harness?.autonomy ?? 'autonomous') === 'autonomous';
   // SETUP-2: with no rules on the base yet, the lead puts them there first and then merges.
   const leadMerges = autonomous && (check?.delegatesMerge || check?.firstMerge);
-  if (next && !leadMerges)
+  if (next && !leadMerges && !working)
     lines.push({
       kind: 'queue',
       text: `${next.branch} is next to merge`,
@@ -899,9 +900,9 @@ export function bandLines({
       actions: [{ id: 'mergeQueue', label: 'Merge' }],
     });
   // TEAM-7, TEAM-9: what of the team needs this person.
-  lines.push(...teamLines(team, check?.lanes ?? {}));
+  if (!working) lines.push(...teamLines(team, check?.lanes ?? {}));
   // REPORT-3: a bug report for code-kit an agent drafted, for the person to read and send, or not.
-  if (reports.length)
+  if (reports.length && !working)
     lines.push({
       kind: 'report',
       text: `${reports.length > 1 ? `${reports.length} bug reports for code-kit to send: ` : 'A bug report for code-kit to send: '}${reports[0].title}`,
@@ -922,11 +923,14 @@ export function bandLines({
   // With the mission rows drawn, the loop's state and its Pause or Resume are on the `now` row.
   else if (mission.length) {
     // nothing more
-  } else if (loop?.state === 'elsewhere')
-    // LOOP-10: another session in this project runs the loop; this one never prompts its lead.
+  } else if (loop?.state === 'elsewhere' || loop?.state === 'unled')
+    // SESS-2: another session leads the project, or none does; this one never prompts its lead.
     lines.push({
       kind: 'loop',
-      text: 'the loop runs in another session',
+      text:
+        loop.state === 'elsewhere'
+          ? 'the lead is in another session'
+          : 'no session leads the project: the loop waits for one',
       actions: [{ id: 'leadHere', label: 'Lead from here' }],
     });
   else if (loop?.state === 'paused')
@@ -936,6 +940,13 @@ export function bandLines({
       kind: 'loop',
       text: `loop on${loop.last ? ` · last: ${loop.last}` : ''}`,
       actions: [{ id: 'pause', label: 'Pause' }],
+    });
+  // OWN-1: another session's decisions are answered there: here, only how many.
+  for (const e of elsewhere)
+    lines.push({
+      kind: 'elsewhere',
+      text: `${plural(e.count, 'decision', 'decisions')} in session ${e.member}, answered there`,
+      actions: [],
     });
   // BAND-4: a digit for every action, in the order they're drawn.
   let digit = 0;
@@ -969,9 +980,10 @@ export function waitingOf(waiting) {
       waiting,
       actions: [{ id: 'carryOn', label: 'Carry on' }],
     };
+  // WHO-4: a step the lead said it couldn't take is a note: the loop asks again once the project moves.
   if (waiting.kind === 'blocked')
     return {
-      kind: 'waiting',
+      kind: 'stuck',
       text: `${waiting.label}: the lead didn't take it${waiting.reason ? `: ${waiting.reason}` : ''}`,
       waiting,
       actions: [{ id: 'askAgain', label: 'Ask again' }],
@@ -1006,8 +1018,8 @@ export function band(lines, { Box, Text, Button }, onAction) {
     facts: 'yellow',
     question: 'cyan',
     brief: 'cyan',
-    denied: 'red',
     report: 'magenta',
+    stuck: 'yellow',
   };
   const LIVE = { quiet: 'yellow', stalled: 'red' };
   const LABEL = 8;
@@ -1516,7 +1528,17 @@ const CHOICES = {
   'compact.milestone': ['ask', 'auto', 'off'],
 };
 const shown = (v) =>
-  v === null || v === '' ? "the session's" : v === true ? 'on' : v === false ? 'off' : String(v);
+  v === null || v === ''
+    ? "the session's"
+    : v === true
+      ? 'on'
+      : v === false
+        ? 'off'
+        : v === 'lead'
+          ? 'the lead'
+          : v === 'person'
+            ? 'you'
+            : String(v);
 
 /**
  * The Settings view: each setting from `code-kit settings --json` with a control, and, once one is
@@ -1524,7 +1546,8 @@ const shown = (v) =>
  */
 export function settingsView(rows, pending, { Box, Text, Select, Input, Button }, handlers) {
   const control = (r) => {
-    const listed = CHOICES[r.key] ?? (typeof r.default === 'boolean' ? [true, false] : null);
+    const listed =
+      r.choices ?? CHOICES[r.key] ?? (typeof r.default === 'boolean' ? [true, false] : null);
     // A value the list doesn't name (a model given by its id) is still shown, as the one chosen.
     const choices =
       listed && !listed.map(String).includes(String(r.value ?? '')) ? [...listed, r.value] : listed;
@@ -1544,7 +1567,7 @@ export function settingsView(rows, pending, { Box, Text, Select, Input, Button }
       onSubmit: (v) => handlers.onChoose(r.key, v.trim()),
     });
   };
-  const rowsView = rows.map((r) =>
+  const rowView = (r) =>
     Box({
       key: `setting-${r.key}`,
       flexDirection: 'column',
@@ -1553,7 +1576,15 @@ export function settingsView(rows, pending, { Box, Text, Select, Input, Button }
           flexDirection: 'row',
           columnGap: 2,
           children: [
-            Box({ width: 28, children: [Text({ bold: true, children: [r.key] })] }),
+            Box({
+              width: 34,
+              children: [
+                Text({
+                  bold: true,
+                  children: [r.section === 'Approvals' ? r.key.replace(/^approvals\./, '') : r.key],
+                }),
+              ],
+            }),
             control(r),
             ...(r.value !== r.default
               ? [Text({ dimColor: true, children: [`default ${shown(r.default)}`] })]
@@ -1570,8 +1601,26 @@ export function settingsView(rows, pending, { Box, Text, Select, Input, Button }
         }),
         Text({ dimColor: true, children: [`  ${r.about}`] }),
       ],
-    }),
-  );
+    });
+  // WHO-3: the harness, then who decides each approval.
+  const section = (name) => rows.filter((r) => (r.section ?? 'Harness') === name);
+  const approvals = section('Approvals');
+  const rowsView = [
+    ...section('Harness').map(rowView),
+    ...(approvals.length
+      ? [
+          Text({ key: 'approvals-heading', bold: true, color: 'cyan', children: ['APPROVALS'] }),
+          Text({
+            key: 'approvals-about',
+            dimColor: true,
+            children: [
+              "Who decides what a lane can't do on its own. The lead decides what's technical; you keep product, design, CI and the kit.",
+            ],
+          }),
+          ...approvals.map(rowView),
+        ]
+      : []),
+  ];
   const confirm = pending
     ? [
         Box({
@@ -1627,7 +1676,9 @@ export function settingsView(rows, pending, { Box, Text, Select, Input, Button }
       Box({ flexDirection: 'column', children: rowsView }),
       Text({
         dimColor: true,
-        children: ['Lanes, paths, layers and protected paths change through /code-kit:init.'],
+        children: [
+          'Lanes, paths, layers and which paths are protected change through /code-kit:init.',
+        ],
       }),
     ],
   });

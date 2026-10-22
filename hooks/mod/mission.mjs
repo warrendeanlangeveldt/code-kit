@@ -50,7 +50,8 @@ export function missionLines({
 }) {
   if (state?.kind !== 'ok') return [];
   const working = state.lanes.filter((l) => l.name !== 'lead' && l.active && live[l.name]);
-  const loopOn = Boolean(loop?.started) && !['off', 'stopped', 'elsewhere'].includes(loop?.state);
+  const away = ['elsewhere', 'unled'].includes(loop?.state);
+  const loopOn = Boolean(loop?.started) && !['off', 'stopped'].includes(loop?.state) && !away;
   if (!leadBusy && !working.length && !loopOn) return [];
   const rows = [];
   const goal = goalOf(state.stories);
@@ -65,28 +66,29 @@ export function missionLines({
     : 'lead idle';
   const loopWord =
     loop?.state === 'elsewhere'
-      ? 'loop in another session'
-      : loop?.state === 'paused'
-        ? 'loop paused'
-        : loop?.state === 'off'
-          ? 'loop off'
-          : loop?.state === 'done'
-            ? 'milestone done'
-            : loopOn
-              ? `loop ${loop.autonomy === 'propose' ? 'proposing' : 'on'}${loop.last ? ` · last: ${loop.last}` : ''}`
-              : null;
+      ? 'the lead is in another session'
+      : loop?.state === 'unled'
+        ? 'no session leads the project'
+        : loop?.state === 'paused'
+          ? 'loop paused'
+          : loop?.state === 'off'
+            ? 'loop off'
+            : loop?.state === 'done'
+              ? 'milestone done'
+              : loopOn
+                ? `loop ${loop.autonomy === 'propose' ? 'proposing' : 'on'}${loop.last ? ` · last: ${loop.last}` : ''}`
+                : null;
   rows.push({
     kind: 'now',
     label: 'now',
     text: [lead, loopWord].filter(Boolean).join(' · '),
-    actions:
-      loop?.state === 'elsewhere'
-        ? [{ id: 'leadHere', label: 'Lead from here' }]
-        : loop?.state === 'paused'
-          ? [{ id: 'resume', label: 'Resume' }]
-          : loopOn && loop?.state === 'running'
-            ? [{ id: 'pause', label: 'Pause' }]
-            : [],
+    actions: away
+      ? [{ id: 'leadHere', label: 'Lead from here' }]
+      : loop?.state === 'paused'
+        ? [{ id: 'resume', label: 'Resume' }]
+        : loopOn && loop?.state === 'running'
+          ? [{ id: 'pause', label: 'Pause' }]
+          : [],
   });
   const next = nextText(nextStep);
   if (next && loop?.state !== 'done') rows.push({ kind: 'next', label: 'next', text: next });

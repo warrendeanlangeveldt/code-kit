@@ -71,6 +71,13 @@ export const SETTINGS = {
     about:
       "The context a lane agent may reach before it's asked to wrap up and hand its story to a fresh agent; 0 for no limit",
   },
+  'slices.open': {
+    default: 1,
+    problem: (v) =>
+      Number.isInteger(v) && v >= 1 && v <= 10 ? null : 'must be a whole number from 1 to 10',
+    about:
+      "How many slices are in focus at once: a free lane builds an open slice's stories first, and may start the next slice only while fewer are open",
+  },
   'background.pauseAtPercent': {
     default: 80,
     problem: (v) =>

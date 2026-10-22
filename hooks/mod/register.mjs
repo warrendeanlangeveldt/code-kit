@@ -70,6 +70,7 @@ import {
   parkWatch,
   readOutcome,
   restartPrompt,
+  stalledPrompt,
   stallDue,
   stepKey,
   stepLabel,
@@ -143,6 +144,13 @@ const loop = {
 // LOOP-10: whether this session runs the loop, the session that does when another does, and when this
 // one last renewed its lease.
 const lease = { mine: false, other: null, renewed: -Infinity };
+// SESS-2: this session's role in the project, `lead` or `working`, or null where code-kit has no record.
+let role = null;
+/** SESS-3: a working session, or one another session leads, stands by: no loop, dialogs or notifications. */
+const standingBy = () => !lease.mine && (Boolean(lease.other) || role === 'working');
+/** SESS-1: how often the mod says the session is still there. */
+const BEAT_MS = 60000;
+let beaten = -Infinity;
 const LEASE_RENEW_MS = 30000;
 // LOOP-11: the lead's last reply, read once before the loop next prompts it: { turnId, text, aborted, sent, read }
 let lastReply = null;
@@ -152,8 +160,13 @@ const offered = new Set();
 let offering = false;
 // NOTIFY-1: the decisions waiting at the last look, by key; null until the first look.
 let notified = null;
-/** LOOP-8: the times in a row the lead is prompted with one step before the person is asked. */
-const ASK_LIMIT = 2;
+/** LOOP-8, WHO-4: the times in a row the lead is prompted with one step before it shows as a note. */
+const ASK_LIMIT = 3;
+/** OWN-2: the calls Claude Code refused that the Lanes pane remembers. */
+const DENIED_KEPT = 20;
+/** SCHED-1: how often, and how long after its claim, a lane with no agent running is freed. */
+const LANES_FREE_MS = 60000;
+let lanesFreed = -Infinity;
 let leadTurn = null; // the lead's running turn, if any
 const activity = new Map(); // agent id → { at, inFlight, nudged, stopped, lane, story }
 const restarts = new Map(); // story → times the loop restarted it
@@ -259,7 +272,8 @@ export function register(on) {
     const firstLine = (ran) => (ran.stderr || ran.stdout).trim().split('\n')[0];
     // A session starts with the loop running: a pause recorded by an earlier one no longer holds. A pause
     // by a session that still runs the loop (LOOP-10) is that session's, and stays.
-    const recorded = await json('loop').catch(() => null);
+    const recorded = await json('loop', '--session', session).catch(() => null);
+    role = recorded?.role ?? null;
     if (recorded?.paused && (!recorded.lead || recorded.lead.session === session))
       await $.process.run(['node', cli, 'loop', 'resume'], { cwd }).catch(() => {});
     lease.other = recorded?.lead && recorded.lead.session !== session ? recorded.lead : null;
@@ -288,9 +302,18 @@ export function register(on) {
         const status = valid ? await json('status') : null;
         const nextStep = valid ? await json('next') : null;
         const all = valid ? await json('requests') : null;
+        // OWN-1: this session's decisions, and how many wait in each other session; null from a code-kit
+        // that can't say, where every open decision shows.
+        const owned = valid
+          ? await json('decisions', '--session', session).catch(() => null)
+          : null;
+        const mine = (kind) =>
+          (owned?.mine ?? []).filter((d) => d.kind === kind).map((d) => d.source);
+        const ownRequest = (r) =>
+          !owned || mine('approve').some((o) => o.at === r.at && o.what === r.what);
         // HELM-6: the person sees only their own decisions; the lead decides the rest.
         const requests = all
-          ? { ...all, open: (all.open ?? []).filter((r) => r.by !== 'lead') }
+          ? { ...all, open: (all.open ?? []).filter((r) => r.by !== 'lead' && ownRequest(r)) }
           : null;
         const stops = valid ? ((await json('stops', '--session', session)) ?? []) : [];
         const queue = valid ? ((await json('queue')) ?? []) : [];
@@ -304,9 +327,11 @@ export function register(on) {
         // TEAM-7: the team's claims, intents and pull requests, where the project is a team's.
         const team = valid && check.team ? await json('team') : null;
         // ASK-2: the lead's questions waiting for the person; REPORT-3: bug reports waiting to be sent.
-        const questions = valid
-          ? ((await json('ask')) ?? []).filter((q) => q.state === 'open')
-          : [];
+        const questions = !valid
+          ? []
+          : owned
+            ? mine('answer')
+            : ((await json('ask')) ?? []).filter((q) => q.state === 'open');
         const reports = valid
           ? ((await json('report')) ?? []).filter((r) => r.state === 'draft')
           : [];
@@ -319,9 +344,16 @@ export function register(on) {
         }
         // LOOP-10: while another session runs the loop, whether it still does (its lease lapses as it ends).
         if (!lease.mine) {
-          const lead = (await json('loop').catch(() => null))?.lead ?? null;
+          const recorded = await json('loop', '--session', session).catch(() => null);
+          const lead = recorded?.lead ?? null;
           lease.other = lead && lead.session !== session ? lead : null;
+          role = recorded?.role ?? role;
         }
+        // SESS-4: a working session's own task, for its band.
+        const task =
+          valid && role === 'working'
+            ? await json('task', '--session', session).catch(() => null)
+            : null;
         // The agents at work; none where the session has none bound (claude -p before it mounts).
         const atWork = agentsAtWork(await $.agent.list().catch(() => []));
         model = {
@@ -339,6 +371,11 @@ export function register(on) {
           // ASK-4: the brief's open questions, less those put off this session.
           brief: (nextStep?.brief ?? []).filter((b) => !briefLater.has(b.question)),
           base: status?.base ?? null,
+          // SESS-3, SESS-4: a working session's band holds its own, and its task.
+          working: role === 'working',
+          task,
+          // OWN-1: what waits in the other sessions, as counts.
+          elsewhere: owned?.elsewhere ?? [],
         };
         if (model.state.kind === 'ok') await act.registerReviewer();
         await act.readMaps();
@@ -705,28 +742,6 @@ export function register(on) {
           .catch(() => {});
         await act.reload();
         return true;
-      },
-      // PERM-1: a call Claude Code refused, which only the person can run or allow.
-      runDenied: async (line) => {
-        await $.prompt.fill({ text: `! ${line.denial.command}`, mode: 'replace' }).catch(() => {});
-      },
-      deniedDone: async (line) => {
-        denied.delete(line.denial.id);
-        $.ui.invalidate('ui.render');
-        $.prompt
-          .submit({
-            text: `The person ran it themselves, or allowed it: ${line.denial.command ?? line.denial.what} (Claude Code had refused it for ${line.denial.who}). Check it worked, and carry on.`,
-          })
-          .catch(() => {});
-      },
-      deniedNo: async (line) => {
-        denied.delete(line.denial.id);
-        $.ui.invalidate('ui.render');
-        $.prompt
-          .submit({
-            text: `The person won't run ${line.denial.command ?? line.denial.what} now (Claude Code refused it for ${line.denial.who}). Don't try to get around it: carry on with other work, and if a story can't go on without it, ask with code-kit ask --blocks.`,
-          })
-          .catch(() => {});
       },
       // REPORT-3: the person sends a drafted report to code-kit's GitHub, or discards it.
       sendReport: async (line) => {
@@ -1206,7 +1221,7 @@ export function register(on) {
         // LEAN-4: past compact.at, the lead's context is compacted between turns, milestone or not.
         if (!fresh.length) return act.compactAtThreshold();
         const mode = harness().compact?.milestone ?? 'ask';
-        if (mode === 'off' || offering || !where.interactive || (lease.other && !lease.mine)) {
+        if (mode === 'off' || offering || !where.interactive || standingBy()) {
           for (const m of fresh) loop.milestones.add(m);
           return act.compactAtThreshold();
         }
@@ -1246,7 +1261,7 @@ export function register(on) {
       // LEAN-4: the lead's context compacted at once when it's past compact.at; true when it took over.
       compactAtThreshold: async () => {
         const at = harness().compact?.at ?? 40;
-        if (!at || offering || !where.interactive || (lease.other && !lease.mine)) return false;
+        if (!at || offering || !where.interactive || standingBy()) return false;
         const percent = (await $.session.usage().catch(() => null))?.context?.percent ?? 0;
         if (percent < Math.max(at, COMPACT_FLOOR)) return false;
         const box = await $.prompt.read().catch(() => null);
@@ -1394,7 +1409,9 @@ export function register(on) {
         const first = notified === null;
         notified = new Set(cards.map(decisionKey));
         if (first || !fresh.length || harness().notify?.on === false) return;
-        if (lease.other && !lease.mine) return;
+        // OWN-5: a working session raises its own decisions, which are all its band holds; a session
+        // another one leads raises none of the project's.
+        if (standingBy() && role !== 'working') return;
         const one =
           fresh.length === 1
             ? fresh[0]
@@ -1408,7 +1425,7 @@ export function register(on) {
       },
       offer: async () => {
         if (offering || leadTurn || loop.sent || !where.interactive) return;
-        if (lease.other && !lease.mine) return;
+        if (standingBy() && role !== 'working') return;
         const now = await $.clock.now();
         const choice = cardsNow(now)
           .map((card) => ({ card, choice: nativeChoice(card) }))
@@ -1532,8 +1549,9 @@ export function register(on) {
         if (key === loop.lastKey && print === loop.lastPrint) return;
         loop.lastKey = key;
         loop.lastPrint = print;
-        // LOOP-8: a step the lead was asked for twice and that is still next didn't take: the project
-        // moving elsewhere (lanes committing) doesn't make a third prompt useful. The person decides.
+        // LOOP-8, WHO-4: a step the lead was asked for three times and that is still next didn't take:
+        // the project moving elsewhere (lanes committing) doesn't make a fourth prompt useful. It shows
+        // as a note; the person may ask again.
         if (loop.asked.times >= ASK_LIMIT) {
           if (loop.proposal?.label !== label) {
             loop.proposal = { prompt, label, kind, target, key, repeated: loop.asked.times };
@@ -1627,6 +1645,36 @@ export function register(on) {
         await act.record('resume', story);
         $.ui.invalidate('ui.render');
       },
+      // SESS-1: the session is still there, while it's open: the other sessions see it live.
+      beat: async () => {
+        const at = await $.clock.now();
+        if (beaten === -Infinity) beaten = at;
+        if (at - beaten < BEAT_MS || model.state?.kind !== 'ok') return;
+        beaten = at;
+        await $.process.run(['node', cli, 'sessions', 'beat', '--session', session], { cwd });
+      },
+      // SCHED-1: a lane this session's agent claimed, with no agent of that lane still running here for a
+      // minute (stopped with TaskStop, or gone without its finish), is released for its next story.
+      freeLanes: async () => {
+        const at = await $.clock.now();
+        // The first look only starts the clock: a session's first minute frees nothing.
+        if (lanesFreed === -Infinity) lanesFreed = at;
+        if (at - lanesFreed < LANES_FREE_MS || model.state?.kind !== 'ok') return;
+        lanesFreed = at;
+        const claims = ((await json('lanes')) ?? []).filter((c) => c.session === session);
+        if (!claims.length) return;
+        const running = new Set(
+          ((await $.agent.list().catch(() => [])) ?? [])
+            .filter((a) => a.status === 'running')
+            .map((a) => a.type),
+        );
+        for (const c of claims) {
+          const type = model.check?.lanes?.[c.lane]?.agent;
+          if (!type || running.has(type) || at - Date.parse(c.since) < LANES_FREE_MS) continue;
+          await $.process.run(['node', cli, 'lanes', 'release', c.lane], { cwd }).catch(() => {});
+          await act.record('free', `${c.lane}${c.story ? ` · ${c.story}` : ''}`);
+        }
+      },
       // LOOP-3: each lane agent at work, by the time since its last tool call.
       stalls: async () => {
         const h = harness();
@@ -1642,6 +1690,12 @@ export function register(on) {
           const a = activityOf(agent.id, now);
           a.lane = lane;
           a.story = attribution(agent.id, agent, model.check, model.state).story ?? lane;
+          // WHO-4: the lead dispatched the stalled story again: a new agent on it ends the note.
+          const flag = flagged.get(a.story);
+          if (flag && flag.agentId !== agent.id) {
+            flagged.delete(a.story);
+            restarts.set(a.story, 0);
+          }
           // A held call, or a long command still running, isn't quiet.
           if (a.inFlight > 0 || waitingOnPerson.has(agent.id)) {
             a.at = now;
@@ -1677,7 +1731,20 @@ export function register(on) {
             await act.record('restart', `${lane} · ${a.story} (${n}/${h.stall.maxRestarts})`);
           } else if (due === 'flag') {
             a.stopped = true;
-            flagged.set(a.story, { lane, story: a.story, count: (restarts.get(a.story) ?? 0) + 1 });
+            const count = (restarts.get(a.story) ?? 0) + 1;
+            flagged.set(a.story, { lane, story: a.story, count, agentId: agent.id });
+            // WHO-4: the lead sorts it out; the person sees a note.
+            loop.pending.push({
+              story: a.story,
+              prompt: stalledPrompt({
+                type: agent.type,
+                id: agent.id,
+                lane,
+                story: a.story,
+                restarts: restarts.get(a.story) ?? 0,
+                last: a.tool ?? null,
+              }),
+            });
             await act.record('flag', `${lane} · ${a.story}`);
           }
           if (due) $.ui.invalidate('ui.render');
@@ -1874,7 +1941,9 @@ export function register(on) {
         if (lease.mine) await act.lead();
         if (!leadTurn) act.offer().catch(() => {});
         await act.notifyNew().catch(() => {});
+        await act.beat().catch(() => {});
         await act.stalls();
+        await act.freeLanes().catch(() => {});
         await act.animate();
         const now = await act.fingerprint();
         const paneOpen = (await $.ui.panes()).some((p) => [PANE_ID, TEAM_ID].includes(p.id));
@@ -1946,6 +2015,8 @@ export function register(on) {
       e.tool_name === 'Bash' && typeof input.command === 'string' ? input.command : null;
     const path = input.file_path ?? input.notebook_path ?? null;
     const lane = e.agent_id ? activity.get(e.agent_id)?.lane : null;
+    // OWN-2: only the latest few are kept: each is activity, not something waiting on the person.
+    if (denied.size >= DENIED_KEPT) denied.delete(denied.keys().next().value);
     denied.set(e.tool_use_id ?? `${e.tool_name}-${denied.size}`, {
       id: e.tool_use_id ?? `${e.tool_name}-${denied.size}`,
       agentId: e.agent_id ?? null,
@@ -2248,14 +2319,21 @@ export function register(on) {
     const state =
       h.autonomy === 'off'
         ? 'off'
-        : lease.other && !lease.mine
-          ? 'elsewhere'
+        : standingBy()
+          ? lease.other
+            ? 'elsewhere'
+            : 'unled'
           : loop.done
             ? 'done'
             : loop.paused
               ? 'paused'
               : 'running';
     const laneNotes = {};
+    // OWN-2: the latest call Claude Code refused in each lane, as its activity.
+    for (const d of denied.values()) {
+      const lane = d.agentId ? (activity.get(d.agentId)?.lane ?? null) : 'lead';
+      if (lane) laneNotes[lane] = `Claude Code refused ${d.what}`;
+    }
     for (const a of activity.values()) {
       if (!a.lane) continue;
       const n = restarts.get(a.story) ?? 0;
@@ -2463,7 +2541,6 @@ export function register(on) {
       nextStep: loop.nextStep,
       combined: combinedNow(),
       team: model.team ?? null,
-      denied: [...denied.values()],
     });
 
   on('ui.render', { component: 'Pane', requestId: PANE_ID }, async ($, e) => {

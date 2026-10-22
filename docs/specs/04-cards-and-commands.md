@@ -53,6 +53,8 @@ An approval request waits until an approval answers it, its file is committed by
 
 ### CARD-8 One card per decision
 
+Spec 23 (OWN-2, OWN-3): a call Claude Code refused is no longer a card, and the same decision raised again in a session is one card, counted.
+
 The band keeps one line per kind of thing waiting ("2 approvals waiting", "3 questions from the lead"), but the Decisions tab lists each decision as its own card: each approval with its lane and files, each held call, each of the lead's questions and the brief's, each call Claude Code refused, each report. Each card's options answer that one.
 
 **Acceptance**

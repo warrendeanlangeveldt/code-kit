@@ -19,11 +19,21 @@ import { fileURLToPath } from 'node:url';
 import { refusalCard } from '../hooks/mod/view.mjs';
 import { holdable } from '../hooks/mod/hold.mjs';
 
+// SESS-1: the CLI reads the calling session from Claude Code's environment; these tests say it themselves.
+delete process.env.CLAUDE_CODE_SESSION_ID;
+
 const here = dirname(fileURLToPath(import.meta.url));
 const hooks = join(here, '..', 'hooks');
 const fixture = readFileSync(join(here, 'fixture.json'), 'utf8');
-// The same rules, with the lead allowed to record approvals the person gives in chat.
-const relayFixture = JSON.stringify({ ...JSON.parse(fixture), approvals: { lead: true } });
+// The fixture keeps every approval for the person (`approvals.delegate: false`), as code-kit did before
+// WHO-1; `leadFixture` has no `approvals`, so the lead decides by default. The same rules, with the lead
+// allowed to record approvals the person gives in chat:
+const relayFixture = JSON.stringify({
+  ...JSON.parse(fixture),
+  approvals: { lead: true, delegate: false },
+});
+const { approvals: _kept, ...leadDefaults } = JSON.parse(fixture);
+const leadFixture = JSON.stringify(leadDefaults);
 const delegateFixture = JSON.stringify({
   ...JSON.parse(fixture),
   approvals: { delegate: { protected: ['design'], dependencies: {} } },
@@ -1296,10 +1306,10 @@ try {
     put('.claude/code-kit.json', fixture);
     const delegateGood = `node "${kitCli}" approve dep-good-pkg --lane web --delegated --reason "x"`;
     expect(
-      'without approvals.delegate the lead may not approve on its own',
+      'with approvals.delegate false the lead may not approve on its own',
       bash(delegateGood),
       2,
-      '"approvals.delegate" isn\'t set',
+      '"approvals.delegate" is false',
     );
     expect('nor does the command', delegate('good-pkg', '--lane', 'web', '--reason', 'x'), 1);
     put('.claude/code-kit.json', delegateFixture);
@@ -1504,6 +1514,75 @@ try {
         JSON.stringify(logLines()),
       ),
       0,
+    );
+    // WHO-1: with no approvals.delegate, technical decisions are the lead's by default.
+    put('.claude/code-kit.json', leadFixture);
+    rmSync(join(repo, '.claude/approvals'), { recursive: true, force: true });
+    rmSync(join(repo, '.claude/state/requests.jsonl'), { force: true });
+    const leadsInstall = bash('pnpm --filter office add dayjs', 'web-engineer');
+    expect(
+      'WHO-1 with no approvals.delegate, a lane installing a package is told to ask the lead, and it is not held',
+      truth(
+        leadsInstall.status === 2 &&
+          leadsInstall.stderr.includes("is the lead's decision") &&
+          !leadsInstall.stderr.includes('! echo') &&
+          holdable(leadsInstall.stderr) === null,
+        leadsInstall.stderr,
+      ),
+      0,
+    );
+    expect(
+      "WHO-1 and the request is the lead's, so the person's band doesn't change",
+      truth(
+        JSON.parse(kit('requests', '--json').stdout).open.every(
+          (r) => !r.names.includes('dep-dayjs') || r.by === 'lead',
+        ),
+      ),
+      0,
+    );
+    expect(
+      "WHO-1 the person keeps the screens' designs",
+      truth(
+        (() => {
+          const r = write('design/approved-screens.json', 'web-engineer');
+          return r.status === 2 && r.stderr.includes("needs a person's approval");
+        })(),
+      ),
+      0,
+    );
+    expect(
+      'WHO-1 and the kit: the lead may not approve it',
+      delegate('kit', '--reason', 'x'),
+      1,
+      'not among the delegated approvals',
+    );
+    // WHO-2: a weakened test on a lane's branch is the lead's, after review, for a story.
+    expect(
+      "WHO-2 the lead approves a weakened test for a lane's story",
+      truth(
+        delegate(
+          'tests',
+          '--lane',
+          'web',
+          '--story',
+          'ST-4',
+          '--reason',
+          'the old case tested removed behaviour',
+        ).status === 0 && approved('web/tests'),
+      ),
+      0,
+    );
+    expect(
+      "WHO-2 but not on its own branch: there it is the person's",
+      delegate('tests', '--story', 'ST-4', '--reason', 'x'),
+      1,
+      "on your own branch a weakened test is the person's",
+    );
+    expect(
+      'WHO-2 nor without the story it reviewed',
+      delegate('tests', '--lane', 'qa', '--reason', 'x'),
+      1,
+      'name the story',
     );
   } finally {
     registry.kill();
@@ -4002,6 +4081,113 @@ else process.exit(2);
     );
     expect('but listing them is fine', sBash('code-kit settings --json'), 0);
 
+    // WHO-3: who decides each approval is a setting the person changes, like the harness's.
+    {
+      const sWrite = (rel, agent) =>
+        spawnSync('node', [join(hooks, 'guard-paths.mjs')], {
+          input: JSON.stringify({
+            cwd: s.dir,
+            tool_input: { file_path: join(s.dir, rel) },
+            ...(agent ? { agent_type: agent } : {}),
+          }),
+          env: { ...process.env, CLAUDE_PROJECT_DIR: s.dir },
+          encoding: 'utf8',
+        });
+      const leadRules = JSON.parse(leadFixture);
+      writeFileSync(
+        join(s.dir, '.claude/code-kit.json'),
+        JSON.stringify({
+          ...leadRules,
+          protected: [
+            { glob: 'supabase/migrations/**', approval: 'schema', why: 'the database schema' },
+            ...leadRules.protected,
+          ],
+        }),
+      );
+      rmSync(join(s.dir, '.claude/approvals'), { recursive: true, force: true });
+      const rows = JSON.parse(sCli('settings', '--json').stdout).filter(
+        (r) => r.section === 'Approvals',
+      );
+      expect(
+        'WHO-3 settings lists who decides each approval: schema, dependencies, merges and tests the lead, the design the person',
+        truth(
+          [
+            'approvals.schema',
+            'approvals.dependencies',
+            'approvals.merge',
+            'approvals.tests',
+          ].every((k) => rows.find((r) => r.key === k)?.value === 'lead') &&
+            rows.find((r) => r.key === 'approvals.design')?.value === 'person' &&
+            !rows.some((r) => r.key === 'approvals.kit'),
+          JSON.stringify(rows),
+        ),
+        0,
+      );
+      expect(
+        "WHO-3 before the change, a lane's migration is the lead's to approve",
+        sWrite('supabase/migrations/001_init.sql', 'db-engineer'),
+        2,
+        "needs the lead's approval",
+      );
+      const moved = sCli(
+        'settings',
+        'set',
+        'approvals.schema',
+        'person',
+        '--reason',
+        'I review schema changes myself',
+        '--via',
+        'pane',
+      );
+      const rules = JSON.parse(readFileSync(join(s.dir, '.claude/code-kit.json'), 'utf8'));
+      expect(
+        'WHO-3 the person moves schema to themselves: approvals.delegate no longer lists it, written out in full',
+        truth(
+          moved.status === 0 &&
+            !rules.approvals.delegate.protected.includes('schema') &&
+            rules.approvals.delegate.merge === true &&
+            rules.approvals.delegate.tests === true &&
+            Boolean(rules.approvals.delegate.dependencies),
+          moved.stdout + moved.stderr + JSON.stringify(rules.approvals),
+        ),
+        0,
+      );
+      expect(
+        "WHO-3 with the person's reason in the kit approval the commit logs",
+        truth(
+          readFileSync(join(s.dir, '.claude/approvals/kit'), 'utf8').includes(
+            'I review schema changes myself (changed in the code-kit pane)',
+          ),
+        ),
+        0,
+      );
+      const after = sWrite('supabase/migrations/001_init.sql', 'db-engineer');
+      expect(
+        "WHO-3 and the lane's next migration needs the person's approval",
+        truth(
+          after.status === 2 &&
+            after.stderr.includes("needs a person's approval") &&
+            holdable(after.stderr)?.names.includes('schema'),
+          after.stderr,
+        ),
+        0,
+      );
+      expect(
+        "WHO-3 a value that isn't the lead or the person changes nothing",
+        sCli('settings', 'set', 'approvals.merge', 'maybe', '--reason', 'x'),
+        1,
+        "isn't one of its values",
+      );
+      expect(
+        'WHO-3 nor may an agent change who decides',
+        sBash('code-kit settings set approvals.merge lead --reason x'),
+        2,
+        "the person's own act",
+      );
+      writeFileSync(join(s.dir, '.claude/code-kit.json'), fixture);
+      rmSync(join(s.dir, '.claude/approvals'), { recursive: true, force: true });
+    }
+
     // HOLD-3, HOLD-4: a held call waits in `code-kit hold` until the band answers, or the hold time ends.
     const waiting = (id, minutes) =>
       new Promise((done) => {
@@ -4960,6 +5146,579 @@ else process.exit(1);
     );
     return n;
   };
+  // --- SCHED-1, SCHED-2: one story per lane across sessions, and slices -----------------------------
+  {
+    const q = newRepo();
+    cleanups.push(q.dir);
+    const qPut = (rel, body = '') => {
+      mkdirSync(dirname(join(q.dir, rel)), { recursive: true });
+      writeFileSync(join(q.dir, rel), body);
+    };
+    const qCommit = (m) => {
+      q.git('add', '-A');
+      q.git('commit', '-q', '-m', m);
+    };
+    const qHook = (name, input, args = []) =>
+      spawnSync('node', [join(hooks, name), ...args], {
+        input: JSON.stringify({ cwd: q.dir, ...input }),
+        env: { ...process.env, CLAUDE_PROJECT_DIR: q.dir },
+        encoding: 'utf8',
+      });
+    const qCli = (...args) =>
+      spawnSync('node', [join(here, '..', 'bin', 'code-kit.mjs'), ...args], {
+        cwd: q.dir,
+        encoding: 'utf8',
+      });
+    const story = (id, lane, req, slice) =>
+      `### ${id} Story ${id}\n\n**Lane:** ${lane}\n**Requirements:** ${req}\n**Depends on:** none\n${slice ? `**Slice:** ${slice}\n` : ''}**Status:** todo\n\n`;
+    qPut(
+      'docs/spec/01-classes.md',
+      '# 01. Classes\n\n### CLS-1 Book\n\n### CLS-2 Cancel\n\n### CLS-3 Pay\n\n### CLS-4 Receipt\n\n### CLS-5 Refund\n',
+    );
+    qPut(
+      'docs/spec/plan.md',
+      `# Plan\n\n## Milestone 1: Classes\n\n${story('ST-3', 'web', 'CLS-1')}${story('ST-4', 'web', 'CLS-2')}`,
+    );
+    qPut('design/approved-screens.json', JSON.stringify({ screens: [] }));
+    qCommit('plan');
+    const first = nextIs(
+      'SCHED-1 with two ready stories for the web lane, next offers the first only',
+      q.dir,
+      'dispatch',
+      'ST-3',
+    );
+    expect(
+      'SCHED-1 and says the second waits for its lane',
+      truth(
+        first.attention.some((a) => a.includes('ST-4 waits for its lane')),
+        JSON.stringify(first),
+      ),
+      0,
+    );
+    const startAgent = (id, session, type = 'web-engineer') =>
+      qHook('guard-agent.mjs', {
+        session_id: session,
+        tool_name: 'Agent',
+        tool_input: { subagent_type: type, description: `${id} booking form`, prompt: 'brief' },
+      });
+    expect(
+      "SCHED-1 starting the web lane's agent claims the lane",
+      startAgent('ST-3', 'aaaa1111-s'),
+      0,
+    );
+    const second = startAgent('ST-7', 'bbbb2222-s');
+    expect(
+      'SCHED-1 another session starting a web agent is refused, naming ST-3 and the session running it',
+      truth(
+        second.status === 2 &&
+          /the web lane is already running ST-3 in another session \([^)]*\/aaaa1111\)/.test(
+            second.stderr,
+          ) &&
+          second.stderr.includes('lanes release web'),
+        second.stderr,
+      ),
+      0,
+    );
+    expect(
+      'SCHED-1 the same session starting ST-3 again (a restart) may',
+      startAgent('ST-3', 'aaaa1111-s'),
+      0,
+    );
+    expect(
+      "SCHED-1 an agent that isn't a lane's starts as before",
+      startAgent('ST-7', 'bbbb2222-s', 'Explore'),
+      0,
+    );
+    expect(
+      'SCHED-1 another lane runs alongside',
+      startAgent('ST-9', 'bbbb2222-s', 'backend-engineer'),
+      0,
+    );
+    expect(
+      'SCHED-1 lanes lists each lane running a story, with its session',
+      truth(
+        JSON.parse(qCli('lanes', '--json').stdout)
+          .map((c) => `${c.lane} ${c.story} ${c.session}`)
+          .join() === 'backend ST-9 bbbb2222-s,web ST-3 aaaa1111-s',
+      ),
+      0,
+    );
+    const waiting = nextIn(q.dir);
+    expect(
+      'SCHED-1 while the web lane runs, next offers neither web story',
+      truth(
+        waiting.step === 'wait' && waiting.why.includes('a lane runs one story at a time'),
+        JSON.stringify(waiting),
+      ),
+      0,
+    );
+    // ST-3's agent commits its work and finishes: its finish frees the lane.
+    q.git('checkout', '-q', '-b', 'web/st-3');
+    qPut('apps/office/book.ts', 'export const book = 1;\n');
+    qCommit('ST-3 book');
+    const finish = () =>
+      qHook('stop-check.mjs', {
+        session_id: 'aaaa1111-s',
+        agent_id: 'agent-3',
+        agent_type: 'web-engineer',
+        hook_event_name: 'SubagentStop',
+      });
+    const refusedFinish = finish();
+    expect(
+      'SCHED-1 a finish the stop check refuses keeps the lane: the agent carries on',
+      truth(
+        refusedFinish.status === 2 &&
+          JSON.parse(qCli('lanes', '--json').stdout).some((c) => c.lane === 'web'),
+        refusedFinish.stderr,
+      ),
+      0,
+    );
+    qPut('.claude/state/reports/web_st-3.md', '# ST-3\n\nDone: booking, CLS-1.\n');
+    const finished = finish();
+    q.git('checkout', '-q', 'main');
+    expect(
+      "SCHED-1 the agent's finish frees its lane",
+      truth(
+        finished.status === 0 &&
+          !JSON.parse(qCli('lanes', '--json').stdout).some((c) => c.lane === 'web'),
+        finished.stderr,
+      ),
+      0,
+    );
+    const after = nextIn(q.dir);
+    expect(
+      'SCHED-1 with ST-3 in review and its lane free, ST-4 is offered next',
+      truth(
+        after.step === 'review' &&
+          after.args === 'ST-3' &&
+          after.then.some((t) => t.step === 'dispatch' && t.args === 'ST-4'),
+        JSON.stringify(after),
+      ),
+      0,
+    );
+    expect(
+      'SCHED-1 a session that ends frees the lanes its agents held',
+      truth(
+        qHook('session.mjs', { session_id: 'bbbb2222-s' }, ['end']).status === 0 &&
+          !JSON.parse(qCli('lanes', '--json').stdout).length,
+      ),
+      0,
+    );
+    startAgent('ST-4', 'cccc3333-s');
+    const released = qCli('lanes', 'release', 'web');
+    expect(
+      'SCHED-1 the lead releases a lane whose agent stopped without finishing',
+      truth(
+        released.status === 0 &&
+          released.stdout.includes('it was running ST-4') &&
+          startAgent('ST-4', 'dddd4444-s').status === 0,
+        released.stdout + released.stderr,
+      ),
+      0,
+    );
+    qCli('lanes', 'release', 'web');
+    // SCHED-2: the open slice first; a lane with nothing in it takes the next slice's story, ahead of it.
+    q.git('branch', '-q', '-D', 'web/st-3');
+    qPut(
+      'docs/spec/plan.md',
+      `# Plan\n\n## Milestone 1: Classes\n\n${story('ST-1', 'backend', 'CLS-1', 'Book a class').replace('todo', 'in progress')}${story('ST-2', 'backend', 'CLS-2', 'Book a class')}${story('ST-5', 'web', 'CLS-3', 'Pay for a class')}${story('ST-6', 'backend', 'CLS-4', 'Pay for a class')}${story('ST-7', 'web', 'CLS-5')}`.replace(
+        '**Lane:** backend\n**Requirements:** CLS-2\n**Depends on:** none',
+        '**Lane:** backend\n**Requirements:** CLS-2\n**Depends on:** none',
+      ),
+    );
+    qCommit('slices');
+    q.git('branch', '-q', 'backend/st-1');
+    const sliced = nextIn(q.dir);
+    expect(
+      'SCHED-2 the backend lane, running the open slice, takes nothing; the web lane takes its story outside a slice first',
+      truth(sliced.step === 'dispatch' && sliced.args === 'ST-7', JSON.stringify(sliced)),
+      0,
+    );
+    qPut(
+      'docs/spec/plan.md',
+      readFileSync(join(q.dir, 'docs/spec/plan.md'), 'utf8').replace(/### ST-7[\s\S]*$/, ''),
+    );
+    qCommit('no ST-7');
+    const aheadOf = nextIn(q.dir);
+    expect(
+      "SCHED-2 with nothing ready in the open slice for the web lane, it takes the next slice's story, marked ahead of its slice",
+      truth(
+        aheadOf.step === 'dispatch' &&
+          aheadOf.args === 'ST-5' &&
+          aheadOf.attention.some((a) => a.includes('ST-5 is ahead of its slice (Pay for a class)')),
+        JSON.stringify(aheadOf),
+      ),
+      0,
+    );
+    const statusJson = JSON.parse(qCli('status', '--json').stdout);
+    expect(
+      'SCHED-2 status shows each slice, and whether it is open',
+      truth(
+        statusJson.slices.map((sl) => `${sl.name}:${sl.open}`).join() ===
+          'Book a class:true,Pay for a class:false' &&
+          statusJson.stories.find((x) => x.id === 'ST-5').slice === 'Pay for a class',
+        JSON.stringify(statusJson.slices),
+      ),
+      0,
+    );
+    const withTeam = { ...JSON.parse(fixture), team: { techLead: 'kim-builds' } };
+    writeFileSync(join(q.dir, '.claude/code-kit.json'), JSON.stringify(withTeam));
+    const reported = JSON.parse(qCli('team', 'report', '--dry-run').stdout || '{}');
+    writeFileSync(join(q.dir, '.claude/code-kit.json'), fixture);
+    const { snapshotProblems: reportProblems } = await import('../hooks/lib/snapshot.mjs');
+    expect(
+      'SCHED-2 and the report carries the slices, and still passes its allow-list',
+      truth(
+        reported.version === 3 &&
+          reported.slices?.some(
+            (sl) => sl.name === 'Book a class' && sl.open && sl.stories.join() === 'ST-1,ST-2',
+          ) &&
+          !reportProblems(reported).length,
+        JSON.stringify(reported.slices) + reportProblems(reported).join('; '),
+      ),
+      0,
+    );
+  }
+
+  // --- SESS-1 to SESS-5: sessions as members of the team ------------------------------------------
+  {
+    const t = newRepo();
+    cleanups.push(t.dir);
+    const tPut = (rel, body = '') => {
+      mkdirSync(dirname(join(t.dir, rel)), { recursive: true });
+      writeFileSync(join(t.dir, rel), body);
+    };
+    const tHook = (name, input, args = []) =>
+      spawnSync('node', [join(hooks, name), ...args], {
+        input: JSON.stringify({ cwd: t.dir, ...input }),
+        env: { ...process.env, CLAUDE_PROJECT_DIR: t.dir },
+        encoding: 'utf8',
+      });
+    const tCli = (session, ...args) =>
+      spawnSync('node', [join(here, '..', 'bin', 'code-kit.mjs'), ...args], {
+        cwd: t.dir,
+        encoding: 'utf8',
+        env: { ...process.env, ...(session ? { CLAUDE_CODE_SESSION_ID: session } : {}) },
+      });
+    const A = 'aaaa0001-lead';
+    const B = 'bbbb0002-work';
+    const C = 'cccc0003-next';
+    const begin = (id) => tHook('session.mjs', { session_id: id }, ['start']);
+    const finish = (id) => tHook('session.mjs', { session_id: id }, ['end']);
+    const roleOf = (id) => JSON.parse(tCli(null, 'loop', '--json', '--session', id).stdout).role;
+    tPut('docs/spec/01-x.md', '# 01. X\n\n### X-1 One\n');
+    tPut(
+      'docs/spec/plan.md',
+      '# Plan\n\n## M1\n\n### ST-1 One\n\n**Lane:** web\n**Requirements:** X-1\n**Depends on:** none\n**Status:** todo\n',
+    );
+    t.git('add', '-A');
+    t.git('commit', '-q', '-m', 'plan');
+    begin(A);
+    begin(B);
+    expect(
+      'SESS-2 the first session to start leads; one started while it is live works',
+      truth(roleOf(A) === 'lead' && roleOf(B) === 'working', `${roleOf(A)} ${roleOf(B)}`),
+      0,
+    );
+    const notMine = tCli(null, 'loop', 'lead', '--session', B);
+    expect(
+      'SESS-2 the loop runs only in the lead session: a working session is refused, told who leads',
+      truth(
+        notMine.status === 1 &&
+          notMine.stderr.includes('aaaa0001') &&
+          notMine.stderr.includes('--take'),
+        notMine.stderr,
+      ),
+      0,
+    );
+    expect('SESS-2 and the lead session runs it', tCli(null, 'loop', 'lead', '--session', A), 0);
+    const whoB = tCli(B, 'who');
+    expect(
+      'SESS-1 code-kit who says which session the caller is, and who leads',
+      truth(
+        /\/bbbb0002: a working session \([^)]*\/aaaa0001 leads\)/.test(whoB.stdout),
+        whoB.stdout + whoB.stderr,
+      ),
+      0,
+    );
+    finish(A);
+    const unled = tCli(null, 'loop', 'lead', '--session', B);
+    expect(
+      'SESS-2 with the lead session ended, no working session takes the loop by itself',
+      truth(unled.status === 1 && unled.stderr.includes('No session leads'), unled.stderr),
+      0,
+    );
+    begin(C);
+    expect('SESS-2 the next session to start leads', truth(roleOf(C) === 'lead'), 0);
+    expect(
+      'SESS-2 Lead from here makes a working session the lead, and the old lead works',
+      truth(
+        tCli(B, 'sessions', 'lead').status === 0 && roleOf(B) === 'lead' && roleOf(C) === 'working',
+      ),
+      0,
+    );
+    tCli(C, 'sessions', 'lead');
+    expect(
+      "SESS-2 choosing the lead is the person's: an agent running sessions lead is refused",
+      tHook('guard-bash.mjs', {
+        session_id: B,
+        tool_input: { command: `node "${join(here, '..', 'bin', 'code-kit.mjs')}" sessions lead` },
+      }),
+      2,
+      "the person's own act",
+    );
+    // SESS-5: a working session's main agent writes in a worktree of its own, not the shared checkout.
+    const inMain = tHook('guard-paths.mjs', {
+      session_id: B,
+      tool_input: { file_path: join(t.dir, 'packages/schemas/integrations/client.ts') },
+    });
+    expect(
+      "SESS-5 a working session's write in the main checkout is refused, saying to use a worktree",
+      truth(
+        inMain.status === 2 &&
+          inMain.stderr.includes('main checkout, which every session shares') &&
+          inMain.stderr.includes('claude --worktree'),
+        inMain.stderr,
+      ),
+      0,
+    );
+    const wt = join(t.dir, '.claude/worktrees/integration');
+    t.git('worktree', 'add', '-q', wt, '-b', 'integration-readiness');
+    const inWorktree = (session, rel, agent) =>
+      tHook('guard-paths.mjs', {
+        cwd: wt,
+        session_id: session,
+        tool_input: { file_path: join(wt, rel) },
+        ...(agent ? { agent_type: agent } : {}),
+      });
+    const noTask = inWorktree(B, 'packages/schemas/integrations/client.ts');
+    expect(
+      "SESS-4 in its worktree, a working session's first write with no task is refused, with the command",
+      truth(
+        noTask.status === 2 &&
+          noTask.stderr.includes('record what you') &&
+          noTask.stderr.includes('task "'),
+        noTask.stderr,
+      ),
+      0,
+    );
+    const recorded = tCli(
+      B,
+      'task',
+      'Integration readiness',
+      '--touches',
+      'apps/office/integrations/**',
+    );
+    expect(
+      'SESS-4 code-kit task records the task and the paths it leases',
+      truth(
+        recorded.status === 0 && recorded.stdout.includes('leasing apps/office/integrations/**'),
+        recorded.stdout + recorded.stderr,
+      ),
+      0,
+    );
+    expect(
+      'SESS-4 with its task, the working session writes in its worktree',
+      inWorktree(B, 'packages/schemas/integrations/client.ts'),
+      0,
+    );
+    // The lane has read its spec (the path guard asks for it before lane code).
+    tPut(
+      '.claude/state/spec-check/main.md',
+      '# Spec check\n\n| Requirement | Status | Where | Note |\n| --- | --- | --- | --- |\n| X-1 One | missing | | |\n',
+    );
+    const leased = tHook('guard-paths.mjs', {
+      session_id: A === C ? A : C,
+      agent_type: 'web-engineer',
+      tool_input: { file_path: join(t.dir, 'apps/office/integrations/client.ts') },
+    });
+    expect(
+      "SESS-4 the lead's web lane writing a path a working session's task leases is refused, naming the session and its task",
+      truth(
+        leased.status === 2 &&
+          /leased by another session \([^)]*\/bbbb0002\), working on "Integration readiness"/.test(
+            leased.stderr,
+          ),
+        leased.stderr,
+      ),
+      0,
+    );
+    const listed = JSON.parse(tCli(null, 'sessions', '--json').stdout);
+    expect(
+      'SESS-4 sessions lists each with its role and task',
+      truth(
+        listed.some(
+          (x) => x.id === B && x.role === 'working' && x.task?.title === 'Integration readiness',
+        ) && listed.some((x) => x.id === C && x.role === 'lead'),
+        JSON.stringify(listed),
+      ),
+      0,
+    );
+    expect(
+      'SESS-4 another task may not lease the same paths',
+      tCli(C, 'task', 'Something else', '--touches', 'apps/office/**'),
+      1,
+      'Integration readiness',
+    );
+    finish(B);
+    const D = 'dddd0004-takeover';
+    begin(D);
+    const afterEnd = tHook('guard-paths.mjs', {
+      session_id: C,
+      agent_type: 'web-engineer',
+      tool_input: { file_path: join(t.dir, 'apps/office/integrations/client.ts') },
+    });
+    expect(
+      'SESS-4 a stale task leases nothing: once its session ended, the lane may write there',
+      truth(afterEnd.status === 0, afterEnd.stderr),
+      0,
+    );
+    const took = tCli(D, 'task', 'take', 'bbbb0002');
+    expect(
+      'SESS-4 task take moves a stale task to the session running it',
+      truth(
+        took.status === 0 &&
+          took.stdout.includes('took over "Integration readiness"') &&
+          JSON.parse(tCli(D, 'task', '--json').stdout)?.title === 'Integration readiness',
+        took.stdout + took.stderr,
+      ),
+      0,
+    );
+    expect(
+      'SESS-4 task done ends it',
+      truth(tCli(D, 'task', 'done').stdout.startsWith('Done:')),
+      0,
+    );
+    // SESS-5: a git command blocked by another session's uncommitted files names that session.
+    tCli(C, 'task', 'Docs pass', '--touches', 'docs/**');
+    tPut('docs/notes.md', 'draft\n');
+    tHook('post-edit-check.mjs', {
+      session_id: C,
+      tool_input: { file_path: join(t.dir, 'docs/notes.md') },
+    });
+    const blockedGit = tHook('lane-audit.mjs', {
+      session_id: D,
+      tool_input: { command: 'git checkout other' },
+      tool_response: {
+        stdout: '',
+        stderr:
+          'error: Your local changes to the following files would be overwritten by checkout:\n\tdocs/notes.md\nPlease commit your changes or stash them before you switch branches.\nAborting',
+      },
+    });
+    expect(
+      "SESS-5 git refused for another session's uncommitted file: the refusal names that session and its task",
+      truth(
+        blockedGit.status === 2 &&
+          /docs\/notes\.md: [^\n]*\/cccc0003, working on "Docs pass"/.test(blockedGit.stderr) &&
+          blockedGit.stderr.includes("don't stash or discard another session's work"),
+        blockedGit.stderr,
+      ),
+      0,
+    );
+    rmSync(join(t.dir, 'docs/notes.md'), { force: true });
+
+    // OWN-1 to OWN-4: a decision belongs to the session that raised it.
+    const owned = (session) =>
+      JSON.parse(tCli(null, 'decisions', '--json', '--session', session).stdout);
+    tCli(C, 'ask', 'Which payment provider?', '--option', 'Stripe: cards and wallets');
+    expect(
+      "OWN-1 a question the lead asks in one session is that session's",
+      truth(
+        owned(C).mine.some((d) => d.kind === 'answer' && d.what === 'Which payment provider?') &&
+          !owned(D).mine.some((d) => d.what === 'Which payment provider?'),
+        JSON.stringify(owned(D)),
+      ),
+      0,
+    );
+    expect(
+      'OWN-1 another live session sees only a count',
+      truth(
+        owned(D).elsewhere.some(
+          (e) => e.session === C && e.count === 1 && /\/cccc0003$/.test(e.member),
+        ),
+        JSON.stringify(owned(D).elsewhere),
+      ),
+      0,
+    );
+    tCli(C, 'ask', 'Which payment provider?');
+    expect(
+      'OWN-3 the same question asked again in the session is one decision, counted',
+      truth(
+        owned(C).mine.filter((d) => d.what === 'Which payment provider?').length === 1 &&
+          owned(C).mine.find((d) => d.what === 'Which payment provider?').count === 2,
+      ),
+      0,
+    );
+    tCli(D, 'ask', 'Which payment provider?');
+    expect(
+      "OWN-3 but the same words from another session are that session's own decision",
+      truth(owned(D).mine.some((d) => d.what === 'Which payment provider?')),
+      0,
+    );
+    const refused = tHook('guard-paths.mjs', {
+      session_id: C,
+      agent_type: 'web-engineer',
+      tool_input: { file_path: join(t.dir, 'design/approved-screens.json') },
+    });
+    expect(
+      "OWN-1 an approval a lane's refusal asks for is its session's decision",
+      truth(
+        refused.status === 2 &&
+          owned(C).mine.some(
+            (d) => d.kind === 'approve' && d.what === 'design/approved-screens.json',
+          ) &&
+          !owned(D).mine.some((d) => d.kind === 'approve'),
+        refused.stderr + JSON.stringify(owned(C).mine.map((d) => d.what)),
+      ),
+      0,
+    );
+    // A question from before sessions were recorded belongs to none, and shows in any.
+    appendFileSync(
+      join(t.dir, '.claude/state/questions.jsonl'),
+      `${JSON.stringify({ kind: 'ask', id: 'Q-90', at: new Date().toISOString(), by: 'lead', question: 'An old one?', story: null, blocks: false, options: [] })}\n`,
+    );
+    expect(
+      'OWN-1 a decision from before sessions were recorded shows in any session',
+      truth(
+        owned(C).mine.some((d) => d.id === 'Q-90') && owned(D).mine.some((d) => d.id === 'Q-90'),
+      ),
+      0,
+    );
+    // OWN-4: a question about a story that's done has lost its cause.
+    tCli(C, 'ask', 'Round prices up?', '--story', 'ST-1');
+    tPut(
+      'docs/spec/plan.md',
+      readFileSync(join(t.dir, 'docs/spec/plan.md'), 'utf8').replace(
+        '**Status:** todo',
+        '**Status:** done',
+      ),
+    );
+    expect(
+      "OWN-4 a question about a story that's done closes",
+      truth(!owned(C).mine.some((d) => d.what === 'Round prices up?')),
+      0,
+    );
+    // OWN-4: a session that ends keeps its decisions; they aren't handed to another lead.
+    tCli(D, 'task', 'Payments', '--touches', 'workers/payments/**');
+    finish(D);
+    expect(
+      "OWN-4 an ended session's decisions go to no other session",
+      truth(
+        !owned(C).mine.some((d) => d.session === D) &&
+          !owned(C).elsewhere.some((e) => e.session === D),
+      ),
+      0,
+    );
+    const E = 'eeee0005-picks-up';
+    begin(E);
+    tCli(E, 'task', 'take', 'dddd0004');
+    expect(
+      'OWN-4 taking over its task brings its decisions to the session that took it',
+      truth(owned(E).mine.some((d) => d.session === D && d.what === 'Which payment provider?')),
+      0,
+    );
+  }
+
   const blank = mkdtempSync(join(tmpdir(), 'code-kit-blank-'));
   cleanups.push(blank);
   const blankNext = nextIs('next: a blank folder starts with spec-design', blank, 'spec-design');
@@ -5078,6 +5837,23 @@ else process.exit(1);
     truth(nextIn(v.dir).step !== 'merge'),
     0,
   );
+  // WHO-1: a base whose rules say nothing about approvals lets the lead merge: merging isn't releasing.
+  {
+    const { approvals: _none, ...silent } = JSON.parse(vConfig);
+    writeFileSync(join(v.dir, '.claude/code-kit.json'), JSON.stringify(silent));
+    v.git('commit', '-q', '-am', 'no approvals section');
+    const step = nextIn(v.dir);
+    expect(
+      'WHO-1 with no approvals.delegate on the base, the lead merges the head under autonomous',
+      truth(
+        step.step === 'merge' &&
+          step.args === 'web/st-2' &&
+          !step.attention.some((a) => a.includes('waits for the person')),
+        JSON.stringify(step),
+      ),
+      0,
+    );
+  }
   writeFileSync(join(v.dir, '.claude/code-kit.json'), vConfig);
   v.git('commit', '-q', '-am', 'stop delegating merges');
   vCli('queue', 'drop', 'web/st-2');
@@ -5394,10 +6170,10 @@ else process.exit(1);
     );
     gConfig({ approvals: { delegate: { protected: ['design'] } } });
     expect(
-      'REG-2 the lead may not approve it within delegated rules',
+      "REG-2 the lead may not approve it where weakened tests aren't delegated",
       gCli('approve', 'tests', '--delegated', '--reason', 'flaky'),
       1,
-      "weakening a test is the person's to allow",
+      "weakened tests aren't delegated",
     );
     gConfig();
     gPut('.claude/approvals/web/tests', 'The keeps-order test is wrong until ST-9');
@@ -5429,6 +6205,85 @@ else process.exit(1);
       truth(!said(res).includes('Weakened tests'), said(res)),
       0,
     );
+
+    // WHO-2: with no approvals.delegate, a weakened test on a lane's branch is the lead's after review.
+    g.git('checkout', '-q', 'main');
+    gConfig({ approvals: undefined });
+    gCommit('the lead decides by default');
+    g.git('checkout', '-q', '-b', 'web/st-60');
+    gPut(
+      'apps/office/old.test.mjs',
+      twoCases.replace("test('lists slots'", "test.skip('lists slots'"),
+    );
+    res = gBash('git add -A && git commit -m skip', 'web-engineer');
+    expect(
+      "WHO-2 a lane's weakened test is the lead's decision, and isn't held for the person",
+      truth(
+        res.status === 2 &&
+          res.stderr.includes("needs the lead's approval") &&
+          res.stderr.includes('the lead decides after reviewing it') &&
+          !res.stderr.includes('! echo') &&
+          holdable(res.stderr) === null,
+        res.stderr,
+      ),
+      0,
+    );
+    const leadOk = gCli(
+      'approve',
+      'tests',
+      '--lane',
+      'web',
+      '--delegated',
+      '--story',
+      'ST-3',
+      '--reason',
+      'lists slots covered a removed filter',
+    );
+    res = gBash('git add -A && git commit -m skip', 'web-engineer');
+    const leadLogged = readFileSync(join(g.dir, '.claude/approval-log.jsonl'), 'utf8')
+      .split('\n')
+      .filter(Boolean)
+      .map((l) => JSON.parse(l));
+    expect(
+      "WHO-2 with the lead's approval the lane commits it, logged as the lead's",
+      truth(
+        leadOk.status === 0 &&
+          res.status === 0 &&
+          leadLogged.some(
+            (e) =>
+              e.approval === 'tests' &&
+              e.branch === 'web/st-60' &&
+              e.reason.includes('approved by the lead within the delegated rules'),
+          ),
+        leadOk.stderr + res.stderr,
+      ),
+      0,
+    );
+    g.git('commit', '-q', '-m', 'ST-3 skip with the lead');
+    // From that commit, so the file the lead weakens is one its branch already has.
+    g.git('checkout', '-q', '-b', 'lead/st-90');
+    gPut(
+      'apps/office/old.test.mjs',
+      twoCases
+        .replace("test('lists slots'", "test.skip('lists slots'")
+        .replace("test('keeps order'", "test.skip('keeps order'"),
+    );
+    res = gBash('git add -A && git commit -m skip');
+    expect(
+      "WHO-2 the same weakening on the lead's own branch is the person's",
+      truth(
+        res.status === 2 &&
+          res.stderr.includes("needs a person's approval") &&
+          res.stderr.includes('nobody else reviews it'),
+        res.stderr,
+      ),
+      0,
+    );
+    g.git('reset', '-q');
+    g.git('checkout', '-q', '--', '.');
+    g.git('checkout', '-q', 'main');
+    gConfig();
+    gCommit('the person keeps every approval again');
 
     // REG-2: verify catches what was weakened outside Claude Code.
     g.git('checkout', '-q', 'main');

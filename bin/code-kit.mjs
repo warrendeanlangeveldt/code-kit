@@ -34,6 +34,13 @@
 //   settings [--json] | settings set <key> <value> --reason … [--via pane]
 //                                    the harness settings; set is the person's own change
 //                         record approvals a person gave in chat (with approvals.lead on, the lead runs it)
+//   decisions [--json] [--all]       what waits on the person in this session, and a count of each other's
+//   who                              which session this is, whether it leads, and its task (spec 23)
+//   sessions [--json] | sessions lead the sessions working the project; make this one the lead
+//   task "<what>" --touches globs | task done | task take <session>
+//                                    a working session's ad hoc task and the paths it leases
+//   lanes [--json] | lanes release <lane>
+//                                    the lanes running a story now, one each across sessions (spec 23)
 // --config <file> reads a draft (.claude/code-kit.draft.json) instead of .claude/code-kit.json.
 import { execFileSync, spawnSync } from 'node:child_process';
 import {
@@ -52,10 +59,12 @@ import { BASELINE_FILE, loadBaseline } from '../hooks/lib/baseline.mjs';
 import { matchesAny } from '../hooks/lib/glob.mjs';
 import {
   CONFIG_FILE,
+  approvalSettings,
   committedConfig,
   effectiveConfig,
   mergeDelegation,
   validate,
+  withApprovalSetting,
 } from '../hooks/lib/config.mjs';
 import { diffConfigs, ownershipMoves } from '../hooks/lib/diff.mjs';
 import { CODE, importsOf, layerOf, layerProblems, targetOf } from '../hooks/lib/layers.mjs';
@@ -133,6 +142,20 @@ import { dependencyRuleProblems, npmFacts, packageOf } from '../hooks/lib/regist
 import { heldTo, laneOfBranch, verifyBranch } from '../hooks/lib/verify.mjs';
 import { skippedLine } from '../hooks/lib/checks.mjs';
 import { TESTS_APPROVAL } from '../hooks/lib/regression.mjs';
+import { laneClaim, laneClaims, releaseLane, shortSession } from '../hooks/lib/laneclaims.mjs';
+import { slicesOf } from '../hooks/lib/schedule.mjs';
+import {
+  leadSession,
+  makeLead,
+  memberOf,
+  readSession,
+  seeSession,
+  sessions,
+  setTask,
+  takeTask,
+} from '../hooks/lib/sessions.mjs';
+import { globsOverlap } from '../hooks/lib/teamfacts.mjs';
+import { decisionsFor, openDecisions } from '../hooks/lib/decisionstore.mjs';
 import {
   appliesTo,
   projectStandards,
@@ -166,6 +189,8 @@ const laneName = option('--lane');
 const intoName = option('--into');
 const via = option('--via');
 const sessionId = option('--session');
+// SESS-1: the session calling, as Claude Code tells every command an agent runs, unless --session says.
+const callerSession = sessionId ?? process.env.CLAUDE_CODE_SESSION_ID ?? null;
 const minutesGiven = option('--minutes');
 const answerGiven = option('--answer');
 const leaseGiven = option('--lease');
@@ -277,6 +302,23 @@ function check() {
         : "You aren't signed in to GitHub (gh auth login), so claims and owners can't be checked.",
     );
   }
+}
+
+/** SESS-1: which session the caller is, whether it leads the project, and its task. */
+function whoAmI() {
+  load();
+  const root = resolve('.');
+  const me = callerSession ? readSession(root, callerSession) : null;
+  if (!me)
+    return out(
+      callerSession
+        ? `Session ${shortSession(callerSession)}, which code-kit hasn't recorded yet.`
+        : 'Not run from a Claude Code session, so no member of the team.',
+    );
+  const lead = leadSession(root);
+  out(
+    `${memberOf(me)}: ${me.role === 'lead' ? 'the lead session' : `a working session${lead ? ` (${memberOf(lead)} leads)` : ' (no session leads now)'}`}${me.task ? `, working on "${me.task.title}"` : ''}.`,
+  );
 }
 
 function who(paths) {
@@ -1021,7 +1063,7 @@ function requests() {
   const open = openRequests(resolve('.')).map((r, i) => ({
     ...r,
     n: i + 1,
-    by: decidedBy(r.names, config),
+    by: decidedBy(r.names, config, r.lane ? { kind: 'lane', lane: r.lane } : { kind: 'lead' }),
   }));
   const granted = approvalsInForce(resolve('.'));
   // CARD-6: every approval given, newest first.
@@ -1046,6 +1088,159 @@ function requests() {
 }
 
 /**
+ * OWN-1: the decisions waiting on the person in this session (the lead's questions, the approvals its
+ * refusals asked for), and a count of those in each other session; `--all` lists every session's.
+ */
+function decisionsCommand() {
+  const { config } = load();
+  const root = resolve('.');
+  if (rest.length) die('code-kit decisions [--json] [--all]');
+  const stories =
+    config.docs?.specs && config.docs?.plan
+      ? buildStatus('.', config, base(config, false), tracked()).stories
+      : [];
+  if (flag('--all')) {
+    const all = openDecisions(root, { stories });
+    if (flag('--json')) return out(JSON.stringify(all, null, 2));
+    if (!all.length) return out('Nothing waits on the person.');
+    for (const d of all)
+      out(
+        `${pad(d.member ?? 'any session', 30)} ${pad(d.kind, 8)} ${d.what}${d.count > 1 ? ` (asked ${d.count} times)` : ''}`,
+      );
+    return;
+  }
+  const r = decisionsFor(root, callerSession, { stories });
+  if (flag('--json')) return out(JSON.stringify(r, null, 2));
+  if (!r.mine.length) out('Nothing waits on the person in this session.');
+  for (const d of r.mine)
+    out(`${pad(d.kind, 8)} ${d.what}${d.count > 1 ? ` (asked ${d.count} times)` : ''}`);
+  for (const e of r.elsewhere)
+    out(`${e.count} decision${e.count === 1 ? '' : 's'} in session ${e.member}, answered there.`);
+}
+
+/**
+ * SESS-1, SESS-2: the sessions working the project, which one leads, and each one's task; `beat` (the mod,
+ * while a session is open) says the session is still there; `lead` makes the caller's session the lead.
+ */
+function sessionsCommand() {
+  load();
+  const root = resolve('.');
+  const [sub] = rest;
+  if (sub === 'beat' || sub === 'lead') {
+    if (!callerSession) die(`code-kit sessions ${sub} needs the session: --session <id>.`);
+    if (sub === 'beat') return seeSession(root, callerSession) && out('Seen.');
+    const was = leadSession(root);
+    makeLead(root, callerSession);
+    return out(
+      `This session (${shortSession(callerSession)}) leads the project now${was && was.id !== callerSession ? `; ${shortSession(was.id)} is a working session` : ''}.`,
+    );
+  }
+  if (sub !== undefined) die('code-kit sessions [--json] | sessions lead | sessions beat');
+  const all = sessions(root).filter((s) => s.live || s.task);
+  if (flag('--json'))
+    return out(
+      JSON.stringify(
+        all.map((s) => ({ ...s, member: memberOf(s) })),
+        null,
+        2,
+      ),
+    );
+  if (!all.length) return out('No session is working this project.');
+  for (const s of all)
+    out(
+      `${pad(memberOf(s), 30)} ${pad(s.live ? s.role : 'ended', 8)} ${s.task ? `${s.task.title}${s.task.paths?.length ? ` (${s.task.paths.join(', ')})` : ''}${s.live ? '' : ', stale'}` : '-'}${s.id === callerSession ? '  ← this session' : ''}`,
+    );
+}
+
+/**
+ * SESS-4: an ad hoc task, for a session working without a story: recorded with the paths it leases, so
+ * the other sessions' agents leave them alone; `done` ends it; `take <session>` moves a stale one here.
+ */
+function taskCommand() {
+  load();
+  const root = resolve('.');
+  const [sub] = rest;
+  if (!callerSession)
+    die(
+      'code-kit task needs the session: run it from Claude Code (CLAUDE_CODE_SESSION_ID), or pass --session <id>.',
+    );
+  if (sub === 'done') {
+    const had = readSession(root, callerSession)?.task;
+    if (!had) return out('This session has no task.');
+    setTask(root, callerSession, null);
+    return out(`Done: "${had.title}". Its paths are free for other sessions.`);
+  }
+  if (sub === 'take') {
+    if (rest.length !== 2) die('code-kit task take <session>');
+    const r = takeTask(root, rest[1], callerSession);
+    if (!r.ok) die(r.why);
+    return out(
+      `This session took over "${r.task.title}" from ${memberOf(r.from)}${r.task.paths?.length ? `, leasing ${r.task.paths.join(', ')}` : ''}.`,
+    );
+  }
+  if (sub === undefined) {
+    const s = readSession(root, callerSession);
+    if (flag('--json')) return out(JSON.stringify(s?.task ?? null));
+    return out(
+      s?.task
+        ? `"${s.task.title}"${s.task.paths?.length ? `, leasing ${s.task.paths.join(', ')}` : ''}.`
+        : 'This session has no task.',
+    );
+  }
+  if (rest.length !== 1)
+    die(
+      'code-kit task "<what you\'re doing>" --touches "<globs>" | task done | task take <session>',
+    );
+  const paths = (touchesGiven ?? '')
+    .split(',')
+    .map((g) => g.trim())
+    .filter(Boolean);
+  const clash = sessions(root).find(
+    (s) =>
+      s.live &&
+      s.id !== callerSession &&
+      s.task?.paths?.some((p) => paths.some((q) => globsOverlap(p, q))),
+  );
+  if (clash)
+    die(
+      `Another session (${memberOf(clash)}) is working on "${clash.task.title}", leasing ${clash.task.paths.join(', ')}. Pick paths it doesn't lease, or wait until it's done.`,
+    );
+  const branch = currentBranch(root) ?? null;
+  setTask(root, callerSession, { title: sub.trim(), paths, branch });
+  out(
+    `This session is working on "${sub.trim()}"${paths.length ? `, leasing ${paths.join(', ')}` : ''}. \`code-kit task done\` when it's finished.`,
+  );
+}
+
+/**
+ * SCHED-1: the lanes claimed now, one story each across every session, or one lane released: for an
+ * agent the lead saw stop without finishing, so its lane can take the next story.
+ */
+function lanesCommand() {
+  const { config } = load();
+  const root = resolve('.');
+  if (rest[0] === 'release') {
+    const lane = rest[1];
+    if (!lane || rest.length !== 2) die('code-kit lanes release <lane>');
+    if (!config.lanes[lane])
+      die(`There is no lane "${lane}". Lanes: ${Object.keys(config.lanes).join(', ')}.`);
+    const held = laneClaim(root, lane);
+    if (!releaseLane(root, lane)) return out(`The ${lane} lane isn't claimed.`);
+    return out(
+      `Released the ${lane} lane${held.story ? ` (it was running ${held.story})` : ''}. Its next story can start.`,
+    );
+  }
+  if (rest.length) die('code-kit lanes [--json] | lanes release <lane>');
+  const claims = laneClaims(root);
+  if (flag('--json')) return out(JSON.stringify(claims, null, 2));
+  if (!claims.length) return out('No lane is running a story.');
+  for (const c of claims)
+    out(
+      `${c.lane.padEnd(12)} ${(c.story ?? 'a story').padEnd(8)} session ${shortSession(c.session) ?? '?'}, since ${c.since.slice(0, 16).replace('T', ' ')} UTC${c.stale ? ' (stale: no agent seen to finish in 12 hours)' : ''}`,
+    );
+}
+
+/**
  * The harness settings (`harness` in the config): listed, or one changed as the person's own act. The
  * change is written to the config and given a kit approval with the person's reason, so the commit that
  * keeps it logs their reason. The hooks refuse `settings set` from every agent.
@@ -1056,33 +1251,50 @@ function settings() {
     const [, key, value] = rest;
     if (!key || value === undefined)
       die('code-kit settings set <key> <value> --reason "<why>" [--via pane]');
-    if (!(key in SETTINGS))
-      die(`${key} isn't a harness setting. They are: ${Object.keys(SETTINGS).join(', ')}.`);
+    const approvalKey = key.startsWith('approvals.');
+    if (!(key in SETTINGS) && !approvalKey)
+      die(
+        `${key} isn't a setting. They are: ${Object.keys(SETTINGS).join(', ')}, and approvals.<name> (see code-kit settings).`,
+      );
     if (!reason?.trim()) die('Give a reason with --reason "…": the approval log keeps it.');
-    const changed = withSetting(raw, key, parseSetting(key, value));
+    // WHO-3: who decides an approval is the person's setting too, written out in full.
+    const changed = approvalKey
+      ? withApprovalSetting(raw, config, key, value)
+      : withSetting(raw, key, parseSetting(key, value));
+    if (!changed)
+      die(
+        `${key} isn't an approval setting, or ${JSON.stringify(value)} isn't one of its values. See code-kit settings.`,
+      );
     const problems = validate(changed);
     if (problems.length) die(`Nothing changed: ${problems.join('; ')}`);
     writeFileSync(resolve(file), `${JSON.stringify(changed, null, 2)}\n`);
     const mark =
       via === 'pane' ? '(changed in the code-kit pane)' : '(changed with code-kit settings)';
     grantApprovals(resolve('.'), ['kit'], null, reason, { kit: mark });
+    const now = approvalKey
+      ? approvalSettings(effectiveConfig(changed, resolve('.'))).find((r) => r.key === key)?.value
+      : settingOf(changed.harness, key);
     return out(
-      `Set harness.${key} to ${JSON.stringify(settingOf(changed.harness, key))}. Commit ${file} to keep it; the approval log will carry your reason.`,
+      `Set ${approvalKey ? key : `harness.${key}`} to ${JSON.stringify(now)}. Commit ${file} to keep it; the approval log will carry your reason.`,
     );
   }
   if (rest.length) die('code-kit settings [--json] | settings set <key> <value> --reason "<why>"');
-  const rows = Object.entries(SETTINGS).map(([key, s]) => ({
-    key,
-    value: settingOf(config.harness, key),
-    default: s.default,
-    about: s.about,
-    // Chosen in the config, or the default standing in.
-    set: settingOf(raw.harness, key) !== undefined,
-  }));
+  const rows = [
+    ...Object.entries(SETTINGS).map(([key, s]) => ({
+      key,
+      value: settingOf(config.harness, key),
+      default: s.default,
+      about: s.about,
+      section: 'Harness',
+      // Chosen in the config, or the default standing in.
+      set: settingOf(raw.harness, key) !== undefined,
+    })),
+    ...approvalSettings(config),
+  ];
   if (flag('--json')) return out(JSON.stringify(rows, null, 2));
   for (const r of rows)
     out(
-      `${r.key.padEnd(26)} ${JSON.stringify(r.value).padEnd(14)} ${r.value === r.default ? '' : `(default ${JSON.stringify(r.default)}) `}${r.about}`,
+      `${r.key.padEnd(44)} ${JSON.stringify(r.value).padEnd(14)} ${r.value === r.default ? '' : `(default ${JSON.stringify(r.default)}) `}${r.about}`,
     );
 }
 
@@ -1264,7 +1476,14 @@ function status() {
   if (flag('--json')) {
     out(
       JSON.stringify(
-        { base: from, stories, requirements: byRequirement, problems, drift },
+        {
+          base: from,
+          stories,
+          slices: slicesOf(stories),
+          requirements: byRequirement,
+          problems,
+          drift,
+        },
         null,
         2,
       ),
@@ -1282,8 +1501,17 @@ function status() {
             ? s.branch
             : '';
     out(
-      `  ${pad(s.id, 7)} ${pad(s.state, 12)} ${pad(s.lane || '-', 10)} ${pad(s.requirements.join(', '), 24)} ${detail}`.trimEnd(),
+      `  ${pad(s.id, 7)} ${pad(s.state, 12)} ${pad(s.lane || '-', 10)} ${pad(s.requirements.join(', '), 24)} ${detail}${s.slice ? `${detail ? ' · ' : ''}slice ${s.slice}` : ''}`.trimEnd(),
     );
+  }
+  // SCHED-2: the slices, in plan order, and which are open.
+  const slices = slicesOf(stories);
+  if (slices.length) {
+    out('\nSlices:');
+    for (const sl of slices)
+      out(
+        `  ${pad(sl.name, 24)} ${pad(sl.done ? 'done' : sl.open ? 'open' : 'not started', 12)} ${sl.stories.join(', ')}`,
+      );
   }
   out('\nRequirements:');
   for (const r of byRequirement) {
@@ -1404,7 +1632,7 @@ async function approve(given) {
     const rules = config.approvals.delegate;
     if (!rules)
       die(
-        'This project delegates no approvals to the lead ("approvals.delegate" isn\'t set). Ask the person.',
+        'This project keeps every approval for the person ("approvals.delegate" is false). Ask the person.',
       );
     // HELM-3: the lead approves a package for a story it has read, not by default.
     const packages = names.filter((n) => n.startsWith(DEPENDENCY_APPROVAL));
@@ -1421,8 +1649,16 @@ async function approve(given) {
       : null;
     const outside = [];
     for (const name of names) {
+      // WHO-2: a weakened test on a lane's branch, after the lead's review; on its own, the person's.
       if (name === TESTS_APPROVAL) {
-        outside.push(`${name}: weakening a test is the person's to allow, and is never delegated`);
+        if (!rules.tests) outside.push(`${name}: weakened tests aren't delegated`);
+        else if (!laneName)
+          outside.push(
+            `${name}: on your own branch a weakened test is the person's; you approve one only for a lane, with --lane`,
+          );
+        else if (!storyGiven)
+          outside.push(`${name}: name the story whose branch weakens the test, with --story ST-n`);
+        else marks[name] = delegatedMark(`tests, reviewed by the lead, for ${story.id}`);
         continue;
       }
       if (name.startsWith(DEPENDENCY_APPROVAL)) {
@@ -1943,6 +2179,7 @@ function askCommand() {
   if (flag('--blocks') && !storyGiven) die('--blocks holds a story: name it with --story ST-n.');
   const r = askQuestion(root, {
     by: 'lead',
+    session: callerSession,
     question,
     why: whyGiven ?? null,
     story: storyGiven ?? null,
@@ -2034,7 +2271,9 @@ function loopCommand() {
     const r = claimLead(root, sessionId, { take: flag('--take') });
     if (!r.ok)
       die(
-        `Another session (${r.lead.session}, renewed ${r.lead.at}) runs the lead loop in this project. Leave it there, or take it over with --take.`,
+        r.lead
+          ? `Another session (${shortSession(r.lead.session)}, seen ${r.lead.at}) leads this project and runs its loop. Leave it there, or lead from here with --take.`
+          : 'No session leads this project now, and this is a working session: the loop runs only in the lead session. Lead from here with --take.',
       );
     return out('This session runs the lead loop.');
   }
@@ -2043,9 +2282,11 @@ function loopCommand() {
       'code-kit loop [--json] | loop pause | loop resume | loop lead --session <id> [--take] | loop release --session <id>',
     );
   const state = readLoop(root);
+  // SESS-2: with --session, whether that session leads the project or works in it.
+  const role = sessionId ? (readSession(root, sessionId)?.role ?? null) : null;
   out(
     flag('--json')
-      ? JSON.stringify(state)
+      ? JSON.stringify({ ...state, ...(sessionId ? { role } : {}) })
       : `${state.paused ? `The lead loop is paused (since ${state.at}).` : 'The lead loop is running.'}${state.lead ? ` Session ${state.lead.session} runs it.` : ''}`,
   );
 }
@@ -2247,6 +2488,10 @@ const commands = {
   requests,
   stops,
   settings,
+  lanes: lanesCommand,
+  sessions: sessionsCommand,
+  decisions: decisionsCommand,
+  task: taskCommand,
   hold: () => (rest.length === 1 ? hold(rest[0]) : usage()),
   queue,
   team: teamCommand,
@@ -2269,7 +2514,7 @@ const commands = {
   diff,
   baseline,
   graph,
-  who: () => (rest.length ? who(rest) : usage()),
+  who: () => (rest.length ? who(rest) : whoAmI()),
 };
 function usage() {
   die(
@@ -2288,6 +2533,9 @@ function usage() {
       '              | report [--json] | report send|discard <id>\n' +
       '              | stops [--session id] [--json] | sent-back <branch> [--reason "…"]\n' +
       '              | settings [--json] | settings set <key> <value> --reason "…" [--via pane]\n' +
+      '              | lanes [--json] | lanes release <lane> | sessions [--json] | sessions lead\n' +
+      '              | who | task "<what>" --touches globs | task done | task take <session>\n' +
+      '              | decisions [--json] [--all]\n' +
       '              | hold <id> [--minutes N] | hold <id> --answer approved|refused\n' +
       '              | queue [--json] | queue add|drop <branch> | queue rules | queue merge --delegated|--person\n' +
       '              | loop [--json] | loop pause|resume | loop lead|release --session id [--take]\n' +

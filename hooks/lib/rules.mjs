@@ -81,19 +81,21 @@ export const delegateCommand = (names, lane) =>
   }>"`;
 
 /**
- * HELM-1: whether the lead grants approval `name` itself, by the project's delegated rules. Weakening a
- * test is always the person's; a package is the lead's where dependencies are delegated.
+ * HELM-1, WHO-1: whether the lead grants approval `name` itself, by the project's delegated rules. A
+ * package is the lead's where dependencies are delegated. WHO-2: a weakened test is the lead's on a lane's
+ * branch, where tests are delegated, and the person's on the lead's own: nobody else reviews those.
  */
-export function leadDecides(name, config) {
+export function leadDecides(name, config, actor) {
   const rules = config?.approvals?.delegate;
-  if (!rules || name === 'tests') return false;
+  if (!rules) return false;
+  if (name === 'tests') return rules.tests === true && actor?.kind === 'lane';
   if (String(name).startsWith(DEPENDENCY_APPROVAL)) return Boolean(rules.dependencies);
   return (rules.protected ?? []).includes(name);
 }
 
 /** HELM-2: whose decision approvals `names` are: the lead's when it may grant every one, else the person's. */
-export const decidedBy = (names, config) =>
-  [names].flat().every((n) => leadDecides(n, config)) ? 'lead' : 'person';
+export const decidedBy = (names, config, actor) =>
+  [names].flat().every((n) => leadDecides(n, config, actor)) ? 'lead' : 'person';
 
 /**
  * HELM-2: what an actor refused for `names` does next, after the refusal's first line. A lane asks the
@@ -108,7 +110,7 @@ export function askHowTo(names, actor, root, config, { allows, need } = {}) {
     (pkg
       ? 'the package, the story and requirement that need it, what the project already has that you checked, and anything lighter that would do'
       : 'the file, the story and requirement that need the change, and what you checked first');
-  if (decidedBy(names, config) === 'lead') {
+  if (decidedBy(names, config, actor) === 'lead') {
     if (actor?.kind === 'lead')
       return `You decide this as the lead. Approve it only if the story's requirements need it${pkg ? ', nothing the project already depends on does the job, and it fits the principles and the layer it goes in' : ' and it keeps to the spec and the architecture'}:\n  Decided by the lead: ${delegateCommand(names)}`;
     return `The lead decides this, not the person. Hand the lead a change request and stop: ${brief}. The lead approves it, or tells you what to use instead.\n  Decided by the lead: ${delegateCommand(names, lane)}`;
@@ -278,19 +280,21 @@ export function currentBranch(root) {
 
 /** Who is acting: { kind: 'lead' | 'lane' | 'readonly', lane?, label }. */
 export function actorFor(input, root, config) {
+  // OWN-1: the session it acts in, whose decisions what it's refused become.
+  const session = input.session_id ?? null;
   const agent = input.agent_type;
   if (agent) {
     const lane = Object.keys(config.lanes).find((l) => config.lanes[l].agent === agent);
     return lane
-      ? { kind: 'lane', lane, label: `${agent} (${lane} lane)` }
-      : { kind: 'readonly', label: agent };
+      ? { kind: 'lane', lane, label: `${agent} (${lane} lane)`, session }
+      : { kind: 'readonly', label: agent, session };
   }
   const laneFile = join(root, LANE_FILE);
   if (existsSync(laneFile)) {
     const lane = readFileSync(laneFile, 'utf8').trim();
-    return { kind: 'lane', lane, label: `${lane} lane worktree` };
+    return { kind: 'lane', lane, label: `${lane} lane worktree`, session };
   }
-  return { kind: 'lead', label: 'lead session' };
+  return { kind: 'lead', label: 'lead session', session };
 }
 
 /** Where approvals live: the main checkout's approvals folder, shared by all of its worktrees. */
@@ -358,6 +362,7 @@ export function useApproval(root, name, actor) {
 const requestsFile = (root) => join(projectWorktrees(root)[0] ?? root, REQUESTS_FILE);
 const sameRequest = (a, b) =>
   a.actor === b.actor &&
+  (a.session ?? null) === (b.session ?? null) &&
   a.what === b.what &&
   [...a.names].sort().join() === [...b.names].sort().join();
 
@@ -423,6 +428,7 @@ export function recordRequest(root, actor, names, what, why, now = Date.now(), e
       at: new Date(now).toISOString(),
       actor: actor?.label ?? 'unknown',
       ...(actor?.kind === 'lane' ? { lane: actor.lane } : {}),
+      ...(actor?.session ? { session: actor.session } : {}),
       names: [names].flat(),
       what: String(what).slice(0, 200),
       why: String(why).slice(0, 300),
@@ -761,7 +767,7 @@ export function writeProblem(actor, rel, root, config) {
   if (guarded && actor.kind !== 'lead' && !approval(root, guarded.approval, actor)) {
     recordRequest(root, actor, guarded.approval, rel, guarded.why);
     const who =
-      decidedBy(guarded.approval, config) === 'lead'
+      decidedBy(guarded.approval, config, actor) === 'lead'
         ? "the lead's approval"
         : "a person's approval";
     return `${rel} is ${guarded.why} and needs ${who}.${noteFor(root, config, { kind: 'protected', name: guarded.approval, glob: guarded.glob })} ${askHowTo(guarded.approval, actor, root, config)}`;

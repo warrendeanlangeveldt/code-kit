@@ -698,37 +698,38 @@ test('LOOP-12 a design step is held once all its stories were handed to the lead
   assert.equal(designHandedOver({ step: 'dispatch', args: 'ST-21' }, handed), false);
 });
 
-test("LOOP-8 and DECIDE-4 a repeated step's card says why it's the person's, and the dialog asks it", async () => {
-  const { decisionCards, nativeChoice } = await import('../hooks/mod/decisions.mjs');
+test("LOOP-8 and WHO-4 a step the lead didn't take is a note in the band, not a decision", async () => {
+  const { decisionCards } = await import('../hooks/mod/decisions.mjs');
   const check = { exists: true, valid: true, problems: [], lanes: {} };
   const state = projectState(check, { problems: [], stories: [] }, null, new Set());
   const loop = {
     state: 'running',
-    proposal: { label: 'Design ST-21, ST-22', prompt: 'p', repeated: 2 },
+    proposal: { label: 'Design ST-21, ST-22', prompt: 'p', repeated: 3 },
   };
-  const [card] = decisionCards(bandLines({ state, requests: { open: [] }, stops: [], loop }), {
-    state,
-  });
-  assert.equal(
-    card.why,
-    "The lead was asked to do this 2 times and it's still the next step, so something stopped it.",
-  );
+  const lines = bandLines({ state, requests: { open: [] }, stops: [], loop });
+  const stuck = lines.find((l) => l.kind === 'stuck');
+  assert.equal(stuck.text, 'Design ST-21, ST-22: still next after 3 prompts to the lead');
   assert.deepEqual(
-    card.options.map((o) => o.label),
+    stuck.actions.map((a) => a.label),
     ['Ask again'],
   );
-  const choice = nativeChoice(card);
-  assert.equal(
-    choice.question,
-    "The lead was asked to do this 2 times and it's still the next step, so something stopped it. Design ST-21, ST-22: still next after 2 prompts. Ask the lead again?",
+  assert.deepEqual(decisionCards(lines, { state }), []);
+  // A lane stalled past its restarts, and a step the lead said it couldn't take, are notes too.
+  const notes = bandLines({
+    state,
+    requests: { open: [] },
+    stops: [],
+    loop: {
+      state: 'running',
+      flagged: [{ lane: 'web', story: 'ST-4', count: 3 }],
+      waiting: { kind: 'blocked', label: 'Review ST-4', reason: 'CI is down' },
+    },
+  });
+  assert.deepEqual(decisionCards(notes, { state }), []);
+  assert.ok(
+    notes.some((l) => l.text === 'web stalled 3 times on ST-4: the lead decides how it goes on'),
   );
-  assert.deepEqual(
-    choice.options.map((o) => [o.label, o.act]),
-    [
-      ['Ask again', 'go'],
-      ['Not now', null],
-    ],
-  );
+  const { nativeChoice } = await import('../hooks/mod/decisions.mjs');
   // What the person stopped, or a reply with no question in it, isn't asked over their typing.
   for (const waiting of [{ kind: 'stopped' }, { kind: 'person', reason: 'r' }]) {
     const [c] = decisionCards(
@@ -950,6 +951,48 @@ test('HOLD-1 and HELM-6 a protected file refused at commit is holdable, one the 
   assert.equal(holdable('some other failure'), null);
 });
 
+test('SCHED-1 and SCHED-2 one story per free lane, the open slice first, then the next, then ahead', async () => {
+  const { pickPerLane, slicesOf } = await import('../hooks/lib/schedule.mjs');
+  const st = (id, lane, state, slice) => ({ id, lane, state, slice: slice ?? null });
+  const stories = [
+    st('ST-1', 'api', 'done', 'Book a class'),
+    st('ST-2', 'api', 'ready', 'Book a class'),
+    st('ST-3', 'web', 'review', 'Book a class'),
+    st('ST-4', 'web', 'ready', 'Pay for a class'),
+    st('ST-5', 'web', 'ready', 'Pay for a class'),
+    st('ST-6', 'mobile', 'ready', 'Pay for a class'),
+    st('ST-7', 'api', 'ready', 'Pay for a class'),
+  ];
+  assert.deepEqual(
+    slicesOf(stories).map((s) => [s.name, s.open, s.done]),
+    [
+      ['Book a class', true, false],
+      ['Pay for a class', false, false],
+    ],
+  );
+  const ready = ['ST-2', 'ST-4', 'ST-5', 'ST-6', 'ST-7'];
+  const one = pickPerLane(stories, { ready, open: 1 });
+  // The api lane takes the open slice's story before the next slice's; web and mobile have none in it.
+  assert.deepEqual(one.pick, ['ST-2', 'ST-4', 'ST-6']);
+  assert.deepEqual(one.ahead, [
+    { id: 'ST-4', slice: 'Pay for a class' },
+    { id: 'ST-6', slice: 'Pay for a class' },
+  ]);
+  assert.deepEqual(one.waiting, ['ST-5', 'ST-7']);
+  // With room for a second slice, the next one opens instead of being ahead.
+  const two = pickPerLane(stories, { ready, open: 2 });
+  assert.deepEqual(two.ahead, []);
+  assert.deepEqual(two.opened, ['Pay for a class']);
+  // A busy lane takes nothing; a sent-back story goes first in its lane.
+  const busy = pickPerLane(stories, {
+    ready,
+    fixes: ['ST-3'],
+    busy: new Set(['api']),
+    open: 1,
+  });
+  assert.deepEqual(busy.pick, ['ST-3', 'ST-6']);
+});
+
 test('SET-1 the harness settings: defaults, validation and typed values', async () => {
   const { harnessSettings, harnessProblems, parseSetting } =
     await import('../hooks/lib/harness.mjs');
@@ -961,6 +1004,7 @@ test('SET-1 the harness settings: defaults, validation and typed values', async 
       reviewer: { on: false, model: 'sonnet' },
       lanes: { model: null, contextLimit: 250000 },
     },
+    slices: { open: 1 },
     background: { pauseAtPercent: 80 },
     compact: { at: 40, milestone: 'ask' },
     notify: { on: true },

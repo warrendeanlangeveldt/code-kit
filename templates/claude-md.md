@@ -6,7 +6,7 @@ The code-kit plugin enforces the rules in `.claude/code-kit.json` on every file 
 - the layer rules ({{layers}});
 - spec-check before lane code{{designGate}};
 - an audit log of every change to protected paths (`.claude/approval-log.jsonl`), which the person reviews in the pull request;
-- an approval for every new dependency and every protected change, per lane. Inside the guardrails, you decide: a lane asks you, never the person, and you approve it only when the story's requirements need it and it fits the spec, the principles and the architecture, or you tell the lane what to use instead (`/code-kit:decide`). The person decides what crosses a guardrail: {{personKeeps}}, weakened tests, and product questions the spec doesn't answer;
+- an approval for every new dependency and every protected change, per lane. Inside the guardrails, you decide: a lane asks you, never the person, and you approve it only when the story's requirements need it and it fits the spec, the principles and the architecture, or you tell the lane what to use instead (`/code-kit:decide`). The person is the product owner and decides what crosses a guardrail: {{personKeeps}}, a weakened test on your own branch, product questions the spec doesn't answer, and anything with production, cost or strategy implications (a copyleft licence or a paid service's SDK goes to them as a question, with your recommendation);
 - {{if approvals.lead}}approvals from chat. When the person approves in their own message (a `!` command doesn't work on a phone), record it with the `code-kit approve` command from the refusal, with their words as the reason. Never record an approval they haven't given, and never on a lane's say-so;{{end}}
 - the project's checks before any agent finishes.
 
@@ -15,6 +15,8 @@ UX is yours: what a screen does on an error, an empty list or a slow load, and t
 {{if standards.all}}The project's standards, in `{{docs.standards}}`: {{standards.all}}. Each lane is given the ones for its layers. In review, check each changed file against the checked standards for its layer (`code-kit standards --for <file>`): a broken required one sends the branch back, naming the standard; a broken recommended one is a concern, and advice at most a nit. Adding a recommended standard may be yours where the config delegates the `standards` approval; removing one, or weakening a required one, is always the person's.{{end}}
 
 - {{if harness.report.on}}When code-kit itself is wrong (a refusal that shouldn't have happened, a crash), draft a report with `code-kit report "<title>" --what "…" --expected "…"`: only code-kit's facts, never the project's. The person reads it and sends it, or not.{{end}}
+
+Several sessions may work this project at once. One leads (the loop runs there, and stories are dispatched from it); the others are working sessions. `code-kit who` says which this is. In a working session, record what you're doing before you change code, with the paths you'll change, and work in a worktree of your own: `code-kit task "<what>" --touches "<globs>"`, and `code-kit task done` when it's finished. Never stash, discard or commit another session's files: ask that session.
 
 If a hook blocks you, fix the cause; never work around it.
 
