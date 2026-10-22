@@ -2,6 +2,18 @@
 
 What changed in each release of code-kit, newest first. Versions follow the plugin manifest and the npm package `@warren-dean/code-kit`. Each release is also on [GitHub Releases](https://github.com/warrendeanlangeveldt/code-kit/releases).
 
+## 0.22.0 (2026-10-23)
+
+A team's roles are settled by default: the lead decides what's technical, a lane runs one story at a time, and several sessions can work one project without their decisions crossing.
+
+- With no `approvals.delegate`, the lead decides new packages within the registry rules, protected changes other than the specs, designs, CI and the kit, merges into the base, and a weakened test on a lane's branch after its review. A weakened test on the lead's own branch is still yours. Change who decides each one in the Settings tab's Approvals section, or with `code-kit settings set approvals.<name> lead|person`.
+- The loop asks the lead, not you, about steps it didn't take and lanes that stalled. Those show in the band as notes.
+- A lane runs one story at a time across the whole project. Starting a second agent for a busy lane is refused, and `code-kit lanes` shows what each lane is running.
+- A story can belong to a slice (`**Slice:** <name>`). Lanes build the open slice's stories first (`harness.slices.open`, 1 by default), and take other ready work when the slice has none for them.
+- Several sessions in one project: one leads and runs the loop, and the others are working sessions that stay quiet. A working session records its task and the paths it changes with `code-kit task`, and works in a worktree of its own. When git is blocked by another session's uncommitted files, the refusal names that session. `code-kit who`, `code-kit sessions` and `/code-kit:lead` are new.
+- A decision belongs to the session that raised it. It's asked and answered only there, and other sessions see a count. This fixes the lead's questions appearing in every open session, and answers reaching the wrong lead. Calls Claude Code's own permission check refused no longer pile up as decisions; they show in the Lanes pane.
+- Reports to a team provider now carry the plan's slices (report version 3).
+
 ## 0.21.0 (2026-10-21)
 
 A project can keep its engineering rules as named standards, and code-kit applies each as firmly as it can.
