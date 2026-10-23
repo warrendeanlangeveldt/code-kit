@@ -44,7 +44,6 @@
 // --config <file> reads a draft (.claude/code-kit.draft.json) instead of .claude/code-kit.json.
 import { execFileSync, spawnSync } from 'node:child_process';
 import {
-  copyFileSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -138,7 +137,13 @@ import {
   reviewerOf,
 } from '../hooks/lib/rules.mjs';
 import { DEPENDENCY_APPROVAL, dependencyApproval } from '../hooks/lib/dependencies.mjs';
-import { dependencyRuleProblems, npmFacts, packageOf } from '../hooks/lib/registry.mjs';
+import {
+  PYPI_MANAGERS,
+  dependencyRuleProblems,
+  npmFacts,
+  packageOf,
+  pypiFacts,
+} from '../hooks/lib/registry.mjs';
 import { heldTo, laneOfBranch, verifyBranch } from '../hooks/lib/verify.mjs';
 import { skippedLine } from '../hooks/lib/checks.mjs';
 import { TESTS_APPROVAL } from '../hooks/lib/regression.mjs';
@@ -155,6 +160,14 @@ import {
   takeTask,
 } from '../hooks/lib/sessions.mjs';
 import { globsOverlap } from '../hooks/lib/teamfacts.mjs';
+import {
+  cleanOf,
+  discardWorktree,
+  keptBecause,
+  pruneWorktrees,
+  removeWorktree,
+  worktrees,
+} from '../hooks/lib/worktrees.mjs';
 import { decisionsFor, openDecisions } from '../hooks/lib/decisionstore.mjs';
 import {
   appliesTo,
@@ -575,10 +588,28 @@ const firstMerge = (into, branch) =>
 
 /** Why a merge didn't happen: `refused` (the rules), `verify` (problems) or `conflict`. */
 class MergeStop extends Error {
-  constructor(kind, message) {
+  /** `first`: the first problem's first line, for the queue's record of why (#57). */
+  constructor(kind, message, first = null) {
     super(message);
     this.kind = kind;
+    this.first = first;
   }
+}
+
+/**
+ * #70: the ecosystem a lane's packages come from, by the manifests in its paths: `uv` for a lane with a
+ * pyproject.toml, requirements file or uv.lock and no package.json, otherwise `npm`.
+ */
+function laneEcosystem(config, lane) {
+  const paths = lane ? (config.lanes[lane]?.paths ?? []) : (config.lead?.paths ?? []);
+  const tracked = (spawnSync('git', ['ls-files'], { encoding: 'utf8' }).stdout ?? '')
+    .split('\n')
+    .filter((f) => f && matchesAny(f, paths));
+  const named = (re) => tracked.some((f) => re.test(f.split('/').at(-1)));
+  return named(/^(pyproject\.toml|uv\.lock|requirements[\w.-]*\.txt|Pipfile)$/) &&
+    !named(/^package\.json$/)
+    ? 'uv'
+    : 'npm';
 }
 
 /** Who merges, from the flags: the lead within the delegated rules, or the person. */
@@ -653,9 +684,9 @@ function mergeOne(branch, config, byPerson, commit = null) {
       }
     }
   };
-  const fail = (message, kind = 'refused') => {
+  const fail = (message, kind = 'refused', first = null) => {
     cleanup();
-    throw new MergeStop(kind, message);
+    throw new MergeStop(kind, message, first);
   };
   const worktree = (b, detach) => {
     const dir = mkdtempSync(join(tmpdir(), 'code-kit-merge-'));
@@ -676,7 +707,7 @@ function mergeOne(branch, config, byPerson, commit = null) {
         'moved',
       );
     const lane = laneOfBranch(branch, config);
-    const { changed, found, skipped } = verifyBranch({
+    const { changed, found, skipped, unfinished } = verifyBranch({
       root: verifyIn,
       base: into,
       config,
@@ -687,10 +718,17 @@ function mergeOne(branch, config, byPerson, commit = null) {
     const problems = Object.entries(VERIFY_GROUPS).flatMap(([key, title]) =>
       found[key].map((p) => `${title}: ${p.split('\n').join('\n    ')}`),
     );
+    // #62: a check that only ran out of time says nothing against the branch: it's tried again.
+    if (problems.length === 1 && unfinished)
+      fail(
+        `Nothing was merged: a check on ${branch} didn't finish, which says nothing against the branch (checked in ${verifyIn}):\n  ${problems[0]}\nIt stays at the head of the queue; merge again once fewer suites are running.`,
+        'unfinished',
+      );
     if (problems.length)
       fail(
         `Nothing was merged. code-kit verify found ${problems.length} problem(s) on ${branch} (checked in ${verifyIn}):\n  ${problems.join('\n  ')}\nSend it back to its lane, or fix it, then merge again.`,
         'verify',
+        problems[0].split('\n')[0],
       );
     const mergeIn = checkedOut(into) ?? worktree(into, false);
     clean(mergeIn, into);
@@ -720,21 +758,11 @@ function mergeOne(branch, config, byPerson, commit = null) {
     const team = teamOf(config);
     const story = storyOfBranch(branch);
     if (team && story) teamProvider(resolve('.'), team).release(story, { merged: true });
-    // A lane agent's worktree has done its work once its branch is merged: removed when it holds
-    // nothing uncommitted (the branch stays), so finished lanes don't pile up checkouts.
-    let removed = '';
-    const agentTree = checkedOut(branch);
-    if (
-      agentTree?.includes('/.claude/worktrees/') &&
-      !g(agentTree, 'status', '--porcelain').trim()
-    ) {
-      try {
-        g(root, 'worktree', 'remove', agentTree);
-        removed = ` Removed its worktree, ${agentTree}.`;
-      } catch {
-        // in use, or locked: left as it is
-      }
-    }
+    // LEAN-8: the merged branch's worktree, and any other that's done with, go now.
+    const pruned = pruneWorktrees(root, config).removed;
+    const removed = pruned.length
+      ? ` Removed ${pruned.length} worktree${pruned.length === 1 ? '' : 's'} that ${pruned.length === 1 ? 'was' : 'were'} done with.`
+      : '';
     return {
       into,
       message: `Merged ${branch} into ${into}: verify passed on ${changed.length} file(s)${lane ? `, held to ${heldTo(lane)}` : ''}, at ${tip.slice(0, 7)}.${skipped.length ? ` ${notRun(skipped)}` : ''}${removed}`,
@@ -800,6 +828,7 @@ function queue() {
       if (e.kind === 'refused') die(e.message);
       // A branch that moved after its review leaves the queue for the lead to review it again; it
       // isn't sent back, since nothing is wrong with it yet.
+      if (e.kind === 'unfinished') die(e.message);
       if (e.kind === 'moved') {
         settle(root, head.branch, 'moved', 'changed after its review');
         die(`${e.message}\n${head.branch} leaves the queue until then.`);
@@ -809,7 +838,7 @@ function queue() {
       const why =
         e.kind === 'conflict'
           ? `conflicts with ${into}${after ? ` after ${after}` : ''}`
-          : `fails verify against ${into}${after ? ` after ${after}` : ''}`;
+          : `fails verify against ${into}${after ? ` after ${after}` : ''}${e.first ? `: ${e.first}` : ''}`;
       const sha = execFileSync('git', ['rev-parse', '--verify', `${head.branch}^{commit}`], {
         encoding: 'utf8',
       }).trim();
@@ -1669,19 +1698,23 @@ async function approve(given) {
           continue;
         }
         const pkg = packageOf(name);
-        // HELM-3: the registry rules are npm's; a package from another ecosystem is the lead's judgement.
-        const registries = new Set(
+        // HELM-3: the registry rules are npm's and PyPI's (#70); a package from another ecosystem is the
+        // lead's judgement. Which one is the request's, or else the lane's own manifests'.
+        const asked = new Set(
           openRequests(resolve('.'))
             .filter((r) => r.names.includes(name) && (r.lane ?? undefined) === laneName)
             .map((r) => r.registries?.[pkg])
             .filter(Boolean),
         );
-        const npm = !registries.size || registries.has('npm');
-        const problems = npm ? dependencyRuleProblems(await npmFacts(pkg), rules.dependencies) : [];
+        const registries = asked.size ? asked : new Set([laneEcosystem(config, laneName)]);
+        const npm = registries.has('npm');
+        const pypi = !npm && [...registries].some((r) => PYPI_MANAGERS.has(r));
+        const facts = npm ? await npmFacts(pkg) : pypi ? await pypiFacts(pkg) : null;
+        const problems = facts ? dependencyRuleProblems(facts, rules.dependencies) : [];
         if (problems.length) outside.push(`${name}: ${problems.join('; ')}`);
         else
           marks[name] = delegatedMark(
-            `dependencies (${pkg}${npm ? '' : `, from ${[...registries].join(', ')}, judged by the lead`}) for ${story.id}`,
+            `dependencies (${pkg}${npm ? '' : pypi ? ', from PyPI' : `, from ${[...registries].join(', ')}, judged by the lead`}) for ${story.id}`,
           );
       } else if (rules.protected.includes(name))
         marks[name] = delegatedMark(`protected: ${name}${story ? ` for ${story.id}` : ''}`);
@@ -2335,78 +2368,71 @@ function instructionsCommand() {
     );
 }
 
-/** LEAN-6: a worktree of the project, with its branch, story, report and whether it's merged and clean. */
-function worktreeList(config) {
-  const root = resolve('.');
-  const run = (...a) => spawnSync('git', a, { cwd: root, encoding: 'utf8' }).stdout?.trim() ?? '';
-  const from = findBase(config, false);
-  const blocks = run('worktree', 'list', '--porcelain').split('\n\n').filter(Boolean);
-  return blocks.slice(1).map((b) => {
-    const path = /^worktree (.+)$/m.exec(b)?.[1];
-    const branch = /^branch refs\/heads\/(.+)$/m.exec(b)?.[1] ?? null;
-    const report = branch ? `.claude/state/reports/${branch.replace(/[^\w.-]+/g, '_')}.md` : null;
-    const status = spawnSync('git', ['-C', path, 'status', '--porcelain'], { encoding: 'utf8' });
-    return {
-      path,
-      branch,
-      story: branch ? storyOfBranch(branch) : null,
-      merged: Boolean(
-        branch &&
-        from &&
-        spawnSync('git', ['merge-base', '--is-ancestor', branch, from], { cwd: root }).status === 0,
-      ),
-      clean: status.status === 0 && !status.stdout.trim(),
-      report: report && existsSync(join(path, report)) ? report : null,
-    };
-  });
-}
-
-/** LEAN-6: releases a worktree: its report kept in the main checkout, the worktree removed, its branch kept. */
+/** LEAN-6: releases a worktree for a fresh agent: its report kept in the main checkout, its branch kept. */
 function releaseWorktree(w) {
-  if (!w.clean)
+  if (!cleanOf(w))
     die(
       `${w.branch ?? w.path} has uncommitted changes; nothing was removed. Commit them on the branch, or have its agent do so, then release it.`,
     );
-  if (w.report) {
-    mkdirSync(join(resolve('.'), '.claude/state/reports'), { recursive: true });
-    copyFileSync(join(w.path, w.report), join(resolve('.'), w.report));
-  }
-  const removed = spawnSync('git', ['worktree', 'remove', w.path], {
-    cwd: resolve('.'),
-    encoding: 'utf8',
-  });
-  if (removed.status !== 0) die(`git worktree remove failed: ${removed.stderr.trim()}`);
+  const r = removeWorktree(resolve('.'), w);
+  if (!r.ok) die(`git worktree remove failed: ${r.why}`);
   return `${w.branch ?? w.path}${w.report ? ` (its report kept at ${w.report})` : ''}`;
 }
 
 /**
- * LEAN-6: `worktrees` lists the project's worktrees; `release <branch>` frees one for a fresh agent on the
- * same story; `prune` releases every one whose branch is merged and that holds nothing uncommitted.
+ * LEAN-6, LEAN-8: `worktrees` lists the project's worktrees and why each one stays; `release <branch>`
+ * frees one for a fresh agent on the same story; `prune` takes away every one that's done with;
+ * `discard <branch>`, the person's act, takes away a merged one that still holds changes, keeping them
+ * as a patch.
  */
 function worktreesCommand() {
   const { config } = load();
-  const list = worktreeList(config);
+  const root = resolve('.');
+  const list = worktrees(root, config);
   if (rest[0] === 'release') {
     const w = list.find((x) => x.branch === rest[1] || x.path === rest[1]);
     if (!w) die(`No worktree has ${rest[1] ?? '<branch>'} checked out.`);
     return out(`Released ${releaseWorktree(w)}. The branch and its commits stay.`);
   }
+  if (rest[0] === 'discard') {
+    if (!rest[1]) die('code-kit worktrees discard <branch>');
+    const r = discardWorktree(root, config, rest[1]);
+    if (!r.ok) die(`${r.why} Nothing was removed.`);
+    return out(
+      `Removed ${rest[1]}'s worktree.${r.patch ? ` What it held is kept in ${r.patch}: \`git apply ${r.patch}\` on the branch brings it back.` : ''}${r.report ? ` Its report is kept at ${r.report}.` : ''}`,
+    );
+  }
   if (rest[0] === 'prune') {
-    const done = list.filter((w) => w.merged && w.clean);
-    if (!done.length) return out('No worktree is both merged and clean; nothing was removed.');
-    for (const w of done) out(`Released ${releaseWorktree(w)}.`);
+    const { removed, kept } = pruneWorktrees(root, config);
+    if (flag('--quiet')) return;
+    if (!removed.length) out('Nothing was done with; nothing was removed.');
+    for (const r of removed) out(`Removed ${r}.`);
+    const decide = kept.filter((k) => k.kind === 'agent' && /uncommitted/.test(k.why));
+    if (decide.length)
+      out(
+        `\n${decide.length} merged worktree${decide.length === 1 ? ' still holds' : 's still hold'} uncommitted changes, so ${decide.length === 1 ? 'it stays' : 'they stay'} for the person to keep or discard: ${decide.map((k) => k.label).join(', ')}.`,
+      );
     return;
   }
-  if (flag('--json')) return out(JSON.stringify(list, null, 2));
-  if (!list.length) return out('No worktrees besides the main checkout.');
-  for (const w of list)
-    out(
-      `  ${w.branch ?? '(detached)'}${w.story ? ` · ${w.story}` : ''}: ${w.merged ? 'merged' : 'not merged'}, ${w.clean ? 'clean' : 'uncommitted changes'}  ${w.path}`,
+  if (flag('--json'))
+    return out(
+      JSON.stringify(
+        list.map((w) => ({ ...w, kept: keptBecause(w) })),
+        null,
+        2,
+      ),
     );
-  const prunable = list.filter((w) => w.merged && w.clean).length;
-  if (prunable)
+  if (!list.length) return out('No worktrees besides the main checkout.');
+  for (const w of list) {
+    const why = keptBecause(w);
     out(
-      `\n${prunable} merged and clean: \`code-kit worktrees prune\` removes them, keeping their reports.`,
+      `  ${w.branch ?? '(detached)'}${w.story ? ` · ${w.story}` : ''}: ${why ? `stays, as ${why}` : 'done with'}  ${w.path}`,
+    );
+  }
+  const done = list.filter((w) => !keptBecause(w)).length;
+  if (done)
+    out(
+      `\n${done} done with: \`code-kit worktrees prune\` removes ${done === 1 ? 'it' : 'them'}, keeping their reports. It runs by itself after each merge and as a session starts.`,
     );
 }
 
@@ -2526,7 +2552,7 @@ function usage() {
       '              | next [--base ref] [--json] | adapters | trace <path>... [--json]\n' +
       '              | instructions [--write] [--json] | instructions show lead|lane [<lane>]\n' +
       '              | standards [--json] [--for <path>...]\n' +
-      '              | worktrees [--json] | worktrees release <branch> | worktrees prune\n' +
+      '              | worktrees [--json] | worktrees release|discard <branch> | worktrees prune [--quiet]\n' +
       '              | approve <name>... --reason "…" [--lane name]   [--config file]\n' +
       '              | merge <branch> --delegated|--person [--into branch] | requests [--json] | requests drop <n>|all\n' +
       '              | ask "<question>" [--story ST-n] [--blocks] [--why "…"] [--option "Label: effect"]... | ask [--json]\n' +

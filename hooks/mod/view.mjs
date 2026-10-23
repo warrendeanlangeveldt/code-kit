@@ -729,6 +729,7 @@ export function bandLines({
   questions = [],
   brief = [],
   reports = [],
+  worktrees = [],
   working = false,
   task = null,
   elsewhere = [],
@@ -912,6 +913,15 @@ export function bandLines({
         { id: 'openDecision', label: 'Read it' },
         { id: 'discardReport', label: 'Discard' },
       ],
+    });
+  // LEAN-8: a merged worktree that still holds uncommitted changes: the person keeps it, or discards them.
+  if (worktrees.length && !working)
+    lines.push({
+      kind: 'worktree',
+      text: `${worktrees.length > 1 ? `${worktrees.length} merged worktrees still hold changes: ` : 'A merged worktree still holds changes: '}${worktrees[0].branch}`,
+      worktree: worktrees[0],
+      worktrees,
+      actions: [{ id: 'openDecision', label: 'Look…' }],
     });
   // LOOP-7: the milestone is done; LOOP-6: the loop's own state, with Pause or Resume.
   if (loop?.state === 'done')

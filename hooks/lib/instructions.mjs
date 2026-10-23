@@ -82,7 +82,8 @@ function laneStandards(root, config, lane) {
   return lines.join('');
 }
 
-const marked = (body) => `${BEGIN(INSTRUCTIONS_VERSION)}\n${body.trim()}\n${END}`;
+// With a blank line inside each marker, as Prettier writes markdown, so a project's format check passes (#77).
+const marked = (body) => `${BEGIN(INSTRUCTIONS_VERSION)}\n\n${body.trim()}\n\n${END}`;
 
 /** The lead's section of CLAUDE.md, between its markers. */
 export function leadSection(root, config) {

@@ -16,9 +16,9 @@ import {
 } from './lib/dependencies.mjs';
 import { CODE_KIT, GIT, codeOf, commandsOf, runs } from './lib/shell.mjs';
 import { block, start } from './lib/hook.mjs';
-import { CONFIG_FILE } from './lib/config.mjs';
+import { CONFIG_FILE, committedConfig } from './lib/config.mjs';
 import { laneOfBranch, storyOfBranch, teamOf, teamProvider, whoami } from './lib/team.mjs';
-import { matchesAny } from './lib/glob.mjs';
+import { globToRegExp, matchesAny } from './lib/glob.mjs';
 import { noteBefore } from './lane-audit.mjs';
 import { TESTS_APPROVAL, commitWeakenings } from './lib/regression.mjs';
 import {
@@ -162,14 +162,36 @@ if ((switchesToProtected && writesHistory) || movesProtected) {
     `Blocked: never commit to, merge into or move ${config.branches.protected.join(' or ')}, even by switching to it first. Work on a branch; a person merges after review${config.approvals.delegate?.merge ? ', or the lead merges a verified branch with `code-kit merge <branch> --delegated`' : ''}.\nCommand: ${cmd}`,
   );
 }
-if (runs(cmd, new RegExp(String.raw`^${GIT}push\b.*\b(${branches})\b`))) {
-  block(
-    `Blocked: push to your own branch; a person merges to ${config.branches.protected[0]} after review.\nCommand: ${cmd}`,
-  );
-}
-
 const sessionIn = sessionRoot(input, project);
 const actor = actorFor(input, sessionIn ?? project, config);
+// #63: the lead may push a protected branch where the person delegated it (`approvals.delegate.push`,
+// read from the config committed on that branch, so a branch can't grant it), and never by force.
+if (runs(cmd, new RegExp(String.raw`^${GIT}push\b.*\b(${branches})\b`))) {
+  const forced = runs(
+    cmd,
+    new RegExp(
+      String.raw`^${GIT}push\b.*(\s--force\S*|\s-[a-zA-Z]*f|\s\+\S|\s--delete\b|\s-d\b|\s--mirror\b|\s:(${branches})\b)`,
+    ),
+  );
+  const pushTo = config.branches.protected.find((b) =>
+    runs(
+      cmd,
+      new RegExp(String.raw`^${GIT}push\b.*\b${b.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\b`),
+    ),
+  );
+  const delegated =
+    actor.kind === 'lead' &&
+    Boolean(
+      committedConfig(project, pushTo ?? config.branches.protected[0]).config?.approvals.delegate
+        ?.push,
+    );
+  if (!delegated || forced)
+    block(
+      forced && delegated
+        ? `Blocked: never force-push, delete or overwrite ${pushTo}; push it as it is, fast-forward only.\nCommand: ${cmd}`
+        : `Blocked: push to your own branch; a person merges to ${config.branches.protected[0]} after review${actor.kind === 'lead' ? `, and pushes it, unless they delegate pushing it to you ("approvals.delegate.push": true, committed on ${config.branches.protected[0]})` : ''}.\nCommand: ${cmd}`,
+    );
+}
 // A read-only agent's command is judged afterwards by what it changed (lane-audit).
 if (actor.kind === 'readonly') noteBefore(input);
 // The lead acts for the person only where the config says the person may approve from chat.
@@ -258,6 +280,11 @@ if (
   block(
     `Blocked: releasing worktrees is the lead's, which knows which stories are still at work. Finish your story and hand back.\nCommand: ${cmd}`,
   );
+// LEAN-8: discarding a worktree's uncommitted changes is the person's, from the band, whoever asks.
+if (runs(cmd, new RegExp(String.raw`^${CODE_KIT}\s+worktrees\s+discard\b`)))
+  block(
+    `Blocked: discarding a worktree that still holds uncommitted changes is the person's own act, from the code-kit band. Tell them which worktree and what it holds, and carry on.\nCommand: ${cmd}`,
+  );
 // ONB-8: code-kit's instructions are the lead's to bring up to date, like the rest of the kit.
 if (
   runs(cmd, new RegExp(String.raw`^${CODE_KIT}\s+instructions\b.*\s--write\b`)) &&
@@ -330,9 +357,13 @@ for (const { pattern, lanes, why } of config.shell.restricted) {
     block(`Blocked: the ${actor.label} may not run this. ${why}\nCommand: ${cmd}`);
 }
 
-// Git commands run against the repository they name (`git -C dir`) or the one the shell is in. Another
-// repository (not this project or one of its worktrees) follows its own rules.
-const gitDir = cmd.match(/\bgit\s+-C\s+("[^"]+"|'[^']+'|\S+)/)?.[1]?.replace(/^["']|["']$/g, '');
+// Git commands run against the repository they name (`git -C dir`), the one the command moves into
+// first (`cd dir && git commit`, #55), or the one the shell is in. Another repository (not this project
+// or one of its worktrees) follows its own rules.
+const unquote = (v) => v?.replace(/^["']|["']$/g, '');
+const gitDir =
+  unquote(cmd.match(/\bgit\s+-C\s+("[^"]+"|'[^']+'|\S+)/)?.[1]) ??
+  unquote(cmd.match(/^\s*cd\s+("[^"]+"|'[^']+'|[^\s;&|]+)\s*(?:&&|;)/)?.[1]);
 const root = gitDir
   ? sessionRoot({ cwd: resolve(input.cwd || project, gitDir) }, project)
   : sessionIn;
@@ -450,7 +481,8 @@ function committedFiles() {
   const git = (...args) =>
     spawnSync('git', ['-C', root, ...args], { encoding: 'utf8' }).stdout ?? '';
   const names = (out) => out.split('\n').filter(Boolean);
-  const staged = names(git('diff', '--cached', '--name-only'));
+  // Both paths of a staged rename: the old one's deletion is a change to it too (#74).
+  const staged = names(git('diff', '--cached', '--name-only', '--no-renames'));
   // This hook runs before the command, so `git add … && git commit` and `git commit -a` have not staged yet.
   const changed = names(git('status', '--porcelain', '-uall', '--no-renames')).map((l) =>
     l.slice(3),
@@ -459,14 +491,27 @@ function committedFiles() {
   const addAll = /\bgit\s+add\b[^;&|]*\s(-A|--all|\.)(\s|$)/.test(cmd);
   const addArgs = [...cmd.matchAll(/\bgit\s+add\s+([^;&|]+)/g)]
     .flatMap((m) => m[1].trim().split(/\s+/))
-    .filter((a) => a && !a.startsWith('-'));
+    .filter((a) => a && !a.startsWith('-'))
+    .map((a) => a.replace(/^(['"])(.*)\1$/, '$2'));
+  // What the shell expands before git sees it (#76): an argument it can't be read from, such as a
+  // variable or a command's output, could be any file, so every changed file counts.
+  const unknowable = addArgs.some((a) => /[$`]/.test(a));
+  const matches = (f, a) => {
+    const arg = a.replace(/^\.\//, '').replace(/\/$/, '');
+    if (f === arg || f.startsWith(`${arg}/`)) return true;
+    if (!/[*?{[]/.test(arg)) return false;
+    const re = globToRegExp(arg);
+    return f.split('/').some((_, i, parts) => re.test(parts.slice(0, i + 1).join('/')));
+  };
   const added = changed.filter(
-    (f) =>
-      commitAll ||
-      addAll ||
-      addArgs.some((a) => f === a || f.startsWith(`${a.replace(/\/$/, '')}/`)),
+    (f) => commitAll || addAll || unknowable || addArgs.some((a) => matches(f, a)),
   );
-  return { files: [...new Set([...staged, ...added])], git };
+  // `git reset --soft <ref> && git commit` commits everything since <ref>, staged by the reset (#76).
+  const resetTo = [...cmd.matchAll(/\bgit\s+reset\s+--soft\s+([^\s;&|]+)/g)].map((m) => m[1]);
+  const reset = resetTo.flatMap((ref) =>
+    names(git('diff', '--name-only', '--no-renames', ref, 'HEAD')),
+  );
+  return { files: [...new Set([...staged, ...added, ...reset])], git };
 }
 
 // Every committed protected file is recorded in the audit log, with the person's reason when an

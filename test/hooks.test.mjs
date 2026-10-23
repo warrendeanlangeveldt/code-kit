@@ -18,6 +18,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { refusalCard } from '../hooks/mod/view.mjs';
 import { holdable } from '../hooks/mod/hold.mjs';
+import { claimLane, releaseLane } from '../hooks/lib/laneclaims.mjs';
 
 // SESS-1: the CLI reads the calling session from Claude Code's environment; these tests say it themselves.
 delete process.env.CLAUDE_CODE_SESSION_ID;
@@ -53,8 +54,26 @@ const pkgs = {
   'tiny-pkg': pkg('MIT', 30, 12),
   'scripted-pkg': pkg('MIT', 30, 50000, { postinstall: 'node fetch-binary.js' }),
 };
+// PyPI's projects (#70): a licence expression, classifiers or free text; a release with wheels, or none.
+const py = (info, daysAgo, lastWeek, wheel = true) => ({ info, daysAgo, lastWeek, wheel });
+const pys = {
+  pillow: py({ license: 'MIT-CMU', classifiers: ['License :: OSI Approved :: MIT License'] }, 20, 9000000),
+  anthropic: py({ license_expression: 'MIT' }, 5, 4000000),
+  'old-py': py({ license: 'MIT' }, 900, 50000),
+  'sdist-only': py({ classifiers: ['License :: OSI Approved :: BSD License', 'License :: OSI Approved :: BSD 3-Clause'] }, 30, 50000, false),
+};
 http.createServer((req, res) => {
   const url = decodeURIComponent(req.url);
+  const pj = url.match(/^\\/pypi\\/([^/]+)\\/json$/);
+  const ps = url.match(/^\\/api\\/packages\\/([^/]+)\\/recent$/);
+  if (pj || ps) {
+    const q = pys[(pj ?? ps)[1]];
+    if (!q) { res.writeHead(404); return res.end('{}'); }
+    res.setHeader('content-type', 'application/json');
+    if (ps) return res.end(JSON.stringify({ data: { last_week: q.lastWeek } }));
+    const at = new Date(now - q.daysAgo * day).toISOString();
+    return res.end(JSON.stringify({ info: q.info, urls: [{ packagetype: 'sdist', upload_time_iso_8601: at }, ...(q.wheel ? [{ packagetype: 'bdist_wheel', upload_time_iso_8601: at }] : [])] }));
+  }
   const dl = url.match(/^\\/downloads\\/point\\/last-week\\/(.+)$/);
   const name = dl ? dl[1] : url.slice(1);
   const p = pkgs[name];
@@ -508,6 +527,41 @@ try {
   );
   expect('commit on a lane branch allowed', bash('git commit -m x'), 0);
   expect('push to a protected branch blocked', bash('git push origin main'), 2);
+  // #63: the person may delegate pushing the protected branch to the lead, never force.
+  {
+    const p = newRepo();
+    cleanups.push(p.dir);
+    const pushHook = (command, agent) =>
+      spawnSync('node', [join(hooks, 'guard-bash.mjs')], {
+        input: JSON.stringify({
+          cwd: p.dir,
+          tool_input: { command },
+          ...(agent ? { agent_type: agent } : {}),
+        }),
+        env: { ...process.env, CLAUDE_PROJECT_DIR: p.dir },
+        encoding: 'utf8',
+      });
+    expect(
+      '#63 without it the lead is told the person can delegate it',
+      pushHook('git push origin main'),
+      2,
+      'approvals.delegate.push',
+    );
+    const delegated = JSON.parse(fixture);
+    delegated.approvals = { ...(delegated.approvals ?? {}), delegate: { push: true } };
+    writeFileSync(join(p.dir, '.claude/code-kit.json'), JSON.stringify(delegated, null, 2));
+    expect(
+      "#63 a branch's own config can't grant it: it's read from what's committed on main",
+      pushHook('git push origin main'),
+      2,
+    );
+    p.git('add', '-A');
+    p.git('commit', '-q', '-m', 'delegate push');
+    expect('#63 delegated, the lead pushes main', pushHook('git push origin main'), 0);
+    expect('#63 never by force', pushHook('git push --force-with-lease origin main'), 2);
+    expect('#63 nor deletes it', pushHook('git push origin :main'), 2);
+    expect('#63 and a lane still may not', pushHook('git push origin main', 'web-engineer'), 2);
+  }
   expect(
     'switching to a protected branch and merging in one command is blocked',
     bash('git switch main && git merge lane/x'),
@@ -978,6 +1032,43 @@ try {
       ),
       0,
     );
+    // #78: a request a session's agent made is dropped like any other.
+    rmSync(requestsFile, { force: true });
+    hook('guard-bash.mjs', {
+      tool_input: { command: addLodash },
+      ...as('web-engineer'),
+      session_id: 'sess-78',
+    });
+    const withSession = reqs().open;
+    const droppedSession = kit('requests', 'drop', 'all', '--reason', 'not needed');
+    expect(
+      "CARD-7 a request carrying its session is dropped, and doesn't come back",
+      truth(
+        withSession.length === 1 &&
+          readFileSync(requestsFile, 'utf8').includes('"session":"sess-78"') &&
+          droppedSession.status === 0 &&
+          !reqs().open.length,
+        JSON.stringify({ withSession, open: reqs().open }),
+      ),
+      0,
+    );
+    // A drop written without the session, before #78, still drops it.
+    rmSync(requestsFile, { force: true });
+    hook('guard-bash.mjs', {
+      tool_input: { command: addLodash },
+      ...as('web-engineer'),
+      session_id: 'sess-78',
+    });
+    const old = JSON.parse(readFileSync(requestsFile, 'utf8').trim().split('\n').at(-1));
+    appendFileSync(
+      requestsFile,
+      `${JSON.stringify({ drop: true, of: old.at, actor: old.actor, names: old.names, what: old.what, by: 'lead', reason: null, at: new Date().toISOString() })}\n`,
+    );
+    expect(
+      'and so does a drop written before drops carried the session',
+      truth(!reqs().open.length, JSON.stringify(reqs().open)),
+      0,
+    );
     bash(addLodash, 'web-engineer');
     expect(
       'CARD-7 refused again later, it asks again',
@@ -1265,6 +1356,41 @@ try {
       ),
       0,
     );
+    // A Send pressed again while GitHub is still filing the first: one issue, not two.
+    rKit(['report', 'Slow to file', '--what', 'x']);
+    writeFileSync(join(fakeBin, 'slow'), '');
+    writeFileSync(
+      join(fakeBin, 'gh'),
+      `#!/bin/sh\necho "$@" >> "${ghLog}"\ncase "$1 $2" in\n  "auth status") exit 0 ;;\n  "issue list") echo '[]' ;;\n  "issue create") sleep 2; echo "https://github.com/o/code-kit/issues/10" ;;\nesac\n`,
+    );
+    const first = spawn(process.execPath, [kitCli, 'report', 'send', 'R-4'], {
+      cwd: r.dir,
+      env: { ...process.env, PATH: `${fakeBin}:${process.env.PATH}` },
+    });
+    const firstDone = new Promise((done) => first.on('exit', done));
+    // Until the first Send has claimed it, however long Node takes to start.
+    for (let i = 0; i < 100 && !existsSync(join(r.dir, '.claude/state/report-sending-R-4')); i++)
+      await new Promise((done) => setTimeout(done, 50));
+    const during = JSON.parse(rKit(['report', '--json']).stdout).find((x) => x.id === 'R-4');
+    const second = rKit(['report', 'send', 'R-4']);
+    const firstCode = await firstDone;
+    const creates = readFileSync(ghLog, 'utf8')
+      .split('\n')
+      .filter((l) => l.startsWith('issue create') && l.includes('Slow to file'));
+    expect(
+      'REPORT-3 a report being sent reads as sending, and a second Send files nothing',
+      truth(
+        during?.state === 'sending' &&
+          second.status === 1 &&
+          second.stderr.includes('R-4 is being sent already') &&
+          firstCode === 0 &&
+          creates.length === 1 &&
+          JSON.parse(rKit(['report', '--json']).stdout).find((x) => x.id === 'R-4').state ===
+            'sent',
+        JSON.stringify({ during, second: second.stderr, firstCode, creates }),
+      ),
+      0,
+    );
   }
 
   // --- approve takes a package's name for its dependency approval ---------------------------------
@@ -1294,6 +1420,8 @@ try {
     ...process.env,
     CODE_KIT_NPM_REGISTRY: `http://127.0.0.1:${port}`,
     CODE_KIT_NPM_DOWNLOADS: `http://127.0.0.1:${port}`,
+    CODE_KIT_PYPI: `http://127.0.0.1:${port}`,
+    CODE_KIT_PYPI_STATS: `http://127.0.0.1:${port}`,
   };
   const delegate = (...args) =>
     spawnSync('node', [kitCli, 'approve', ...args, '--delegated'], {
@@ -1377,7 +1505,7 @@ try {
       "is the lead's decision",
     );
     expect(
-      "is judged by the lead, without the npm registry (which hasn't heard of it)",
+      '#70 is checked on PyPI, not the npm registry (which has an old package of the same name)',
       truth(
         delegate(
           'pillow',
@@ -1389,10 +1517,37 @@ try {
           'MED-5 needs HEIC decoding',
         ).status === 0 &&
           readFileSync(join(repo, '.claude/approvals/backend/dep-pillow'), 'utf8').includes(
-            'dependencies (pillow, from uv, judged by the lead) for ST-138',
+            'dependencies (pillow, from PyPI) for ST-138',
           ),
       ),
       0,
+    );
+    // With no request to say where a package comes from, a lane with only Python manifests is PyPI's.
+    put('workers/pyproject.toml', '[project]\nname = "workers"\n');
+    git('add', 'workers/pyproject.toml');
+    git('commit', '-q', '--no-verify', '-m', 'workers: pyproject');
+    expect(
+      "#70 a Python lane's package is checked on PyPI without a request naming it",
+      truth(
+        delegate('anthropic', '--lane', 'backend', '--story', 'ST-138', '--reason', 'x').status ===
+          0 &&
+          readFileSync(join(repo, '.claude/approvals/backend/dep-anthropic'), 'utf8').includes(
+            'dependencies (anthropic, from PyPI) for ST-138',
+          ),
+      ),
+      0,
+    );
+    expect(
+      "#70 PyPI's facts are held to the rules: a release too old",
+      delegate('old-py', '--lane', 'backend', '--story', 'ST-138', '--reason', 'x'),
+      1,
+      'its last release was',
+    );
+    expect(
+      '#70 and a package with no wheel, which builds from source as it installs',
+      delegate('sdist-only', '--lane', 'backend', '--story', 'ST-138', '--reason', 'x'),
+      1,
+      'installing it runs a script',
     );
     expect('a lane never approves', bash(delegateGood, 'web-engineer'), 2, 'only the lead');
     expect('the lead may run it', bash(delegateGood), 0);
@@ -3673,6 +3828,66 @@ else process.exit(2);
       ),
       0,
     );
+    // #62: a check that runs out of time keeps the branch in the queue; #57: a failure is named
+    // through the runtime's warnings, and recorded with it.
+    q.git('checkout', '-q', 'main');
+    const withChecks = JSON.parse(readFileSync(join(q.dir, '.claude/code-kit.json'), 'utf8'));
+    withChecks.checks = [
+      ...(withChecks.checks ?? []),
+      { name: 'slow suite', files: ['runbooks/slow/**'], run: ['sleep 3'], timeoutSeconds: 1 },
+      { name: 'noisy suite', files: ['runbooks/noisy/**'], run: ['node runbooks/noisy.mjs'] },
+    ];
+    writeFileSync(join(q.dir, '.claude/code-kit.json'), JSON.stringify(withChecks, null, 2));
+    qPut(
+      'runbooks/noisy.mjs',
+      "for (let i = 0; i < 40; i++) console.error('(node:1) [DEP0205] DeprecationWarning: module.register() is deprecated');\nconsole.error('✘ booking form saves a slot');\nconsole.error('Error: expected 2, received 3');\nprocess.exit(1);\n",
+    );
+    q.git('add', '-A');
+    q.git('commit', '-q', '-m', 'checks');
+    for (const [branch, file] of [
+      ['platform/st-g', 'runbooks/slow/x.md'],
+      ['platform/st-h', 'runbooks/noisy/x.md'],
+    ]) {
+      q.git('checkout', '-q', '-b', branch, 'main');
+      qPut(file, 'x\n');
+      q.git('add', '-A');
+      q.git('commit', '-q', '-m', branch);
+      q.git('checkout', '-q', 'main');
+    }
+    qKit('queue', 'add', 'platform/st-g');
+    const slow = qKit('queue', 'merge', '--delegated');
+    expect(
+      "#62 a check that didn't finish leaves the branch at the head of the queue, not sent back",
+      truth(
+        slow.status === 1 &&
+          slow.stderr.includes("didn't finish") &&
+          slow.stderr.includes('timeoutSeconds') &&
+          !slow.stderr.includes('sent back') &&
+          JSON.parse(qKit('queue', '--json').stdout).some(
+            (e) => e.branch === 'platform/st-g' && e.state === 'waiting',
+          ),
+        slow.stderr + qKit('queue', '--json').stdout,
+      ),
+      0,
+    );
+    qKit('queue', 'drop', 'platform/st-g');
+    qKit('queue', 'add', 'platform/st-h');
+    const noisy = qKit('queue', 'merge', '--delegated');
+    const record = JSON.parse(qKit('queue', '--json').stdout).find(
+      (e) => e.branch === 'platform/st-h',
+    );
+    expect(
+      "#57 a failure is shown through the runtime's warnings, and the queue records which check failed",
+      truth(
+        noisy.status === 1 &&
+          noisy.stderr.includes('✘ booking form saves a slot') &&
+          noisy.stderr.includes('expected 2, received 3') &&
+          !noisy.stderr.includes('DeprecationWarning') &&
+          JSON.stringify(record).includes('noisy suite'),
+        noisy.stderr + JSON.stringify(record),
+      ),
+      0,
+    );
     q.git('checkout', '-q', 'main');
   }
 
@@ -3707,6 +3922,73 @@ else process.exit(2);
     2,
   );
   rmSync(join(repo, '.claude/approvals'), { recursive: true });
+  // #76: what the shell expands, and what a reset stages, are committed too.
+  expect(
+    '#76 a protected file staged by a brace list needs approval',
+    inLaneTree('git add design/{approved-screens,nothing}.json && git commit -m d'),
+    2,
+  );
+  expect('#76 and by a glob', inLaneTree('git add design/*.json && git commit -m d'), 2);
+  expect(
+    "#76 and by a variable, which can't be read before the shell runs",
+    inLaneTree('f=design/approved-screens.json; git add $f && git commit -m d'),
+    2,
+  );
+  const laneGit = (...a) =>
+    execFileSync('git', ['-C', laneTree, '-c', 'user.email=t@t', '-c', 'user.name=t', ...a], {
+      encoding: 'utf8',
+    });
+  laneGit('add', 'design/approved-screens.json');
+  laneGit('commit', '-q', '--no-verify', '-m', 'register');
+  expect(
+    '#76 and by a soft reset recommitted in the same command',
+    inLaneTree('git reset --soft HEAD~1 && git commit -m again'),
+    2,
+  );
+  // #74: a staged rename of a protected file logs its old path as well as its new one.
+  approveFor('web', 'design');
+  laneGit('mv', 'design/approved-screens.json', 'design/screens-moved.json');
+  const moved = inLaneTree('git commit -m moved');
+  const laneLog = join(laneTree, '.claude/approval-log.jsonl');
+  expect(
+    '#74 a renamed protected file is logged under its old path',
+    truth(
+      moved.status === 0 &&
+        existsSync(laneLog) &&
+        readFileSync(laneLog, 'utf8').includes('"file":"design/approved-screens.json"'),
+      moved.stderr,
+    ),
+    0,
+  );
+  rmSync(join(repo, '.claude/approvals'), { recursive: true });
+  // #55: a commit run as `cd <worktree> && git commit` is judged, and logged, in that worktree.
+  approveFor('web', 'design');
+  const logged = () => readFileSync(laneLog, 'utf8').split('\n').filter(Boolean).length;
+  const before = logged();
+  const viaCd = hook('guard-bash.mjs', {
+    tool_input: { command: `cd ${laneTree} && git commit -m moved` },
+    agent_type: 'web-engineer',
+  });
+  expect(
+    '#55 a commit made by moving into a lane worktree first is logged there',
+    truth(viaCd.status === 0 && logged() > before, viaCd.stderr),
+    0,
+  );
+  rmSync(join(repo, '.claude/approvals'), { recursive: true });
+  // #55: a branch's spec-check report kept in the main checkout serves a fresh worktree of the branch.
+  expect(
+    '#55 a lane worktree without its spec-check report is refused',
+    writeAt(join(laneTree, 'apps/office/lib/resumed.ts'), 'web-engineer'),
+    2,
+    'spec-check',
+  );
+  put('.claude/state/spec-check/web_st-7.md', '| Requirement | Status |\n');
+  expect(
+    '#55 but one kept in the main checkout lets it carry on',
+    writeAt(join(laneTree, 'apps/office/lib/resumed.ts'), 'web-engineer'),
+    0,
+  );
+  rmSync(join(repo, '.claude/state/spec-check/web_st-7.md'));
   git('worktree', 'remove', '--force', '.claude/worktrees/dep');
   git('branch', '-q', '-D', 'web/st-7');
 
@@ -6425,6 +6707,132 @@ else process.exit(1);
       2,
       "releasing worktrees is the lead's",
     );
+
+    // LEAN-8: what's done with goes by itself; what still holds changes is the person's.
+    const commitIn = (dir, file, body) => {
+      writeFileSync(join(dir, file), body);
+      for (const a of [
+        ['add', '-A'],
+        ['commit', '-q', '-m', file],
+      ])
+        execFileSync('git', ['-C', dir, '-c', 'user.email=t@t', '-c', 'user.name=t', ...a]);
+    };
+    const addTree = (branch) => {
+      t.git('worktree', 'add', '-q', '-b', branch, tree(branch), 'main');
+      return tree(branch);
+    };
+    // Just dispatched: made from main, nothing committed yet (#61).
+    const fresh = addTree('web/st-3');
+    // Merged, then changed and never committed.
+    const holding = addTree('web/st-4');
+    commitIn(holding, 'st4.txt', 'work\n');
+    t.git('merge', '-q', '--no-ff', '-m', 'merge st-4', 'web/st-4');
+    writeFileSync(join(holding, 'st4.txt'), 'more, uncommitted\n');
+    writeFileSync(join(holding, 'notes.txt'), 'untracked\n');
+    // Merged and clean, but its lane's agent still holds the story.
+    const busy = addTree('web/st-5');
+    commitIn(busy, 'st5.txt', 'work\n');
+    t.git('merge', '-q', '--no-ff', '-m', 'merge st-5', 'web/st-5');
+    claimLane(t.dir, { lane: 'web', story: 'ST-5', session: 's1' });
+    // Merged and clean, locked by a Claude Code process that's still running, its agent finished.
+    const locked = addTree('api/st-6');
+    commitIn(locked, 'st6.txt', 'work\n');
+    t.git('merge', '-q', '--no-ff', '-m', 'merge st-6', 'api/st-6');
+    t.git(
+      'worktree',
+      'lock',
+      '--reason',
+      `claude agent agent-x (pid ${process.pid} start now)`,
+      locked,
+    );
+    // A folder a removal left behind, and a worktree whose folder is gone.
+    mkdirSync(join(t.dir, '.claude/worktrees/lead-st66/.claude/state'), { recursive: true });
+    const gone = addTree('web/st-7');
+    rmSync(gone, { recursive: true, force: true });
+    const pruned = tCli('worktrees', 'prune');
+    expect(
+      "LEAN-8 prune takes what is done with: a finished agent's locked worktree, a gone one, a stray folder",
+      truth(
+        pruned.status === 0 &&
+          !existsSync(locked) &&
+          !existsSync(join(t.dir, '.claude/worktrees/lead-st66')) &&
+          !t.git('worktree', 'list').includes('st-7') &&
+          t.git('branch', '--list', 'api/st-6').includes('api/st-6'),
+        pruned.stdout + pruned.stderr,
+      ),
+      0,
+    );
+    expect(
+      'LEAN-8 it keeps a just-dispatched branch, one its agent still holds, and one holding changes, and names that one',
+      truth(
+        existsSync(fresh) &&
+          existsSync(busy) &&
+          existsSync(holding) &&
+          pruned.stdout.includes('still holds uncommitted changes') &&
+          pruned.stdout.includes('web/st-4'),
+        pruned.stdout,
+      ),
+      0,
+    );
+    const nextOut = JSON.parse(tCli('next', '--json').stdout);
+    expect(
+      'LEAN-8 next gives the person the merged worktree holding changes, with what it holds',
+      truth(
+        nextOut.worktrees?.length === 1 &&
+          nextOut.worktrees[0].branch === 'web/st-4' &&
+          nextOut.worktrees[0].changes === 2 &&
+          nextOut.worktrees[0].files.some((f) => f.includes('notes.txt')),
+        JSON.stringify(nextOut.worktrees),
+      ),
+      0,
+    );
+    expect(
+      "LEAN-8 no agent discards a worktree, the lead included: it is the person's",
+      spawnSync('node', [join(hooks, 'guard-bash.mjs')], {
+        input: JSON.stringify({
+          cwd: t.dir,
+          tool_input: { command: `node "${kitCli}" worktrees discard web/st-4` },
+        }),
+        env: { ...process.env, CLAUDE_PROJECT_DIR: t.dir },
+        encoding: 'utf8',
+      }),
+      2,
+      "the person's own act",
+    );
+    const discarded = tCli('worktrees', 'discard', 'web/st-4');
+    const patch = /kept in (\S+):/.exec(discarded.stdout)?.[1];
+    expect(
+      'LEAN-8 discarded, the worktree goes and what it held is kept as a patch',
+      truth(
+        discarded.status === 0 &&
+          !existsSync(holding) &&
+          patch &&
+          readFileSync(join(t.dir, patch), 'utf8').includes('more, uncommitted') &&
+          readFileSync(join(t.dir, patch), 'utf8').includes('notes.txt'),
+        discarded.stdout + discarded.stderr,
+      ),
+      0,
+    );
+    expect(
+      'LEAN-8 an unmerged worktree is never discarded',
+      tCli('worktrees', 'discard', 'web/st-3'),
+      1,
+      "isn't merged",
+    );
+    // As a session starts, what's done with goes, in the background.
+    releaseLane(t.dir, 'web');
+    spawnSync('node', [join(hooks, 'session.mjs'), 'start'], {
+      input: JSON.stringify({ session_id: 'prune-1' }),
+      env: { ...process.env, CLAUDE_PROJECT_DIR: t.dir },
+      encoding: 'utf8',
+    });
+    for (let i = 0; i < 100 && existsSync(busy); i++)
+      await new Promise((done) => setTimeout(done, 100));
+    expect(
+      'LEAN-8 a session starting prunes what is done with, once its agent has finished',
+      truth(!existsSync(busy) && existsSync(fresh)),
+      0,
+    );
   }
 
   // --- ONB-8: code-kit's own instructions, kept current ---------------------------------------------
@@ -6532,6 +6940,15 @@ else process.exit(1);
           kRead('CLAUDE.md').includes('Our own notes.') &&
           kRead('CLAUDE.md').includes('## Deploying') &&
           kRead('CLAUDE.md').includes('approvals from chat'),
+      ),
+      0,
+    );
+    expect(
+      '#77 the written block has the blank lines Prettier puts inside its markers',
+      truth(
+        /<!-- code-kit:begin v\d+ -->\n\n\S/.test(kRead('CLAUDE.md')) &&
+          /\S\n\n<!-- code-kit:end -->/.test(kRead('CLAUDE.md')),
+        kRead('CLAUDE.md'),
       ),
       0,
     );

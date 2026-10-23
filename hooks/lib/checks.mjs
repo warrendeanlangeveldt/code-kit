@@ -46,10 +46,12 @@ function runCheck(check, files, root, actor, skipped) {
         skipped.push({ check: check.name, command, where: where.replace(/^ in /, '') || null });
         return null; // not installed yet (fresh clone): the check can't run
       }
+      // #62: a check that ran out of time didn't fail; it's marked so a merge can try it again.
       if (res.error || res.status === null)
         return {
           check: check.name,
-          title: `${check.name}: \`${command}\` did not finish${where} (${res.error?.code ?? res.signal}).`,
+          timedOut: res.error?.code === 'ETIMEDOUT' || res.signal === 'SIGTERM',
+          title: `${check.name}: \`${command}\` did not finish${where} (${res.error?.code ?? res.signal}) within ${check.timeoutSeconds ?? 240} seconds; \`timeoutSeconds\` on the check gives it longer.`,
         };
       if (res.status !== 0)
         return {

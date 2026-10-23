@@ -1,10 +1,15 @@
-// What the npm registry says about a package, for the lead's delegated dependency approvals: the
-// licence, how often it's downloaded, when it was last released, and whether installing it runs
-// scripts. The rule itself is a pure function, so it's tested without the network.
+// What the npm registry, or PyPI for a Python package, says about a package, for the lead's delegated
+// dependency approvals: the licence, how often it's downloaded, when it was last released, and whether
+// installing it runs scripts. The rule itself is a pure function, so it's tested without the network.
 import { DEPENDENCY_APPROVAL } from './dependencies.mjs';
 
 const REGISTRY = () => process.env.CODE_KIT_NPM_REGISTRY ?? 'https://registry.npmjs.org';
 const DOWNLOADS = () => process.env.CODE_KIT_NPM_DOWNLOADS ?? 'https://api.npmjs.org';
+const PYPI = () => process.env.CODE_KIT_PYPI ?? 'https://pypi.org';
+const PYPI_STATS = () => process.env.CODE_KIT_PYPI_STATS ?? 'https://pypistats.org';
+
+/** The package managers whose packages come from PyPI. */
+export const PYPI_MANAGERS = new Set(['pip', 'uv', 'poetry', 'pipenv', 'pdm']);
 
 /** The package an approval name stands for: `dep-@scope+pkg` → `@scope/pkg`. */
 export const packageOf = (approvalName) =>
@@ -66,6 +71,68 @@ export async function npmFacts(pkg) {
     };
   } catch (e) {
     return { error: `couldn't reach the npm registry (${e.message})` };
+  }
+}
+
+// PyPI's licence words as the SPDX ids a rule names: its classifiers first, then its free-text field.
+const PYPI_LICENCES = [
+  [/\bMIT\b/i, 'MIT'],
+  [/\bApache\b.*2|Apache Software License/i, 'Apache-2.0'],
+  [/BSD.*3|3-Clause|New BSD|Modified BSD/i, 'BSD-3-Clause'],
+  [/BSD.*2|2-Clause|Simplified BSD/i, 'BSD-2-Clause'],
+  [/\bISC\b/i, 'ISC'],
+  [/Python Software Foundation|\bPSF\b/i, 'PSF-2.0'],
+  [/Mozilla Public License 2|\bMPL[- ]?2/i, 'MPL-2.0'],
+  [/\bLGPL/i, 'LGPL'],
+  [/\bAGPL/i, 'AGPL-3.0'],
+  [/\bGPL.*3|GPLv3/i, 'GPL-3.0'],
+  [/\bGPL.*2|GPLv2/i, 'GPL-2.0'],
+];
+
+/** A PyPI project's licence as an SPDX id: its licence expression, else its classifiers, else its text. */
+export function pypiLicence(info) {
+  if (info?.license_expression) return info.license_expression;
+  const words = [
+    ...(info?.classifiers ?? []).filter((c) => c.startsWith('License ::')),
+    ...(info?.license && info.license.length <= 80 ? [info.license] : []),
+  ];
+  for (const w of words) for (const [re, id] of PYPI_LICENCES) if (re.test(w)) return id;
+  return info?.license && info.license.length <= 40 ? info.license : 'unknown';
+}
+
+/**
+ * #70: the same facts for a Python package, from PyPI: a release with no wheel builds from source as it
+ * installs, which is what an npm install script that compiles is.
+ */
+export async function pypiFacts(pkg) {
+  const name = encodeURIComponent(pkg.replace(/\[.*\]$/, '').toLowerCase());
+  try {
+    const meta = await fetch(`${PYPI()}/pypi/${name}/json`, {
+      headers: { accept: 'application/json' },
+    });
+    if (meta.status === 404) return { error: `${pkg} isn't on PyPI` };
+    if (!meta.ok) return { error: `PyPI answered ${meta.status} for ${pkg}` };
+    const doc = await meta.json();
+    const files = doc.urls ?? [];
+    const stats = await fetch(`${PYPI_STATS()}/api/packages/${name}/recent`, {
+      headers: { accept: 'application/json' },
+    });
+    const weeklyDownloads = stats.ok ? ((await stats.json()).data?.last_week ?? 0) : 0;
+    const wheel = files.some((f) => f.packagetype === 'bdist_wheel');
+    return {
+      licence: pypiLicence(doc.info),
+      weeklyDownloads,
+      lastRelease:
+        files
+          .map((f) => f.upload_time_iso_8601)
+          .filter(Boolean)
+          .sort()
+          .at(-1) ?? null,
+      installScripts: files.length > 0 && !wheel,
+      installScriptKind: files.length > 0 && !wheel ? 'build' : null,
+    };
+  } catch (e) {
+    return { error: `couldn't reach PyPI (${e.message})` };
   }
 }
 
