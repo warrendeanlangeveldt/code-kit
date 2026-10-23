@@ -258,6 +258,11 @@ if (
   block(
     `Blocked: releasing worktrees is the lead's, which knows which stories are still at work. Finish your story and hand back.\nCommand: ${cmd}`,
   );
+// LEAN-8: discarding a worktree's uncommitted changes is the person's, from the band, whoever asks.
+if (runs(cmd, new RegExp(String.raw`^${CODE_KIT}\s+worktrees\s+discard\b`)))
+  block(
+    `Blocked: discarding a worktree that still holds uncommitted changes is the person's own act, from the code-kit band. Tell them which worktree and what it holds, and carry on.\nCommand: ${cmd}`,
+  );
 // ONB-8: code-kit's instructions are the lead's to bring up to date, like the rest of the kit.
 if (
   runs(cmd, new RegExp(String.raw`^${CODE_KIT}\s+instructions\b.*\s--write\b`)) &&

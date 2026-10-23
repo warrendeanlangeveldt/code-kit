@@ -14,6 +14,7 @@ Found measuring a lead session on a project of 138 stories: about 780k tokens si
 - Compacting the lead's context when a milestone finishes (LEAN-3), and whenever it's past a threshold (LEAN-4).
 - A lane agent's context limit, one agent per story, and worktrees released (LEAN-5, LEAN-6).
 - Lanes reading what they need, and reviewers on Sonnet (LEAN-7).
+- Worktrees taken away as their work is done, without anyone asking (LEAN-8).
 
 ## Out of scope
 
@@ -81,6 +82,21 @@ A lane agent reads every file it changes in full, and of what it imports and wha
 **Acceptance**
 
 - Given no reviewer model set, then the security reviewer starts on Sonnet; given its agent file names Opus, it starts on Opus.
+
+### LEAN-8 Worktrees go once they're done with
+
+Each lane agent's worktree has its own install, a gigabyte or more in a project with a JavaScript and a Python service, so worktrees left behind fill the disk within weeks. A worktree is done with when its branch's own commits are merged into the base, it holds nothing uncommitted, and no agent of its lane still claims its story. A branch made for an agent just dispatched has no commits of its own, so it isn't merged, however much of the base it contains. A lock Claude Code holds on an agent's worktree doesn't keep it once its agent has finished; a lock without a process, which a person set, does.
+
+`worktrees prune` removes every worktree that's done with, keeping each report in the main checkout and each branch. It also removes a temporary merge checkout more than 30 minutes old that an interrupted merge left, git's record of a worktree whose folder is gone, and folders under `.claude/worktrees` that aren't worktrees. It runs by itself after each merge and, in the background, as each session starts. `worktrees` says why each one that stays is staying.
+
+A merged worktree that still holds uncommitted changes stays, and the band puts it to the person with what it holds: Keep leaves it until the next session, and Discard removes it, first keeping what it held as a patch under `.claude/state/discarded`. Discarding is the person's act alone; the hooks refuse it to every agent, the lead included.
+
+**Acceptance**
+
+- Given `web/st-3` made from main for an agent just dispatched, then prune keeps it.
+- Given `api/st-6` merged and clean, locked by Claude Code for an agent that has finished, then prune removes it and keeps the branch.
+- Given `web/st-5` merged and clean, with its lane's claim on ST-5 still held, then prune keeps it; once the claim ends, the next session's start removes it.
+- Given `web/st-4` merged with two uncommitted changes, then prune keeps it, and the band shows it with its two files; Discard removes it and keeps both changes in a patch.
 
 ## Quality targets
 

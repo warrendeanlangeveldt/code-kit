@@ -7,7 +7,16 @@
 // them the new-issue link to open; a report someone already filed gets a comment instead of a second issue.
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
-import { appendFileSync, mkdirSync, readFileSync, realpathSync } from 'node:fs';
+import {
+  appendFileSync,
+  closeSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  realpathSync,
+  statSync,
+  unlinkSync,
+} from 'node:fs';
 import { homedir, platform, release } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -21,6 +30,47 @@ const PLUGIN = JSON.parse(
 export const REPO = PLUGIN.repository.replace(/^https:\/\/github\.com\//, '').replace(/\.git$/, '');
 
 const fileOf = (root) => join(projectWorktrees(root)[0] ?? root, REPORTS_FILE);
+/** REPORT-3: held while a report is being sent, so a second Send can't file it again. */
+const sendingOf = (root, id) => join(dirname(fileOf(root)), `report-sending-${id}`);
+/** A send that's held its claim this long died before it finished, and the report is a draft again. */
+const SENDING_MS = 5 * 60 * 1000;
+
+function sendingSince(root, id, now = Date.now()) {
+  try {
+    const at = statSync(sendingOf(root, id)).mtimeMs;
+    return now - at < SENDING_MS ? at : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Claims the send of `id`, or says it's being sent already: one claim, whichever process asks first. */
+function claimSend(root, id, now = Date.now()) {
+  const file = sendingOf(root, id);
+  mkdirSync(dirname(file), { recursive: true });
+  for (let tries = 0; tries < 2; tries++) {
+    try {
+      closeSync(openSync(file, 'wx'));
+      return true;
+    } catch {
+      if (sendingSince(root, id, now) !== null) return false;
+      try {
+        unlinkSync(file);
+      } catch {
+        // taken by another send meanwhile
+      }
+    }
+  }
+  return false;
+}
+
+const releaseSend = (root, id) => {
+  try {
+    unlinkSync(sendingOf(root, id));
+  } catch {
+    // gone already
+  }
+};
 
 function records(root) {
   try {
@@ -86,8 +136,8 @@ function bodyOf(r) {
 }
 
 /**
- * Every report, oldest first: { id, at, by, title, body, fingerprint, state: 'draft' | 'sent' | 'discarded',
- * sent: { at, url, comment } | null }.
+ * Every report, oldest first: { id, at, by, title, body, fingerprint, state: 'draft' | 'sending' | 'sent' |
+ * 'discarded', sent: { at, url, comment } | null }. `sending`: a Send is filing it now.
  */
 export function readReports(root) {
   const byId = new Map();
@@ -102,7 +152,9 @@ export function readReports(root) {
       });
     if (r.kind === 'discarded') d.state = 'discarded';
   }
-  return [...byId.values()].map(({ kind, ...r }) => r);
+  return [...byId.values()].map(({ kind, ...r }) =>
+    r.state === 'draft' && sendingSince(root, r.id) !== null ? { ...r, state: 'sending' } : r,
+  );
 }
 
 export const draftReports = (root) => readReports(root).filter((r) => r.state === 'draft');
@@ -175,9 +227,24 @@ const gh = (args) =>
  * it already, otherwise a new issue; without a working `gh`, nothing is sent and the link is returned.
  */
 export function sendReport(root, id, now = Date.now()) {
-  const r = readReports(root).find((x) => x.id === id);
-  if (!r) return { ok: false, why: `There's no report ${id}.` };
-  if (r.state !== 'draft') return { ok: false, why: `${id} was ${r.state} already.` };
+  const before = readReports(root).find((x) => x.id === id);
+  if (!before) return { ok: false, why: `There's no report ${id}.` };
+  if (before.state === 'sending') return { ok: false, why: `${id} is being sent already.` };
+  if (before.state !== 'draft') return { ok: false, why: `${id} was ${before.state} already.` };
+  if (!claimSend(root, id, now)) return { ok: false, why: `${id} is being sent already.` };
+  try {
+    // Another send may have finished between the read and the claim.
+    const r = readReports(root).find((x) => x.id === id);
+    if (r.sent || r.state === 'discarded')
+      return { ok: false, why: `${id} was ${r.sent ? 'sent' : 'discarded'} already.` };
+    return fileIssue(root, r, now);
+  } finally {
+    releaseSend(root, id);
+  }
+}
+
+function fileIssue(root, r, now) {
+  const { id } = r;
   let url;
   let comment = false;
   try {
@@ -240,6 +307,8 @@ export function sendReport(root, id, now = Date.now()) {
 export function discardReport(root, id, now = Date.now()) {
   const r = readReports(root).find((x) => x.id === id);
   if (!r) return { ok: false, why: `There's no report ${id}.` };
+  if (r.state === 'sending')
+    return { ok: false, why: `${id} is being sent, so it can't be discarded.` };
   if (r.state !== 'draft') return { ok: false, why: `${id} was ${r.state} already.` };
   append(root, { kind: 'discarded', id, at: new Date(now).toISOString() });
   return { ok: true };

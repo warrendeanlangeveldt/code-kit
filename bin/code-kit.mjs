@@ -44,7 +44,6 @@
 // --config <file> reads a draft (.claude/code-kit.draft.json) instead of .claude/code-kit.json.
 import { execFileSync, spawnSync } from 'node:child_process';
 import {
-  copyFileSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -155,6 +154,14 @@ import {
   takeTask,
 } from '../hooks/lib/sessions.mjs';
 import { globsOverlap } from '../hooks/lib/teamfacts.mjs';
+import {
+  cleanOf,
+  discardWorktree,
+  keptBecause,
+  pruneWorktrees,
+  removeWorktree,
+  worktrees,
+} from '../hooks/lib/worktrees.mjs';
 import { decisionsFor, openDecisions } from '../hooks/lib/decisionstore.mjs';
 import {
   appliesTo,
@@ -720,21 +727,11 @@ function mergeOne(branch, config, byPerson, commit = null) {
     const team = teamOf(config);
     const story = storyOfBranch(branch);
     if (team && story) teamProvider(resolve('.'), team).release(story, { merged: true });
-    // A lane agent's worktree has done its work once its branch is merged: removed when it holds
-    // nothing uncommitted (the branch stays), so finished lanes don't pile up checkouts.
-    let removed = '';
-    const agentTree = checkedOut(branch);
-    if (
-      agentTree?.includes('/.claude/worktrees/') &&
-      !g(agentTree, 'status', '--porcelain').trim()
-    ) {
-      try {
-        g(root, 'worktree', 'remove', agentTree);
-        removed = ` Removed its worktree, ${agentTree}.`;
-      } catch {
-        // in use, or locked: left as it is
-      }
-    }
+    // LEAN-8: the merged branch's worktree, and any other that's done with, go now.
+    const pruned = pruneWorktrees(root, config).removed;
+    const removed = pruned.length
+      ? ` Removed ${pruned.length} worktree${pruned.length === 1 ? '' : 's'} that ${pruned.length === 1 ? 'was' : 'were'} done with.`
+      : '';
     return {
       into,
       message: `Merged ${branch} into ${into}: verify passed on ${changed.length} file(s)${lane ? `, held to ${heldTo(lane)}` : ''}, at ${tip.slice(0, 7)}.${skipped.length ? ` ${notRun(skipped)}` : ''}${removed}`,
@@ -2335,78 +2332,71 @@ function instructionsCommand() {
     );
 }
 
-/** LEAN-6: a worktree of the project, with its branch, story, report and whether it's merged and clean. */
-function worktreeList(config) {
-  const root = resolve('.');
-  const run = (...a) => spawnSync('git', a, { cwd: root, encoding: 'utf8' }).stdout?.trim() ?? '';
-  const from = findBase(config, false);
-  const blocks = run('worktree', 'list', '--porcelain').split('\n\n').filter(Boolean);
-  return blocks.slice(1).map((b) => {
-    const path = /^worktree (.+)$/m.exec(b)?.[1];
-    const branch = /^branch refs\/heads\/(.+)$/m.exec(b)?.[1] ?? null;
-    const report = branch ? `.claude/state/reports/${branch.replace(/[^\w.-]+/g, '_')}.md` : null;
-    const status = spawnSync('git', ['-C', path, 'status', '--porcelain'], { encoding: 'utf8' });
-    return {
-      path,
-      branch,
-      story: branch ? storyOfBranch(branch) : null,
-      merged: Boolean(
-        branch &&
-        from &&
-        spawnSync('git', ['merge-base', '--is-ancestor', branch, from], { cwd: root }).status === 0,
-      ),
-      clean: status.status === 0 && !status.stdout.trim(),
-      report: report && existsSync(join(path, report)) ? report : null,
-    };
-  });
-}
-
-/** LEAN-6: releases a worktree: its report kept in the main checkout, the worktree removed, its branch kept. */
+/** LEAN-6: releases a worktree for a fresh agent: its report kept in the main checkout, its branch kept. */
 function releaseWorktree(w) {
-  if (!w.clean)
+  if (!cleanOf(w))
     die(
       `${w.branch ?? w.path} has uncommitted changes; nothing was removed. Commit them on the branch, or have its agent do so, then release it.`,
     );
-  if (w.report) {
-    mkdirSync(join(resolve('.'), '.claude/state/reports'), { recursive: true });
-    copyFileSync(join(w.path, w.report), join(resolve('.'), w.report));
-  }
-  const removed = spawnSync('git', ['worktree', 'remove', w.path], {
-    cwd: resolve('.'),
-    encoding: 'utf8',
-  });
-  if (removed.status !== 0) die(`git worktree remove failed: ${removed.stderr.trim()}`);
+  const r = removeWorktree(resolve('.'), w);
+  if (!r.ok) die(`git worktree remove failed: ${r.why}`);
   return `${w.branch ?? w.path}${w.report ? ` (its report kept at ${w.report})` : ''}`;
 }
 
 /**
- * LEAN-6: `worktrees` lists the project's worktrees; `release <branch>` frees one for a fresh agent on the
- * same story; `prune` releases every one whose branch is merged and that holds nothing uncommitted.
+ * LEAN-6, LEAN-8: `worktrees` lists the project's worktrees and why each one stays; `release <branch>`
+ * frees one for a fresh agent on the same story; `prune` takes away every one that's done with;
+ * `discard <branch>`, the person's act, takes away a merged one that still holds changes, keeping them
+ * as a patch.
  */
 function worktreesCommand() {
   const { config } = load();
-  const list = worktreeList(config);
+  const root = resolve('.');
+  const list = worktrees(root, config);
   if (rest[0] === 'release') {
     const w = list.find((x) => x.branch === rest[1] || x.path === rest[1]);
     if (!w) die(`No worktree has ${rest[1] ?? '<branch>'} checked out.`);
     return out(`Released ${releaseWorktree(w)}. The branch and its commits stay.`);
   }
+  if (rest[0] === 'discard') {
+    if (!rest[1]) die('code-kit worktrees discard <branch>');
+    const r = discardWorktree(root, config, rest[1]);
+    if (!r.ok) die(`${r.why} Nothing was removed.`);
+    return out(
+      `Removed ${rest[1]}'s worktree.${r.patch ? ` What it held is kept in ${r.patch}: \`git apply ${r.patch}\` on the branch brings it back.` : ''}${r.report ? ` Its report is kept at ${r.report}.` : ''}`,
+    );
+  }
   if (rest[0] === 'prune') {
-    const done = list.filter((w) => w.merged && w.clean);
-    if (!done.length) return out('No worktree is both merged and clean; nothing was removed.');
-    for (const w of done) out(`Released ${releaseWorktree(w)}.`);
+    const { removed, kept } = pruneWorktrees(root, config);
+    if (flag('--quiet')) return;
+    if (!removed.length) out('Nothing was done with; nothing was removed.');
+    for (const r of removed) out(`Removed ${r}.`);
+    const decide = kept.filter((k) => k.kind === 'agent' && /uncommitted/.test(k.why));
+    if (decide.length)
+      out(
+        `\n${decide.length} merged worktree${decide.length === 1 ? ' still holds' : 's still hold'} uncommitted changes, so ${decide.length === 1 ? 'it stays' : 'they stay'} for the person to keep or discard: ${decide.map((k) => k.label).join(', ')}.`,
+      );
     return;
   }
-  if (flag('--json')) return out(JSON.stringify(list, null, 2));
-  if (!list.length) return out('No worktrees besides the main checkout.');
-  for (const w of list)
-    out(
-      `  ${w.branch ?? '(detached)'}${w.story ? ` · ${w.story}` : ''}: ${w.merged ? 'merged' : 'not merged'}, ${w.clean ? 'clean' : 'uncommitted changes'}  ${w.path}`,
+  if (flag('--json'))
+    return out(
+      JSON.stringify(
+        list.map((w) => ({ ...w, kept: keptBecause(w) })),
+        null,
+        2,
+      ),
     );
-  const prunable = list.filter((w) => w.merged && w.clean).length;
-  if (prunable)
+  if (!list.length) return out('No worktrees besides the main checkout.');
+  for (const w of list) {
+    const why = keptBecause(w);
     out(
-      `\n${prunable} merged and clean: \`code-kit worktrees prune\` removes them, keeping their reports.`,
+      `  ${w.branch ?? '(detached)'}${w.story ? ` · ${w.story}` : ''}: ${why ? `stays, as ${why}` : 'done with'}  ${w.path}`,
+    );
+  }
+  const done = list.filter((w) => !keptBecause(w)).length;
+  if (done)
+    out(
+      `\n${done} done with: \`code-kit worktrees prune\` removes ${done === 1 ? 'it' : 'them'}, keeping their reports. It runs by itself after each merge and as a session starts.`,
     );
 }
 
@@ -2526,7 +2516,7 @@ function usage() {
       '              | next [--base ref] [--json] | adapters | trace <path>... [--json]\n' +
       '              | instructions [--write] [--json] | instructions show lead|lane [<lane>]\n' +
       '              | standards [--json] [--for <path>...]\n' +
-      '              | worktrees [--json] | worktrees release <branch> | worktrees prune\n' +
+      '              | worktrees [--json] | worktrees release|discard <branch> | worktrees prune [--quiet]\n' +
       '              | approve <name>... --reason "…" [--lane name]   [--config file]\n' +
       '              | merge <branch> --delegated|--person [--into branch] | requests [--json] | requests drop <n>|all\n' +
       '              | ask "<question>" [--story ST-n] [--blocks] [--why "…"] [--option "Label: effect"]... | ask [--json]\n' +

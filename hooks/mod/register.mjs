@@ -100,6 +100,8 @@ let reviewing = new Set(); // stories the person asked the lead to review (ACT-3
 let reviewTurn = null; // 'next' until the lead's review turn starts, then its id
 let approving = null; // the open Approve… confirmation: { request, reason, error }
 let result = null; // what the last merge reported
+// REPORT-3: the reports a Send is filing now, off the band and the Decisions tab until it's done.
+const sendingReports = new Set();
 let notice = null; // why the person's last act failed
 let teamSince = null; // TEAM-6: since you last looked, as read when the Team pane's tab opened
 let teamUi = { ...DEFAULT_TEAM_UI }; // TEAM-7: the Team pane's own state
@@ -116,6 +118,7 @@ const present = new Map(); // agent id (or 'main') → its presence for a hosted
 const held = new Map(); // tool_use_id → a call held for the person (HOLD-2)
 const denied = new Map(); // tool_use_id → a call Claude Code's own permission check refused (PERM-1)
 const briefLater = new Set(); // the brief's questions the person put off this session (ASK-4)
+const worktreesKept = new Set(); // merged worktrees the person chose to keep this session (LEAN-8)
 let answering = null; // the open Answer… box: { kind: 'question' | 'brief', question, id?, path?, text, error }
 let where = null; // { cli, cwd, interactive }, from session start
 // The lead loop (spec 05): what it did, and what it waits on.
@@ -333,7 +336,9 @@ export function register(on) {
             ? mine('answer')
             : ((await json('ask')) ?? []).filter((q) => q.state === 'open');
         const reports = valid
-          ? ((await json('report')) ?? []).filter((r) => r.state === 'draft')
+          ? ((await json('report')) ?? []).filter(
+              (r) => r.state === 'draft' && !sendingReports.has(r.id),
+            )
           : [];
         // TEAM-12: the plan mirrored onto the team's Project board, at most every 10 minutes, in the
         // background: a slow GitHub never holds up the band.
@@ -370,6 +375,8 @@ export function register(on) {
           reports,
           // ASK-4: the brief's open questions, less those put off this session.
           brief: (nextStep?.brief ?? []).filter((b) => !briefLater.has(b.question)),
+          // LEAN-8: merged worktrees still holding changes, less those kept this session.
+          worktrees: (nextStep?.worktrees ?? []).filter((w) => !worktreesKept.has(w.branch)),
           base: status?.base ?? null,
           // SESS-3, SESS-4: a working session's band holds its own, and its task.
           working: role === 'working',
@@ -745,16 +752,55 @@ export function register(on) {
       },
       // REPORT-3: the person sends a drafted report to code-kit's GitHub, or discards it.
       sendReport: async (line) => {
-        const ran = await $.process.run(['node', cli, 'report', 'send', line.report.id], {
+        const { id } = line.report;
+        if (sendingReports.has(id)) return;
+        sendingReports.add(id);
+        await act.reload();
+        await $.ui.toast(`Sending ${id} to code-kit's GitHub…`);
+        try {
+          const ran = await $.process.run(['node', cli, 'report', 'send', id], {
+            cwd,
+            timeoutMs: 120000,
+          });
+          const text = `${ran.stdout}${ran.stderr}`.trim();
+          if (ran.exitCode === 0) await $.ui.toast(text);
+          else {
+            result = { ok: false, title: 'Report not sent', text };
+            await $.ui.open({ id: RESULT_ID, title: 'Report', focus: true, closeOnEscape: true });
+          }
+        } finally {
+          sendingReports.delete(id);
+          await act.reload();
+        }
+      },
+      // LEAN-8: the person keeps a merged worktree that still holds changes, or discards them.
+      keepWorktree: (line) => {
+        worktreesKept.add(line.worktree.branch);
+        model = {
+          ...model,
+          worktrees: (model.worktrees ?? []).filter((w) => w.branch !== line.worktree.branch),
+        };
+        $.ui.invalidate('ui.render');
+      },
+      discardWorktree: async (line) => {
+        const { branch } = line.worktree;
+        worktreesKept.add(branch);
+        model = {
+          ...model,
+          worktrees: (model.worktrees ?? []).filter((w) => w.branch !== branch),
+        };
+        $.ui.invalidate('ui.render');
+        const ran = await $.process.run(['node', cli, 'worktrees', 'discard', branch], {
           cwd,
           timeoutMs: 120000,
         });
-        result = {
-          ok: ran.exitCode === 0,
-          title: ran.exitCode === 0 ? 'Report sent' : 'Report not sent',
-          text: `${ran.stdout}${ran.stderr}`.trim(),
-        };
-        await $.ui.open({ id: RESULT_ID, title: 'Report', focus: true, closeOnEscape: true });
+        const text = `${ran.stdout}${ran.stderr}`.trim();
+        if (ran.exitCode === 0) await $.ui.toast(text);
+        else {
+          worktreesKept.delete(branch);
+          result = { ok: false, title: 'Worktree not removed', text };
+          await $.ui.open({ id: RESULT_ID, title: 'Worktree', focus: true, closeOnEscape: true });
+        }
         await act.reload();
       },
       discardReport: async (line) => {

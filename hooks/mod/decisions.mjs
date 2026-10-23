@@ -20,6 +20,7 @@ export const DECISION_KINDS = new Set([
   'question',
   'brief',
   'report',
+  'worktree',
   'waiting',
 ]);
 
@@ -56,6 +57,9 @@ const EFFECT = {
   sendReport:
     "Files it on code-kit's GitHub under your account (a comment instead, if it's filed already).",
   discardReport: "It's not sent, and goes.",
+  keepWorktree: 'It stays as it is, and comes back next session.',
+  discardWorktree:
+    'The worktree goes. What it held is kept as a patch under .claude/state/discarded, to apply again if you need it.',
 };
 
 /**
@@ -89,6 +93,12 @@ function eachDecision(line) {
     }));
   if (line.kind === 'report')
     return (line.reports ?? [line.report]).map((r) => ({ ...line, text: r.title, report: r }));
+  if (line.kind === 'worktree')
+    return (line.worktrees ?? [line.worktree]).map((w) => ({
+      ...line,
+      text: `${w.branch} is merged, and its worktree holds uncommitted changes`,
+      worktree: w,
+    }));
   return [line];
 }
 
@@ -121,6 +131,11 @@ function optionsOf(line) {
       { id: 'sendReport', label: 'Send' },
       { id: 'discardReport', label: 'Discard' },
     ];
+  if (line.kind === 'worktree')
+    return [
+      { id: 'discardWorktree', label: 'Discard' },
+      { id: 'keepWorktree', label: 'Keep' },
+    ];
   // LOOP-11: what the lead waits on, read from its reply: its answers, or the person's own words.
   if (line.kind === 'waiting' && line.waiting.kind === 'person' && line.waiting.question)
     return [
@@ -148,6 +163,7 @@ const TAG = {
   question: 'question',
   brief: 'your brief',
   report: 'bug report',
+  worktree: 'worktree',
   waiting: 'the lead',
 };
 
@@ -195,6 +211,11 @@ function headlineOf(line, story) {
     };
   if (line.kind === 'report')
     return { headline: line.report.title, sub: "drafted by an agent, for code-kit's GitHub" };
+  if (line.kind === 'worktree')
+    return {
+      headline: `${line.worktree.branch}'s worktree still holds ${line.worktree.changes} uncommitted change${line.worktree.changes === 1 ? '' : 's'}`,
+      sub: 'its branch is merged',
+    };
   if (line.kind === 'waiting' && line.waiting.question)
     return { headline: line.waiting.question, sub: 'from the lead, which waits on it' };
   return { headline: line.text, sub: story ? `${story.id} ${story.title ?? ''}` : '' };
@@ -244,6 +265,8 @@ function whyOf(line, check) {
     return 'You stopped the lead mid-turn, so the loop leaves the lead to you until you say.';
   if (line.kind === 'waiting' && line.waiting.kind === 'blocked')
     return "The lead was asked to take this step and didn't, so the loop won't ask again until you say.";
+  if (line.kind === 'worktree')
+    return "Its branch is merged, but something in its worktree was changed and never committed. Only you can tell whether that's work or leftovers, and the worktree holds a full install, so it takes disk space until it goes.";
   if (line.kind === 'report')
     return "code-kit got in an agent's way. It's sent under your GitHub account to a public repository, so read what it says first.";
   return null;
@@ -347,7 +370,10 @@ export function decisionCards(lines, context = {}) {
           (line.question?.blocks ? `${line.question.story} waits on your answer.` : null) ??
           (line.waiting?.label ? `The loop's last step: ${line.waiting.label}` : null) ??
           (line.denial ? clip(line.denial.command ?? line.denial.what, 400) : null) ??
-          (line.report ? line.report.body : null),
+          (line.report ? line.report.body : null) ??
+          (line.worktree?.files?.length
+            ? `${line.worktree.files.join('\n')}${line.worktree.changes > line.worktree.files.length ? `\n… and ${line.worktree.changes - line.worktree.files.length} more` : ''}`
+            : null),
         settled,
         why: whyOf(line, check),
         options: optionsOf(line).map((a) => ({

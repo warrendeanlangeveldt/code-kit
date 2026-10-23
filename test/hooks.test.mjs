@@ -18,6 +18,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { refusalCard } from '../hooks/mod/view.mjs';
 import { holdable } from '../hooks/mod/hold.mjs';
+import { claimLane, releaseLane } from '../hooks/lib/laneclaims.mjs';
 
 // SESS-1: the CLI reads the calling session from Claude Code's environment; these tests say it themselves.
 delete process.env.CLAUDE_CODE_SESSION_ID;
@@ -1262,6 +1263,41 @@ try {
       truth(
         rKit(['report', 'discard', 'R-3']).status === 0 &&
           !JSON.parse(rKit(['report', '--json']).stdout).some((x) => x.state === 'draft'),
+      ),
+      0,
+    );
+    // A Send pressed again while GitHub is still filing the first: one issue, not two.
+    rKit(['report', 'Slow to file', '--what', 'x']);
+    writeFileSync(join(fakeBin, 'slow'), '');
+    writeFileSync(
+      join(fakeBin, 'gh'),
+      `#!/bin/sh\necho "$@" >> "${ghLog}"\ncase "$1 $2" in\n  "auth status") exit 0 ;;\n  "issue list") echo '[]' ;;\n  "issue create") sleep 2; echo "https://github.com/o/code-kit/issues/10" ;;\nesac\n`,
+    );
+    const first = spawn(process.execPath, [kitCli, 'report', 'send', 'R-4'], {
+      cwd: r.dir,
+      env: { ...process.env, PATH: `${fakeBin}:${process.env.PATH}` },
+    });
+    const firstDone = new Promise((done) => first.on('exit', done));
+    // Until the first Send has claimed it, however long Node takes to start.
+    for (let i = 0; i < 100 && !existsSync(join(r.dir, '.claude/state/report-sending-R-4')); i++)
+      await new Promise((done) => setTimeout(done, 50));
+    const during = JSON.parse(rKit(['report', '--json']).stdout).find((x) => x.id === 'R-4');
+    const second = rKit(['report', 'send', 'R-4']);
+    const firstCode = await firstDone;
+    const creates = readFileSync(ghLog, 'utf8')
+      .split('\n')
+      .filter((l) => l.startsWith('issue create') && l.includes('Slow to file'));
+    expect(
+      'REPORT-3 a report being sent reads as sending, and a second Send files nothing',
+      truth(
+        during?.state === 'sending' &&
+          second.status === 1 &&
+          second.stderr.includes('R-4 is being sent already') &&
+          firstCode === 0 &&
+          creates.length === 1 &&
+          JSON.parse(rKit(['report', '--json']).stdout).find((x) => x.id === 'R-4').state ===
+            'sent',
+        JSON.stringify({ during, second: second.stderr, firstCode, creates }),
       ),
       0,
     );
@@ -6424,6 +6460,132 @@ else process.exit(1);
       }),
       2,
       "releasing worktrees is the lead's",
+    );
+
+    // LEAN-8: what's done with goes by itself; what still holds changes is the person's.
+    const commitIn = (dir, file, body) => {
+      writeFileSync(join(dir, file), body);
+      for (const a of [
+        ['add', '-A'],
+        ['commit', '-q', '-m', file],
+      ])
+        execFileSync('git', ['-C', dir, '-c', 'user.email=t@t', '-c', 'user.name=t', ...a]);
+    };
+    const addTree = (branch) => {
+      t.git('worktree', 'add', '-q', '-b', branch, tree(branch), 'main');
+      return tree(branch);
+    };
+    // Just dispatched: made from main, nothing committed yet (#61).
+    const fresh = addTree('web/st-3');
+    // Merged, then changed and never committed.
+    const holding = addTree('web/st-4');
+    commitIn(holding, 'st4.txt', 'work\n');
+    t.git('merge', '-q', '--no-ff', '-m', 'merge st-4', 'web/st-4');
+    writeFileSync(join(holding, 'st4.txt'), 'more, uncommitted\n');
+    writeFileSync(join(holding, 'notes.txt'), 'untracked\n');
+    // Merged and clean, but its lane's agent still holds the story.
+    const busy = addTree('web/st-5');
+    commitIn(busy, 'st5.txt', 'work\n');
+    t.git('merge', '-q', '--no-ff', '-m', 'merge st-5', 'web/st-5');
+    claimLane(t.dir, { lane: 'web', story: 'ST-5', session: 's1' });
+    // Merged and clean, locked by a Claude Code process that's still running, its agent finished.
+    const locked = addTree('api/st-6');
+    commitIn(locked, 'st6.txt', 'work\n');
+    t.git('merge', '-q', '--no-ff', '-m', 'merge st-6', 'api/st-6');
+    t.git(
+      'worktree',
+      'lock',
+      '--reason',
+      `claude agent agent-x (pid ${process.pid} start now)`,
+      locked,
+    );
+    // A folder a removal left behind, and a worktree whose folder is gone.
+    mkdirSync(join(t.dir, '.claude/worktrees/lead-st66/.claude/state'), { recursive: true });
+    const gone = addTree('web/st-7');
+    rmSync(gone, { recursive: true, force: true });
+    const pruned = tCli('worktrees', 'prune');
+    expect(
+      "LEAN-8 prune takes what is done with: a finished agent's locked worktree, a gone one, a stray folder",
+      truth(
+        pruned.status === 0 &&
+          !existsSync(locked) &&
+          !existsSync(join(t.dir, '.claude/worktrees/lead-st66')) &&
+          !t.git('worktree', 'list').includes('st-7') &&
+          t.git('branch', '--list', 'api/st-6').includes('api/st-6'),
+        pruned.stdout + pruned.stderr,
+      ),
+      0,
+    );
+    expect(
+      'LEAN-8 it keeps a just-dispatched branch, one its agent still holds, and one holding changes, and names that one',
+      truth(
+        existsSync(fresh) &&
+          existsSync(busy) &&
+          existsSync(holding) &&
+          pruned.stdout.includes('still holds uncommitted changes') &&
+          pruned.stdout.includes('web/st-4'),
+        pruned.stdout,
+      ),
+      0,
+    );
+    const nextOut = JSON.parse(tCli('next', '--json').stdout);
+    expect(
+      'LEAN-8 next gives the person the merged worktree holding changes, with what it holds',
+      truth(
+        nextOut.worktrees?.length === 1 &&
+          nextOut.worktrees[0].branch === 'web/st-4' &&
+          nextOut.worktrees[0].changes === 2 &&
+          nextOut.worktrees[0].files.some((f) => f.includes('notes.txt')),
+        JSON.stringify(nextOut.worktrees),
+      ),
+      0,
+    );
+    expect(
+      "LEAN-8 no agent discards a worktree, the lead included: it is the person's",
+      spawnSync('node', [join(hooks, 'guard-bash.mjs')], {
+        input: JSON.stringify({
+          cwd: t.dir,
+          tool_input: { command: `node "${kitCli}" worktrees discard web/st-4` },
+        }),
+        env: { ...process.env, CLAUDE_PROJECT_DIR: t.dir },
+        encoding: 'utf8',
+      }),
+      2,
+      "the person's own act",
+    );
+    const discarded = tCli('worktrees', 'discard', 'web/st-4');
+    const patch = /kept in (\S+):/.exec(discarded.stdout)?.[1];
+    expect(
+      'LEAN-8 discarded, the worktree goes and what it held is kept as a patch',
+      truth(
+        discarded.status === 0 &&
+          !existsSync(holding) &&
+          patch &&
+          readFileSync(join(t.dir, patch), 'utf8').includes('more, uncommitted') &&
+          readFileSync(join(t.dir, patch), 'utf8').includes('notes.txt'),
+        discarded.stdout + discarded.stderr,
+      ),
+      0,
+    );
+    expect(
+      'LEAN-8 an unmerged worktree is never discarded',
+      tCli('worktrees', 'discard', 'web/st-3'),
+      1,
+      "isn't merged",
+    );
+    // As a session starts, what's done with goes, in the background.
+    releaseLane(t.dir, 'web');
+    spawnSync('node', [join(hooks, 'session.mjs'), 'start'], {
+      input: JSON.stringify({ session_id: 'prune-1' }),
+      env: { ...process.env, CLAUDE_PROJECT_DIR: t.dir },
+      encoding: 'utf8',
+    });
+    for (let i = 0; i < 100 && existsSync(busy); i++)
+      await new Promise((done) => setTimeout(done, 100));
+    expect(
+      'LEAN-8 a session starting prunes what is done with, once its agent has finished',
+      truth(!existsSync(busy) && existsSync(fresh)),
+      0,
     );
   }
 

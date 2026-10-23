@@ -13,6 +13,7 @@ import { decidedBy, laneOf, openRequests } from './rules.mjs';
 import { instructionsState } from './instructions.mjs';
 import { SECURITY_AGENT_FILE } from './security.mjs';
 import { laneClaims } from './laneclaims.mjs';
+import { keptBecause, worktrees } from './worktrees.mjs';
 import { pickPerLane } from './schedule.mjs';
 
 export const DRAFT_FILE = '.claude/code-kit.draft.json';
@@ -77,7 +78,8 @@ const hasMarkdown = (dir) => {
 };
 
 /**
- * { step, why, args, then, attention, brief }. `brief`: the brief's open questions (ASK-4). `step` is a skill (spec-design, init, check, dispatch,
+ * { step, why, args, then, attention, brief, worktrees }. `brief`: the brief's open questions (ASK-4);
+ * `worktrees`: the merged ones still holding changes, { branch, story, changes, files }, for the person (LEAN-8). `step` is a skill (spec-design, init, check, dispatch,
  * review), `merge` (the head of the merge queue, where the lead merges), `wait` (lanes are
  * building) or `done`. `base(config)` resolves the branch lanes merge into.
  */
@@ -85,6 +87,8 @@ export function nextStep(root, base) {
   const attention = [];
   // ASK-4: the brief's open questions, for the person's Decisions tab.
   let briefQuestions = [];
+  // LEAN-8: merged worktrees still holding changes, for the person to keep or discard.
+  let holdingTrees = [];
   const result = (step, why, extra = {}) => ({
     step,
     why,
@@ -92,6 +96,7 @@ export function nextStep(root, base) {
     then: [],
     attention,
     brief: briefQuestions,
+    worktrees: holdingTrees,
     ...extra,
   });
   const isRepo = git(root, 'rev-parse', '--is-inside-work-tree') === 'true';
@@ -158,6 +163,26 @@ export function nextStep(root, base) {
       'Nothing here yet; spec-design turns your idea into a specification.',
     );
   }
+
+  // LEAN-8: worktrees that are done with are only disk space; prune takes them after each merge and as a
+  // session starts, and those still holding changes are the person's to keep or discard.
+  const trees = worktrees(root, config);
+  const leftovers = trees.filter((w) => !keptBecause(w) && !w.missing).length;
+  if (leftovers)
+    attention.push(
+      `${leftovers} worktree${leftovers === 1 ? ' is' : 's are'} done with; \`code-kit worktrees prune\` removes them, keeping their reports.`,
+    );
+  const holding = trees.filter((w) => w.kind === 'agent' && w.merged && !w.clean && !w.agentAtWork);
+  holdingTrees = holding.map((w) => ({
+    branch: w.branch,
+    story: w.story,
+    changes: w.changes,
+    files: w.files,
+  }));
+  if (holding.length)
+    attention.push(
+      `${holding.map((w) => w.branch).join(', ')} ${holding.length === 1 ? 'is' : 'are'} merged, but ${holding.length === 1 ? 'its worktree still holds' : 'their worktrees still hold'} uncommitted changes: the person keeps or discards each, from the band (discarding keeps them as a patch).`,
+    );
 
   const { specs, plan } = config.docs ?? {};
   if (!specs || !plan)
@@ -255,12 +280,6 @@ export function nextStep(root, base) {
   if (unbuildable.length)
     attention.push(
       `${unbuildable.join(', ')} can't be dispatched until the plan's gaps are fixed.`,
-    );
-  // LEAN-6: worktrees whose story is merged and which hold nothing uncommitted are only disk space.
-  const leftovers = mergedWorktrees(root, config);
-  if (leftovers)
-    attention.push(
-      `${leftovers} worktree${leftovers === 1 ? ' is' : 's are'} merged and clean; \`code-kit worktrees prune\` removes them, keeping their reports.`,
     );
   // ONB-8: code-kit's own instructions to the lead and the lanes, brought up to date before the next step:
   // a newer code-kit's rules reach the agents only through them.
@@ -523,24 +542,4 @@ export function missingSkills(root) {
       );
   }
   return out;
-}
-
-/** LEAN-6: how many of the project's worktrees have a merged branch and nothing uncommitted. */
-function mergedWorktrees(root, config) {
-  const list = git(root, 'worktree', 'list', '--porcelain');
-  if (!list) return 0;
-  const from = config.branches?.protected?.[0];
-  if (!from || !git(root, 'rev-parse', '--verify', '-q', from)) return 0;
-  let n = 0;
-  for (const block of list.split('\n\n').slice(1)) {
-    const path = /^worktree (.+)$/m.exec(block)?.[1];
-    const branch = /^branch refs\/heads\/(.+)$/m.exec(block)?.[1];
-    if (!path || !branch) continue;
-    const merged =
-      spawnSync('git', ['merge-base', '--is-ancestor', branch, from], { cwd: root }).status === 0;
-    if (!merged) continue;
-    const status = spawnSync('git', ['-C', path, 'status', '--porcelain'], { encoding: 'utf8' });
-    if (status.status === 0 && !status.stdout.trim()) n++;
-  }
-  return n;
 }

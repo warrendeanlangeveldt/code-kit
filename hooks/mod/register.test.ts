@@ -82,6 +82,8 @@ function project() {
     answer: 'Merge',
     open: new Set<string>(),
     opened: [] as string[],
+    reportFails: false, // report send: GitHub refuses it
+    toasts: [] as string[],
     closed: [] as string[],
     prompts: [] as string[],
     acts: [] as string[][],
@@ -216,6 +218,18 @@ function stub(on: any, w: World) {
       return ran(0, 'Recorded.');
     }
     if (sub === 'ask') return ran(0, JSON.stringify(w.questions));
+    if (sub === 'worktrees' && argv[3] === 'discard') {
+      w.acts.push([...argv.slice(2)]);
+      w.next = {
+        ...w.next,
+        worktrees: (w.next.worktrees ?? []).filter((x: any) => x.branch !== argv[4]),
+      };
+      return ran(0, `Removed ${argv[4]}'s worktree.`);
+    }
+    if (sub === 'report' && argv[3] === 'send' && w.reportFails) {
+      w.acts.push([...argv.slice(2)]);
+      return ran(1, '', "GitHub didn't take it (HTTP 502).");
+    }
     if (sub === 'report' && ['send', 'discard'].includes(argv[3])) {
       w.acts.push([...argv.slice(2)]);
       w.reports = w.reports.map((r) =>
@@ -492,6 +506,10 @@ function stub(on: any, w: World) {
     return { value: undefined };
   });
   on('ui.panes', () => ({ value: [...w.open].map((id) => ({ id, title: id, isShown: true })) }));
+  on('ui.toast', ($: any, e: any) => {
+    w.toasts.push(e.text);
+    return { value: undefined };
+  });
   on('ui.open', ($: any, e: any) => {
     w.opened.push(e.id);
     w.open.add(e.id);
@@ -1902,8 +1920,83 @@ test('REPORT-3 a bug report an agent drafted waits for the person, who reads it 
     await ui.find({ type: 'Text', text: '**What happened:** the card never showed' }),
   ).toBeDefined();
   await press($, 'decide-sendReport', PANE);
-  expect(w.acts).toContainEqual(['report', 'send', 'R-1']);
-  expect(w.opened).toContain('code-kit-result');
+  expect(w.acts.filter((a: string[]) => a[0] === 'report' && a[1] === 'send')).toEqual([
+    ['report', 'send', 'R-1'],
+  ]);
+  // Sent, it leaves the tab, and the result is a toast, not a pane to close.
+  expect(w.toasts).toEqual([
+    "Sending R-1 to code-kit's GitHub…",
+    'Filed https://github.com/o/code-kit/issues/9',
+  ]);
+  expect(await ui.find({ type: 'Text', text: '**What happened:** the card never showed' })).toBe(
+    undefined,
+  );
+  expect(w.opened).not.toContain(RESULT);
+  await ui.unmount();
+});
+
+test('REPORT-3 a report GitHub refused stays to send again, and says why', async ($, on) => {
+  const w = project();
+  w.reportFails = true;
+  w.reports = [
+    {
+      id: 'R-1',
+      at: '2026-10-13T00:00:00Z',
+      by: 'lead',
+      title: 'Decisions tab misses a held call',
+      fingerprint: 'ck-1',
+      body: '**What happened:** the card never showed',
+      state: 'draft',
+      sent: null,
+    },
+  ];
+  await start($, on, w);
+  const band = await bandUi($);
+  await press($, 'band-openDecision');
+  await band.unmount();
+  const ui = await pane($, PANE);
+  await press($, 'decide-sendReport', PANE);
+  expect(w.opened).toContain(RESULT);
+  const result = await pane($, RESULT);
+  expect(await result.find({ type: 'Text', text: /GitHub didn't take it/ })).toBeDefined();
+  await result.unmount();
+  expect(
+    await ui.find({ type: 'Text', text: '**What happened:** the card never showed' }),
+  ).toBeDefined();
+  await ui.unmount();
+});
+
+test('LEAN-8 a merged worktree still holding changes waits for the person, who keeps it or discards it', async ($, on) => {
+  const w = project();
+  w.next = {
+    ...w.next,
+    worktrees: [
+      { branch: 'web/st-2', story: 'ST-2', changes: 2, files: [' M st2.txt', '?? notes.txt'] },
+      { branch: 'api/st-3', story: 'ST-3', changes: 1, files: [' M a.ts'] },
+    ],
+  };
+  await start($, on, w);
+  const band = await bandUi($);
+  expect(
+    await band.find({
+      type: 'Text',
+      text: '2 merged worktrees still hold changes: web/st-2',
+    }),
+  ).toBeDefined();
+  await press($, 'band-openDecision');
+  await band.unmount();
+  const ui = await pane($, PANE);
+  expect(await ui.find({ type: 'Text', text: /\?\? notes\.txt/ })).toBeDefined();
+  await press($, 'decide-discardWorktree', PANE);
+  expect(w.acts).toContainEqual(['worktrees', 'discard', 'web/st-2']);
+  expect(w.opened).not.toContain(RESULT);
+  await press($, 'decide-keepWorktree', PANE);
+  expect(w.acts.filter((a: string[]) => a[0] === 'worktrees')).toEqual([
+    ['worktrees', 'discard', 'web/st-2'],
+  ]);
+  expect((await ui.findAll({ type: 'Text' })).some((t: any) => /api\/st-3/.test(t.text))).toBe(
+    false,
+  );
   await ui.unmount();
 });
 

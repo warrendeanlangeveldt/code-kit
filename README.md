@@ -452,7 +452,8 @@ code-kit verify [--base ref] [--branch name] [--no-checks] [--json]  # a branch'
 code-kit security [--base ref] [--branch name] [--json]  # whether a branch needs the security review, and why: sign-in, permissions, outside input, personal data, payments, secrets, dependencies
 code-kit status [--base ref] [--json]  # stories and requirements against the spec
 code-kit next [--base ref] [--json]    # the step to take now, from the project's state
-code-kit worktrees [--json] | worktrees release <branch> | worktrees prune  # the project's worktrees; free one for a fresh agent on its story, or remove every merged and clean one, keeping their reports
+code-kit worktrees [--json] | worktrees release <branch> | worktrees prune [--quiet]  # the project's worktrees and why each stays; free one for a fresh agent on its story, or remove every one that's done with, keeping their reports (also after each merge and as a session starts)
+code-kit worktrees discard <branch>  # the person's, from the band: remove a merged worktree that still holds changes, kept as a patch
 code-kit instructions [--write] [--json] | instructions show lead|lane [<lane>]  # code-kit's part of CLAUDE.md and the lane agents: where each stands, brought up to date, or printed
 code-kit standards [--json] [--for <path>...]  # the project's standards with any its organisation's provider supplies, and what's wrong with them; --for keeps the ones for those files' layers
 code-kit trace <path>... [--json]      # what a file is for: requirements, lane, layer rules
