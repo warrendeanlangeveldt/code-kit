@@ -325,7 +325,7 @@ export function register(on) {
             ? ((await json('adapters', '--session', session)) ?? [])
             : [];
         // TEAM-7: the team's claims, intents and pull requests, where the project is a team's.
-        const team = valid && check.team ? await json('team') : null;
+        const team = valid && check.team ? await json('team', '--session', session) : null;
         // ASK-2: the lead's questions waiting for the person; REPORT-3: bug reports waiting to be sent.
         const questions = !valid
           ? []

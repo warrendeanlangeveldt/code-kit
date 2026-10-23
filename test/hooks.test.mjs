@@ -6800,6 +6800,9 @@ else process.exit(1);
       GIT_CONFIG_GLOBAL: gitConfig,
       CLAUDE_PROJECT_DIR: repo,
     };
+    // The calling session is each test's to say, not the session running the tests.
+    delete env.CLAUDE_CODE_SESSION_ID;
+    delete env.CODE_KIT_SESSION;
     const g = (...args) => execFileSync('git', ['-C', repo, ...args], { encoding: 'utf8', env });
     execFileSync('git', ['init', '-q', '-b', 'main', repo]);
     g('remote', 'add', 'origin', 'https://github.com/acme/booking.git');
@@ -6963,7 +6966,7 @@ else process.exit(1);
       expect('HUBR-6 the session hook starts the live link', sessionHook('start'), 0);
       const stream = () => {
         try {
-          return JSON.parse(readFileSync(join(repo, '.claude/state/hub-stream.json'), 'utf8'));
+          return JSON.parse(readFileSync(join(repo, '.claude/state/hub-stream-s1.json'), 'utf8'));
         } catch {
           return {};
         }
@@ -6988,6 +6991,32 @@ else process.exit(1);
             ),
           ),
           JSON.stringify(seen().calls.filter((c) => c.op === 'presence')),
+        ),
+        0,
+      );
+      const liveFor = (session) =>
+        JSON.parse(kit('team', '--json', '--fresh', '--session', session).stdout || '{}').provider;
+      expect(
+        "a session's own link makes it live, and only it: another session on the checkout isn't",
+        truth(
+          liveFor('s1')?.live === true &&
+            liveFor('s2')?.live === false &&
+            /this session has no live link/.test(liveFor('s2')?.detail ?? ''),
+          JSON.stringify([liveFor('s1'), liveFor('s2')]),
+        ),
+        0,
+      );
+      const statusOf = (session) => kit('team', 'provider', 'status', '--session', session).stdout;
+      expect(
+        'team provider status checks each part, and says whether the calling session is linked',
+        truth(
+          /✓ this machine is signed in as kim/.test(statusOf('s1')) &&
+            /✓ the config here names the hub/.test(statusOf('s1')) &&
+            /✓ origin\/main's config names the hub/.test(statusOf('s1')) &&
+            /✓ the hub sees acme\/booking/.test(statusOf('s1')) &&
+            /✓ this session is linked/.test(statusOf('s1')) &&
+            /✗ this session isn't linked yet/.test(statusOf('s2')),
+          statusOf('s1') + statusOf('s2'),
         ),
         0,
       );
@@ -7018,6 +7047,14 @@ else process.exit(1);
         'the session hook ends it, and the hub hears the session leave',
         truth(
           waitUntil(() => seen().calls.some((c) => c.op === 'leave' && c.input.session === 's1')),
+        ),
+        0,
+      );
+      expect(
+        'and the ended session no longer looks live',
+        truth(
+          waitUntil(() => liveFor('s1')?.live === false),
+          JSON.stringify(liveFor('s1')),
         ),
         0,
       );
@@ -7149,6 +7186,29 @@ else process.exit(1);
         truth(kit('team', 'provider', 'status').stdout.includes('as kim')),
         0,
       );
+      // Connect, run from a session, links that session at once: no restart.
+      const fromSession = spawnSync('node', [kitCli, 'team', 'provider', 'connect'], {
+        cwd: repo,
+        encoding: 'utf8',
+        env: { ...env, CLAUDE_CODE_SESSION_ID: 's3' },
+      });
+      const daemonOf = () => {
+        try {
+          return JSON.parse(readFileSync(join(repo, '.claude/state/hub-daemon-s3.json'), 'utf8'));
+        } catch {
+          return {};
+        }
+      };
+      expect(
+        'team provider connect, run from a session, links that session without a restart',
+        truth(
+          /This session is linked to the hub now/.test(fromSession.stdout) &&
+            waitUntil(() => liveFor('s3')?.live === true),
+          fromSession.stdout + fromSession.stderr,
+        ),
+        0,
+      );
+      if (daemonOf().pid) process.kill(daemonOf().pid, 'SIGTERM');
 
       // TEAM-8 and HUBR-7: the hub gone, claims go through GitHub, and intents wait for the hub.
       hubServer.kill();

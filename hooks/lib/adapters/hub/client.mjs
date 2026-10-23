@@ -17,6 +17,7 @@ import {
   chmodSync,
   existsSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
   renameSync,
   statSync,
@@ -104,6 +105,40 @@ const mainRoot = (cwd) => {
 const stateDir = (root) => join(mainRoot(root), '.claude', 'state');
 const hubDown = (root) => readJson(join(stateDir(root), 'hub-down.json'), {});
 
+/** The Claude Code session calling: code-kit passes it on, and Claude Code tells every command an agent runs. */
+const sessionOf = () =>
+  String(process.env.CODE_KIT_SESSION ?? process.env.CLAUDE_CODE_SESSION_ID ?? '').replace(
+    /[^\w-]/g,
+    '',
+  ) || null;
+const streamFileOf = (root, session) => join(stateDir(root), `hub-stream-${session}.json`);
+
+/**
+ * A session's live link: up while its daemon runs and its event stream is connected. Each session holds
+ * its own, so one session's link never makes another look live.
+ */
+function linkOf(root, session) {
+  const daemon = readJson(join(stateDir(root), `hub-daemon-${session}.json`));
+  const stream = readJson(streamFileOf(root, session), {});
+  return {
+    up: Boolean(daemon?.pid && alive(daemon.pid) && stream.connected),
+    why: stream.why ?? null,
+  };
+}
+
+/** The sessions on this checkout whose live link is up. */
+function linkedSessions(root) {
+  let names = [];
+  try {
+    names = readdirSync(stateDir(root));
+  } catch {
+    // no state yet
+  }
+  return names
+    .map((n) => n.match(/^hub-daemon-([\w-]+)\.json$/)?.[1])
+    .filter((s) => s && linkOf(root, s).up);
+}
+
 // --- talking to the hub ------------------------------------------------------------------------
 
 async function hub(method, path, body, { timeoutMs = 15_000 } = {}) {
@@ -153,8 +188,7 @@ export async function provide(op, input, root = process.cwd()) {
   // The daemon keeps the state fresh from the stream: read it from disk unless asked for fresh.
   if (op === 'state' && !input.fresh) {
     const kept = readJson(join(stateDir(root), 'team.json'));
-    const live = readJson(join(stateDir(root), 'hub-stream.json'), {});
-    if (kept?.hub && live.connected && Date.now() - Date.parse(kept.at) < 5 * 60_000)
+    if (kept?.hub && linkedSessions(root).length && Date.now() - Date.parse(kept.at) < 5 * 60_000)
       return named(kept, root);
   }
   const { team: _team, ...body } = input;
@@ -189,20 +223,23 @@ export async function provide(op, input, root = process.cwd()) {
 }
 
 /**
- * The state names what coordinates the team, for code-kit's Team pane: the hub, whether this session's
- * stream is live, and who this machine is signed in as.
+ * The state names what coordinates the team, for code-kit's Team pane: the hub, whether the calling
+ * session's own link is live (any session's, when no session is calling), and who this machine is
+ * signed in as.
  */
 function named(state, root) {
-  const live = readJson(join(stateDir(root), 'hub-stream.json'), {});
+  const session = sessionOf();
+  const link = session ? linkOf(root, session) : { up: linkedSessions(root).length > 0 };
   return {
     ...state,
     provider: {
       name: 'code-kit hub',
-      live: Boolean(live.connected),
+      live: link.up,
       account: credentials()?.login ?? null,
-      detail: live.connected
+      detail: link.up
         ? 'claims, leases, intents and presence as they happen; every push checked for drift'
-        : (live.why ?? 'not connected to its live updates; read on each refresh'),
+        : (link.why ??
+          "this session has no live link, so the team's state is read on each refresh; a session links as it starts"),
     },
   };
 }
@@ -449,6 +486,132 @@ async function connect(root) {
   console.log(
     `This repository now coordinates through the hub (${state.claims.length} claims, ${state.intents.length} open intents). Commit .claude/code-kit.json and .mcp.json so the team does too.`,
   );
+  // The session that ran connect links now, rather than at its next start.
+  const session = sessionOf();
+  if (session) {
+    startDaemon(root, session, claudeOf(), url);
+    console.log(
+      'This session is linked to the hub now; other sessions link as they start, or run connect in them.',
+    );
+  }
+}
+
+/** The Claude Code process this command runs under, for the link to end with it; null when there's none. */
+function claudeOf() {
+  let pid = process.ppid;
+  for (let i = 0; i < 8 && pid > 1; i += 1) {
+    const line = psOf(pid);
+    if (!line) return null;
+    if (/(^|\/)claude(\s|$)/.test(line.command)) return pid;
+    pid = line.ppid;
+  }
+  return null;
+}
+function psOf(pid) {
+  try {
+    const out = execFileSync('ps', ['-o', 'ppid=,command=', '-p', String(pid)], {
+      encoding: 'utf8',
+    }).trim();
+    const m = out.match(/^(\d+)\s+(.*)$/);
+    return m ? { ppid: Number(m[1]), command: m[2] } : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * `team provider status`: whether this repository is connected to the hub, one check a line, each failing
+ * one saying what to do, then the answer. Connected means this machine is signed in, the config here and
+ * on the base branch name the hub, and the hub can see the repository with nothing left to set up; live
+ * means the calling session's own link is up. True when connected.
+ */
+async function status(root) {
+  const lines = [];
+  const check = (ok, text) => (lines.push(`  ${ok ? '✓' : '✗'} ${text}`), ok);
+  const repo = repoOf(originOf(root));
+  const cred = credentials();
+  const url = (() => {
+    try {
+      return hubUrl();
+    } catch {
+      return null;
+    }
+  })();
+  const names = (config) => Boolean(url) && config?.team?.provider?.hub?.replace(/\/$/, '') === url;
+  const signed = check(
+    Boolean(cred?.token),
+    cred?.token
+      ? `this machine is signed in as ${cred.login}`
+      : "this machine isn't signed in: run /code-kit:team-init (it signs in through GitHub)",
+  );
+  const here = check(
+    names(readJson(join(root, '.claude', 'code-kit.json'))),
+    names(readJson(join(root, '.claude', 'code-kit.json')))
+      ? 'the config here names the hub'
+      : 'the config here doesn\'t name the hub: set "team": { "provider": { "hub": "' +
+          (url ?? '<the hub>') +
+          '" } } in .claude/code-kit.json',
+  );
+  const base =
+    git(root, 'symbolic-ref', '--short', 'refs/remotes/origin/HEAD') ??
+    (git(root, 'rev-parse', '--verify', '-q', 'origin/main') ? 'origin/main' : null);
+  const committed = (() => {
+    if (!base) return false;
+    try {
+      return names(JSON.parse(git(root, 'show', `${base}:.claude/code-kit.json`) ?? ''));
+    } catch {
+      return false;
+    }
+  })();
+  check(
+    committed,
+    committed
+      ? `${base}'s config names the hub, so the team's sessions use it`
+      : `${base ?? 'the base branch'}'s config doesn't name the hub yet (as last fetched): commit the team section and merge it, so the hub knows the tech lead and every teammate's session uses it`,
+  );
+  const mcp = readJson(join(root, '.mcp.json'), {})?.mcpServers?.['code-kit-hub'];
+  check(
+    Boolean(url) && mcp?.url === `${url}/mcp`,
+    mcp
+      ? "the project's MCP servers include the hub's"
+      : "the project's MCP servers don't include the hub's: run /code-kit:team-init, and commit .mcp.json",
+  );
+  let seen = false;
+  if (signed && repo && url) {
+    const state = await provide('state', { fresh: true }, root);
+    const setup = Array.isArray(state.setup) ? state.setup : [];
+    seen = check(
+      !state.unreachable && state.ok !== false,
+      state.unreachable || state.ok === false
+        ? `the hub can't use ${repo}: ${state.why}`
+        : `the hub sees ${repo}`,
+    );
+    // What the hub says is left to set up doesn't stop the connection: it's shown, not failed.
+    for (const line of seen ? setup : []) lines.push(`  ! ${line}`);
+  } else if (!repo)
+    check(false, "this repository has no GitHub origin, so the hub can't be used here");
+  const session = sessionOf();
+  const linked = linkedSessions(root);
+  const live = session ? linkOf(root, session).up : linked.length > 0;
+  check(
+    live,
+    session
+      ? live
+        ? 'this session is linked: claims, intents and presence arrive as they happen'
+        : "this session isn't linked yet: run /code-kit:team-init, or start a new session, once the checks above pass"
+      : `${linked.length} session${linked.length === 1 ? '' : 's'} on this checkout linked`,
+  );
+  const connected = signed && here && committed && seen;
+  console.log(`code-kit hub${url ? ` (${url})` : ''}${repo ? `, for ${repo}` : ''}:`);
+  for (const line of lines) console.log(line);
+  console.log(
+    connected
+      ? live || !session
+        ? 'Connected.'
+        : "Connected, but this session isn't linked yet."
+      : 'Not connected yet: fix each ✗ above, in order.',
+  );
+  return connected;
 }
 
 // --- the daemon (HUB-5): the stream, the team's state on disk, presence --------------------------
@@ -457,7 +620,7 @@ async function daemon({ root, session, watch }) {
   const dir = stateDir(root);
   const repo = repoOf(originOf(root));
   if (!repo || !credentials()?.token) return;
-  const streamFile = join(dir, 'hub-stream.json');
+  const streamFile = streamFileOf(root, session);
   const eventsFile = join(dir, 'team-events.jsonl');
   writeJson(join(dir, `hub-daemon-${session}.json`), { pid: process.pid, started: Date.now() });
   let lastId = readJson(streamFile, {}).lastId ?? 0;
@@ -498,10 +661,10 @@ async function daemon({ root, session, watch }) {
     stopping = true;
     clearInterval(tick);
     await hub('POST', `/v1/repos/${repo}/leave`, { session }, { timeoutMs: 3000 }).catch(() => {});
-    writeJson(streamFile, { lastId, connected: false });
-    try {
-      unlinkSync(join(dir, `hub-daemon-${session}.json`));
-    } catch {}
+    for (const file of [streamFile, join(dir, `hub-daemon-${session}.json`)])
+      try {
+        unlinkSync(file);
+      } catch {}
     process.exit(0);
   };
   process.on('SIGTERM', stop);
@@ -670,18 +833,7 @@ async function main(argv) {
     console.log('Signed out of code-kit hub on this machine.');
     return 0;
   }
-  if (cmd === 'status') {
-    const cred = credentials();
-    console.log(
-      cred?.token ? `Signed in to ${cred.url} as ${cred.login}.` : `Not signed in: run ${SIGN_IN}.`,
-    );
-    const repo = repoOf(originOf(process.cwd()));
-    if (repo && cred?.token) {
-      const live = readJson(join(stateDir(process.cwd()), 'hub-stream.json'), {});
-      console.log(`${repo}: ${live.connected ? 'live' : (live.why ?? 'not connected')}`);
-    }
-    return 0;
-  }
+  if (cmd === 'status') return status(process.cwd()).then((ok) => (ok ? 0 : 1));
   if (cmd === 'connect') return connect(process.cwd()).then(() => 0);
   if (cmd === 'drift-model') {
     const choice = args[0];
