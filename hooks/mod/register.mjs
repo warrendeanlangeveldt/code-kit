@@ -1508,6 +1508,11 @@ export function register(on) {
         // LOOP-11: the lead's last reply first: one that waits on the person holds every step.
         await act.hear();
         if (loop.waiting && ['person', 'stopped'].includes(loop.waiting.kind)) return;
+        // #59: a restart or hand-back for a story that has since merged is stale, and goes unasked.
+        const finished = new Set(
+          (model.state?.stories ?? []).filter((s) => s.state === 'done').map((s) => s.id),
+        );
+        loop.pending = loop.pending.filter((p) => !finished.has(p.story));
         if (loop.pending.length) {
           const { story, prompt } = loop.pending.shift();
           // Until the person has chosen how hands-off the loop is, or under propose, a restart is offered
@@ -2290,10 +2295,10 @@ export function register(on) {
       const a = activityOf(e.agentId, await $.clock.now());
       a.handedBack = true;
       // LEAN-5: an agent that handed back at its limit: the lead carries its story on with a fresh one.
-      if (a.overflow && !a.continued && act) {
+      const story = (model.state?.stories ?? []).find((s) => s.id === a.story);
+      if (a.overflow && !a.continued && act && story?.state !== 'done') {
         a.continued = true;
         const agent = agentsSeen.get(e.agentId);
-        const story = (model.state?.stories ?? []).find((s) => s.id === a.story);
         loop.pending.push({
           story: a.story,
           prompt: continuePrompt({

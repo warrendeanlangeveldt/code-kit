@@ -2516,6 +2516,28 @@ test('LEAN-5 a lane agent past its context limit is told to wrap up, and its sto
   );
 });
 
+test('#59 an agent that hands back at its limit a story already merged and done is not carried on', async ($, on) => {
+  const w = project();
+  w.next = { step: 'wait', args: '', then: [] };
+  w.stories = w.stories.map((s: any) => (s.id === 'ST-4' ? { ...s, state: 'done' } : s));
+  w.agents = [
+    { id: 'a1', type: 'web-engineer', description: 'ST-4 booking form', status: 'running' },
+  ];
+  const clock = await start($, on, w);
+  await clock.advance(2000);
+  await request($, 'a1', 300);
+  await $.turn.complete({
+    turnId: 't-a1',
+    agentId: 'a1',
+    answer: 'ST-4: committed, report written.',
+    durationMs: 1,
+    isAborted: false,
+  } as any);
+  await leadTurn($, 't-2');
+  await settle(clock);
+  expect(w.prompts.some((p: string) => /handed ST-4 back/.test(p))).toBe(false);
+});
+
 test("LEAN-4 past compact.at the lead's context is compacted between turns, without asking", async ($, on) => {
   const w = project();
   const compacted: string[] = [];
