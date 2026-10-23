@@ -588,13 +588,14 @@ const firstMerge = (into, branch) =>
 
 /** Why a merge didn't happen: `refused` (the rules), `verify` (problems) or `conflict`. */
 class MergeStop extends Error {
-  constructor(kind, message) {
+  /** `first`: the first problem's first line, for the queue's record of why (#57). */
+  constructor(kind, message, first = null) {
     super(message);
     this.kind = kind;
+    this.first = first;
   }
 }
 
-/** Who merges, from the flags: the lead within the delegated rules, or the person. */
 /**
  * #70: the ecosystem a lane's packages come from, by the manifests in its paths: `uv` for a lane with a
  * pyproject.toml, requirements file or uv.lock and no package.json, otherwise `npm`.
@@ -611,6 +612,7 @@ function laneEcosystem(config, lane) {
     : 'npm';
 }
 
+/** Who merges, from the flags: the lead within the delegated rules, or the person. */
 function mergeMode() {
   const byPerson = flag('--person');
   if (!flag('--delegated') && !byPerson)
@@ -682,9 +684,9 @@ function mergeOne(branch, config, byPerson, commit = null) {
       }
     }
   };
-  const fail = (message, kind = 'refused') => {
+  const fail = (message, kind = 'refused', first = null) => {
     cleanup();
-    throw new MergeStop(kind, message);
+    throw new MergeStop(kind, message, first);
   };
   const worktree = (b, detach) => {
     const dir = mkdtempSync(join(tmpdir(), 'code-kit-merge-'));
@@ -705,7 +707,7 @@ function mergeOne(branch, config, byPerson, commit = null) {
         'moved',
       );
     const lane = laneOfBranch(branch, config);
-    const { changed, found, skipped } = verifyBranch({
+    const { changed, found, skipped, unfinished } = verifyBranch({
       root: verifyIn,
       base: into,
       config,
@@ -716,10 +718,17 @@ function mergeOne(branch, config, byPerson, commit = null) {
     const problems = Object.entries(VERIFY_GROUPS).flatMap(([key, title]) =>
       found[key].map((p) => `${title}: ${p.split('\n').join('\n    ')}`),
     );
+    // #62: a check that only ran out of time says nothing against the branch: it's tried again.
+    if (problems.length === 1 && unfinished)
+      fail(
+        `Nothing was merged: a check on ${branch} didn't finish, which says nothing against the branch (checked in ${verifyIn}):\n  ${problems[0]}\nIt stays at the head of the queue; merge again once fewer suites are running.`,
+        'unfinished',
+      );
     if (problems.length)
       fail(
         `Nothing was merged. code-kit verify found ${problems.length} problem(s) on ${branch} (checked in ${verifyIn}):\n  ${problems.join('\n  ')}\nSend it back to its lane, or fix it, then merge again.`,
         'verify',
+        problems[0].split('\n')[0],
       );
     const mergeIn = checkedOut(into) ?? worktree(into, false);
     clean(mergeIn, into);
@@ -819,6 +828,7 @@ function queue() {
       if (e.kind === 'refused') die(e.message);
       // A branch that moved after its review leaves the queue for the lead to review it again; it
       // isn't sent back, since nothing is wrong with it yet.
+      if (e.kind === 'unfinished') die(e.message);
       if (e.kind === 'moved') {
         settle(root, head.branch, 'moved', 'changed after its review');
         die(`${e.message}\n${head.branch} leaves the queue until then.`);
@@ -828,7 +838,7 @@ function queue() {
       const why =
         e.kind === 'conflict'
           ? `conflicts with ${into}${after ? ` after ${after}` : ''}`
-          : `fails verify against ${into}${after ? ` after ${after}` : ''}`;
+          : `fails verify against ${into}${after ? ` after ${after}` : ''}${e.first ? `: ${e.first}` : ''}`;
       const sha = execFileSync('git', ['rev-parse', '--verify', `${head.branch}^{commit}`], {
         encoding: 'utf8',
       }).trim();

@@ -164,6 +164,27 @@ function currentBranchOf(root) {
   }
 }
 
+// The runtime's own noise, which says nothing about whether the check passed (#57).
+const NOISE = [
+  /^\(node:\d+\) \[?\w*\]? ?(DeprecationWarning|ExperimentalWarning|Warning)\b/,
+  /^\(Use `node --trace-(deprecation|warnings) /,
+  /^\s*$/,
+];
+const FAILING = /\b(fail(ed|ing|s)?|error|✗|✘|×|expected|received|assert|panic|traceback)\b/i;
+
+/**
+ * What a failed check printed, as the lead needs it (#57): the runtime's warnings left out, the lines
+ * that name a failure first (up to 20), then the last 20 lines.
+ */
+export function failureOutput(output) {
+  const lines = String(output ?? '')
+    .split('\n')
+    .filter((l) => !NOISE.some((re) => re.test(l)));
+  const tail = lines.slice(-20);
+  const named = lines.filter((l) => FAILING.test(l) && !tail.includes(l)).slice(0, 20);
+  return [...named, ...(named.length ? ['…'] : []), ...tail].join('\n');
+}
+
 /**
  * The files changed, every problem with the branch, grouped as { ownership, protected, layers,
  * baseline, design, tests, regression, standards, checks }, and the checks `skipped` because a tool isn't
@@ -301,6 +322,7 @@ export function verifyBranch({
   if (fix) found.regression.push(...proveFix({ root, from, base, changed, config, fix }));
 
   let skipped = [];
+  let unfinished = false;
   if (checks) {
     const actor = lane
       ? { kind: 'lane', lane, label: `${lane} lane branch` }
@@ -308,13 +330,10 @@ export function verifyBranch({
     const ran = runChecks(config, changed, root, actor);
     skipped = ran.skipped;
     const { failure } = ran;
-    if (failure)
-      found.checks.push(
-        `${failure.title}\n${String(failure.output ?? '')
-          .split('\n')
-          .slice(-40)
-          .join('\n')}`.trim(),
-      );
+    if (failure) {
+      found.checks.push(`${failure.title}\n${failureOutput(failure.output)}`.trim());
+      unfinished = Boolean(failure.timedOut);
+    }
   }
-  return { changed, found, skipped };
+  return { changed, found, skipped, unfinished };
 }

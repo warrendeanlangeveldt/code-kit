@@ -16,7 +16,7 @@ import {
 } from './lib/dependencies.mjs';
 import { CODE_KIT, GIT, codeOf, commandsOf, runs } from './lib/shell.mjs';
 import { block, start } from './lib/hook.mjs';
-import { CONFIG_FILE } from './lib/config.mjs';
+import { CONFIG_FILE, committedConfig } from './lib/config.mjs';
 import { laneOfBranch, storyOfBranch, teamOf, teamProvider, whoami } from './lib/team.mjs';
 import { globToRegExp, matchesAny } from './lib/glob.mjs';
 import { noteBefore } from './lane-audit.mjs';
@@ -162,14 +162,36 @@ if ((switchesToProtected && writesHistory) || movesProtected) {
     `Blocked: never commit to, merge into or move ${config.branches.protected.join(' or ')}, even by switching to it first. Work on a branch; a person merges after review${config.approvals.delegate?.merge ? ', or the lead merges a verified branch with `code-kit merge <branch> --delegated`' : ''}.\nCommand: ${cmd}`,
   );
 }
-if (runs(cmd, new RegExp(String.raw`^${GIT}push\b.*\b(${branches})\b`))) {
-  block(
-    `Blocked: push to your own branch; a person merges to ${config.branches.protected[0]} after review.\nCommand: ${cmd}`,
-  );
-}
-
 const sessionIn = sessionRoot(input, project);
 const actor = actorFor(input, sessionIn ?? project, config);
+// #63: the lead may push a protected branch where the person delegated it (`approvals.delegate.push`,
+// read from the config committed on that branch, so a branch can't grant it), and never by force.
+if (runs(cmd, new RegExp(String.raw`^${GIT}push\b.*\b(${branches})\b`))) {
+  const forced = runs(
+    cmd,
+    new RegExp(
+      String.raw`^${GIT}push\b.*(\s--force\S*|\s-[a-zA-Z]*f|\s\+\S|\s--delete\b|\s-d\b|\s--mirror\b|\s:(${branches})\b)`,
+    ),
+  );
+  const pushTo = config.branches.protected.find((b) =>
+    runs(
+      cmd,
+      new RegExp(String.raw`^${GIT}push\b.*\b${b.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\b`),
+    ),
+  );
+  const delegated =
+    actor.kind === 'lead' &&
+    Boolean(
+      committedConfig(project, pushTo ?? config.branches.protected[0]).config?.approvals.delegate
+        ?.push,
+    );
+  if (!delegated || forced)
+    block(
+      forced && delegated
+        ? `Blocked: never force-push, delete or overwrite ${pushTo}; push it as it is, fast-forward only.\nCommand: ${cmd}`
+        : `Blocked: push to your own branch; a person merges to ${config.branches.protected[0]} after review${actor.kind === 'lead' ? `, and pushes it, unless they delegate pushing it to you ("approvals.delegate.push": true, committed on ${config.branches.protected[0]})` : ''}.\nCommand: ${cmd}`,
+    );
+}
 // A read-only agent's command is judged afterwards by what it changed (lane-audit).
 if (actor.kind === 'readonly') noteBefore(input);
 // The lead acts for the person only where the config says the person may approve from chat.

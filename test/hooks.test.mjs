@@ -527,6 +527,41 @@ try {
   );
   expect('commit on a lane branch allowed', bash('git commit -m x'), 0);
   expect('push to a protected branch blocked', bash('git push origin main'), 2);
+  // #63: the person may delegate pushing the protected branch to the lead, never force.
+  {
+    const p = newRepo();
+    cleanups.push(p.dir);
+    const pushHook = (command, agent) =>
+      spawnSync('node', [join(hooks, 'guard-bash.mjs')], {
+        input: JSON.stringify({
+          cwd: p.dir,
+          tool_input: { command },
+          ...(agent ? { agent_type: agent } : {}),
+        }),
+        env: { ...process.env, CLAUDE_PROJECT_DIR: p.dir },
+        encoding: 'utf8',
+      });
+    expect(
+      '#63 without it the lead is told the person can delegate it',
+      pushHook('git push origin main'),
+      2,
+      'approvals.delegate.push',
+    );
+    const delegated = JSON.parse(fixture);
+    delegated.approvals = { ...(delegated.approvals ?? {}), delegate: { push: true } };
+    writeFileSync(join(p.dir, '.claude/code-kit.json'), JSON.stringify(delegated, null, 2));
+    expect(
+      "#63 a branch's own config can't grant it: it's read from what's committed on main",
+      pushHook('git push origin main'),
+      2,
+    );
+    p.git('add', '-A');
+    p.git('commit', '-q', '-m', 'delegate push');
+    expect('#63 delegated, the lead pushes main', pushHook('git push origin main'), 0);
+    expect('#63 never by force', pushHook('git push --force-with-lease origin main'), 2);
+    expect('#63 nor deletes it', pushHook('git push origin :main'), 2);
+    expect('#63 and a lane still may not', pushHook('git push origin main', 'web-engineer'), 2);
+  }
   expect(
     'switching to a protected branch and merging in one command is blocked',
     bash('git switch main && git merge lane/x'),
@@ -3790,6 +3825,66 @@ else process.exit(2);
         required.status === 1 &&
           required.stdout.includes('`no-such-tool-xyz --version` is not installed'),
         required.stdout + required.stderr,
+      ),
+      0,
+    );
+    // #62: a check that runs out of time keeps the branch in the queue; #57: a failure is named
+    // through the runtime's warnings, and recorded with it.
+    q.git('checkout', '-q', 'main');
+    const withChecks = JSON.parse(readFileSync(join(q.dir, '.claude/code-kit.json'), 'utf8'));
+    withChecks.checks = [
+      ...(withChecks.checks ?? []),
+      { name: 'slow suite', files: ['runbooks/slow/**'], run: ['sleep 3'], timeoutSeconds: 1 },
+      { name: 'noisy suite', files: ['runbooks/noisy/**'], run: ['node runbooks/noisy.mjs'] },
+    ];
+    writeFileSync(join(q.dir, '.claude/code-kit.json'), JSON.stringify(withChecks, null, 2));
+    qPut(
+      'runbooks/noisy.mjs',
+      "for (let i = 0; i < 40; i++) console.error('(node:1) [DEP0205] DeprecationWarning: module.register() is deprecated');\nconsole.error('✘ booking form saves a slot');\nconsole.error('Error: expected 2, received 3');\nprocess.exit(1);\n",
+    );
+    q.git('add', '-A');
+    q.git('commit', '-q', '-m', 'checks');
+    for (const [branch, file] of [
+      ['platform/st-g', 'runbooks/slow/x.md'],
+      ['platform/st-h', 'runbooks/noisy/x.md'],
+    ]) {
+      q.git('checkout', '-q', '-b', branch, 'main');
+      qPut(file, 'x\n');
+      q.git('add', '-A');
+      q.git('commit', '-q', '-m', branch);
+      q.git('checkout', '-q', 'main');
+    }
+    qKit('queue', 'add', 'platform/st-g');
+    const slow = qKit('queue', 'merge', '--delegated');
+    expect(
+      "#62 a check that didn't finish leaves the branch at the head of the queue, not sent back",
+      truth(
+        slow.status === 1 &&
+          slow.stderr.includes("didn't finish") &&
+          slow.stderr.includes('timeoutSeconds') &&
+          !slow.stderr.includes('sent back') &&
+          JSON.parse(qKit('queue', '--json').stdout).some(
+            (e) => e.branch === 'platform/st-g' && e.state === 'waiting',
+          ),
+        slow.stderr + qKit('queue', '--json').stdout,
+      ),
+      0,
+    );
+    qKit('queue', 'drop', 'platform/st-g');
+    qKit('queue', 'add', 'platform/st-h');
+    const noisy = qKit('queue', 'merge', '--delegated');
+    const record = JSON.parse(qKit('queue', '--json').stdout).find(
+      (e) => e.branch === 'platform/st-h',
+    );
+    expect(
+      "#57 a failure is shown through the runtime's warnings, and the queue records which check failed",
+      truth(
+        noisy.status === 1 &&
+          noisy.stderr.includes('✘ booking form saves a slot') &&
+          noisy.stderr.includes('expected 2, received 3') &&
+          !noisy.stderr.includes('DeprecationWarning') &&
+          JSON.stringify(record).includes('noisy suite'),
+        noisy.stderr + JSON.stringify(record),
       ),
       0,
     );

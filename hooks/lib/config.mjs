@@ -127,6 +127,8 @@ function delegateRules(given, protectedPaths = []) {
   return {
     protected: d.protected ?? [],
     merge: d.merge === true,
+    // #63: pushing the protected branch is the person's unless they delegate it: a push can deploy.
+    push: d.push === true,
     tests: d.tests === true,
     dependencies: d.dependencies
       ? {
@@ -237,6 +239,13 @@ export function approvalSettings(config) {
       ['lead', 'person'],
     ),
     row(
+      'approvals.push',
+      who(Boolean(rules?.push)),
+      'person',
+      'Who pushes the base to the remote once merged: a push can deploy, so it stays yours unless you say',
+      ['lead', 'person'],
+    ),
+    row(
       'approvals.tests',
       who(Boolean(rules?.tests)),
       'lead',
@@ -253,6 +262,7 @@ export function withApprovalSetting(raw, config, key, text) {
   const delegate = {
     protected: [...(rules?.protected ?? [])],
     merge: Boolean(rules?.merge),
+    push: Boolean(rules?.push),
     tests: Boolean(rules?.tests),
     ...(deps ? { dependencies: { ...deps } } : {}),
   };
@@ -279,7 +289,7 @@ export function withApprovalSetting(raw, config, key, text) {
     lead
       ? (delegate.dependencies = deps ?? delegateRules({ dependencies: {} }).dependencies)
       : delete delegate.dependencies;
-  else if (rule === 'merge' || rule === 'tests') delegate[rule] = lead;
+  else if (rule === 'merge' || rule === 'push' || rule === 'tests') delegate[rule] = lead;
   else if (config.protected.some((p) => p.approval === rule) && rule !== 'kit')
     delegate.protected = lead
       ? [...new Set([...delegate.protected, rule])]
@@ -381,6 +391,7 @@ export function validate(c) {
       (isObj(d) &&
         (d.protected === undefined || isList(d.protected)) &&
         [undefined, true, false].includes(d.merge) &&
+        [undefined, true, false].includes(d.push) &&
         [undefined, true, false].includes(d.tests) &&
         (dep === undefined ||
           (isObj(dep) &&
@@ -390,7 +401,7 @@ export function validate(c) {
             ([undefined, true, false].includes(dep.allowInstallScripts) ||
               (isList(dep.allowInstallScripts) &&
                 dep.allowInstallScripts.every((k) => ['binary', 'build', 'other'].includes(k))))))),
-    '"approvals.delegate" must be false, or { protected?: [approval names], merge?: true|false, tests?: true|false, dependencies?: { licences?, minWeeklyDownloads?, maxMonthsSinceRelease?, allowInstallScripts?: true|false|["binary","build","other"] } }',
+    '"approvals.delegate" must be false, or { protected?: [approval names], merge?: true|false, push?: true|false, tests?: true|false, dependencies?: { licences?, minWeeklyDownloads?, maxMonthsSinceRelease?, allowInstallScripts?: true|false|["binary","build","other"] } }',
   );
   need(
     c.branches === undefined || isList(c.branches?.protected),
