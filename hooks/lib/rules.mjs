@@ -388,7 +388,11 @@ function requestRecords(root) {
 export const readRequests = (root) => requestRecords(root).filter((r) => !r.drop);
 
 /** CARD-7: whether a request was dropped (the person dismissed it, or the lead said it's no longer needed). */
-const droppedIn = (drops, r) => drops.some((d) => d.of === r.at && sameRequest(d, r));
+// A drop written before drops carried the request's session (code-kit issue #78) matches it whatever its session.
+const droppedIn = (drops, r) =>
+  drops.some(
+    (d) => d.of === r.at && sameRequest('session' in d ? d : { ...d, session: r.session }, r),
+  );
 
 /**
  * CARD-7: drops open requests: `which` is a request's number in `openRequests`' order (1 is the
@@ -409,7 +413,7 @@ export function dropRequests(root, which, { by, reason = null }, now = Date.now(
   for (const r of picked)
     appendFileSync(
       file,
-      `${JSON.stringify({ drop: true, of: r.at, actor: r.actor, names: r.names, what: r.what, by, reason, at: new Date(now).toISOString() })}\n`,
+      `${JSON.stringify({ drop: true, of: r.at, actor: r.actor, session: r.session ?? null, names: r.names, what: r.what, by, reason, at: new Date(now).toISOString() })}\n`,
     );
   return { ok: true, dropped: picked };
 }

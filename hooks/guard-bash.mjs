@@ -18,7 +18,7 @@ import { CODE_KIT, GIT, codeOf, commandsOf, runs } from './lib/shell.mjs';
 import { block, start } from './lib/hook.mjs';
 import { CONFIG_FILE } from './lib/config.mjs';
 import { laneOfBranch, storyOfBranch, teamOf, teamProvider, whoami } from './lib/team.mjs';
-import { matchesAny } from './lib/glob.mjs';
+import { globToRegExp, matchesAny } from './lib/glob.mjs';
 import { noteBefore } from './lane-audit.mjs';
 import { TESTS_APPROVAL, commitWeakenings } from './lib/regression.mjs';
 import {
@@ -455,7 +455,8 @@ function committedFiles() {
   const git = (...args) =>
     spawnSync('git', ['-C', root, ...args], { encoding: 'utf8' }).stdout ?? '';
   const names = (out) => out.split('\n').filter(Boolean);
-  const staged = names(git('diff', '--cached', '--name-only'));
+  // Both paths of a staged rename: the old one's deletion is a change to it too (#74).
+  const staged = names(git('diff', '--cached', '--name-only', '--no-renames'));
   // This hook runs before the command, so `git add … && git commit` and `git commit -a` have not staged yet.
   const changed = names(git('status', '--porcelain', '-uall', '--no-renames')).map((l) =>
     l.slice(3),
@@ -464,14 +465,27 @@ function committedFiles() {
   const addAll = /\bgit\s+add\b[^;&|]*\s(-A|--all|\.)(\s|$)/.test(cmd);
   const addArgs = [...cmd.matchAll(/\bgit\s+add\s+([^;&|]+)/g)]
     .flatMap((m) => m[1].trim().split(/\s+/))
-    .filter((a) => a && !a.startsWith('-'));
+    .filter((a) => a && !a.startsWith('-'))
+    .map((a) => a.replace(/^(['"])(.*)\1$/, '$2'));
+  // What the shell expands before git sees it (#76): an argument it can't be read from, such as a
+  // variable or a command's output, could be any file, so every changed file counts.
+  const unknowable = addArgs.some((a) => /[$`]/.test(a));
+  const matches = (f, a) => {
+    const arg = a.replace(/^\.\//, '').replace(/\/$/, '');
+    if (f === arg || f.startsWith(`${arg}/`)) return true;
+    if (!/[*?{[]/.test(arg)) return false;
+    const re = globToRegExp(arg);
+    return f.split('/').some((_, i, parts) => re.test(parts.slice(0, i + 1).join('/')));
+  };
   const added = changed.filter(
-    (f) =>
-      commitAll ||
-      addAll ||
-      addArgs.some((a) => f === a || f.startsWith(`${a.replace(/\/$/, '')}/`)),
+    (f) => commitAll || addAll || unknowable || addArgs.some((a) => matches(f, a)),
   );
-  return { files: [...new Set([...staged, ...added])], git };
+  // `git reset --soft <ref> && git commit` commits everything since <ref>, staged by the reset (#76).
+  const resetTo = [...cmd.matchAll(/\bgit\s+reset\s+--soft\s+([^\s;&|]+)/g)].map((m) => m[1]);
+  const reset = resetTo.flatMap((ref) =>
+    names(git('diff', '--name-only', '--no-renames', ref, 'HEAD')),
+  );
+  return { files: [...new Set([...staged, ...added, ...reset])], git };
 }
 
 // Every committed protected file is recorded in the audit log, with the person's reason when an

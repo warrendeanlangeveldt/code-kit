@@ -54,8 +54,26 @@ const pkgs = {
   'tiny-pkg': pkg('MIT', 30, 12),
   'scripted-pkg': pkg('MIT', 30, 50000, { postinstall: 'node fetch-binary.js' }),
 };
+// PyPI's projects (#70): a licence expression, classifiers or free text; a release with wheels, or none.
+const py = (info, daysAgo, lastWeek, wheel = true) => ({ info, daysAgo, lastWeek, wheel });
+const pys = {
+  pillow: py({ license: 'MIT-CMU', classifiers: ['License :: OSI Approved :: MIT License'] }, 20, 9000000),
+  anthropic: py({ license_expression: 'MIT' }, 5, 4000000),
+  'old-py': py({ license: 'MIT' }, 900, 50000),
+  'sdist-only': py({ classifiers: ['License :: OSI Approved :: BSD License', 'License :: OSI Approved :: BSD 3-Clause'] }, 30, 50000, false),
+};
 http.createServer((req, res) => {
   const url = decodeURIComponent(req.url);
+  const pj = url.match(/^\\/pypi\\/([^/]+)\\/json$/);
+  const ps = url.match(/^\\/api\\/packages\\/([^/]+)\\/recent$/);
+  if (pj || ps) {
+    const q = pys[(pj ?? ps)[1]];
+    if (!q) { res.writeHead(404); return res.end('{}'); }
+    res.setHeader('content-type', 'application/json');
+    if (ps) return res.end(JSON.stringify({ data: { last_week: q.lastWeek } }));
+    const at = new Date(now - q.daysAgo * day).toISOString();
+    return res.end(JSON.stringify({ info: q.info, urls: [{ packagetype: 'sdist', upload_time_iso_8601: at }, ...(q.wheel ? [{ packagetype: 'bdist_wheel', upload_time_iso_8601: at }] : [])] }));
+  }
   const dl = url.match(/^\\/downloads\\/point\\/last-week\\/(.+)$/);
   const name = dl ? dl[1] : url.slice(1);
   const p = pkgs[name];
@@ -979,6 +997,43 @@ try {
       ),
       0,
     );
+    // #78: a request a session's agent made is dropped like any other.
+    rmSync(requestsFile, { force: true });
+    hook('guard-bash.mjs', {
+      tool_input: { command: addLodash },
+      ...as('web-engineer'),
+      session_id: 'sess-78',
+    });
+    const withSession = reqs().open;
+    const droppedSession = kit('requests', 'drop', 'all', '--reason', 'not needed');
+    expect(
+      "CARD-7 a request carrying its session is dropped, and doesn't come back",
+      truth(
+        withSession.length === 1 &&
+          readFileSync(requestsFile, 'utf8').includes('"session":"sess-78"') &&
+          droppedSession.status === 0 &&
+          !reqs().open.length,
+        JSON.stringify({ withSession, open: reqs().open }),
+      ),
+      0,
+    );
+    // A drop written without the session, before #78, still drops it.
+    rmSync(requestsFile, { force: true });
+    hook('guard-bash.mjs', {
+      tool_input: { command: addLodash },
+      ...as('web-engineer'),
+      session_id: 'sess-78',
+    });
+    const old = JSON.parse(readFileSync(requestsFile, 'utf8').trim().split('\n').at(-1));
+    appendFileSync(
+      requestsFile,
+      `${JSON.stringify({ drop: true, of: old.at, actor: old.actor, names: old.names, what: old.what, by: 'lead', reason: null, at: new Date().toISOString() })}\n`,
+    );
+    expect(
+      'and so does a drop written before drops carried the session',
+      truth(!reqs().open.length, JSON.stringify(reqs().open)),
+      0,
+    );
     bash(addLodash, 'web-engineer');
     expect(
       'CARD-7 refused again later, it asks again',
@@ -1330,6 +1385,8 @@ try {
     ...process.env,
     CODE_KIT_NPM_REGISTRY: `http://127.0.0.1:${port}`,
     CODE_KIT_NPM_DOWNLOADS: `http://127.0.0.1:${port}`,
+    CODE_KIT_PYPI: `http://127.0.0.1:${port}`,
+    CODE_KIT_PYPI_STATS: `http://127.0.0.1:${port}`,
   };
   const delegate = (...args) =>
     spawnSync('node', [kitCli, 'approve', ...args, '--delegated'], {
@@ -1413,7 +1470,7 @@ try {
       "is the lead's decision",
     );
     expect(
-      "is judged by the lead, without the npm registry (which hasn't heard of it)",
+      '#70 is checked on PyPI, not the npm registry (which has an old package of the same name)',
       truth(
         delegate(
           'pillow',
@@ -1425,10 +1482,37 @@ try {
           'MED-5 needs HEIC decoding',
         ).status === 0 &&
           readFileSync(join(repo, '.claude/approvals/backend/dep-pillow'), 'utf8').includes(
-            'dependencies (pillow, from uv, judged by the lead) for ST-138',
+            'dependencies (pillow, from PyPI) for ST-138',
           ),
       ),
       0,
+    );
+    // With no request to say where a package comes from, a lane with only Python manifests is PyPI's.
+    put('workers/pyproject.toml', '[project]\nname = "workers"\n');
+    git('add', 'workers/pyproject.toml');
+    git('commit', '-q', '--no-verify', '-m', 'workers: pyproject');
+    expect(
+      "#70 a Python lane's package is checked on PyPI without a request naming it",
+      truth(
+        delegate('anthropic', '--lane', 'backend', '--story', 'ST-138', '--reason', 'x').status ===
+          0 &&
+          readFileSync(join(repo, '.claude/approvals/backend/dep-anthropic'), 'utf8').includes(
+            'dependencies (anthropic, from PyPI) for ST-138',
+          ),
+      ),
+      0,
+    );
+    expect(
+      "#70 PyPI's facts are held to the rules: a release too old",
+      delegate('old-py', '--lane', 'backend', '--story', 'ST-138', '--reason', 'x'),
+      1,
+      'its last release was',
+    );
+    expect(
+      '#70 and a package with no wheel, which builds from source as it installs',
+      delegate('sdist-only', '--lane', 'backend', '--story', 'ST-138', '--reason', 'x'),
+      1,
+      'installing it runs a script',
     );
     expect('a lane never approves', bash(delegateGood, 'web-engineer'), 2, 'only the lead');
     expect('the lead may run it', bash(delegateGood), 0);
@@ -3741,6 +3825,45 @@ else process.exit(2);
     'it serves only the lane it was given to',
     inLaneTree(commitRegister, 'backend-engineer'),
     2,
+  );
+  rmSync(join(repo, '.claude/approvals'), { recursive: true });
+  // #76: what the shell expands, and what a reset stages, are committed too.
+  expect(
+    '#76 a protected file staged by a brace list needs approval',
+    inLaneTree('git add design/{approved-screens,nothing}.json && git commit -m d'),
+    2,
+  );
+  expect('#76 and by a glob', inLaneTree('git add design/*.json && git commit -m d'), 2);
+  expect(
+    "#76 and by a variable, which can't be read before the shell runs",
+    inLaneTree('f=design/approved-screens.json; git add $f && git commit -m d'),
+    2,
+  );
+  const laneGit = (...a) =>
+    execFileSync('git', ['-C', laneTree, '-c', 'user.email=t@t', '-c', 'user.name=t', ...a], {
+      encoding: 'utf8',
+    });
+  laneGit('add', 'design/approved-screens.json');
+  laneGit('commit', '-q', '--no-verify', '-m', 'register');
+  expect(
+    '#76 and by a soft reset recommitted in the same command',
+    inLaneTree('git reset --soft HEAD~1 && git commit -m again'),
+    2,
+  );
+  // #74: a staged rename of a protected file logs its old path as well as its new one.
+  approveFor('web', 'design');
+  laneGit('mv', 'design/approved-screens.json', 'design/screens-moved.json');
+  const moved = inLaneTree('git commit -m moved');
+  const laneLog = join(laneTree, '.claude/approval-log.jsonl');
+  expect(
+    '#74 a renamed protected file is logged under its old path',
+    truth(
+      moved.status === 0 &&
+        existsSync(laneLog) &&
+        readFileSync(laneLog, 'utf8').includes('"file":"design/approved-screens.json"'),
+      moved.stderr,
+    ),
+    0,
   );
   rmSync(join(repo, '.claude/approvals'), { recursive: true });
   git('worktree', 'remove', '--force', '.claude/worktrees/dep');
@@ -6694,6 +6817,15 @@ else process.exit(1);
           kRead('CLAUDE.md').includes('Our own notes.') &&
           kRead('CLAUDE.md').includes('## Deploying') &&
           kRead('CLAUDE.md').includes('approvals from chat'),
+      ),
+      0,
+    );
+    expect(
+      '#77 the written block has the blank lines Prettier puts inside its markers',
+      truth(
+        /<!-- code-kit:begin v\d+ -->\n\n\S/.test(kRead('CLAUDE.md')) &&
+          /\S\n\n<!-- code-kit:end -->/.test(kRead('CLAUDE.md')),
+        kRead('CLAUDE.md'),
       ),
       0,
     );

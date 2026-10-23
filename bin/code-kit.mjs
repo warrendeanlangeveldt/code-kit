@@ -137,7 +137,13 @@ import {
   reviewerOf,
 } from '../hooks/lib/rules.mjs';
 import { DEPENDENCY_APPROVAL, dependencyApproval } from '../hooks/lib/dependencies.mjs';
-import { dependencyRuleProblems, npmFacts, packageOf } from '../hooks/lib/registry.mjs';
+import {
+  PYPI_MANAGERS,
+  dependencyRuleProblems,
+  npmFacts,
+  packageOf,
+  pypiFacts,
+} from '../hooks/lib/registry.mjs';
 import { heldTo, laneOfBranch, verifyBranch } from '../hooks/lib/verify.mjs';
 import { skippedLine } from '../hooks/lib/checks.mjs';
 import { TESTS_APPROVAL } from '../hooks/lib/regression.mjs';
@@ -589,6 +595,22 @@ class MergeStop extends Error {
 }
 
 /** Who merges, from the flags: the lead within the delegated rules, or the person. */
+/**
+ * #70: the ecosystem a lane's packages come from, by the manifests in its paths: `uv` for a lane with a
+ * pyproject.toml, requirements file or uv.lock and no package.json, otherwise `npm`.
+ */
+function laneEcosystem(config, lane) {
+  const paths = lane ? (config.lanes[lane]?.paths ?? []) : (config.lead?.paths ?? []);
+  const tracked = (spawnSync('git', ['ls-files'], { encoding: 'utf8' }).stdout ?? '')
+    .split('\n')
+    .filter((f) => f && matchesAny(f, paths));
+  const named = (re) => tracked.some((f) => re.test(f.split('/').at(-1)));
+  return named(/^(pyproject\.toml|uv\.lock|requirements[\w.-]*\.txt|Pipfile)$/) &&
+    !named(/^package\.json$/)
+    ? 'uv'
+    : 'npm';
+}
+
 function mergeMode() {
   const byPerson = flag('--person');
   if (!flag('--delegated') && !byPerson)
@@ -1666,19 +1688,23 @@ async function approve(given) {
           continue;
         }
         const pkg = packageOf(name);
-        // HELM-3: the registry rules are npm's; a package from another ecosystem is the lead's judgement.
-        const registries = new Set(
+        // HELM-3: the registry rules are npm's and PyPI's (#70); a package from another ecosystem is the
+        // lead's judgement. Which one is the request's, or else the lane's own manifests'.
+        const asked = new Set(
           openRequests(resolve('.'))
             .filter((r) => r.names.includes(name) && (r.lane ?? undefined) === laneName)
             .map((r) => r.registries?.[pkg])
             .filter(Boolean),
         );
-        const npm = !registries.size || registries.has('npm');
-        const problems = npm ? dependencyRuleProblems(await npmFacts(pkg), rules.dependencies) : [];
+        const registries = asked.size ? asked : new Set([laneEcosystem(config, laneName)]);
+        const npm = registries.has('npm');
+        const pypi = !npm && [...registries].some((r) => PYPI_MANAGERS.has(r));
+        const facts = npm ? await npmFacts(pkg) : pypi ? await pypiFacts(pkg) : null;
+        const problems = facts ? dependencyRuleProblems(facts, rules.dependencies) : [];
         if (problems.length) outside.push(`${name}: ${problems.join('; ')}`);
         else
           marks[name] = delegatedMark(
-            `dependencies (${pkg}${npm ? '' : `, from ${[...registries].join(', ')}, judged by the lead`}) for ${story.id}`,
+            `dependencies (${pkg}${npm ? '' : pypi ? ', from PyPI' : `, from ${[...registries].join(', ')}, judged by the lead`}) for ${story.id}`,
           );
       } else if (rules.protected.includes(name))
         marks[name] = delegatedMark(`protected: ${name}${story ? ` for ${story.id}` : ''}`);
