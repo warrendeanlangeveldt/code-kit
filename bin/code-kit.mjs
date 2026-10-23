@@ -191,6 +191,8 @@ const via = option('--via');
 const sessionId = option('--session');
 // SESS-1: the session calling, as Claude Code tells every command an agent runs, unless --session says.
 const callerSession = sessionId ?? process.env.CLAUDE_CODE_SESSION_ID ?? null;
+// A provider's command hears which session is calling, for that session's own live link.
+if (callerSession) process.env.CODE_KIT_SESSION = callerSession;
 const minutesGiven = option('--minutes');
 const answerGiven = option('--answer');
 const leaseGiven = option('--lease');
