@@ -2,6 +2,14 @@
 
 What changed in each release of code-kit, newest first. Versions follow the plugin manifest and the npm package `@warren-dean/code-kit`. Each release is also on [GitHub Releases](https://github.com/warrendeanlangeveldt/code-kit/releases).
 
+## 0.22.1 (2026-10-23)
+
+For projects on the hosted team provider, which is in preview:
+
+- A session shows as live only when its own link to the provider is up. Before, one session's link made every session on the checkout look live.
+- `code-kit team provider status` checks each part of the setup: this machine's sign-in, the config in the checkout and on the base branch, the MCP server, whether the provider sees the repository, and whether this session is linked. Each part that fails says what to do, and the last line says whether the repository is connected.
+- `/code-kit:team-init` links the session it runs in once it connects, so there's no restart.
+
 ## 0.22.0 (2026-10-23)
 
 A team's roles are settled by default: the lead decides what's technical, a lane runs one story at a time, and several sessions can work one project without their decisions crossing.
