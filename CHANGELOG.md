@@ -2,6 +2,22 @@
 
 What changed in each release of code-kit, newest first. Versions follow the plugin manifest and the npm package `@warren-dean/code-kit`. Each release is also on [GitHub Releases](https://github.com/warrendeanlangeveldt/code-kit/releases).
 
+## 0.23.0 (2026-10-23)
+
+Worktrees no longer fill the disk, bug reports send once, and a batch of reported bugs is fixed.
+
+- A worktree goes once it's done with: its branch's own commits are merged, it holds nothing uncommitted, and no agent of its lane still holds the story. This happens after each merge and, in the background, as each session starts, along with an interrupted merge's temporary checkout, worktrees whose folder is gone, and stray folders under `.claude/worktrees`. `code-kit worktrees` says why each one that stays is staying.
+- A merged worktree that still holds uncommitted changes waits in the band for you, with what it holds. Keep leaves it; Discard removes it and keeps the changes as a patch under `.claude/state/discarded`. No agent can discard one.
+- A branch made for an agent just dispatched, with no commits of its own, is no longer taken as merged (#61).
+- Sending a bug report claims it first, so pressing Send again while GitHub is still filing it files nothing more. The report leaves the band at once, and the result is a toast; a pane opens only when it fails.
+- `approvals.delegate.push` (or `code-kit settings set approvals.push lead`) lets the lead push the protected branch, read from the config committed there, never by force or delete. Left out, pushing stays yours (#63).
+- A Python lane's packages are checked on PyPI for the delegated rules: licence, downloads, last release, and whether a release has wheels (#70).
+- A check that runs out of time leaves its branch at the head of the merge queue instead of sending it back, and says how to give it longer with `timeoutSeconds` (#62). A failed check's output leaves out Node's warnings and leads with the lines that name the failure, and the queue records which check failed (#57).
+- The commit hook logs a renamed protected file's old path (#74), and counts files staged in the same command by a brace list, a glob, a variable or a soft reset (#76), and a commit made with `cd <worktree> && git commit` in that worktree (#55). A branch's spec-check report is kept in the main checkout when its worktree goes (#55).
+- No hand-back or restart prompt for a story that's merged and done (#59).
+- `instructions --write` keeps the blank lines Prettier puts inside code-kit's markers (#77).
+- `requests drop` drops requests that carry a session (#78).
+
 ## 0.22.1 (2026-10-23)
 
 For projects on the hosted team provider, which is in preview:
