@@ -853,8 +853,12 @@ function specCheckProblem(rel, root) {
     return null; // not a git worktree: nothing to key the report on
   }
   if (rel === report) return null;
-  const file = join(root, report);
-  if (existsSync(file) && /\|\s*Requirement\s*\|/i.test(readFileSync(file, 'utf8'))) return null;
+  // In the worktree, or in the main checkout, where it's kept when a worktree goes (#55).
+  const read = (dir) => {
+    const file = join(dir, report);
+    return existsSync(file) && /\|\s*Requirement\s*\|/i.test(readFileSync(file, 'utf8'));
+  };
+  if (read(root) || read(projectWorktrees(root)[0] ?? root)) return null;
   return `Run the spec-check skill before writing code on this branch. Save its report (the requirement table, questions and recommendation) to ${report}, then continue.`;
 }
 

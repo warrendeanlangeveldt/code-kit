@@ -18,7 +18,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { basename, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { laneClaims } from './laneclaims.mjs';
 import { storyOfBranch } from './teamfacts.mjs';
 
@@ -179,11 +179,18 @@ export function strayFolders(root, list) {
     .filter((p) => !known.has(real(p)) && !existsSync(join(p, '.git')));
 }
 
-/** A worktree's report moved to the main checkout, so the next agent on its story still reads it. */
+/**
+ * A worktree's report moved to the main checkout, so the next agent on its story still reads it, and its
+ * spec-check report, so that agent can carry on writing code on the branch (#55).
+ */
 function keepReport(root, w) {
-  if (!w.report) return;
-  mkdirSync(join(root, '.claude/state/reports'), { recursive: true });
-  copyFileSync(join(w.path, w.report), join(root, w.report));
+  const keep = (rel) => {
+    if (!rel || !existsSync(join(w.path, rel))) return;
+    mkdirSync(dirname(join(root, rel)), { recursive: true });
+    copyFileSync(join(w.path, rel), join(root, rel));
+  };
+  keep(w.report);
+  if (w.branch) keep(`.claude/state/spec-check/${w.branch.replace(/[^\w.-]+/g, '_')}.md`);
 }
 
 /**

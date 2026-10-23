@@ -3961,6 +3961,34 @@ else process.exit(2);
     0,
   );
   rmSync(join(repo, '.claude/approvals'), { recursive: true });
+  // #55: a commit run as `cd <worktree> && git commit` is judged, and logged, in that worktree.
+  approveFor('web', 'design');
+  const logged = () => readFileSync(laneLog, 'utf8').split('\n').filter(Boolean).length;
+  const before = logged();
+  const viaCd = hook('guard-bash.mjs', {
+    tool_input: { command: `cd ${laneTree} && git commit -m moved` },
+    agent_type: 'web-engineer',
+  });
+  expect(
+    '#55 a commit made by moving into a lane worktree first is logged there',
+    truth(viaCd.status === 0 && logged() > before, viaCd.stderr),
+    0,
+  );
+  rmSync(join(repo, '.claude/approvals'), { recursive: true });
+  // #55: a branch's spec-check report kept in the main checkout serves a fresh worktree of the branch.
+  expect(
+    '#55 a lane worktree without its spec-check report is refused',
+    writeAt(join(laneTree, 'apps/office/lib/resumed.ts'), 'web-engineer'),
+    2,
+    'spec-check',
+  );
+  put('.claude/state/spec-check/web_st-7.md', '| Requirement | Status |\n');
+  expect(
+    '#55 but one kept in the main checkout lets it carry on',
+    writeAt(join(laneTree, 'apps/office/lib/resumed.ts'), 'web-engineer'),
+    0,
+  );
+  rmSync(join(repo, '.claude/state/spec-check/web_st-7.md'));
   git('worktree', 'remove', '--force', '.claude/worktrees/dep');
   git('branch', '-q', '-D', 'web/st-7');
 

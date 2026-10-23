@@ -357,9 +357,13 @@ for (const { pattern, lanes, why } of config.shell.restricted) {
     block(`Blocked: the ${actor.label} may not run this. ${why}\nCommand: ${cmd}`);
 }
 
-// Git commands run against the repository they name (`git -C dir`) or the one the shell is in. Another
-// repository (not this project or one of its worktrees) follows its own rules.
-const gitDir = cmd.match(/\bgit\s+-C\s+("[^"]+"|'[^']+'|\S+)/)?.[1]?.replace(/^["']|["']$/g, '');
+// Git commands run against the repository they name (`git -C dir`), the one the command moves into
+// first (`cd dir && git commit`, #55), or the one the shell is in. Another repository (not this project
+// or one of its worktrees) follows its own rules.
+const unquote = (v) => v?.replace(/^["']|["']$/g, '');
+const gitDir =
+  unquote(cmd.match(/\bgit\s+-C\s+("[^"]+"|'[^']+'|\S+)/)?.[1]) ??
+  unquote(cmd.match(/^\s*cd\s+("[^"]+"|'[^']+'|[^\s;&|]+)\s*(?:&&|;)/)?.[1]);
 const root = gitDir
   ? sessionRoot({ cwd: resolve(input.cwd || project, gitDir) }, project)
   : sessionIn;
