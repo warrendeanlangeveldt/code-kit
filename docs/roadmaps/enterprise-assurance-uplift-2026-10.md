@@ -3,7 +3,7 @@
 **Status:** Proposed roadmap; not an implementation claim  
 **Prepared:** 2026-10-25  
 **Scope:** Open-source CodeKit core, Claude Code integration, portable agent adapters, durability, evidence and architecture/engineering enforcement  
-**Companion:** [CodeKit Hub](https://github.com/warrendeanlangeveldt/code-kit-hub) has a separate **private** self-hosted enterprise roadmap. This public document deliberately excludes customer identities, private repository metrics and customer implementation details.
+**Companion:** CodeKit Hub has a separate **private** self-hosted enterprise roadmap. This public document deliberately excludes private repository URLs, customer identities, private project metrics and customer implementation details.
 
 ## 1. Position and product boundaries
 
