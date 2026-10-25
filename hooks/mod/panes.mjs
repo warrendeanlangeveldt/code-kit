@@ -863,6 +863,30 @@ export function pickerOf(requirements, selected) {
   return same.slice(start, start + SELECT_MAX);
 }
 
+/** The four observable links in a requirement's trace. These indicate linked evidence,
+ * never that implementation is correct or tests passed. Missing remote trail data
+ * remains unknown; it must not turn into a false red gap.
+ */
+export function requirementReceipt(requirement, trailRow, trailLoaded = false) {
+  const link = (label, value, state) => ({ label, value, state });
+  const stories = requirement.stories ?? [];
+  const tests = requirement.tests ?? [];
+  return [
+    link('Requirement', requirement.id, 'present'),
+    link('Story', stories.length ? `${stories.length} linked` : 'not linked', stories.length ? 'present' : 'gap'),
+    link(
+      'Code',
+      trailRow
+        ? `${(trailRow.files ?? []).length} file(s) linked`
+        : trailLoaded ? 'no linked files' : 'trace not loaded',
+      trailRow
+        ? (trailRow.files ?? []).length ? 'present' : 'gap'
+        : trailLoaded ? 'gap' : 'unknown',
+    ),
+    link('Named tests', tests.length ? `${tests.length} named` : 'none named', tests.length ? 'present' : 'gap'),
+  ];
+}
+
 /**
  * The Map tab (TRACE-1 to TRACE-4): a row per spec, a cell per requirement, a legend, and the
  * selected requirement's stories and tests. `status` is `code-kit status --json`'s.
@@ -960,10 +984,36 @@ export function mapTab(
   });
   // TRACE-2: the selected requirement, its stories with their states and branches, and its tests.
   const stories = (status.stories ?? []).filter((s) => selected.stories?.includes(s.id));
+  const evidence = requirementReceipt(
+    selected,
+    trail?.requirements?.find((r) => r.id === selected.id),
+    Boolean(trail),
+  );
+  const receipt = Box({
+    key: 'trail-receipt',
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    columnGap: 2,
+    children: evidence.map((entry) =>
+      Box({
+        key: `trace-${entry.label.toLowerCase().replace(/\s+/g, '-')}`,
+        flexDirection: 'column',
+        borderStyle: 'single',
+        borderColor: entry.state === 'present' ? 'green' : entry.state === 'gap' ? 'yellow' : 'gray',
+        paddingX: 1,
+        children: [
+          text(entry.label, { bold: true }),
+          text(entry.value, { dimColor: entry.state === 'unknown' }),
+        ],
+      }),
+    ),
+  });
   const detail = Box({
     key: 'map-detail',
     flexDirection: 'column',
     children: [
+      text('Evidence links (not verification results)', { dimColor: true }),
+      receipt,
       Select({
         key: 'map-select',
         label: 'Requirement',
