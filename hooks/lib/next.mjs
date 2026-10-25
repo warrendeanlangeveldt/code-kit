@@ -17,6 +17,7 @@ import { keptBecause, worktrees } from './worktrees.mjs';
 import { ciFindings } from './ci.mjs';
 import { storyModels } from './dispatches.mjs';
 import { pickPerLane } from './schedule.mjs';
+import { reconcileAll } from './events.mjs';
 
 export const DRAFT_FILE = '.claude/code-kit.draft.json';
 export const BRIEF_STATES = ['framed', 'explored', 'scoped', 'specified', 'planned', 'ready'];
@@ -233,6 +234,27 @@ export function nextStep(root, base) {
   const from = base(config);
   if (!from)
     attention.push('The base branch has no commits yet, so story branches are read against HEAD.');
+  // DUR-4: every act an agent left open when it stopped is checked against git before any work is
+  // chosen; what git can't settle, the lead decides before anything else on that story.
+  let unsettled = [];
+  try {
+    const { reconciled, unknowns } = reconcileAll(root, config, { base: from });
+    unsettled = unknowns;
+    for (const r of reconciled)
+      attention.push(
+        `${r.story}: an interrupted ${r.kind} was reconciled as ${r.found} (${r.how}).`,
+      );
+  } catch {
+    // an unreadable log: recovery falls back to git, as before
+  }
+  if (unsettled.length) {
+    const stories = [...new Set(unsettled.map((u) => u.story))];
+    return result(
+      'reconcile',
+      `${unsettled.map((u) => `${u.story}'s agent stopped during ${u.kind === 'unrepeatable' ? "a command that can't safely run twice" : `a ${u.kind}`} (\`${u.target}\`), and git can't say whether it ran`).join('; ')}. Find out before anything else on ${stories.length === 1 ? 'that story' : 'those stories'}.`,
+      { args: stories.join(' '), acts: unsettled },
+    );
+  }
   const status = buildStatus(root, config, from ?? 'HEAD', files);
   if (status.problems.length)
     attention.push(

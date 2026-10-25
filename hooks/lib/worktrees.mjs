@@ -19,6 +19,7 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
+import { pruneLogs } from './events.mjs';
 import { laneClaims } from './laneclaims.mjs';
 import { storyOfBranch } from './teamfacts.mjs';
 
@@ -250,6 +251,9 @@ export function pruneWorktrees(root, config, now = Date.now()) {
     rmSync(p, { recursive: true, force: true });
     removed.push(`${p.slice(root.length + 1)} (left behind, not a worktree)`);
   }
+  // DUR-6: the event logs of stories merged more than 30 days ago go with them.
+  for (const base of baseRefs(root, config))
+    for (const story of pruneLogs(root, { base, now })) removed.push(`${story}'s event log`);
   return { removed, kept };
 }
 
