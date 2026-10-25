@@ -1716,9 +1716,13 @@ export function register(on) {
         lanesFreed = at;
         const claims = ((await json('lanes')) ?? []).filter((c) => c.session === session);
         if (!claims.length) return;
+        // A lane's worker remains live while pending, waiting for a tool/person, or idle
+        // awaiting a later message. Releasing its claim would allow a second agent into
+        // the same paths. Release only when the worker has finished or disappeared.
+        const terminal = new Set(['completed', 'failed', 'killed']);
         const running = new Set(
           ((await $.agent.list().catch(() => [])) ?? [])
-            .filter((a) => a.status === 'running')
+            .filter((a) => !terminal.has(a.status))
             .map((a) => a.type),
         );
         for (const c of claims) {
