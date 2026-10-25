@@ -1809,27 +1809,35 @@ export function register(on) {
         const open = (await $.ui.panes()).some((p) => p.id === PANE_ID);
         const now = await $.clock.now();
         const art = artNow(now, liveNow(now));
-        const working = Object.keys(art.poses).filter((n) => art.poses[n] === 'working');
-        if (!open || paneSurface !== 'terminal' || !working.length) {
+        // Animate only meaningful live activity in the terminal. SVG handles its
+        // own occasional idle blink; terminal blits must stop when the pane is closed.
+        const animated = new Set(['working', 'waiting']);
+        const moving = Object.keys(art.poses).filter((n) => animated.has(art.poses[n]));
+        if (!open || paneSurface !== 'terminal' || !moving.length) {
           animation?.cancel();
           animation = null;
           return;
         }
         if (animation) return;
         animation = $.clock.every(400, async () => {
-          frame = (frame + 1) % 2;
+          frame = (frame + 1) % 24;
           const at = await $.clock.now();
           const still = artNow(at, liveNow(at));
-          for (const name of Object.keys(still.poses).filter((n) => still.poses[n] === 'working'))
+          for (const name of Object.keys(still.poses).filter((n) => animated.has(still.poses[n]))) {
+            const pose = still.poses[name];
+            // Active work moves briskly; a waiting agent lifts its hand only
+            // occasionally, so it cannot be mistaken for rapid execution.
+            const poseFrame = pose === 'working' ? frame : Math.floor(frame / 6);
             await $.ui
               .blit({
                 requestId: PANE_ID,
                 key: `char-${name}`,
                 cells: rasterCells(
-                  sprite('working', frame, still.tints[name], { lead: name === 'lead' }),
+                  sprite(pose, poseFrame, still.tints[name], { lead: name === 'lead' }),
                 ),
               })
               .catch(() => {});
+          }
         });
       },
       // --- panes v2: the selected lane's acts (VIEW-6) ----------------------------------------
