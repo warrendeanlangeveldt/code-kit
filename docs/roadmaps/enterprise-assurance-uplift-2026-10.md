@@ -27,7 +27,7 @@ Verified from current repository code and documentation (not a live runtime cert
 |---|---|---|
 | Configured lanes, ownership and protected paths | `hooks/lib/rules.mjs`, `.claude/code-kit.json` | Hook-visible writes and Git-based verification; hooks are not a sandbox |
 | Pre-use controls on Edit/Write/Bash/Agent and post-use audit | `hooks/hooks.json`, `hooks/guard-*.mjs`, `hooks/lane-audit.mjs` | Some shell effects detected after execution; other MCP tool effects not covered pre-use |
-| Architectural layer and package rules | `hooks/lib/layers.mjs`, `hooks/lib/verify.mjs` | JS/TS import analysis is pattern-based; not semantic assurance |
+| Architectural layer and package rules | `hooks/lib/layers.mjs`, `hooks/lib/verify.mjs` | **Only JS/TS imports are analysed**, via patterns; configured Python layer policies are currently **not enforced by this engine**. This is a material coverage gap for polyglot projects. |
 | Specs, stories, design gate and requirements trace | `hooks/lib/plan.mjs`, `hooks/lib/storymap.mjs`, `skills/next`, `skills/spec-check` | A named test does not by itself prove real acceptance criteria |
 | Approval evidence in Git | `.claude/approval-log.jsonl`, `hooks/lib/verify.mjs` | Must distinguish human attestations from agent assertions |
 | Stop checks, branch verify, regression protections | `hooks/stop-check.mjs`, `hooks/lib/verify.mjs`, `hooks/lib/regression.mjs` | A non-run check must never be represented as a pass |
@@ -188,6 +188,8 @@ Protected operations (merge, deploy, schema migration, remote write, dependency 
 | Before merge | Verify *reviewed SHA*; require all mandatory quality gates and authorisations; abort if policy/evidence changed |
 | CI/remote | Independent evaluation of branch, repo protection and artefacts even for contributors without local CodeKit |
 | After release | Correlate release commit and checks to change request and approvals; monitor deviations |
+
+Establish an **enforcement capability matrix** by tool **and language**. In particular, build AST-based (or language-appropriate tool-backed) dependency checking for Python before claiming enforcement of configured Python layer restrictions; report configured-but-unsupported language rules as **not enforced**, preferably fail setup/verification for mandatory policies. Add polyglot fixtures and drift tests.
 
 Establish an **enforcement capability matrix** by tool; `prevented`, `observed after`, `detectable in CI`, `not observable`. In policy-critical contexts, no adapter can advertise assurance above its actual enforcement surface. Make all important missing dependencies explicit in `verify`.
 
