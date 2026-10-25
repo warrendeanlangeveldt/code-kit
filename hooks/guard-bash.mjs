@@ -20,6 +20,7 @@ import { CONFIG_FILE, committedConfig } from './lib/config.mjs';
 import { laneOfBranch, storyOfBranch, teamOf, teamProvider, whoami } from './lib/team.mjs';
 import { globToRegExp, matchesAny } from './lib/glob.mjs';
 import { noteBefore } from './lane-audit.mjs';
+import { storyMerges } from './lib/queue.mjs';
 import { TESTS_APPROVAL, commitWeakenings } from './lib/regression.mjs';
 import {
   STANDARDS_APPROVAL,
@@ -386,6 +387,19 @@ const settingUp =
 if (writesHistory && config.branches.protected.includes(branch) && !settingUp) {
   block(
     `Blocked: never commit or merge on ${branch}. Work on a branch; the lead merges it after review (or the person, where merges aren't delegated).`,
+  );
+}
+// MQ-5: a story's branch merges only into the base, through the merge queue. Merged with git into any
+// other branch (an integration branch such as lead/next), it looks unmerged to the queue, the trail and
+// worktree cleanup, and that branch becomes a second base. A lane merging another story into its own
+// story's branch, or its base into it (MQ-3), is still its own work.
+const elsewhere = storyMerges(cmd, branch).find(
+  ({ into }) => !storyOfBranch(into) && !config.branches.protected.includes(into),
+);
+if (elsewhere) {
+  const base = config.branches.protected[0];
+  block(
+    `Blocked: ${elsewhere.story} is a story's branch, and a story merges only into ${base}, through the merge queue: queue it once its review passes (\`code-kit queue add ${elsewhere.story}\`), then ${config.approvals.delegate?.merge ? `merge it with \`code-kit merge ${elsewhere.story} --delegated\`` : 'the person merges it from the code-kit pane'}. Merged into ${elsewhere.into}, it would look unmerged to the queue, the trail and worktree cleanup, and ${elsewhere.into} would become a second ${base}.\nCommand: ${cmd}`,
   );
 }
 

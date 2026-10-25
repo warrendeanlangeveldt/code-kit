@@ -1796,6 +1796,50 @@ try {
     b.git('merge', '--abort');
   }
 
+  // --- MQ-5: a story's branch merges only into the base, through the queue -----------------------
+  {
+    const m = newRepo();
+    cleanups.push(m.dir);
+    const mHook = (command, agent) =>
+      spawnSync('node', [join(hooks, 'guard-bash.mjs')], {
+        input: JSON.stringify({
+          cwd: m.dir,
+          tool_input: { command },
+          ...(agent ? { agent_type: agent } : {}),
+        }),
+        env: { ...process.env, CLAUDE_PROJECT_DIR: m.dir },
+        encoding: 'utf8',
+      });
+    m.git('branch', 'web/st-1');
+    m.git('branch', 'lead/next');
+    m.git('checkout', '-q', 'lead/next');
+    expect(
+      'MQ-5 the lead may not merge a story into an integration branch with git',
+      mHook('git merge --no-ff -m "Merge web/st-1 (ST-1)" web/st-1'),
+      2,
+      'a story merges only into main, through the merge queue',
+    );
+    expect(
+      'nor by switching to it first, nor from a remote ref',
+      mHook('git switch lead/next && git merge origin/web/st-1'),
+      2,
+      'Merged into lead/next',
+    );
+    expect('it may merge the base into that branch', mHook('git merge main'), 0);
+    expect(
+      'and a commit message that mentions a merge is only text',
+      mHook('git commit --allow-empty -m "git merge web/st-1"'),
+      0,
+    );
+    m.git('checkout', '-q', '-b', 'web/st-2', 'main');
+    expect(
+      'MQ-3 a lane merges its base into its story branch',
+      mHook('git merge main', 'web-engineer'),
+      0,
+    );
+    expect('and a story it depends on', mHook('git merge --no-edit web/st-1', 'web-engineer'), 0);
+  }
+
   // --- SETUP-1: the approved setup is committed straight onto main, while main has no rules yet ------
   {
     const u = newRepo(false);

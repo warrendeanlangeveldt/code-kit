@@ -4,6 +4,8 @@
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { projectWorktrees } from './rules.mjs';
+import { GIT, commandsOf } from './shell.mjs';
+import { storyOfBranch } from './teamfacts.mjs';
 
 export const QUEUE_FILE = '.claude/state/merge-queue.json';
 /** Merged and sent-back entries kept for the pane, newest last. */
@@ -91,4 +93,38 @@ export function settle(root, branch, state, reason = null, now = Date.now()) {
 /** The branch merged last, for a send-back's reason ("conflicts with main after web/st-4"). */
 export function lastMerged(entries) {
   return [...entries].reverse().find((e) => e.state === 'merged')?.branch ?? null;
+}
+
+/** A ref as a local branch's name: `origin/web/st-4` → `web/st-4`; others as they are. */
+const local = (ref) => ref.replace(/^[\w.-]+\/(?=[^/]+\/[^/]+$)/, '');
+
+/**
+ * MQ-5: the story branches `cmd` merges with git, each with the branch it lands on: the one a
+ * `git switch` or `git checkout` earlier in the command moves to, else `branch`, the one checked out.
+ * [{ story: 'web/st-4', into: 'lead/next' }].
+ */
+export function storyMerges(cmd, branch) {
+  const found = [];
+  let on = branch;
+  const switches = new RegExp(
+    String.raw`^${GIT}(?:switch|checkout)\s+((?:-\S+\s+)*)([^\s-]\S*)\s*$`,
+  );
+  const merges = new RegExp(String.raw`^${GIT}merge\b(.*)$`);
+  for (const { text, code } of commandsOf(cmd)) {
+    const moved = code.match(switches);
+    if (moved) {
+      on = moved[2];
+      continue;
+    }
+    const merged = code.match(merges);
+    if (!merged) continue;
+    // Its words as written, found in the masked code, so quoted text (a message) never reads as a branch.
+    const from = code.length - merged[1].length;
+    for (const w of merged[1].matchAll(/\S+/g)) {
+      if (w[0].startsWith('-') || /["']/.test(w[0])) continue;
+      const ref = local(text.slice(from + w.index, from + w.index + w[0].length));
+      if (storyOfBranch(ref)) found.push({ story: ref, into: on });
+    }
+  }
+  return found;
 }

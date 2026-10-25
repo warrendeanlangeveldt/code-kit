@@ -53,6 +53,15 @@ A branch that no longer merges cleanly, or fails verify against the moved base, 
 
 The pane shows the queue in order with each entry's state.
 
+### MQ-5 Stories merge only into the base
+
+A story's branch (`<lane>/st-<n>`) reaches the project only through the queue, into the base. An agent's `git merge` of a story branch into any other branch that isn't itself a story's (an integration branch such as `lead/next`) is refused, with the way through the queue. Merged elsewhere, the story looks unmerged to the queue, the trail and worktree cleanup (LEAN-8), and that branch becomes a second base that never reaches the first. A lane merging the base or a story it depends on into its own story's branch is unaffected (MQ-3).
+
+**Acceptance**
+
+- Given the lead on `lead/next`, then `git merge web/st-1` is refused, and so is `git switch lead/next && git merge origin/web/st-1`; `git merge main` there is not.
+- Given a lane on `web/st-2`, then `git merge main` and `git merge web/st-1` are not refused.
+
 ## Open questions
 
 | Question | Owner | Blocks |
