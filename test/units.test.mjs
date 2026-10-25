@@ -13,6 +13,8 @@ import { diffConfigs, ownershipMoves } from '../hooks/lib/diff.mjs';
 import { newProblems } from '../hooks/lib/baseline.mjs';
 import { addedPackages, dependencyApproval, isDependencyFile } from '../hooks/lib/dependencies.mjs';
 import { commandsOf, runs, withoutHeredocs } from '../hooks/lib/shell.mjs';
+import { storyMerges } from '../hooks/lib/queue.mjs';
+import { publishTitle } from '../hooks/lib/publish.mjs';
 import {
   NOT_CODE_KIT,
   agentsAtWork,
@@ -2710,4 +2712,31 @@ test('CIC-4 the runs summed by workflow and trigger, most minutes first, cancell
     u.rows.map((r) => `${r.workflow} ${r.event} ${r.runs} ${r.minutes} ${r.cancelled} ${r.failed}`),
     ['ci push 2 53 0 1', 'ci pull_request 1 20 1 0', 'code-kit pull_request 1 1 0 0'],
   );
+});
+
+test('MQ-5 the story branches a command merges, and the branch each lands on', () => {
+  assert.deepEqual(
+    storyMerges('git merge --no-ff -m "Merge web/st-9 into x" web/st-2', 'lead/next'),
+    [{ story: 'web/st-2', into: 'lead/next' }],
+  );
+  assert.deepEqual(storyMerges('git checkout lead/next && git merge origin/data/st-2', 'main'), [
+    { story: 'data/st-2', into: 'lead/next' },
+  ]);
+  assert.deepEqual(storyMerges('git -C ../x merge api/st-3 web/st-4', 'lead/next'), [
+    { story: 'api/st-3', into: 'lead/next' },
+    { story: 'web/st-4', into: 'lead/next' },
+  ]);
+  assert.deepEqual(storyMerges('git merge main', 'web/st-2'), []);
+  assert.deepEqual(storyMerges('git merge --abort', 'lead/next'), []);
+  assert.deepEqual(storyMerges('git commit -m "git merge web/st-2"', 'lead/next'), []);
+});
+
+test("MQ-6 a publishing pull request's title names the stories it holds", () => {
+  assert.equal(publishTitle(['web/st-1'], 1), 'ST-1 from the code-kit queue');
+  assert.equal(publishTitle(['web/st-1', 'api/st-2'], 2), 'ST-1 and ST-2 from the code-kit queue');
+  assert.equal(
+    publishTitle(['web/st-1', 'api/st-2', 'x/st-3', 'y/st-4'], 4),
+    'ST-1, ST-2 and 2 more from the code-kit queue',
+  );
+  assert.equal(publishTitle([], 3), '3 commits from code-kit');
 });

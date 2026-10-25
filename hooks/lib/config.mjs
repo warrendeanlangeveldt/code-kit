@@ -95,7 +95,10 @@ export function withDefaults(c) {
     checks: c.checks ?? [],
     tests: c.tests ?? [],
     regression: { prepare: c.regression?.prepare ?? null },
-    branches: { protected: c.branches?.protected ?? ['main', 'master'] },
+    branches: {
+      protected: c.branches?.protected ?? ['main', 'master'],
+      publish: c.branches?.publish ?? null,
+    },
     approvals: {
       lead: c.approvals?.lead === true,
       delegate: delegateRules(c.approvals?.delegate, c.protected ?? []),
@@ -404,8 +407,12 @@ export function validate(c) {
     '"approvals.delegate" must be false, or { protected?: [approval names], merge?: true|false, push?: true|false, tests?: true|false, dependencies?: { licences?, minWeeklyDownloads?, maxMonthsSinceRelease?, allowInstallScripts?: true|false|["binary","build","other"] } }',
   );
   need(
-    c.branches === undefined || isList(c.branches?.protected),
+    c.branches === undefined || c.branches.protected === undefined || isList(c.branches.protected),
     '"branches.protected" must be a list of branch names',
+  );
+  need(
+    [undefined, 'push', 'pull-request'].includes(c.branches?.publish),
+    '"branches.publish" must be "push" or "pull-request": how merges reach the remote\'s base',
   );
   p.push(...harnessProblems(c.harness));
   p.push(...teamProblems(c));

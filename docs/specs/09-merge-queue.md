@@ -53,6 +53,26 @@ A branch that no longer merges cleanly, or fails verify against the moved base, 
 
 The pane shows the queue in order with each entry's state.
 
+### MQ-5 Stories merge only into the base
+
+A story's branch (`<lane>/st-<n>`) reaches the project only through the queue, into the base. An agent's `git merge` of a story branch into any other branch that isn't itself a story's (an integration branch such as `lead/next`) is refused, with the way through the queue. Merged elsewhere, the story looks unmerged to the queue, the trail and worktree cleanup (LEAN-8), and that branch becomes a second base that never reaches the first. A lane merging the base or a story it depends on into its own story's branch is unaffected (MQ-3).
+
+**Acceptance**
+
+- Given the lead on `lead/next`, then `git merge web/st-1` is refused, and so is `git switch lead/next && git merge origin/web/st-1`; `git merge main` there is not.
+- Given a lane on `web/st-2`, then `git merge main` and `git merge web/st-1` are not refused.
+
+### MQ-6 Merged work reaches the remote
+
+The base's rules say how a merge reaches the remote's base (`branches.publish`, read from the config committed on the base). With `push`, the merge pushes the base, fast-forward only. With `pull-request`, for a base the remote only lets change through pull requests (GitHub's branch protection), it pushes the base's head to code-kit's own branch `code-kit/publish-<base>` and opens a pull request from it, titled with the stories it holds; or updates the one already open. Moving the remote's base is the person's, or the lead's where `approvals.delegate.push` is on: then the lead pushes, or merges the pull request and deletes code-kit's branch, and the local base fast-forwards to the remote's. Otherwise nothing is pushed to the base, and the pull request waits for the person. A pull request GitHub won't merge yet (a review or a check it requires) waits there, and the local merge stands; `code-kit publish --delegated|--person` tries again. Left unset, code-kit doesn't publish, as before.
+
+**Acceptance**
+
+- Given `branches.publish` `pull-request` and pushing delegated, when the lead merges `web/st-1`, then a pull request "ST-1 from the code-kit queue" is opened from `code-kit/publish-main` and merged, the remote's main contains `web/st-1`, and the branch is deleted.
+- Given GitHub refuses to merge it, then the merge stands locally, the pull request waits, and `code-kit publish --delegated` merges it once GitHub allows.
+- Given pushing isn't delegated, then the lead opens the pull request and leaves it for the person.
+- Given `branches.publish` `push` and pushing delegated, then the merge pushes main.
+
 ## Open questions
 
 | Question | Owner | Blocks |

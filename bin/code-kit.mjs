@@ -19,6 +19,8 @@
 //   approve <name>... --reason "…" [--lane name]
 //   merge <branch> --delegated|--person [--into branch]  merge a branch that passes verify: the lead
 //                                    (approvals.delegate.merge) or the person (the code-kit pane)
+//   publish --delegated|--person      put what's merged into the base onto the remote's, as
+//                                    branches.publish says: pushed, or as a pull request
 //   requests [--json]                 open approval requests and approvals in force
 //   requests drop <n>|all [--reason …] [--via pane]   drop requests nobody needs answered any more
 //   ask "<question>" [--story ST-n] [--blocks] [--why …] [--option "Label: what it does"]...
@@ -112,6 +114,7 @@ import {
   writeInstructions,
 } from '../hooks/lib/instructions.mjs';
 import { dequeue, enqueue, lastMerged, readQueue, settle, waiting } from '../hooks/lib/queue.mjs';
+import { publishBase } from '../hooks/lib/publish.mjs';
 import { SETTINGS, parseSetting, settingOf, withSetting } from '../hooks/lib/harness.mjs';
 import { claimLead, readLoop, releaseLead, writeLoop } from '../hooks/lib/loop-state.mjs';
 import {
@@ -629,11 +632,37 @@ function mergeMode() {
   return byPerson;
 }
 
+/**
+ * MQ-6: what's merged into the base, put onto the remote's as the base's rules say (`branches.publish`):
+ * pushed, or as a pull request. Moving the remote's base is the person's, or the lead's where pushing it
+ * is delegated; otherwise a pull request waits for the person. '' where the base doesn't publish.
+ */
+function publishAfter(config, byPerson) {
+  const into = intoName ?? config.branches.protected[0];
+  const target = configAt(into) ?? config;
+  const mode = target.branches.publish;
+  if (!mode) return '';
+  const mayMove = byPerson || target.approvals.delegate?.push === true;
+  return ` ${publishBase(resolve('.'), into, { mode, mayMove }).message}`;
+}
+
+/** `publish --delegated|--person`: publishes what's merged and not yet on the remote, as a merge does. */
+function publish() {
+  const { config } = load();
+  const byPerson = mergeMode();
+  const into = intoName ?? config.branches.protected[0];
+  if (!(configAt(into) ?? config).branches.publish)
+    return out(
+      `${into}'s rules don't say how merges reach the remote ("branches.publish" isn't set), so code-kit leaves pushing ${into} to you.`,
+    );
+  out(publishAfter(config, byPerson).trim());
+}
+
 function merge(branch) {
   const { config } = load();
   const byPerson = mergeMode();
   try {
-    out(mergeOne(branch, config, byPerson).message);
+    out(`${mergeOne(branch, config, byPerson).message}${publishAfter(config, byPerson)}`);
   } catch (e) {
     if (e instanceof MergeStop) die(e.message);
     throw e;
@@ -823,9 +852,10 @@ function queue() {
     try {
       const { message } = mergeOne(head.branch, config, byPerson, head.commit ?? null);
       settle(root, head.branch, 'merged');
+      const published = publishAfter(config, byPerson);
       const left = waiting(readQueue(root));
       return out(
-        `${message}${left.length ? ` Next in the queue: ${left[0].branch}.` : ' The queue is empty.'}`,
+        `${message}${published}${left.length ? ` Next in the queue: ${left[0].branch}.` : ' The queue is empty.'}`,
       );
     } catch (e) {
       if (!(e instanceof MergeStop)) throw e;
@@ -2587,6 +2617,7 @@ const commands = {
   loop: loopCommand,
   approve: () => (rest.length ? approve(rest) : usage()),
   merge: () => (rest.length === 1 ? merge(rest[0]) : usage()),
+  publish: () => (rest.length === 0 ? publish() : usage()),
   requests,
   stops,
   settings,
@@ -2630,7 +2661,8 @@ function usage() {
       '              | standards [--json] [--for <path>...]\n' +
       '              | worktrees [--json] | worktrees release|discard <branch> | worktrees prune [--quiet]\n' +
       '              | approve <name>... --reason "…" [--lane name]   [--config file]\n' +
-      '              | merge <branch> --delegated|--person [--into branch] | requests [--json] | requests drop <n>|all\n' +
+      '              | merge <branch> --delegated|--person [--into branch] | publish --delegated|--person\n' +
+      '              | requests [--json] | requests drop <n>|all\n' +
       '              | ask "<question>" [--story ST-n] [--blocks] [--why "…"] [--option "Label: effect"]... | ask [--json]\n' +
       '              | ask answer <id> "<answer>" | ask withdraw <id> --reason "…"\n' +
       '              | report "<title>" --what "…" [--expected …] [--command …] [--refusal …] [--rule …]\n' +
