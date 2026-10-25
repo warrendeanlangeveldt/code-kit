@@ -7092,6 +7092,24 @@ else process.exit(1);
       ),
       0,
     );
+    // Merged on the remote through a pull request, with the local main left behind.
+    t.git('worktree', 'add', '-q', '-b', 'web/st-8', tree('web/st-8'), 'main');
+    writeFileSync(join(tree('web/st-8'), 'st8.txt'), 'work\n');
+    execFileSync('git', ['-C', tree('web/st-8'), 'add', '-A']);
+    execFileSync('git', [
+      ...['-C', tree('web/st-8'), '-c', 'user.email=t@t', '-c', 'user.name=t'],
+      ...['commit', '-q', '-m', 'ST-8'],
+    ]);
+    t.git('update-ref', 'refs/remotes/origin/main', 'web/st-8');
+    expect(
+      "LEAN-8 a branch merged into the remote's base counts as merged when the local base is behind",
+      truth(
+        tCli('worktrees', 'prune').status === 0 && !existsSync(tree('web/st-8')),
+        tCli('worktrees').stdout,
+      ),
+      0,
+    );
+    t.git('update-ref', '-d', 'refs/remotes/origin/main');
     expect(
       'a lane may not release or prune worktrees',
       spawnSync('node', [join(hooks, 'guard-bash.mjs')], {
