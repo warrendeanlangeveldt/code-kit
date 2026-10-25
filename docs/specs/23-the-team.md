@@ -17,21 +17,23 @@ The fix treats each session as a member of the team, as spec 16 treats each deve
 
 ## Decisions
 
-| Date       | Decision                                                                                                             | Why                                                                                                                 |
-| ---------- | -------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
-| 2026-10-21 | Merging into the base branch is the lead's                                                                           | Merging isn't releasing: the project's pipelines decide what reaches production                                     |
-| 2026-10-21 | The lead approves a weakened test on a lane's branch; on its own branch the person does                              | The lead reviews lanes' work against the requirements; nobody reviews the lead's own stories but the person         |
-| 2026-10-21 | A decision is answered only in the session that raised it                                                            | The question's context is that session's conversation; another session's lead would answer without it               |
-| 2026-10-21 | One agent per lane at a time, across every session in the project                                                    | Parallel work in one lane conflicts in its worktrees and at merge; the plan's graph is for running different lanes  |
-| 2026-10-21 | Slices set priority, not a gate: a lane builds the open slice's stories first, and takes later work when it has none | Lanes don't sit idle, and the feature in progress still finishes first                                              |
-| 2026-10-21 | One open slice to start with, to be evaluated                                                                        | The simplest setting that shows whether slices cut merge conflicts                                                  |
-| 2026-10-21 | No chat rooms in the mod: several Claude Code sessions stay the way to work in parallel                              | Claude Code's sessions already have the transcript, permissions, commands and compaction; code-kit coordinates them |
+| Date       | Decision                                                                                                             | Why                                                                                                                  |
+| ---------- | -------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| 2026-10-21 | Merging into the base branch is the lead's                                                                           | Merging isn't releasing: the project's pipelines decide what reaches production                                      |
+| 2026-10-21 | The lead approves a weakened test on a lane's branch; on its own branch the person does                              | The lead reviews lanes' work against the requirements; nobody reviews the lead's own stories but the person          |
+| 2026-10-21 | A decision is answered only in the session that raised it                                                            | The question's context is that session's conversation; another session's lead would answer without it                |
+| 2026-10-21 | One agent per lane at a time, across every session in the project                                                    | Parallel work in one lane conflicts in its worktrees and at merge; the plan's graph is for running different lanes   |
+| 2026-10-21 | Slices set priority, not a gate: a lane builds the open slice's stories first, and takes later work when it has none | Lanes don't sit idle, and the feature in progress still finishes first                                               |
+| 2026-10-21 | One open slice to start with, to be evaluated                                                                        | The simplest setting that shows whether slices cut merge conflicts                                                   |
+| 2026-10-21 | No chat rooms in the mod: several Claude Code sessions stay the way to work in parallel                              | Claude Code's sessions already have the transcript, permissions, commands and compaction; code-kit coordinates them  |
+| 2026-10-25 | Each lane agent's model follows its story's size, which the lead writes in the plan                                  | Most stories don't need the session's model; the lead judges a story's difficulty when it writes it, not at dispatch |
 
 ## In scope
 
 - Who decides what, by default, and editing it in the Settings tab.
 - Sessions as team members: their identity, the lead session, working sessions, ad hoc tasks and their leases.
 - One agent per lane across the project, and slices.
+- Each lane agent's model, from its story's size.
 - Decisions owned by the session that raised them, kept in one store the CLI reads.
 
 ## Out of scope
@@ -50,6 +52,8 @@ The fix treats each session as a member of the team, as spec 16 treats each deve
 | Lane claim  | `.claude/state/lanes.json`         | lane, story, member, agent's tool call id, since; one per lane                                                                                                                                    |
 | Decision    | the questions and requests logs    | id, member, kind (`approve`, `answer`), subject (a story or task), what, context (what was being done, why it's needed), options with what each does, blocks, count, opened, closed `{ at, how }` |
 | Slice       | the plan                           | a story's `**Slice:** <name>`; a slice is open from its first dispatch until every story in it is merged                                                                                          |
+| Size        | the plan                           | a story's `**Size:** small`, `medium` or `large`, written by the lead                                                                                                                             |
+| Dispatch    | `.claude/state/dispatches.jsonl`   | at, story, lane, branch, model, why; one line per lane agent started                                                                                                                              |
 
 A decision isn't kept twice: the lead's questions (`.claude/state/questions.jsonl`) and the approvals a refusal asks for (`.claude/state/requests.jsonl`) each record the session that raised them, and `code-kit decisions` reads both as one list. All of it lives in the main checkout's `.claude/state`, which every session and worktree on the machine reads, as approvals and questions do today. A session's id is Claude Code's: `session_id` in hooks, `$.session.id()` in the mod, and `CLAUDE_CODE_SESSION_ID` in every command an agent runs, which is how the CLI knows the session calling it.
 
@@ -147,6 +151,33 @@ A story may belong to a slice (`**Slice:** <name>`): a feature that can be shown
 **Acceptance**
 
 - Given the open slice "Book a class" with an api story ready, and the web lane free with nothing ready in that slice, then `next` offers the web lane the next slice's ready story, marked ahead of its slice, and still offers the api story first to the api lane.
+
+### SCHED-3 Each story's model, from its size
+
+With `agents.lanes.model` set to `story`, each lane agent runs on the model its story needs rather than one model for every lane. The lead writes each story's size in the plan as it writes the story (`**Size:** small`, `medium` or `large`), because that's when it knows what the story involves:
+
+- `small`: one layer, inside patterns the code already has, and no new contract. Copy, configuration, a field added to an existing form, tests for code that exists.
+- `medium`: most stories.
+- `large`: a new data model or migration, a contract other lanes build on, money, sign-in or concurrency, or a library the project hasn't used before.
+
+code-kit turns the size into a model, Haiku for small, Sonnet for medium and Opus for large, and then raises it from facts the plan and the reviews already hold:
+
+- a story citing a security requirement runs on Opus, since a mistake there is the one the security review exists to catch;
+- a fix story (`**Fixes:**`) runs on Sonnet at least, since it has to write the test that fails without the fix (REG-2);
+- each time the story's branch was sent back, it goes up one model, to Opus at most: a fresh agent on the same model tends to make the same mistake again.
+
+A story with no size runs on Sonnet. A lane's agent file that sets its own `model:` (other than `inherit`) keeps it, and a model the lead's call names wins over everything, as in SET-4.
+
+`next --json` gives each story it offers a lane its model and the reason (`{ story, model, why }`); the text output says it on the dispatch line, and the dispatch skill passes it as the Agent call's `model`. Where the lead's call names none, the mod sets the same model as the agent starts. Starting a lane agent appends what it ran on to `.claude/state/dispatches.jsonl`, and the journal says it where the story was handed out and where it was sent back, so the person can see whether the smaller models are being sent back more often than they save.
+
+**Acceptance**
+
+- Given `agents.lanes.model` `story`, when `next --json` offers ST-3 (`**Size:** small`), ST-4 (`large`) and ST-5 (no size), then it gives them Haiku, Opus and Sonnet, each with its reason.
+- Given ST-3 small and citing a security requirement, then it runs on Opus; given ST-3 small with `**Fixes:**`, on Sonnet.
+- Given ST-3 small and sent back once, then it's offered again on Sonnet; sent back twice, on Opus.
+- Given the web lane's agent file sets `model: opus`, then its small story is offered on Opus, because its agent file names it.
+- Given a lane agent started for ST-3 on Haiku, then the dispatch log records it, and the journal says ST-3 was handed to the web lane on Haiku and, after a send-back, that it had run on Haiku.
+- Given `agents.lanes.model` `sonnet`, then sizes are ignored and every lane agent runs on Sonnet.
 
 ### OWN-1 A decision belongs to the session that raised it
 

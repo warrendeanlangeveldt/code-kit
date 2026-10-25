@@ -1534,7 +1534,7 @@ export const SETTINGS_ID = 'code-kit-settings';
 const CHOICES = {
   autonomy: ['autonomous', 'propose', 'off'],
   'agents.reviewer.model': ['', 'haiku', 'sonnet', 'opus'],
-  'agents.lanes.model': ['', 'haiku', 'sonnet', 'opus'],
+  'agents.lanes.model': ['', 'story', 'haiku', 'sonnet', 'opus'],
   'compact.milestone': ['ask', 'auto', 'off'],
 };
 const shown = (v) =>
@@ -1548,7 +1548,9 @@ const shown = (v) =>
           ? 'the lead'
           : v === 'person'
             ? 'you'
-            : String(v);
+            : v === 'story'
+              ? "each story's size"
+              : String(v);
 
 /**
  * The Settings view: each setting from `code-kit settings --json` with a control, and, once one is

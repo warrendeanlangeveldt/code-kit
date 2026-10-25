@@ -660,6 +660,48 @@ test('LEAN-4 to LEAN-5 the context a request carried, the wrap-up, and carrying 
   );
 });
 
+test('SCHED-3 a story runs on the model its size gives, raised for security, a fix and each send-back', async () => {
+  const { storyModel } = await import('../hooks/lib/schedule.mjs');
+  const m = (o) => {
+    const r = storyModel(o);
+    return `${r.model}: ${r.why}`;
+  };
+  assert.equal(m({ size: 'small' }), 'haiku: a small story');
+  assert.equal(m({ size: 'medium' }), 'sonnet: a medium story');
+  assert.equal(m({ size: 'large' }), 'opus: a large story');
+  assert.equal(m({}), 'sonnet: no size in the plan');
+  assert.equal(
+    m({ size: 'small', security: true }),
+    'opus: a small story, it cites a security requirement',
+  );
+  assert.equal(m({ size: 'large', security: true }), 'opus: a large story');
+  assert.equal(
+    m({ size: 'small', fix: true }),
+    'sonnet: a small story, a fix proves its bug with a test',
+  );
+  assert.equal(m({ size: 'medium', fix: true }), 'sonnet: a medium story');
+  assert.equal(m({ size: 'small', sentBack: 1 }), 'sonnet: a small story, sent back once');
+  assert.equal(m({ size: 'small', sentBack: 2 }), 'opus: a small story, sent back twice');
+  assert.equal(m({ size: 'small', sentBack: 5 }), 'opus: a small story, sent back 5 times');
+  assert.equal(m({ size: 'large', sentBack: 1 }), 'opus: a large story');
+  assert.equal(
+    m({ size: 'small', fix: true, sentBack: 1 }),
+    'opus: a small story, a fix proves its bug with a test, sent back once',
+  );
+  assert.equal(m({ size: 'small', fileModel: 'opus' }), "opus: its lane's agent file names opus");
+  assert.equal(m({ size: 'small', fileModel: 'inherit' }), 'haiku: a small story');
+  const lanes = { web: { agent: 'web-engineer' } };
+  assert.equal(
+    laneModel({ type: 'web-engineer', lanes, setting: 'story', story: 'haiku' }),
+    'haiku',
+  );
+  assert.equal(laneModel({ type: 'web-engineer', lanes, setting: 'story' }), null);
+  assert.equal(
+    laneModel({ type: 'web-engineer', lanes, setting: 'story', model: 'opus', story: 'haiku' }),
+    null,
+  );
+});
+
 test("SET-4 a lane agent's model: the lead's choice, then its agent file's, then the setting", async () => {
   const { harnessProblems, harnessSettings } = await import('../hooks/lib/harness.mjs');
   const lanes = { web: { agent: 'web-engineer' }, api: { agent: 'api-engineer' } };

@@ -1579,6 +1579,8 @@ function next() {
   out(actionable ? `Next: ${command(step.step, step.args)}` : `Next: ${step.step}`);
   out(`Why: ${step.why}`);
   for (const t of step.then) out(`Then: ${command(t.step, t.args)}`);
+  // SCHED-3: the model each story offered to a lane runs on.
+  for (const m of step.models ?? []) out(`Model: ${m.story} on ${m.model} (${m.why})`);
   for (const a of step.attention) out(`Note: ${a}`);
 }
 

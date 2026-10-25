@@ -2,6 +2,16 @@
 
 What changed in each release of code-kit, newest first. Versions follow the plugin manifest and the npm package `@warren-dean/code-kit`. Each release is also on [GitHub Releases](https://github.com/warrendeanlangeveldt/code-kit/releases).
 
+## 0.24.0 (2026-10-25)
+
+Each lane agent can run on the model its story needs, instead of one model for every lane.
+
+- Set `harness.agents.lanes.model` to `story` (init now recommends it, and `/harness` offers it as "each story's size"). Each story in the plan gets a `**Size:**` line written by the lead: `small` runs on Haiku, `medium` on Sonnet and `large` on Opus. A story with no size runs on Sonnet.
+- The model goes up where the story calls for it. A story citing a security requirement runs on Opus. A fix story runs on Sonnet at least, since it has to write the test that proves its bug. Each time a story's branch is sent back, the next agent runs one model higher, up to Opus.
+- A lane's agent file that names its own model keeps it, and a model the lead names on the call still wins over all of this.
+- `code-kit next` says each story's model and why (`Model: ST-3 on haiku (a small story)`), and `next --json` gives it in `models`. The dispatch skill passes it to the agent, and the mod sets it when the call leaves it out.
+- Each lane agent's start is logged in `.claude/state/dispatches.jsonl` with its model. The journal says which model a story was handed out on, and which one it had run on when it was sent back, so you can see whether the smaller models are being sent back more often than they save.
+
 ## 0.23.0 (2026-10-23)
 
 Worktrees no longer fill the disk, bug reports send once, and a batch of reported bugs is fixed.

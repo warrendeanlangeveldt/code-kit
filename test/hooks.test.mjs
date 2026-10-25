@@ -5662,6 +5662,192 @@ else process.exit(1);
     );
   }
 
+  // --- SCHED-3: each story's model, from its size ------------------------------------------------
+  {
+    const m = newRepo();
+    cleanups.push(m.dir);
+    const mPut = (rel, body = '') => {
+      mkdirSync(dirname(join(m.dir, rel)), { recursive: true });
+      writeFileSync(join(m.dir, rel), body);
+    };
+    const mCommit = (msg) => {
+      m.git('add', '-A');
+      m.git('commit', '-q', '-m', msg);
+    };
+    const mCli = (...args) =>
+      spawnSync('node', [join(here, '..', 'bin', 'code-kit.mjs'), ...args], {
+        cwd: m.dir,
+        encoding: 'utf8',
+      });
+    const withModel = (model) =>
+      writeFileSync(
+        join(m.dir, '.claude/code-kit.json'),
+        JSON.stringify({ ...JSON.parse(fixture), harness: { agents: { lanes: { model } } } }),
+      );
+    const sized = (id, lane, req, size, extra = '') =>
+      `### ${id} Story ${id}\n\n**Lane:** ${lane}\n**Requirements:** ${req}\n**Depends on:** none\n${size ? `**Size:** ${size}\n` : ''}${extra}**Status:** todo\n\n`;
+    const plan = (...stories) =>
+      mPut('docs/spec/plan.md', `# Plan\n\n## Milestone 1: Classes\n\n${stories.join('')}`);
+    mPut(
+      'docs/spec/01-classes.md',
+      '# 01. Classes\n\n## Requirements\n\n### CLS-1 Book\n\n### CLS-2 Cancel\n\n### CLS-3 Pay\n\n## Security requirements\n\n### CLS-9 A customer sees only their own bookings\n',
+    );
+    mPut('design/approved-screens.json', JSON.stringify({ screens: [] }));
+    withModel('story');
+    plan(
+      sized('ST-3', 'web', 'CLS-1', 'small'),
+      sized('ST-4', 'backend', 'CLS-2', 'large'),
+      sized('ST-5', 'data', 'CLS-3'),
+    );
+    mCommit('plan');
+    const modelsOf = () =>
+      Object.fromEntries(
+        (nextIn(m.dir).models ?? []).map((x) => [x.story, `${x.model}: ${x.why}`]),
+      );
+    const offered = modelsOf();
+    expect(
+      'SCHED-3 next gives a small story Haiku, a large one Opus and one with no size Sonnet, each with its reason',
+      truth(
+        offered['ST-3'] === 'haiku: a small story' &&
+          offered['ST-4'] === 'opus: a large story' &&
+          offered['ST-5'] === 'sonnet: no size in the plan',
+        JSON.stringify(offered),
+      ),
+      0,
+    );
+    expect(
+      'SCHED-3 the text output says each story offered and its model',
+      truth(
+        mCli('next').stdout.includes('Model: ST-3 on haiku (a small story)'),
+        mCli('next').stdout,
+      ),
+      0,
+    );
+    plan(
+      sized('ST-3', 'web', 'CLS-1, CLS-9', 'small'),
+      sized('ST-4', 'backend', 'CLS-2', 'small', '**Fixes:** a cancelled booking still charged\n'),
+    );
+    mCommit('security and a fix');
+    const raised = modelsOf();
+    expect(
+      'SCHED-3 a small story citing a security requirement runs on Opus; a small fix on Sonnet',
+      truth(
+        raised['ST-3'] === 'opus: a small story, it cites a security requirement' &&
+          raised['ST-4'] === 'sonnet: a small story, a fix proves its bug with a test',
+        JSON.stringify(raised),
+      ),
+      0,
+    );
+    plan(sized('ST-3', 'web', 'CLS-1', 'small'));
+    mCommit('one story');
+    const startWeb = (model) =>
+      spawnSync('node', [join(hooks, 'guard-agent.mjs')], {
+        input: JSON.stringify({
+          cwd: m.dir,
+          session_id: 'eeee5555-s',
+          tool_name: 'Agent',
+          tool_input: {
+            subagent_type: 'web-engineer',
+            description: 'ST-3 booking form',
+            prompt: 'brief',
+            ...(model ? { model } : {}),
+          },
+        }),
+        env: { ...process.env, CLAUDE_PROJECT_DIR: m.dir },
+        encoding: 'utf8',
+      });
+    startWeb('haiku');
+    const logged = () =>
+      readFileSync(join(m.dir, '.claude/state/dispatches.jsonl'), 'utf8')
+        .split('\n')
+        .filter(Boolean)
+        .map((l) => JSON.parse(l));
+    expect(
+      'SCHED-3 starting a lane agent logs the story, its branch and the model it runs on, with why',
+      truth(
+        logged().at(-1).story === 'ST-3' &&
+          logged().at(-1).branch === 'web/st-3' &&
+          logged().at(-1).model === 'haiku' &&
+          logged().at(-1).why === 'a small story',
+        JSON.stringify(logged()),
+      ),
+      0,
+    );
+    m.git('checkout', '-q', '-b', 'web/st-3');
+    mPut('apps/office/book.ts', 'export const book = 1;\n');
+    mCommit('ST-3 book');
+    m.git('checkout', '-q', 'main');
+    mCli('lanes', 'release', 'web');
+    mCli('sent-back', 'web/st-3', '--reason', 'the cancel button is missing');
+    expect(
+      'SCHED-3 sent back once, a small story is offered again on Sonnet',
+      truth(
+        modelsOf()['ST-3'] === 'sonnet: a small story, sent back once',
+        JSON.stringify(modelsOf()),
+      ),
+      0,
+    );
+    const journalText = () =>
+      JSON.parse(mCli('journal', '--json').stdout)
+        .events.map((e) => e.text)
+        .join('\n');
+    expect(
+      'SCHED-3 the journal says the story was handed out on Haiku, and that it had run on Haiku when sent back',
+      truth(
+        journalText().includes('was handed to the web lane on Haiku (a small story).') &&
+          journalText().includes(
+            'The lead sent ST-3 back to the web lane: the cancel button is missing; it had run on Haiku.',
+          ),
+        journalText(),
+      ),
+      0,
+    );
+    m.git('checkout', '-q', 'web/st-3');
+    mPut('apps/office/book.ts', 'export const book = 2;\n');
+    mCommit('ST-3 fix');
+    m.git('checkout', '-q', 'main');
+    mCli('sent-back', 'web/st-3');
+    expect(
+      'SCHED-3 sent back twice, it goes up to Opus',
+      truth(
+        modelsOf()['ST-3'] === 'opus: a small story, sent back twice',
+        JSON.stringify(modelsOf()),
+      ),
+      0,
+    );
+    m.git('branch', '-q', '-D', 'web/st-3');
+    rmSync(join(m.dir, '.claude/state/reviews.jsonl'), { force: true });
+    mPut(
+      '.claude/agents/web-engineer.md',
+      '---\nname: web-engineer\nmodel: opus\n---\nYou build the web lane.\n',
+    );
+    mCommit('web agent on opus');
+    expect(
+      'SCHED-3 a lane whose agent file names a model keeps it, and says so',
+      truth(
+        modelsOf()['ST-3'] === "opus: its lane's agent file names opus",
+        JSON.stringify(modelsOf()),
+      ),
+      0,
+    );
+    withModel('sonnet');
+    mCommit('lanes on sonnet');
+    rmSync(join(m.dir, '.claude/agents/web-engineer.md'));
+    mCommit('no web agent file');
+    mCli('lanes', 'release', 'web');
+    startWeb();
+    expect(
+      'SCHED-3 with the lane model a model, sizes are ignored: next gives none, and the agent is logged on it',
+      truth(
+        !(nextIn(m.dir).models ?? []).length &&
+          logged().at(-1).model === 'sonnet' &&
+          logged().at(-1).why === 'the lane model set',
+        JSON.stringify(logged().at(-1)),
+      ),
+      0,
+    );
+  }
+
   // --- SESS-1 to SESS-5: sessions as members of the team ------------------------------------------
   {
     const t = newRepo();

@@ -52,7 +52,7 @@ const field = (lines, name) =>
     .trim() ?? '';
 
 /**
- * Every story in the plan: [{ id, title, lane, requirements, dependsOn, status, fixes, milestone, slice }]. A story's
+ * Every story in the plan: [{ id, title, lane, requirements, dependsOn, status, fixes, milestone, slice, size }]. A story's
  * milestone is the `## ` heading above it ("Milestone 5: Your own key"), or null.
  */
 export function readStories(root, planPath) {
@@ -82,6 +82,11 @@ export function readStories(root, planPath) {
         milestone,
         // SCHED-2: the slice it belongs to, a feature built across lanes, or null.
         slice: field(body, 'Slice') || null,
+        // SCHED-3: small, medium or large, as the lead judged it, or null.
+        size:
+          field(body, 'Size')
+            .toLowerCase()
+            .match(/^(small|medium|large)\b/)?.[1] ?? null,
       });
     });
   }

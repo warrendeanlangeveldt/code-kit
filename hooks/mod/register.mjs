@@ -377,6 +377,8 @@ export function register(on) {
           brief: (nextStep?.brief ?? []).filter((b) => !briefLater.has(b.question)),
           // LEAN-8: merged worktrees still holding changes, less those kept this session.
           worktrees: (nextStep?.worktrees ?? []).filter((w) => !worktreesKept.has(w.branch)),
+          // SCHED-3: the model each story offered to a lane runs on.
+          models: nextStep?.models ?? [],
           base: status?.base ?? null,
           // SESS-3, SESS-4: a working session's band holds its own, and its task.
           working: role === 'working',
@@ -2241,12 +2243,17 @@ export function register(on) {
     const file = where
       ? await $.fs.read(`${where.cwd}/.claude/agents/${e.subagentType}.md`).catch(() => null)
       : null;
+    // SCHED-3: with the lane model `story`, the model `next` gave the story the call's description names.
+    const story = String(e.description ?? '')
+      .match(/\bST-\d+\b/i)?.[0]
+      ?.toUpperCase();
     const chosen = laneModel({
       type: e.subagentType,
       model: e.model,
       lanes,
       setting,
       fileModel: typeof file === 'string' ? agentFileModel(file) : null,
+      story: (model.models ?? []).find((m) => m.story === story)?.model ?? null,
     });
     return next(chosen ? { ...e, model: chosen } : e);
   }).catch(($, e, next) => next(e));

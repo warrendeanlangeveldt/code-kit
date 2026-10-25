@@ -6,6 +6,7 @@
 import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { dispatches } from './dispatches.mjs';
 import { APPROVAL_LOG } from './rules.mjs';
 import { sendBacks } from './reviews.mjs';
 import { storyTimes } from './timeline.mjs';
@@ -141,10 +142,19 @@ export function journal(root, status, base, docs = {}) {
   const times = storyTimes(root, status.stories, base);
   const byId = new Map(status.stories.map((s) => [s.id, s]));
   const backs = sendBacks(root);
+  // SCHED-3: the model each lane agent ran on, from the dispatch log; the session's isn't named.
+  const started = dispatches(root).filter((d) => d.model);
+  const modelName = (m) => (/^(haiku|sonnet|opus)$/.test(m) ? m[0].toUpperCase() + m.slice(1) : m);
+  const ranOn = (branch, before) =>
+    started.filter((d) => d.branch === branch && Date.parse(d.at) <= before).at(-1) ?? null;
   for (const t of times) {
     const s = byId.get(t.id);
     const name = `${t.id} ${s?.title ?? ''}`.trim();
     const reqText = s?.requirements?.length ? ` (${s.requirements.join(', ')})` : '';
+    const first = started.find((x) => x.branch === t.branch);
+    const onModel = first
+      ? ` on ${modelName(first.model)}${first.why ? ` (${first.why})` : ''}`
+      : '';
     if (t.started)
       events.push({
         at: t.started,
@@ -153,9 +163,11 @@ export function journal(root, status, base, docs = {}) {
         text:
           t.lane === 'lead'
             ? `The lead started ${name}${reqText} itself.`
-            : `${name}${reqText} was handed to the ${t.lane} lane.`,
+            : `${name}${reqText} was handed to the ${t.lane} lane${onModel}.`,
       });
-    for (const b of backs.filter((x) => x.branch === t.branch))
+    for (const b of backs.filter((x) => x.branch === t.branch)) {
+      const d = t.lane === 'lead' ? null : ranOn(t.branch, Date.parse(b.at));
+      const ran = d ? `; it had run on ${modelName(d.model)}.` : '';
       events.push({
         at: Date.parse(b.at),
         kind: 'sentBack',
@@ -163,8 +175,9 @@ export function journal(root, status, base, docs = {}) {
         text:
           t.lane === 'lead'
             ? `${t.id} needed more work from the lead${b.reason ? `: ${b.reason}` : '.'}`
-            : `The lead sent ${t.id} back to the ${t.lane} lane${b.reason ? `: ${b.reason}` : '.'}`,
+            : `The lead sent ${t.id} back to the ${t.lane} lane${b.reason ? `: ${b.reason}${ran}` : ran || '.'}`,
       });
+    }
     if (t.merged)
       events.push({
         at: t.merged,

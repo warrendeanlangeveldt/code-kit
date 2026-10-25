@@ -3248,6 +3248,34 @@ test("SET-4 a lane agent starts on the lane model set; the lead's own choice, an
   ]);
 });
 
+test("SCHED-3 with the lane model story, a lane agent starts on the model next gave its story; the lead's own choice and an agent file's still win", async ($, on) => {
+  const w = project();
+  (w.check as any).harness = { agents: { lanes: { model: 'story' } } };
+  w.next = {
+    step: 'dispatch',
+    args: 'ST-9',
+    then: [],
+    models: [{ story: 'ST-9', model: 'haiku', why: 'a small story' }],
+  } as any;
+  w.agentFiles['/work/.claude/agents/web-engineer.md'] =
+    '---\nname: web-engineer\nmodel: opus\n---\n';
+  await start($, on, w);
+  await dispatch($, 'core-engineer');
+  await dispatch($, 'core-engineer', 'sonnet');
+  await dispatch($, 'web-engineer');
+  await $.agent.spawn({
+    prompt: 'ST-2 other',
+    description: 'ST-2 other',
+    subagentType: 'core-engineer',
+  });
+  expect(w.spawned.map((e) => [e.subagentType, e.model ?? null])).toEqual([
+    ['core-engineer', 'haiku'],
+    ['core-engineer', 'sonnet'],
+    ['web-engineer', null],
+    ['core-engineer', null],
+  ]);
+});
+
 test('SET-4 with no lane model set, lane agents start as Claude Code decides', async ($, on) => {
   const w = project();
   await start($, on, w);
