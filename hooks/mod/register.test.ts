@@ -2493,9 +2493,7 @@ for (const status of ['pending', 'waiting', 'idle']) {
     w.laneClaims = [
       { lane: 'web', story: 'ST-4', session: 's1', since: new Date(0).toISOString() },
     ];
-    w.agents = [
-      { id: 'a1', type: 'web-engineer', description: 'ST-4 booking form', status },
-    ];
+    w.agents = [{ id: 'a1', type: 'web-engineer', description: 'ST-4 booking form', status }];
     const clock = await start($, on, w);
     await clock.advance(64000);
     expect(w.acts.filter((a: string[]) => a[0] === 'lanes')).toEqual([]);
@@ -2509,14 +2507,10 @@ for (const status of ['completed', 'failed', 'killed']) {
     w.laneClaims = [
       { lane: 'web', story: 'ST-4', session: 's1', since: new Date(0).toISOString() },
     ];
-    w.agents = [
-      { id: 'a1', type: 'web-engineer', description: 'ST-4 booking form', status },
-    ];
+    w.agents = [{ id: 'a1', type: 'web-engineer', description: 'ST-4 booking form', status }];
     const clock = await start($, on, w);
     await clock.advance(64000);
-    expect(w.acts.filter((a: string[]) => a[0] === 'lanes')).toEqual([
-      ['lanes', 'release', 'web'],
-    ]);
+    expect(w.acts.filter((a: string[]) => a[0] === 'lanes')).toEqual([['lanes', 'release', 'web']]);
   });
 }
 
