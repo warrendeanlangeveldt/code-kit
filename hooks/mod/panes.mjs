@@ -1275,6 +1275,13 @@ export function decisionsTab(cards, ui, { Box, Text, Button }, on) {
   if (!cards.length) return [];
   const at = Math.min(ui.decision ?? 0, cards.length - 1);
   const card = cards[at];
+  // Display only evidence already contained in the decision card. This is a
+  // presentation of a decision, never an assertion that permission was granted.
+  const impact = [
+    ...(card.story ? [`Story ${card.story.id}`] : []),
+    ...(card.requirements?.length ? [`${card.requirements.length} requirement${card.requirements.length === 1 ? '' : 's'}`] : []),
+    ...(card.why ? ['Policy / authority explanation'] : []),
+  ];
   const row = (label, value, style = {}) =>
     Box({
       key: `decision-${label}`,
@@ -1360,6 +1367,17 @@ export function decisionsTab(cards, ui, { Box, Text, Button }, on) {
     paddingX: 1,
     rowGap: 0,
     children: [
+      Box({
+        key: 'decision-context-header',
+        flexDirection: 'row',
+        columnGap: 2,
+        flexWrap: 'wrap',
+        children: [
+          text(`DECISION ${at + 1}/${cards.length}`, { color: 'yellow', bold: true }),
+          text(card.tag.toUpperCase(), { color: 'cyan' }),
+          text('pending your choice', { dimColor: true }),
+        ],
+      }),
       text(
         card.kind === 'brief'
           ? 'An open question in your brief'
@@ -1368,6 +1386,20 @@ export function decisionsTab(cards, ui, { Box, Text, Button }, on) {
             : card.headline,
         { bold: true, wrap: 'wrap' },
       ),
+      ...(impact.length
+        ? [
+            Box({
+              key: 'decision-impact',
+              flexDirection: 'row',
+              flexWrap: 'wrap',
+              columnGap: 2,
+              children: [
+                text('CONTEXT', { dimColor: true }),
+                ...impact.map((item) => text(item, { color: 'cyan' })),
+              ],
+            }),
+          ]
+        : []),
       ...(card.details ?? []).map((d) =>
         row(d.label, d.value, d.label === 'Question' ? { bold: true } : {}),
       ),
@@ -1401,12 +1433,21 @@ export function decisionsTab(cards, ui, { Box, Text, Button }, on) {
           ]
         : []),
       ...(card.why ? [row('Why it is yours', card.why, { color: 'yellow' })] : []),
-      text('Your options', { dimColor: true }),
+      Box({
+        key: 'decision-options-heading',
+        borderStyle: 'single',
+        borderColor: 'gray',
+        paddingX: 1,
+        children: [
+          text('YOUR OPTIONS · select a choice to record or act', { bold: true }),
+        ],
+      }),
       ...card.options.map((o) =>
         Box({
           key: `decision-option-${o.id}`,
           flexDirection: 'row',
           columnGap: 2,
+          flexWrap: 'wrap',
           children: [
             Button({
               key: `decide-${o.id}`,
