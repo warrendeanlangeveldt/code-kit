@@ -21,6 +21,9 @@
 //                                    (approvals.delegate.merge) or the person (the code-kit pane)
 //   publish --delegated|--person      put what's merged into the base onto the remote's, as
 //                                    branches.publish says: pushed, or as a pull request
+//   replay <story> [--json|--brief]   a story's state rebuilt from its event log (spec 26), reading only
+//   reconcile [--json] | reconcile <story> --act <id> --found done|not-done --how "…"
+//                                    check acts a stopped agent left open against git; record a finding
 //   requests [--json]                 open approval requests and approvals in force
 //   requests drop <n>|all [--reason …] [--via pane]   drop requests nobody needs answered any more
 //   ask "<question>" [--story ST-n] [--blocks] [--why …] [--option "Label: what it does"]...
@@ -55,6 +58,7 @@ import {
   readdirSync,
   readFileSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -115,6 +119,13 @@ import {
 } from '../hooks/lib/instructions.mjs';
 import { dequeue, enqueue, lastMerged, readQueue, settle, waiting } from '../hooks/lib/queue.mjs';
 import { publishBase } from '../hooks/lib/publish.mjs';
+import {
+  briefOf,
+  readEvents,
+  reconcileAll,
+  recordFinding,
+  replay as replayEvents,
+} from '../hooks/lib/events.mjs';
 import { SETTINGS, parseSetting, settingOf, withSetting } from '../hooks/lib/harness.mjs';
 import { claimLead, readLoop, releaseLead, writeLoop } from '../hooks/lib/loop-state.mjs';
 import {
@@ -216,6 +227,9 @@ if (callerSession) process.env.CODE_KIT_SESSION = callerSession;
 const minutesGiven = option('--minutes');
 const daysGiven = option('--days');
 const answerGiven = option('--answer');
+const actGiven = option('--act');
+const foundGiven = option('--found');
+const howGiven = option('--how');
 const leaseGiven = option('--lease');
 const touchesGiven = option('--touches');
 const techLeadGiven = option('--tech-lead');
@@ -236,6 +250,7 @@ const FLAGS = [
   '--write',
   '--no-checks',
   '--json',
+  '--brief',
   '--delegated',
   '--person',
   '--fresh',
@@ -1673,6 +1688,66 @@ function status() {
   }
 }
 
+/**
+ * DUR-3, DUR-5: `replay <story>` rebuilds a story's state from its event log, reading only; `--json`
+ * for the mod and the skills, `--brief` for the brief of the agent that carries the story on.
+ */
+function replayCommand(id) {
+  const story = id.toUpperCase();
+  const events = readEvents('.', story);
+  const state = replayEvents(events);
+  if (flag('--json'))
+    return out(JSON.stringify({ story, events: events.length, ...state }, null, 2));
+  if (!events.length)
+    return out(
+      `${story} has no event log (it started before code-kit kept one): read its state from git, its report and \`code-kit status\`.`,
+    );
+  const report = state.branch
+    ? join('.claude/state/reports', `${state.branch.replace(/[^\w.-]+/g, '_')}.md`)
+    : null;
+  let reportAt = null;
+  try {
+    reportAt = report ? statSync(report).mtime.toISOString() : null;
+  } catch {
+    // no report written
+  }
+  if (flag('--brief')) return out(briefOf(story, state, { reportAt }));
+  out(`${story}: ${state.phase ?? 'not started'}${state.branch ? ` on ${state.branch}` : ''}`);
+  out(briefOf(story, state, { reportAt }).split('\n').slice(1).join('\n'));
+}
+
+/**
+ * DUR-4: `reconcile` checks every act a stopped agent left open against git, as `next` does, and lists
+ * what it settled and what it couldn't; `reconcile <story> --act <id> --found done|not-done --how "…"`
+ * records the lead's own finding for an act git couldn't settle.
+ */
+function reconcileCommand(id) {
+  const { config } = load();
+  if (id) {
+    if (!actGiven || !['done', 'not-done'].includes(foundGiven) || !howGiven)
+      die('code-kit reconcile <story> --act <id> --found done|not-done --how "<how you know>"');
+    const recorded = recordFinding(
+      '.',
+      id.toUpperCase(),
+      actGiven,
+      foundGiven === 'done' ? 'done' : 'not done',
+      howGiven,
+    );
+    if (!recorded) die(`${id.toUpperCase()} has no act ${actGiven} left open.`);
+    return out(`Recorded act ${actGiven} of ${id.toUpperCase()} as ${recorded.result.found}.`);
+  }
+  const result = reconcileAll('.', config, { base: findBase(config, false) });
+  if (flag('--json')) return out(JSON.stringify(result, null, 2));
+  if (!result.reconciled.length && !result.unknowns.length)
+    return out('Nothing is left open by an agent that stopped.');
+  for (const r of result.reconciled)
+    out(`${r.story}: ${r.kind} \`${r.target}\` was ${r.found} (${r.how}); ${r.next}.`);
+  for (const u of result.unknowns)
+    out(
+      `${u.story}: ${u.kind} \`${u.target}\` (act ${u.act}) is unknown: ${u.how}. The lead finds out and records it.`,
+    );
+}
+
 function next() {
   const step = nextStep(resolve('.'), (config) => findBase(config, false));
   if (flag('--json')) return out(JSON.stringify(step, null, 2));
@@ -2639,6 +2714,8 @@ const commands = {
   'sent-back': () => (rest.length === 1 ? sentBackCommand(rest[0]) : usage()),
   ci: ciCommand,
   release: () => (rest.length === 1 ? releaseCommand(rest[0]) : usage()),
+  replay: () => (rest.length === 1 ? replayCommand(rest[0]) : usage()),
+  reconcile: () => (rest.length <= 1 ? reconcileCommand(rest[0]) : usage()),
   trace: () => (rest.length ? trace(rest) : usage()),
   adapters,
   next,
@@ -2662,6 +2739,7 @@ function usage() {
       '              | worktrees [--json] | worktrees release|discard <branch> | worktrees prune [--quiet]\n' +
       '              | approve <name>... --reason "…" [--lane name]   [--config file]\n' +
       '              | merge <branch> --delegated|--person [--into branch] | publish --delegated|--person\n' +
+      '              | replay <story> [--json|--brief] | reconcile [--json] | reconcile <story> --act <id> --found done|not-done --how "…"\n' +
       '              | requests [--json] | requests drop <n>|all\n' +
       '              | ask "<question>" [--story ST-n] [--blocks] [--why "…"] [--option "Label: effect"]... | ask [--json]\n' +
       '              | ask answer <id> "<answer>" | ask withdraw <id> --reason "…"\n' +

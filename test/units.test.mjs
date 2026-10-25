@@ -658,7 +658,7 @@ test('LEAN-4 to LEAN-5 the context a request carried, the wrap-up, and carrying 
   assert.match(compactInstructions(), /^The lead's context is compacted between turns/);
   assert.equal(
     continuePrompt({ type: 'api-engineer', story: 'ST-9', branch: 'api/st-9', cli: '/k.mjs' }),
-    'api-engineer handed ST-9 back at its context limit, with its work committed on api/st-9. Carry the story on with a fresh agent: run node "/k.mjs" worktrees release api/st-9 (it keeps the commits and moves the report to the main checkout), then dispatch ST-9 again with the same brief, adding "Read your earlier report first: .claude/state/reports/api_st-9.md in the main checkout": /code-kit:dispatch ST-9',
+    'api-engineer handed ST-9 back at its context limit, with its work committed on api/st-9. Carry the story on with a fresh agent: run node "/k.mjs" worktrees release api/st-9 (it keeps the commits and moves the report to the main checkout), then dispatch ST-9 again with the same brief, adding "Read your earlier report first: .claude/state/reports/api_st-9.md in the main checkout" and what node "/k.mjs" replay ST-9 --brief prints: /code-kit:dispatch ST-9',
   );
 });
 
@@ -2739,4 +2739,138 @@ test("MQ-6 a publishing pull request's title names the stories it holds", () => 
     'ST-1, ST-2 and 2 more from the code-kit queue',
   );
   assert.equal(publishTitle([], 3), '3 commits from code-kit');
+});
+
+test('DUR-1 each tool call is classified by what it does, with its target', async () => {
+  const { classify } = await import('../hooks/lib/events.mjs');
+  const config = {
+    shell: { block: [{ pattern: 'supabase db push' }], restricted: [] },
+    checks: [{ run: ['make check'] }],
+    protected: [{ glob: 'supabase/migrations/**', approval: 'migration' }],
+    execution: { unrepeatable: ['^npm run seed'] },
+  };
+  const kind = (tool, input) => classify(tool, input, config).kind;
+  assert.equal(kind('Edit', { file_path: 'a.ts' }), 'edit');
+  assert.equal(kind('Grep', { pattern: 'x' }), 'read');
+  assert.equal(kind('Bash', { command: 'npm test' }), 'test');
+  assert.equal(kind('Bash', { command: 'make check' }), 'test');
+  assert.equal(kind('Bash', { command: 'git add -A && git commit -m x' }), 'commit');
+  assert.equal(kind('Bash', { command: 'git push origin web/st-4' }), 'push');
+  assert.equal(kind('Bash', { command: 'npm install zod' }), 'install');
+  assert.equal(kind('Bash', { command: 'node /k/code-kit.mjs queue merge --delegated' }), 'merge');
+  assert.equal(kind('Bash', { command: 'node /k/code-kit.mjs queue add web/st-4' }), 'queue');
+  assert.equal(kind('Bash', { command: 'psql -f supabase/migrations/1.sql' }), 'unrepeatable');
+  assert.equal(kind('Bash', { command: 'npm run seed' }), 'unrepeatable');
+  assert.equal(kind('Bash', { command: 'supabase db push' }), 'unrepeatable');
+  assert.equal(kind('Bash', { command: 'ls' }), 'run');
+  assert.equal(
+    kind('Agent', { description: 'ST-4 booking', subagent_type: 'web-engineer' }),
+    'dispatch',
+  );
+  assert.equal(
+    classify('Bash', { command: 'git commit -m "echo git merge web/st-2"' }, config).kind,
+    'commit',
+  );
+});
+
+test('DUR-2 a command is recorded with its credentials masked, at most 300 characters', async () => {
+  const { maskCommand } = await import('../hooks/lib/events.mjs');
+  const masked = maskCommand(
+    'curl -H "Authorization: Bearer abc123" https://u:pw@x API_TOKEN=zzz --password hunter2',
+  );
+  for (const secret of ['abc123', 'pw@', 'zzz', 'hunter2'])
+    assert.ok(!masked.includes(secret), masked);
+  assert.equal(maskCommand('x'.repeat(400)).length, 300);
+});
+
+test('DUR-3 replay rebuilds a story from its events, and lists what was left open', async () => {
+  const { replay } = await import('../hooks/lib/events.mjs');
+  const e = (act, phase, kind, extra = {}) => ({
+    act,
+    phase,
+    kind,
+    actor: extra.actor ?? 'web',
+    at: extra.at ?? '2026-10-26T10:00:00.000Z',
+    target: extra.target ?? null,
+    branch: 'web/st-4',
+    result: extra.result,
+  });
+  const state = replay([
+    e('d', 'start', 'dispatch', { actor: 'lead' }),
+    e('d', 'end', 'dispatch', { actor: 'lead', result: { ok: true } }),
+    e('a', 'start', 'edit', { target: 'apps/w.ts' }),
+    e('a', 'end', 'edit', { target: 'apps/w.ts', result: { ok: true } }),
+    e('t', 'start', 'test', { target: 'npm test' }),
+    e('t', 'end', 'test', { target: 'npm test', result: { ok: true, test: 'passed' } }),
+    e('c', 'start', 'commit'),
+    e('c', 'end', 'commit', { result: { ok: true, sha: 'abc1234' } }),
+    e('b', 'start', 'edit', { target: 'apps/x.ts' }),
+    e('b', 'end', 'edit', { target: 'apps/x.ts', result: { ok: true } }),
+    e('z', 'start', 'edit', { target: 'apps/y.ts' }),
+  ]);
+  assert.equal(state.phase, 'building');
+  assert.equal(state.branch, 'web/st-4');
+  assert.equal(state.lastCommit.sha, 'abc1234');
+  assert.equal(state.lastTest.ok, true);
+  assert.deepEqual(state.changed, ['apps/x.ts']);
+  assert.deepEqual(
+    state.open.map((o) => [o.act, o.kind, o.target]),
+    [['z', 'edit', 'apps/y.ts']],
+  );
+  const merged = replay([
+    e('m', 'start', 'merge', { actor: 'lead' }),
+    e('m', 'end', 'merge', { actor: 'lead', result: { ok: true } }),
+  ]);
+  assert.equal(merged.phase, 'merged');
+});
+
+test('DUR-5 the brief says the last commit, the tests last run, what changed and what is open', async () => {
+  const { briefOf } = await import('../hooks/lib/events.mjs');
+  const now = Date.parse('2026-10-26T10:30:00Z');
+  const brief = briefOf(
+    'ST-4',
+    {
+      lastCommit: { sha: 'abc1234', at: '2026-10-26T10:00:00Z' },
+      lastTest: { target: 'npm test', ok: false, at: '2026-10-26T10:20:00Z' },
+      changed: ['apps/a.ts', 'apps/b.ts', 'apps/c.ts'],
+      reconciled: [{ result: { found: 'not done', how: 'it can safely run again', next: 'x' } }],
+      open: [],
+      recent: [],
+      trimmed: 0,
+      lastAt: '2026-10-26T10:25:00Z',
+    },
+    { now, reportAt: '2026-10-26T10:10:00Z' },
+  );
+  assert.match(brief, /Last commit: abc1234 \(30 min ago\)/);
+  assert.match(brief, /`npm test`, failed/);
+  assert.match(brief, /apps\/a\.ts, apps\/b\.ts, apps\/c\.ts/);
+  assert.match(brief, /Reconciled: not done/);
+  assert.match(brief, /came after the report/);
+});
+
+test('DUR-6 a log past its size keeps its first agent event and its last events, saying what went', async () => {
+  const { trimLog } = await import('../hooks/lib/events.mjs');
+  const dir = mkdtempSync(join(tmpdir(), 'code-kit-trim-'));
+  const file = join(dir, 'ST-9.jsonl');
+  const lines = [JSON.stringify({ kind: 'dispatch', act: 'first' })];
+  for (let i = 0; i < 30; i++) lines.push(JSON.stringify({ kind: 'edit', act: `e${i}` }));
+  writeFileSync(file, `${lines.join('\n')}\n`);
+  trimLog(file, 10);
+  const kept = readFileSync(file, 'utf8').trim().split('\n').map(JSON.parse);
+  rmSync(dir, { recursive: true, force: true });
+  assert.equal(kept[0].act, 'first');
+  assert.equal(kept[1].kind, 'trimmed');
+  assert.equal(kept[1].result.dropped, 20);
+  assert.deepEqual(
+    kept.slice(2).map((k) => k.act),
+    Array.from({ length: 10 }, (_, i) => `e${i + 20}`),
+  );
+});
+
+test('DUR-7 the lane agent template tells it to commit after each step whose tests pass', () => {
+  const template = readFileSync(
+    join(dirname(fileURLToPath(import.meta.url)), '../templates/agent.md'),
+    'utf8',
+  );
+  assert.match(template, /Commit after each step whose tests pass/);
 });

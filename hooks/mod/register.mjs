@@ -1779,6 +1779,7 @@ export function register(on) {
                 id: agent.id,
                 story: a.story,
                 minutes: h.stall.restartMinutes,
+                cli,
               }),
             });
             await act.record('restart', `${lane} · ${a.story} (${n}/${h.stall.maxRestarts})`);

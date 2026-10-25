@@ -2009,6 +2009,331 @@ if (a[0] === 'pr' && a[1] === 'merge') {
     );
   }
 
+  // --- DUR-1 to DUR-6: the event log, replay, reconcile, the brief and what's kept ----------------
+  {
+    const d = newRepo(false);
+    cleanups.push(d.dir);
+    mkdirSync(join(d.dir, '.claude'), { recursive: true });
+    writeFileSync(
+      join(d.dir, '.claude/code-kit.json'),
+      JSON.stringify({ ...JSON.parse(fixture), execution: { unrepeatable: ['^npm run seed'] } }),
+    );
+    mkdirSync(join(d.dir, 'docs/spec'), { recursive: true });
+    writeFileSync(
+      join(d.dir, 'docs/spec/01-booking.md'),
+      '# 01. Booking\n\n### BOOK-1 Request\n\nx\n',
+    );
+    writeFileSync(
+      join(d.dir, 'docs/spec/plan.md'),
+      '# Plan\n\n## M1\n\n### ST-4 Booking form\n\n**Lane:** web\n**Requirements:** BOOK-1\n**Status:** todo\n\n### ST-5 Booking list\n\n**Lane:** web\n**Requirements:** BOOK-1\n**Status:** todo\n',
+    );
+    writeFileSync(
+      join(d.dir, '.gitignore'),
+      '.claude/approvals/\n.claude/state/\n.claude/worktrees/\n',
+    );
+    d.git('add', '-A');
+    d.git('commit', '-q', '-m', 'rules');
+    const tree = join(d.dir, '.claude/worktrees/web-st-4');
+    d.git('worktree', 'add', '-q', '-b', 'web/st-4', tree, 'main');
+    mkdirSync(join(tree, 'apps/office'), { recursive: true });
+    const act = (mode, payload, { cwd = tree, session = 's-gone', lane = true } = {}) =>
+      spawnSync('node', [join(hooks, 'act.mjs'), mode], {
+        input: JSON.stringify({
+          session_id: session,
+          cwd,
+          ...(lane ? { agent_type: 'web-engineer', agent_id: 'a1' } : {}),
+          ...payload,
+        }),
+        env: { ...process.env, CLAUDE_PROJECT_DIR: d.dir },
+        encoding: 'utf8',
+      });
+    const dCli = (...a) => spawnSync('node', [kitCli, ...a], { cwd: d.dir, encoding: 'utf8' });
+    const log = (story) => {
+      const f = join(d.dir, '.claude/state/events', `${story}.jsonl`);
+      return existsSync(f)
+        ? readFileSync(f, 'utf8').trim().split('\n').filter(Boolean).map(JSON.parse)
+        : [];
+    };
+    const edit = {
+      tool_name: 'Edit',
+      tool_use_id: 't1',
+      tool_input: {
+        file_path: join(tree, 'apps/office/w.ts'),
+        old_string: 'OLD_TEXT_ZZ',
+        new_string: 'NEW_TEXT_ZZ',
+      },
+    };
+    act('start', edit);
+    writeFileSync(join(tree, 'apps/office/w.ts'), 'export const w = 1;\n');
+    act('end', { ...edit, tool_response: { ok: true } });
+    const first = log('ST-4');
+    expect(
+      'DUR-1 an edit is recorded before and after, in its story log, with its file and commit',
+      truth(
+        first.length === 2 &&
+          first[0].phase === 'start' &&
+          first[1].phase === 'end' &&
+          first[0].act === 't1' &&
+          first.every((e) => e.kind === 'edit' && e.target === 'apps/office/w.ts' && e.head) &&
+          first[1].result.ok === true,
+        JSON.stringify(first),
+      ),
+      0,
+    );
+    expect(
+      'DUR-2 and it holds neither the old nor the new text',
+      truth(!JSON.stringify(first).includes('_TEXT_ZZ')),
+      0,
+    );
+    const test = { tool_name: 'Bash', tool_use_id: 't2', tool_input: { command: 'npm test' } };
+    act('start', test);
+    act('fail', { ...test, error: 'Exit code 1\n1 failing' });
+    expect(
+      'DUR-1 a failing test ends as a failed test, with its exit status',
+      truth(
+        log('ST-4').some(
+          (e) =>
+            e.act === 't2' &&
+            e.phase === 'end' &&
+            e.kind === 'test' &&
+            e.result.ok === false &&
+            e.result.test === 'failed' &&
+            e.result.exit === 1,
+        ),
+      ),
+      0,
+    );
+    // An agent's act with no end, followed by its next call: it went on, so it wasn't a crash.
+    const read = (id) => ({ tool_name: 'Read', tool_use_id: id, tool_input: { file_path: 'x' } });
+    act('start', { ...read('t5'), agent_id: 'a3' });
+    act('start', { ...read('t6'), agent_id: 'a3' });
+    expect(
+      'DUR-1 an act left open is closed by the same agent’s next call, ended without a result',
+      truth(
+        log('ST-4').some(
+          (e) => e.act === 't5' && e.phase === 'end' && e.result.ended === 'without a result',
+        ),
+      ),
+      0,
+    );
+    // The commit is interrupted mid-call; the commit itself happened.
+    act('start', {
+      tool_name: 'Bash',
+      tool_use_id: 't3',
+      tool_input: { command: 'git commit -m ST-4' },
+    });
+    execFileSync('git', ['-C', tree, 'add', '-A']);
+    execFileSync('git', [
+      ...['-C', tree, '-c', 'user.email=t@t', '-c', 'user.name=t'],
+      ...['commit', '-q', '-m', 'ST-4'],
+    ]);
+    // A command that can't safely run twice, interrupted by another agent of the story.
+    act('start', {
+      tool_name: 'Bash',
+      tool_use_id: 't4',
+      agent_id: 'a2',
+      tool_input: { command: 'npm run seed' },
+    });
+    writeFileSync(join(tree, 'apps/office/u.ts'), 'uncommitted\n');
+    // The session that ran them has ended (closed, or crashed and gone quiet).
+    const { endSession, startSession } = await import('../hooks/lib/sessions.mjs');
+    endSession(d.dir, 's-gone');
+    const replayed = JSON.parse(dCli('replay', 'ST-4', '--json').stdout);
+    expect(
+      'DUR-3 replay says it is building, with the failing test and the acts left open',
+      truth(
+        replayed.phase === 'building' &&
+          replayed.lastTest?.ok === false &&
+          ['t3', 't4', 't6'].every((id) => replayed.open.some((o) => o.act === id)),
+        JSON.stringify(replayed),
+      ),
+      0,
+    );
+    expect('DUR-3 a story with no log says so', dCli('replay', 'ST-99'), 0);
+    const rec = JSON.parse(dCli('reconcile', '--json').stdout);
+    expect(
+      'DUR-4 an interrupted commit that happened is reconciled as done; a read can run again',
+      truth(
+        rec.reconciled.some((r) => r.act === 't3' && r.found === 'done') &&
+          rec.reconciled.some((r) => r.act === 't6' && r.found === 'not done'),
+        JSON.stringify(rec),
+      ),
+      0,
+    );
+    expect(
+      "DUR-4 a command that can't safely run twice is unknown, for the lead",
+      truth(
+        rec.unknowns.some((u) => u.act === 't4' && u.kind === 'unrepeatable'),
+        JSON.stringify(rec.unknowns),
+      ),
+      0,
+    );
+    expect(
+      'DUR-4 reconciling leaves uncommitted work where it is',
+      truth(existsSync(join(tree, 'apps/office/u.ts'))),
+      0,
+    );
+    const stepNow = JSON.parse(dCli('next', '--json').stdout);
+    expect(
+      'DUR-4 next asks the lead to reconcile before anything else on the story',
+      truth(
+        stepNow.step === 'reconcile' &&
+          stepNow.args === 'ST-4' &&
+          stepNow.acts.some((a) => a.act === 't4'),
+        JSON.stringify({ step: stepNow.step, args: stepNow.args, why: stepNow.why }),
+      ),
+      0,
+    );
+    const { leadPrompt } = await import('../hooks/mod/loop.mjs');
+    expect(
+      'DUR-4 the loop asks the lead to find out, never to run it again',
+      truth(
+        /Never run it again just to be sure/.test(
+          leadPrompt({ step: 'reconcile', args: 'ST-4', acts: rec.unknowns }, { cli: '/k' }) ?? '',
+        ),
+      ),
+      0,
+    );
+    const finding = [
+      ...['reconcile', 'ST-4', '--act', 't4', '--found', 'not-done'],
+      ...['--how', 'the seed table is empty'],
+    ];
+    expect(
+      'a lane may not record what an interrupted act came to',
+      spawnSync('node', [join(hooks, 'guard-bash.mjs')], {
+        input: JSON.stringify({
+          cwd: tree,
+          tool_input: { command: `node "${kitCli}" ${finding.join(' ')}` },
+          agent_type: 'web-engineer',
+        }),
+        env: { ...process.env, CLAUDE_PROJECT_DIR: d.dir },
+        encoding: 'utf8',
+      }),
+      2,
+      "is the lead's",
+    );
+    expect('the lead records it', dCli(...finding), 0);
+    expect(
+      'and it is settled',
+      truth(!JSON.parse(dCli('reconcile', '--json').stdout).unknowns.length),
+      0,
+    );
+    const brief = dCli('replay', 'ST-4', '--brief').stdout;
+    expect(
+      'DUR-5 the brief names the last commit, the failing test and what was reconciled',
+      truth(
+        /Last commit: [0-9a-f]{7}/.test(brief) &&
+          /`npm test`, failed/.test(brief) &&
+          /Reconciled: not done \(the seed table is empty\)/.test(brief),
+        brief,
+      ),
+      0,
+    );
+    // An act of an agent still at work, in a live session, isn't reconciled.
+    startSession(d.dir, 's-live');
+    act(
+      'start',
+      {
+        tool_name: 'Bash',
+        tool_use_id: 't7',
+        agent_id: 'a9',
+        tool_input: { command: 'npm run seed' },
+      },
+      { session: 's-live' },
+    );
+    expect(
+      'DUR-4 an act whose agent is still at work is left alone',
+      truth(!JSON.parse(dCli('reconcile', '--json').stdout).unknowns.some((u) => u.act === 't7')),
+      0,
+    );
+    // The lead's merge from the queue, interrupted after git merged it.
+    d.git('branch', 'web/st-5', 'main');
+    const tree5 = join(d.dir, '.claude/worktrees/web-st-5');
+    d.git('worktree', 'add', '-q', tree5, 'web/st-5');
+    writeFileSync(join(tree5, 's5.txt'), 'five\n');
+    execFileSync('git', ['-C', tree5, 'add', '-A']);
+    execFileSync('git', [
+      ...['-C', tree5, '-c', 'user.email=t@t', '-c', 'user.name=t'],
+      ...['commit', '-q', '-m', 'ST-5'],
+    ]);
+    dCli('queue', 'add', 'web/st-5');
+    act(
+      'start',
+      {
+        tool_name: 'Bash',
+        tool_use_id: 'm1',
+        tool_input: { command: `node "${kitCli}" queue merge --delegated` },
+      },
+      { cwd: d.dir, lane: false },
+    );
+    d.git('merge', '-q', '--no-ff', '-m', 'Merge web/st-5 into main', 'web/st-5');
+    endSession(d.dir, 's-gone');
+    dCli('reconcile');
+    const queueNow = JSON.parse(
+      readFileSync(join(d.dir, '.claude/state/merge-queue.json'), 'utf8'),
+    );
+    expect(
+      'DUR-4 an interrupted merge the base contains is reconciled as done, and its queue entry settled',
+      truth(
+        queueNow.some((e) => e.branch === 'web/st-5' && e.state === 'merged') &&
+          log('ST-5').some((e) => e.kind === 'reconciled' && e.result.found === 'done'),
+        JSON.stringify(queueNow),
+      ),
+      0,
+    );
+    // DUR-6: a story merged 40 days ago loses its log; ST-4's stays.
+    const old = new Date(Date.now() - 40 * 86400000).toISOString();
+    writeFileSync(
+      join(d.dir, '.claude/state/events/ST-7.jsonl'),
+      [
+        { act: 'm7', phase: 'start', kind: 'merge', actor: 'lead', at: old },
+        { act: 'm7', phase: 'end', kind: 'merge', actor: 'lead', at: old, result: { ok: true } },
+      ]
+        .map((e) => JSON.stringify(e))
+        .join('\n') + '\n',
+    );
+    dCli('worktrees', 'prune');
+    expect(
+      'DUR-6 prune removes the log of a story merged over 30 days ago, and keeps the rest',
+      truth(
+        !existsSync(join(d.dir, '.claude/state/events/ST-7.jsonl')) &&
+          existsSync(join(d.dir, '.claude/state/events/ST-4.jsonl')),
+      ),
+      0,
+    );
+    // DUR-2: a log that can't be written never stops the call, and is said once.
+    const e2 = newRepo();
+    cleanups.push(e2.dir);
+    mkdirSync(join(e2.dir, '.claude/state'), { recursive: true });
+    writeFileSync(join(e2.dir, '.claude/state/events'), 'a file where the folder goes');
+    const session = `s-${Date.now()}`;
+    const broken = () =>
+      spawnSync('node', [join(hooks, 'act.mjs'), 'start'], {
+        input: JSON.stringify({
+          session_id: session,
+          cwd: e2.dir,
+          tool_name: 'Read',
+          tool_use_id: 'r1',
+          tool_input: { file_path: 'x' },
+        }),
+        env: { ...process.env, CLAUDE_PROJECT_DIR: e2.dir },
+        encoding: 'utf8',
+      });
+    const once = broken();
+    const twice = broken();
+    expect(
+      "DUR-2 when the log can't be written, the call goes on and the session is told once",
+      truth(
+        once.status === 0 &&
+          twice.status === 0 &&
+          once.stdout.includes("couldn't write its event log") &&
+          !twice.stdout.includes("couldn't write"),
+        once.stdout + twice.stdout,
+      ),
+      0,
+    );
+  }
+
   // --- SETUP-1: the approved setup is committed straight onto main, while main has no rules yet ------
   {
     const u = newRepo(false);

@@ -91,6 +91,7 @@ export function withDefaults(c) {
     layers: c.layers ?? [],
     importAliases: c.importAliases ?? {},
     shell: { block: c.shell?.block ?? [], restricted: c.shell?.restricted ?? [] },
+    execution: { unrepeatable: c.execution?.unrepeatable ?? [] },
     postEdit: c.postEdit ?? [],
     checks: c.checks ?? [],
     tests: c.tests ?? [],
@@ -409,6 +410,22 @@ export function validate(c) {
   need(
     c.branches === undefined || c.branches.protected === undefined || isList(c.branches.protected),
     '"branches.protected" must be a list of branch names',
+  );
+  need(
+    c.execution === undefined ||
+      (c.execution &&
+        typeof c.execution === 'object' &&
+        (c.execution.unrepeatable === undefined ||
+          (isList(c.execution.unrepeatable) &&
+            c.execution.unrepeatable.every((r) => {
+              try {
+                new RegExp(r);
+                return true;
+              } catch {
+                return false;
+              }
+            })))),
+    '"execution.unrepeatable" must be a list of patterns (regular expressions) for commands that can\'t safely run twice',
   );
   need(
     [undefined, 'push', 'pull-request'].includes(c.branches?.publish),

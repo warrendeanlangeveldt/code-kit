@@ -277,6 +277,14 @@ if (runs(cmd, new RegExp(String.raw`^${CODE_KIT}\s+settings\s+set\b`)))
   block(
     `Blocked: changing the harness settings is the person's own act, from the code-kit pane (/harness) or their terminal. Tell them what you'd change and why, and stop.\nCommand: ${cmd}`,
   );
+// DUR-4: what an interrupted act came to is the lead's to record, which found out.
+if (
+  runs(cmd, new RegExp(String.raw`^${CODE_KIT}\s+reconcile\s+\S+.*\s--act\b`)) &&
+  actor.kind !== 'lead'
+)
+  block(
+    `Blocked: recording what an interrupted act came to is the lead's, which checks what happened. Tell the lead what you know, and carry on.\nCommand: ${cmd}`,
+  );
 // LEAN-6: releasing or pruning worktrees is the lead's, which knows which stories are still at work.
 if (
   runs(cmd, new RegExp(String.raw`^${CODE_KIT}\s+worktrees\s+(?:release|prune)\b`)) &&

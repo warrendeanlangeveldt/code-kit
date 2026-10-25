@@ -1,5 +1,5 @@
 {
-  "description": "code-kit: lanes, protected paths with an approval log, spec-check and design gates, layer rules and the project's checks, from .claude/code-kit.json",
+  "description": "code-kit: lanes, protected paths with an approval log, spec-check and design gates, layer rules and the project's checks, and a log of every act for recovery after a crash, from .claude/code-kit.json",
   "modules": ["./mod/register.mjs"],
   "hooks": {
     "PreToolUse": [
@@ -32,6 +32,17 @@
             "timeout": 10
           }
         ]
+      },
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/act.mjs\" start",
+            "timeout": 5,
+            "async": true
+          }
+        ]
       }
     ],
     "PostToolUse": [
@@ -52,6 +63,17 @@
             "type": "command",
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/lane-audit.mjs\"",
             "timeout": 30
+          }
+        ]
+      },
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/act.mjs\" end",
+            "timeout": 5,
+            "async": true
           }
         ]
       }
@@ -106,6 +128,25 @@
             "type": "command",
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/stop-check.mjs\"",
             "timeout": 600
+          },
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/act.mjs\" handback",
+            "timeout": 5,
+            "async": true
+          }
+        ]
+      }
+    ],
+    "PostToolUseFailure": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/act.mjs\" fail",
+            "timeout": 5,
+            "async": true
           }
         ]
       }

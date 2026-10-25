@@ -4,6 +4,7 @@
 
 /** The steps the loop hands the lead; the rest (spec-design, init, check) wait for the person. */
 const LEAD_STEPS = new Set([
+  'reconcile',
   'instructions',
   'decide',
   'dispatch',
@@ -146,6 +147,18 @@ export function leadPrompt(step, { cli = 'code-kit' } = {}) {
         : `Run node "${cli}" instructions --write.`;
     return `${step.why ?? "code-kit's instructions are behind."} ${how} Commit the change on a branch and merge it like your own stories, so new lane agents start with the current rules.`;
   }
+  // DUR-4: an act an agent left open that git can't settle: the lead finds out, and records it.
+  if (step.step === 'reconcile') {
+    const acts = step.acts ?? [];
+    if (!acts.length) return null;
+    const each = acts
+      .map(
+        (a) =>
+          `${a.story}: ${a.kind} \`${a.target}\` (act ${a.act}); see node "${cli}" replay ${a.story}`,
+      )
+      .join('; ');
+    return `${step.why ?? 'An agent stopped mid-act.'} For each, check what happened (${each}). Never run it again just to be sure. Record what you found with node "${cli}" reconcile <story> --act <act> --found done|not-done --how "<how you know>". If finding out needs something you don't decide, such as a migration the person approves, ask them with code-kit ask.`;
+  }
   // HELM-4: a lane waits on the lead's decision; the decide skill takes each request on its merits.
   if (step.step === 'decide')
     return ids.length
@@ -186,6 +199,7 @@ export function stepLabel(step) {
   const ids = (step.args ?? '').split(/\s+/).filter(Boolean).join(', ');
   const verb =
     {
+      reconcile: 'Reconcile',
       decide: 'Decide requests',
       instructions: 'Update the instructions',
       dispatch: 'Dispatch',
@@ -214,8 +228,8 @@ export function stallDue(quietMs, agent, restarts, stall) {
 }
 
 /** The lead's prompt to stop a stalled agent and dispatch its story again (LOOP-3). */
-export function restartPrompt({ type, id, story, minutes }) {
-  return `${type} (agent ${id}) on ${story} has made no tool call for ${minutes} minutes. Stop it with TaskStop, then dispatch ${story} again with the same brief on the same branch: /code-kit:dispatch ${story}`;
+export function restartPrompt({ type, id, story, minutes, cli = 'code-kit' }) {
+  return `${type} (agent ${id}) on ${story} has made no tool call for ${minutes} minutes. Stop it with TaskStop, then dispatch ${story} again with the same brief on the same branch, adding what node "${cli}" replay ${story} --brief prints (DUR-5: its last commit, tests and what it left open): /code-kit:dispatch ${story}`;
 }
 
 /**
@@ -374,5 +388,5 @@ export const wrapUpText = (limit) =>
 
 /** LEAN-5, LEAN-6: the lead's prompt to carry a story on with a fresh agent once its agent handed back at the limit. */
 export function continuePrompt({ type, story, branch, cli = 'code-kit' }) {
-  return `${type} handed ${story} back at its context limit, with its work committed${branch ? ` on ${branch}` : ''}. Carry the story on with a fresh agent: run node "${cli}" worktrees release ${branch ?? '<branch>'} (it keeps the commits and moves the report to the main checkout), then dispatch ${story} again with the same brief, adding "Read your earlier report first: .claude/state/reports/${(branch ?? '<branch>').replace(/[^\w.-]+/g, '_')}.md in the main checkout": /code-kit:dispatch ${story}`;
+  return `${type} handed ${story} back at its context limit, with its work committed${branch ? ` on ${branch}` : ''}. Carry the story on with a fresh agent: run node "${cli}" worktrees release ${branch ?? '<branch>'} (it keeps the commits and moves the report to the main checkout), then dispatch ${story} again with the same brief, adding "Read your earlier report first: .claude/state/reports/${(branch ?? '<branch>').replace(/[^\w.-]+/g, '_')}.md in the main checkout" and what node "${cli}" replay ${story} --brief prints: /code-kit:dispatch ${story}`;
 }
