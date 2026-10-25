@@ -45,14 +45,16 @@ const alive = (pid) => {
   }
 };
 
-/** The base branch's ref a worktree's branch is merged into: the first protected branch, or its remote. */
-export function baseRef(root, config) {
+/**
+ * The base branch's refs a worktree's branch is merged into: the first protected branch here and on its
+ * remote, each that exists. A local base can fall weeks behind the remote's where the base only moves
+ * through pull requests, so a branch merged into either counts as merged.
+ */
+export function baseRefs(root, config) {
   const name = config.branches?.protected?.[0];
-  if (!name) return null;
-  return (
-    [name, `origin/${name}`].find(
-      (r) => git(root, 'rev-parse', '--verify', '--quiet', r).status === 0,
-    ) ?? null
+  if (!name) return [];
+  return [name, `origin/${name}`].filter(
+    (r) => git(root, 'rev-parse', '--verify', '--quiet', r).status === 0,
   );
 }
 
@@ -80,7 +82,7 @@ export function worktrees(root, config, now = Date.now()) {
   if (list.status !== 0) return [];
   const main = list.stdout.split('\n\n')[0];
   const mainPath = /^worktree (.+)$/m.exec(main)?.[1] ?? root;
-  const from = baseRef(root, config);
+  const from = baseRefs(root, config);
   const claims = laneClaims(mainPath, now).filter((c) => !c.stale);
   const agents = real(join(mainPath, WORKTREES_DIR));
   const temp = real(tmpdir());
@@ -103,9 +105,11 @@ export function worktrees(root, config, now = Date.now()) {
       const story = branch ? storyOfBranch(branch) : null;
       const merged = Boolean(
         branch &&
-        from &&
-        spawnSync('git', ['merge-base', '--is-ancestor', branch, from], { cwd: root }).status ===
-          0 &&
+        from.some(
+          (ref) =>
+            spawnSync('git', ['merge-base', '--is-ancestor', branch, ref], { cwd: root }).status ===
+            0,
+        ) &&
         hasOwnCommits(root, branch),
       );
       // Read only where it decides anything: an unmerged worktree stays whatever it holds.

@@ -85,7 +85,7 @@ A lane agent reads every file it changes in full, and of what it imports and wha
 
 ### LEAN-8 Worktrees go once they're done with
 
-Each lane agent's worktree has its own install, a gigabyte or more in a project with a JavaScript and a Python service, so worktrees left behind fill the disk within weeks. A worktree is done with when its branch's own commits are merged into the base, it holds nothing uncommitted, and no agent of its lane still claims its story. A branch made for an agent just dispatched has no commits of its own, so it isn't merged, however much of the base it contains. A lock Claude Code holds on an agent's worktree doesn't keep it once its agent has finished; a lock without a process, which a person set, does.
+Each lane agent's worktree has its own install, a gigabyte or more in a project with a JavaScript and a Python service, so worktrees left behind fill the disk within weeks. A worktree is done with when its branch's own commits are merged into the base (here or on its remote: where the base only moves through pull requests, the local base can be weeks behind), it holds nothing uncommitted, and no agent of its lane still claims its story. A branch made for an agent just dispatched has no commits of its own, so it isn't merged, however much of the base it contains. A lock Claude Code holds on an agent's worktree doesn't keep it once its agent has finished; a lock without a process, which a person set, does.
 
 `worktrees prune` removes every worktree that's done with, keeping each report in the main checkout and each branch. It also removes a temporary merge checkout more than 30 minutes old that an interrupted merge left, git's record of a worktree whose folder is gone, and folders under `.claude/worktrees` that aren't worktrees. It runs by itself after each merge and, in the background, as each session starts. `worktrees` says why each one that stays is staying.
 
@@ -96,6 +96,7 @@ A merged worktree that still holds uncommitted changes stays, and the band puts 
 - Given `web/st-3` made from main for an agent just dispatched, then prune keeps it.
 - Given `api/st-6` merged and clean, locked by Claude Code for an agent that has finished, then prune removes it and keeps the branch.
 - Given `web/st-5` merged and clean, with its lane's claim on ST-5 still held, then prune keeps it; once the claim ends, the next session's start removes it.
+- Given `web/st-8` merged into `origin/main` through a pull request, with the local `main` behind, then prune removes it.
 - Given `web/st-4` merged with two uncommitted changes, then prune keeps it, and the band shows it with its two files; Discard removes it and keeps both changes in a patch.
 
 ## Quality targets
