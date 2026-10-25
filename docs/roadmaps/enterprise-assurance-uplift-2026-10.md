@@ -186,7 +186,7 @@ Protected operations (merge, deploy, schema migration, remote write, dependency 
 | Post-tool | Detect filesystem/tool side effects, correlate to action id, and flag policy drift immediately |
 | Before commit | Check ownership, generated code/contracts, regression weakening, secrets, dependency changes and provenance |
 | Before merge | Verify *reviewed SHA*; require all mandatory quality gates and authorisations; abort if policy/evidence changed |
-| CI/remote | Independent evaluation of branch, repo protection and artefacts even for contributors without local CodeKit |
+| CI/remote | Cost-aware, independently executed checks at the policy-approved boundary: lightweight PR verification when required, full CI on release branches or on demand; report exactly which checks ran and which were skipped |
 | After release | Correlate release commit and checks to change request and approvals; monitor deviations |
 
 Establish an **enforcement capability matrix** by tool **and language**. In particular, build AST-based (or language-appropriate tool-backed) dependency checking for Python before claiming enforcement of configured Python layer restrictions; report configured-but-unsupported language rules as **not enforced**, preferably fail setup/verification for mandatory policies. Add polyglot fixtures and drift tests.
@@ -204,6 +204,20 @@ Establish an **enforcement capability matrix** by tool; `prevented`, `observed a
 - Integrate Context Graph decisions as references to graph version/constraint, not duplicate sensitive context into telemetry.
 
 **Non-goals:** claiming sandbox security from hooks; claiming automated proof of semantic correctness from a successful test suite; making Claude's freeform judgment a trusted authority; mandating one vendor or removing developer choice.
+
+### Cost-aware, risk-based CI (existing design, not a regression)
+
+**Verified rationale:** `docs/specs/25-what-ci-costs.md` records a 2026-10-25 owner decision to reduce GitHub Actions usage after approximately 5,400 minutes of execution across three projects in a week. Earlier workflows repeatedly ran slow project checks after CodeKit's local merge verification. Treat this as a conscious **cost and assurance-tier decision**, not evidence that CodeKit lacks release governance.
+
+The intended assurance pattern is:
+1. **Per action / per story:** local proactive hook checks, lane checks, lead review, and merge-queue `verify` **including relevant project checks** where installed/configured. Do not represent a missing or skipped command as passing.
+2. **Optional lightweight PR gate:** CI `verify --no-checks` for rule-only independent validation, when project or corporate policy requires it (fast, bounded, cancel-in-progress).
+3. **Full release gate:** the person approves `code-kit release <version>`, which cuts/pushes `release/<version>`. The project's **own configured** full CI workflow should target this release branch; an on-demand `workflow_dispatch` is another legitimate project-owner choice.
+4. **Enterprise risk overlay:** a central policy can mandate a remote independent gate for a protected class of changes (e.g. security-critical modules or releases), while routine work retains cost-effective local verification; such an overlay requires explicit accountable authorisation.
+
+**Important configuration truth:** Edrei's current `.github/workflows/ci.yml` and `.github/workflows/code-kit.yml` both use `workflow_dispatch` only, by the owner's explicit decision. Neither automatically runs on `release/**` today. A `code-kit release` command by itself does **not** cause those workflows to run unless the repository actually has a matching release branch trigger. Record a release as `CI_NOT_RUN` until matching independent execution evidence is observed; never imply it was validated because a branch exists.
+
+Instrument `code-kit ci usage` and `code-kit ci check` as first-class assurance economics, distinguishing runner-minutes, wall time, outcome, check coverage, launch trigger and risk class. Benchmarks should include *minutes spent per accepted change* and how often a required gate was missed, not optimise for maximum CI runs. Respect the owner's decision on CI policy; no automated init should silently re-enable expensive workflows.
 
 ## 6. Adapter architecture (beyond Claude Code)
 
@@ -238,7 +252,7 @@ interface AgentRuntimeAdapter {
 | CK-03 | SQLite ledger | Transactional local event streams, outbox, snapshots, integrity check and migrations | Process termination/restart preserves committed events; concurrent writes dedupe | P0 |
 | CK-04 | Recovery | Deterministic `reconcile`, lease/fence state and replacement-agent handoff | Crash matrix passes; dirty work never discarded; unknown effects require reconciliation | P0 |
 | CK-05 | Audit unification | Journal/timeline/trail render from correlated evidence; verify provenance map | One change traversable from requirement to verified SHA without fabricated history | P1 |
-| CK-06 | Enforcement hardening | Pre/post action policy, independent CI attestation, explicit coverage/missed-check reporting | Adversarial fixtures; no skipped mandatory gate counted as success | P1 |
+| CK-06 | Enforcement hardening | Pre/post action policy, **policy-driven independent CI at release/on-demand/selected PR risk boundaries**, explicit coverage/missed-check reporting and cost telemetry | Adversarial fixtures; no skipped mandatory gate counted as success; no redundant slow CI by default | P1 |
 | CK-07 | Provider interface v2 | `appendEvents`, `getEvents`, `getCheckpoint`, `claimExecution`, `renewExecution`, `reconcileExecution` | Local/GitHub/Hub provider conformance; offline replay/outbox tested | P1 |
 | CK-08 | Portable runtime | Pure core + Claude adapter, then supported Codex adapter | Existing Claude fixtures pass; adapters publish accurate capability matrix | P2 |
 | CK-09 | Architecture governance packs | Reference policy libraries for contracts, architecture, security, change and quality | Independent owner approval, versioning and documented exceptions | P2 |
