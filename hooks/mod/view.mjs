@@ -397,6 +397,9 @@ export function lanesPane(
                     ],
                   }),
                   text(story, { wrap: 'truncate-end', dimColor: !l.story }),
+                  ...(l.agent && l.story
+                    ? [text(`agent: ${l.agent}`, { dimColor: true, wrap: 'truncate-end' })]
+                    : []),
                 ],
               }),
             ],
