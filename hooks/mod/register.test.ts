@@ -620,6 +620,37 @@ test('PANE-2 each lane shows its agent, story, branch and state', async ($, on) 
   await ui.unmount();
 });
 
+test('LANES wide surfaces show responsive agent cards and the truthful stage rail without removing tabs', async ($, on) => {
+  const w = project();
+  await start($, on, w);
+  await lanes($);
+  const ui = await $.ui.mount({
+    plugin: 'code-kit',
+    component: 'Pane',
+    requestId: PANE,
+    surface: 'terminal',
+    viewport: { columns: 150, rows: 50 },
+    props: { title: PANE, isFocused: true, bodyColumns: 112, placement: 'dock' },
+  });
+  expect(await ui.find({ key: 'lane-heading-web' })).toBeDefined();
+  expect(await ui.find({ key: 'flow-web' })).toBeDefined();
+  expect(await ui.find({ type: 'Text', text: /◆ Build/ })).toBeDefined();
+  for (const id of ['lanes', 'decisions', 'journal', 'code', 'map', 'queue', 'usage'])
+    expect(await ui.find({ key: `tab-${id}` })).toBeDefined();
+  await ui.unmount();
+});
+
+test('LANES narrow surfaces keep the compact rows and all existing controls', async ($, on) => {
+  const w = project();
+  await start($, on, w);
+  await lanes($);
+  const ui = await pane($, PANE);
+  expect(await ui.find({ key: 'lane-web' })).toBeDefined();
+  expect(await ui.find({ key: 'lane-heading-web' })).toBeUndefined();
+  expect(await ui.find({ key: 'lane-next' })).toBeDefined();
+  await ui.unmount();
+});
+
 test('PANE-3 the ready stories are listed with their lanes, the lead stories as its own', async ($, on) => {
   const w = project();
   await start($, on, w);
