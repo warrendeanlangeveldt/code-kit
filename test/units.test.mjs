@@ -14,6 +14,7 @@ import { newProblems } from '../hooks/lib/baseline.mjs';
 import { addedPackages, dependencyApproval, isDependencyFile } from '../hooks/lib/dependencies.mjs';
 import { commandsOf, runs, withoutHeredocs } from '../hooks/lib/shell.mjs';
 import { storyMerges } from '../hooks/lib/queue.mjs';
+import { publishTitle } from '../hooks/lib/publish.mjs';
 import {
   NOT_CODE_KIT,
   agentsAtWork,
@@ -2728,4 +2729,14 @@ test('MQ-5 the story branches a command merges, and the branch each lands on', (
   assert.deepEqual(storyMerges('git merge main', 'web/st-2'), []);
   assert.deepEqual(storyMerges('git merge --abort', 'lead/next'), []);
   assert.deepEqual(storyMerges('git commit -m "git merge web/st-2"', 'lead/next'), []);
+});
+
+test("MQ-6 a publishing pull request's title names the stories it holds", () => {
+  assert.equal(publishTitle(['web/st-1'], 1), 'ST-1 from the code-kit queue');
+  assert.equal(publishTitle(['web/st-1', 'api/st-2'], 2), 'ST-1 and ST-2 from the code-kit queue');
+  assert.equal(
+    publishTitle(['web/st-1', 'api/st-2', 'x/st-3', 'y/st-4'], 4),
+    'ST-1, ST-2 and 2 more from the code-kit queue',
+  );
+  assert.equal(publishTitle([], 3), '3 commits from code-kit');
 });

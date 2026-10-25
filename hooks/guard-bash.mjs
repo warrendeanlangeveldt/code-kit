@@ -106,7 +106,11 @@ for (const [re, why, text] of ALWAYS) {
 }
 const packages = addedPackages(cmd);
 const approves = runs(cmd, new RegExp(String.raw`^${CODE_KIT}\s+approve\b`));
-const delegatedMerge = runs(cmd, new RegExp(String.raw`^${CODE_KIT}\s+(?:queue\s+)?merge\b`));
+// Merging into a protected branch, and publishing what's merged to the remote's (MQ-6), are alike.
+const delegatedMerge = runs(
+  cmd,
+  new RegExp(String.raw`^${CODE_KIT}\s+(?:(?:queue\s+)?merge|publish)\b`),
+);
 const queues = runs(cmd, new RegExp(String.raw`^${CODE_KIT}\s+queue\s+(?:add|drop)\b`));
 const rulesOntoBase = runs(cmd, new RegExp(String.raw`^${CODE_KIT}\s+queue\s+rules\b`));
 const asks = runs(cmd, new RegExp(String.raw`^${CODE_KIT}\s+ask\b\s+(?!--json\b)\S`));
@@ -399,7 +403,7 @@ const elsewhere = storyMerges(cmd, branch).find(
 if (elsewhere) {
   const base = config.branches.protected[0];
   block(
-    `Blocked: ${elsewhere.story} is a story's branch, and a story merges only into ${base}, through the merge queue: queue it once its review passes (\`code-kit queue add ${elsewhere.story}\`), then ${config.approvals.delegate?.merge ? `merge it with \`code-kit merge ${elsewhere.story} --delegated\`` : 'the person merges it from the code-kit pane'}. Merged into ${elsewhere.into}, it would look unmerged to the queue, the trail and worktree cleanup, and ${elsewhere.into} would become a second ${base}.\nCommand: ${cmd}`,
+    `Blocked: ${elsewhere.story} is a story's branch, and a story merges only into ${base}, through the merge queue: queue it once its review passes (\`code-kit queue add ${elsewhere.story}\`), then ${config.approvals.delegate?.merge ? `merge it with \`code-kit merge ${elsewhere.story} --delegated\`` : 'the person merges it from the code-kit pane'}. Merged into ${elsewhere.into}, it would look unmerged to the queue, the trail and worktree cleanup, and ${elsewhere.into} would become a second ${base}. ${config.branches.publish ? `The merge then reaches the remote's ${base} as "branches.publish" says (${config.branches.publish}).` : `Where the remote's ${base} only moves through pull requests, a person sets "branches.publish": "pull-request" and code-kit opens them.`}\nCommand: ${cmd}`,
   );
 }
 

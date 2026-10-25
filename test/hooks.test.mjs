@@ -1840,6 +1840,175 @@ try {
     expect('and a story it depends on', mHook('git merge --no-edit web/st-1', 'web-engineer'), 0);
   }
 
+  // --- MQ-6: what's merged reaches the remote's base, pushed or through a pull request -----------
+  {
+    const p = newRepo(false);
+    cleanups.push(p.dir);
+    const remote = mkdtempSync(join(tmpdir(), 'code-kit-remote-'));
+    cleanups.push(remote);
+    execFileSync('git', ['init', '-q', '--bare', '-b', 'main', remote]);
+    // A stand-in for gh: it records each call, and merging a pull request moves the remote's main.
+    const fakeBin = mkdtempSync(join(tmpdir(), 'code-kit-gh-'));
+    cleanups.push(fakeBin);
+    const ghLog = join(fakeBin, 'calls.jsonl');
+    writeFileSync(
+      join(fakeBin, 'gh'),
+      `#!/usr/bin/env node
+const { appendFileSync } = require('node:fs');
+const { execFileSync } = require('node:child_process');
+const a = process.argv.slice(2);
+appendFileSync(${JSON.stringify(ghLog)}, JSON.stringify(a) + '\\n');
+if (a[0] === 'pr' && a[1] === 'create') console.log('https://github.com/o/r/pull/7');
+if (a[0] === 'pr' && a[1] === 'merge') {
+  if (process.env.FAKE_GH_REFUSE) { console.error('Pull request is not mergeable: review required'); process.exit(1); }
+  execFileSync('git', ['--git-dir', ${JSON.stringify(remote)}, 'update-ref', 'refs/heads/main', 'refs/heads/code-kit/publish-main']);
+}
+`,
+      { mode: 0o755 },
+    );
+    const pConfig = (publish, push) =>
+      JSON.stringify({
+        ...JSON.parse(fixture),
+        branches: { protected: ['main'], publish },
+        approvals: { delegate: { merge: true, push } },
+      });
+    mkdirSync(join(p.dir, '.claude'), { recursive: true });
+    writeFileSync(join(p.dir, '.gitignore'), '.claude/approvals/\n.claude/state/\n');
+    writeFileSync(join(p.dir, '.claude/code-kit.json'), pConfig('pull-request', true));
+    p.git('add', '-A');
+    p.git('commit', '-q', '-m', 'rules');
+    p.git('remote', 'add', 'origin', remote);
+    p.git('push', '-q', '-u', 'origin', 'main');
+    const story = (n) => {
+      p.git('checkout', '-q', '-b', `web/st-${n}`, 'main');
+      writeFileSync(join(p.dir, `apps/office/s${n}.ts`), `export const s${n} = ${n};\n`);
+      p.git('add', '-A');
+      p.git('commit', '-q', '-m', `ST-${n}`);
+      p.git('checkout', '-q', 'main');
+    };
+    mkdirSync(join(p.dir, 'apps/office'), { recursive: true });
+    const pCli = (env, ...a) =>
+      spawnSync('node', [kitCli, ...a], {
+        cwd: p.dir,
+        encoding: 'utf8',
+        env: { ...process.env, PATH: `${fakeBin}:${process.env.PATH}`, ...env },
+      });
+    const calls = () =>
+      existsSync(ghLog)
+        ? readFileSync(ghLog, 'utf8').trim().split('\n').filter(Boolean).map(JSON.parse)
+        : [];
+    const onRemote = (ref) =>
+      spawnSync('git', ['--git-dir', remote, 'merge-base', '--is-ancestor', ref, 'main'], {
+        cwd: p.dir,
+      }).status === 0;
+
+    story(1);
+    const first = pCli({}, 'merge', 'web/st-1', '--delegated');
+    expect(
+      'MQ-6 where the base takes pull requests, the merge goes up as one and the lead merges it where pushing is delegated',
+      truth(
+        first.status === 0 &&
+          first.stdout.includes("Published 1 merge (web/st-1) to origin's main") &&
+          calls().some(
+            (c) =>
+              c[1] === 'create' &&
+              c.includes('code-kit/publish-main') &&
+              c.includes('ST-1 from the code-kit queue'),
+          ) &&
+          calls().some((c) => c[1] === 'merge') &&
+          onRemote(p.git('rev-parse', 'web/st-1').trim()),
+        first.stdout + first.stderr,
+      ),
+      0,
+    );
+    expect(
+      "and code-kit's branch for it is gone from the remote",
+      truth(
+        !execFileSync('git', ['--git-dir', remote, 'branch', '--list'])
+          .toString()
+          .includes('publish'),
+      ),
+      0,
+    );
+
+    story(2);
+    const refused = pCli({ FAKE_GH_REFUSE: '1' }, 'merge', 'web/st-2', '--delegated');
+    expect(
+      "MQ-6 a pull request GitHub won't merge yet waits there, and the local merge stands",
+      truth(
+        refused.status === 0 &&
+          refused.stdout.includes("GitHub didn't merge it") &&
+          !onRemote(p.git('rev-parse', 'web/st-2').trim()),
+        refused.stdout + refused.stderr,
+      ),
+      0,
+    );
+    const again = pCli({}, 'publish', '--delegated');
+    expect(
+      'publish puts it up once GitHub allows it',
+      truth(
+        again.status === 0 && onRemote(p.git('rev-parse', 'web/st-2').trim()),
+        again.stdout + again.stderr,
+      ),
+      0,
+    );
+
+    writeFileSync(join(p.dir, '.claude/code-kit.json'), pConfig('pull-request', false));
+    p.git('commit', '-q', '-am', 'pushing main is the person');
+    story(3);
+    rmSync(ghLog, { force: true });
+    const opened = pCli({}, 'merge', 'web/st-3', '--delegated');
+    expect(
+      "MQ-6 where pushing isn't delegated, the lead opens the pull request and leaves it for the person",
+      truth(
+        opened.status === 0 &&
+          opened.stdout.includes("Merging it is the person's") &&
+          calls().some((c) => c[1] === 'create') &&
+          !calls().some((c) => c[1] === 'merge'),
+        opened.stdout + opened.stderr,
+      ),
+      0,
+    );
+
+    writeFileSync(join(p.dir, '.claude/code-kit.json'), pConfig('push', true));
+    p.git('commit', '-q', '-am', 'push main');
+    execFileSync('git', ['--git-dir', remote, 'branch', '-D', 'code-kit/publish-main']);
+    story(4);
+    const pushed = pCli({}, 'merge', 'web/st-4', '--delegated');
+    expect(
+      'MQ-6 where the base takes a push, the lead pushes it where pushing is delegated',
+      truth(
+        pushed.status === 0 &&
+          pushed.stdout.includes('Pushed main to origin') &&
+          onRemote(p.git('rev-parse', 'web/st-4').trim()),
+        pushed.stdout + pushed.stderr,
+      ),
+      0,
+    );
+    const pHook = (command, agent) =>
+      spawnSync('node', [join(hooks, 'guard-bash.mjs')], {
+        input: JSON.stringify({
+          cwd: p.dir,
+          tool_input: { command },
+          ...(agent ? { agent_type: agent } : {}),
+        }),
+        env: { ...process.env, CLAUDE_PROJECT_DIR: p.dir },
+        encoding: 'utf8',
+      });
+    expect(
+      'a lane may not publish',
+      pHook(`node "${kitCli}" publish --delegated`, 'web-engineer'),
+      2,
+      'only the lead',
+    );
+    expect(
+      'nor may any agent publish as the person',
+      pHook(`node "${kitCli}" publish --person`),
+      2,
+      "the person's own act",
+    );
+  }
+
   // --- SETUP-1: the approved setup is committed straight onto main, while main has no rules yet ------
   {
     const u = newRepo(false);
