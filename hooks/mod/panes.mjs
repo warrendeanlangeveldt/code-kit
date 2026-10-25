@@ -1516,6 +1516,13 @@ export function journalTab(events, { Box, Text }, now = Date.now()) {
       );
     }
     const yours = e.who === 'person' || e.kind === 'request';
+    const colour = yours
+      ? 'yellow'
+      : e.kind === 'merge' || e.kind === 'milestone'
+        ? 'green'
+        : e.kind === 'sentBack'
+          ? 'magenta'
+          : 'cyan';
     rows.push(
       Box({
         key: `journal-${i}`,
@@ -1523,23 +1530,38 @@ export function journalTab(events, { Box, Text }, now = Date.now()) {
         columnGap: 1,
         children: [
           text(time(e.at), { dimColor: true }),
-          text(JOURNAL_GLYPH[e.kind] ?? '·', {
-            color: yours
-              ? 'yellow'
-              : e.kind === 'merge' || e.kind === 'milestone'
-                ? 'green'
-                : e.kind === 'sentBack'
-                  ? 'magenta'
-                  : undefined,
+          Box({
+            key: `journal-rail-${i}`,
+            flexDirection: 'column',
+            children: [
+              text(JOURNAL_GLYPH[e.kind] ?? '·', { color: colour, bold: true }),
+              text('│', { dimColor: true }),
+            ],
           }),
-          text(e.text, { wrap: 'wrap', ...(yours ? { color: 'yellow' } : {}) }),
+          Box({
+            flexDirection: 'column',
+            flexGrow: 1,
+            children: [
+              Box({
+                flexDirection: 'row',
+                columnGap: 2,
+                flexWrap: 'wrap',
+                children: [
+                  text(e.kind.toUpperCase(), { color: colour, bold: true }),
+                  ...(e.story ? [text(e.story, { dimColor: true })] : []),
+                  ...(yours ? [text('YOUR DECISION', { color: 'yellow' })] : []),
+                ],
+              }),
+              text(e.text, { wrap: 'wrap', ...(yours ? { color: 'yellow' } : {}) }),
+            ],
+          }),
         ],
       }),
     );
   });
   return [
     text(
-      `From your request to now: ${events.length} event${events.length === 1 ? '' : 's'}${events.length > shown.length ? `, the latest ${shown.length} shown` : ''}. Yours are in yellow.`,
+      `Project history reconstructed from Git and CodeKit records: ${events.length} event${events.length === 1 ? '' : 's'}${events.length > shown.length ? `, latest ${shown.length} shown` : ''}. Not a full tool-execution log. Your decisions are yellow.`,
       { dimColor: true },
     ),
     Box({ key: 'journal', flexDirection: 'column', children: rows }),
