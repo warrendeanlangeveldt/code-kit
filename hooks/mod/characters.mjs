@@ -57,8 +57,8 @@ const HEADS = {
     '............',
     '............',
     '...HHHHHH...',
-    '...HHHHHH...',
-    '..PHHHHHHP..',
+    '..DHHHHHHD..',
+    '..DHHHHHHD..',
     '...HHHHHH...',
     '...DDDDDD...',
   ],
@@ -72,16 +72,61 @@ const HEADS = {
     '....HHHH....',
   ],
 };
-/** The lanes' shapes and tints, in config order after the lead; both cycle together. */
+/** The lanes' shapes, tints and marks: six shapes first, then a mark on each, so lanes differ without colour. */
 const SHAPES = ['antenna', 'cat', 'cap', 'bunny', 'bolts', 'wizard'];
+const MARKS = [null, 'glasses', 'scarf', 'belt'];
 const TINTS = [0x4aa3ff, 0x5cc85c, 0xd070e0, 0x40c8c8, 0xff9a40, 0xff6070];
 const LEAD_TINT = 0xd8a840;
 
-/** A lane's character: its shape and tint, fixed by its place in the config. */
+/** A name's own number (FNV-1a), so a lane's look comes from its name, not its place. */
+function hashOf(name) {
+  let h = 0x811c9dc5;
+  for (const ch of String(name)) {
+    h ^= ch.codePointAt(0);
+    h = Math.imul(h, 0x01000193) >>> 0;
+  }
+  return h;
+}
+
+/**
+ * Every lane's character (UI-11), for whatever lanes the project's config has: each look (a shape,
+ * then a mark) chosen from the lane's name and kept apart from the lanes before it in the config, so
+ * a lane added later never changes another's. Six lanes get six shapes; more get marks as well, up to
+ * 24 apart; past that, looks repeat and the tint still tells them apart.
+ */
+export function charactersOf(lanes) {
+  const out = { lead: { shape: 'crown', mark: null, tint: LEAD_TINT } };
+  const looks = new Set();
+  const tints = new Set();
+  const all = SHAPES.length * MARKS.length;
+  for (const lane of [...new Set(lanes)].filter((l) => l !== 'lead')) {
+    const h = hashOf(lane);
+    // Probe a mark at a time, every shape before the next mark, starting at the name's own shape.
+    let look = null;
+    for (let i = 0; i < all && look === null; i++) {
+      const mark = Math.floor(i / SHAPES.length);
+      const shape = (h + i) % SHAPES.length;
+      const id = mark * SHAPES.length + shape;
+      if (!looks.has(id)) look = id;
+    }
+    if (look === null) look = h % all;
+    looks.add(look);
+    if (tints.size >= TINTS.length) tints.clear();
+    let tint = (h >>> 8) % TINTS.length;
+    for (let i = 0; i < TINTS.length && tints.has(tint); i++) tint = (tint + 1) % TINTS.length;
+    tints.add(tint);
+    out[lane] = {
+      shape: SHAPES[look % SHAPES.length],
+      mark: MARKS[Math.floor(look / SHAPES.length)],
+      tint: TINTS[tint],
+    };
+  }
+  return out;
+}
+
+/** One lane's character, among the project's lanes. */
 export function characterOf(lane, lanes) {
-  if (lane === 'lead') return { shape: 'crown', tint: LEAD_TINT };
-  const i = Math.max(0, lanes.filter((l) => l !== 'lead').indexOf(lane));
-  return { shape: SHAPES[i % SHAPES.length], tint: TINTS[i % TINTS.length] };
+  return charactersOf(lanes.includes(lane) ? lanes : [...lanes, lane])[lane];
 }
 
 /** The body, rows 7 to 11, arms in columns 3 and 8. */
@@ -145,6 +190,10 @@ function face(grid, kind, dx = 0, dy = 0) {
       [3, 4],
       [3, 7],
     ],
+    scan: [
+      [5, 5],
+      [5, 8],
+    ],
   };
   if (kind === 'closed') return put(grid, at(eyes.open), 'L');
   if (kind === 'crossed') return put(grid, at(eyes.open), 'X');
@@ -164,14 +213,34 @@ function face(grid, kind, dx = 0, dy = 0) {
   }
 }
 
+/** A lane's mark, worn in every pose: glasses round the eyes, a scarf at the neck, a belt. */
+function wear(grid, mark, mood, dx = 0, dy = 0) {
+  const at = (points) => points.map(([y, x]) => [y + dy, x + dx]);
+  const eyes = mood === 'down' || mood === 'scan' ? 5 : mood === 'up' ? 3 : 4;
+  if (mark === 'glasses')
+    put(
+      grid,
+      at([
+        [eyes, 3],
+        [eyes, 5],
+        [eyes, 6],
+        [eyes, 8],
+      ]),
+      'P',
+    );
+  if (mark === 'scarf') put(grid, at([3, 4, 5, 6, 7, 8].map((x) => [7, x])), 'S');
+  if (mark === 'belt') put(grid, at([4, 5, 6, 7].map((x) => [9, x])), 'P');
+}
+
 /** A frame as a grid of letters, before colour. */
-function compose(shape, pose, frame) {
+function compose({ shape, mark = null }, pose, frame) {
   const g = blank();
   const head = HEADS[shape] ?? HEADS.antenna;
   const whole = (dx, dy, mood, body = BODY) => {
     paint(g, head, { dx, dy });
     paint(g, body, { top: 7, dx, dy });
     face(g, mood, dx, dy);
+    wear(g, mark, mood, dx, dy);
   };
   const f = frame % (POSES[pose]?.frames ?? 1);
   switch (pose) {
@@ -203,7 +272,7 @@ function compose(shape, pose, frame) {
     }
     case 'reading': {
       // A book held open, eyes down, a page turning.
-      whole(0, 0, 'down');
+      whole(0, 0, f === 1 ? 'scan' : 'down');
       paint(g, ['WWWDDWWW', 'WWWDDWWW'], { top: 8, dx: 2 });
       if (f === 2)
         put(
@@ -279,6 +348,7 @@ function compose(shape, pose, frame) {
       paint(g, BODY, { top: 7 });
       paint(g, head, { dx: 1, dy: 1 });
       face(g, 'crossed', 1, 1);
+      wear(g, mark, 'open', 1, 1);
       break;
     }
     case 'resting': {
@@ -372,10 +442,11 @@ const shade = (rgb, by) =>
  * A pose's frame as a grid of colours (null for none), 12 by 12. Resting is drawn dimmed. With
  * motion off, a loop shows its first frame and a move its last.
  */
-export function characterFrame(pose, frame, { shape, tint }, { motion = 'while-active' } = {}) {
+export function characterFrame(pose, frame, character, { motion = 'while-active' } = {}) {
+  const { tint } = character;
   const spec = POSES[pose] ?? POSES.resting;
   const f = motion === 'off' ? (spec.loop ? 0 : spec.frames - 1) : frame;
-  const letters = compose(shape, POSES[pose] ? pose : 'resting', f);
+  const letters = compose(character, POSES[pose] ? pose : 'resting', f);
   const body = pose === 'resting' ? shade(tint, 0.5) : tint;
   const colour = {
     H: body,
@@ -431,12 +502,9 @@ export function characterSvg(pose, character, { scale = 3, motion = 'while-activ
 /** The sheet (UI-11): every lane in every pose and move, the lead first. */
 export function sheet(lanes) {
   const names = ['lead', ...lanes.filter((l) => l !== 'lead')];
-  const poses = [...WORK, ...STILL, ...MOVES];
+  const characters = charactersOf(names);
   return {
-    poses,
-    rows: names.map((lane) => {
-      const character = characterOf(lane, names);
-      return { lane, ...character };
-    }),
+    poses: [...WORK, ...STILL, ...MOVES],
+    rows: names.map((lane) => ({ lane, ...characters[lane] })),
   };
 }

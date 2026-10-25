@@ -2874,3 +2874,71 @@ test('DUR-7 the lane agent template tells it to commit after each step whose tes
   );
   assert.match(template, /Commit after each step whose tests pass/);
 });
+
+test('UI-11 the characters: a look per lane from its name, every pose and move, motion off', async () => {
+  const { charactersOf, characterFrame, characterFrames, characterSvg, workOf, sheet, POSES } =
+    await import('../hooks/mod/characters.mjs');
+  const nine = [
+    'lead',
+    'frontend',
+    'backend',
+    'db',
+    'mobile',
+    'infra',
+    'docs',
+    'pay',
+    'search',
+    'auth',
+  ];
+  const looks = charactersOf(nine);
+  assert.equal(looks.lead.shape, 'crown');
+  const lanes = nine.slice(1);
+  // Six lanes, six shapes; past six, shape and mark together stay apart.
+  assert.equal(new Set(lanes.slice(0, 6).map((l) => looks[l].shape)).size, 6);
+  assert.equal(new Set(lanes.map((l) => `${looks[l].shape}/${looks[l].mark}`)).size, 9);
+  assert.ok(lanes.slice(0, 6).every((l) => looks[l].mark === null));
+  // A lane added later changes no other lane's look.
+  const more = charactersOf([...nine, 'reports']);
+  for (const l of nine) assert.deepEqual(more[l], looks[l]);
+  // The look comes from the name, not the place: the same lane alone looks the same as first.
+  assert.deepEqual(charactersOf(['lead', 'frontend']).frontend, looks.frontend);
+  // Every pose and move draws 12 by 12; loops have four frames that differ.
+  const c = looks.frontend;
+  for (const pose of Object.keys(POSES)) {
+    const frames = characterFrames(pose, c);
+    assert.equal(frames.length, POSES[pose].frames);
+    for (const g of frames) assert.ok(g.length === 12 && g.every((r) => r.length === 12));
+  }
+  for (const pose of ['writing', 'running', 'reading', 'thinking'])
+    assert.notDeepEqual(characterFrame(pose, 0, c), characterFrame(pose, 1, c));
+  // Without colour, shapes differ: the lit pixels of two lanes' resting pose aren't the same.
+  const lit = (g) => g.map((r) => r.map((x) => (x === null ? 0 : 1)).join('')).join('/');
+  assert.notEqual(
+    lit(characterFrame('resting', 0, looks.frontend)),
+    lit(characterFrame('resting', 0, looks.backend)),
+  );
+  // Motion off: a loop holds its first frame, a move its last.
+  assert.deepEqual(
+    characterFrame('running', 3, c, { motion: 'off' }),
+    characterFrame('running', 0, c),
+  );
+  assert.deepEqual(
+    characterFrame('merged', 0, c, { motion: 'off' }),
+    characterFrame('merged', 3, c),
+  );
+  assert.match(characterSvg('writing', c), /repeatCount="indefinite"/);
+  assert.match(characterSvg('merged', c), /fill="freeze"/);
+  assert.doesNotMatch(characterSvg('writing', c, { motion: 'off' }), /<animate/);
+  // The kind of work, from the agent's current tool.
+  assert.equal(workOf('Edit'), 'writing');
+  assert.equal(workOf('Bash'), 'running');
+  assert.equal(workOf('Grep'), 'reading');
+  assert.equal(workOf(null), 'thinking');
+  // The sheet: the lead first, then the project's own lanes, in every pose.
+  const s = sheet(['web', 'api']);
+  assert.deepEqual(
+    s.rows.map((r) => r.lane),
+    ['lead', 'web', 'api'],
+  );
+  assert.equal(s.poses.length, 12);
+});
