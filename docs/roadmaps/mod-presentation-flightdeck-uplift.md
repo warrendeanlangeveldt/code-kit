@@ -60,11 +60,40 @@ For narrower panes and inline views, the original dense rows remain. The seven n
 | Queue receipt | Review queue commit SHA | Not a claim of independent CI execution |
 | Usage bar | Measured token count | Relative to maximum measured story, not budget percentage |
 
+## Implemented in the follow-on branch (v2: inner-detail views)
+
+This is a stacked, separately reviewed change based on the v1 visual-uplift branch. Existing menus, tabs, approval actions, selection behaviour, navigation and animations are preserved.
+
+### Decisions
+- Retains the current decision list, 5-card window, hotkeys and full context with response actions.
+- Adds a readable decision position/type/pending header, and surfaces linked story, requirements and policy-authority context before the detailed question.
+- Separates options into a clearly identifiable action section; never claims an approval was granted by merely showing a decision.
+
+### Journal
+- Retains the full original entries, groups by day and builds a compact, connected event rail with type, story ID, provenance and human-decision highlighting.
+- Adds an important data-integrity disclosure: these are reconstructed **Git + CodeKit project records**, not complete raw tool-execution history.
+
+### Code map
+- Adds a compact summary of mapped code nodes, architecture layers and recent observed file touches, preserving the SVG/terminal topology and highlighted Context Graph views.
+- Selected file detail separates architecture layer, lane owner and genuinely observed recent tool activity.
+- Never paints a mere filesystem observation as a verified policy or passing test.
+
+### Trail
+- Adds four small evidence receipts per selected requirement: **Requirement**, **Story**, **Code**, **Named tests**.
+- Each receipt distinguishes `present`, `gap` and `unknown`. In particular, code linking remains `unknown` while the trail source hasn't loaded instead of becoming a fabricated failure.
+- Test references mean **named test files**, not passing test results. Existing trace matrix, keyboard navigation and detailed story/test listing remain intact.
+
+### Validation and remaining limits
+- Syntax and pure renderer smoke checks passed for the modified pane and its dependencies in the review session.
+- Added unit assertions for link-presence/unknown logic and code-map aggregates; integration assertions exercise the rendered enhanced views.
+- Full Claude Code mod tests and formatting CI must still pass; this review session does not have the installed Claude CLI.
+- Multi-agent permission histories, real-time execution receipts and verified test attestations require richer deterministic runtime evidence. No synthetic events or success badges were introduced in this UI-only branch.
+
 ## Next visual iterations (not included in this PR)
 
-1. **Decisions:** clearer permission/request history with separate *Claude permission* vs *CodeKit engineering policy* lanes; accountable approval decision cards.
-2. **Journal:** expandable chronological execution rail using durable event source once implemented; distinguish observed from reconstructed or agent-declared events.
-3. **Code map / Trail:** link architecture boundaries, file movement and requirement-to-test evidence; animate **only actual observed transitions**.
+1. **Decisions (remaining):** bring independently observed Claude runtime permission history beside CodeKit engineering policy decisions once the underlying structured execution events are available; new v2 cards already improve current context and approval actions.
+2. **Journal (remaining):** upgrade the new reconstructed-history rail to a durable event-sourced execution rail once CodeKit emits event provenance, with filters and expandable receipts.
+3. **Code map / Trail (remaining):** evolve v2's architecture summaries and requirement-link receipts into independently attested checks; animate **only observed** file movement and validated runtime transitions.
 4. **Queue:** show independently attested check outcomes, freshness, release-CI status and review SHA linkage when the backend exposes it.
 5. **Usage:** per-agent context pressure, cache/token profiles, compaction and model handoffs when trustworthy data exists.
 6. **Motion preference:** add Off / Subtle / Expressive once Claude Mods exposes a reliable shared preference and reduced-motion handling; no requirement to use animated SVG on accessibility-sensitive surfaces.
