@@ -2605,3 +2605,109 @@ test('spec 22 a report carries the standards, its why in one line at most; an ol
   );
   assert.match(shape([{ ...standard, category: 'style' }])[0], /category: not one of/);
 });
+
+test('CIC-2 the workflows a project already has: their triggers, jobs and steps, as GitHub writes them', async () => {
+  const { parseYaml, triggersOf } = await import('../hooks/lib/ci.mjs');
+  const doc = parseYaml(
+    [
+      'name: ci # the main one',
+      'on:',
+      '  push:',
+      '    branches:',
+      '      - main',
+      "      - 'release/**'",
+      '  pull_request:',
+      'jobs:',
+      '  check:',
+      '    runs-on: ubuntu-latest',
+      '    timeout-minutes: 20',
+      '    steps:',
+      '      - uses: actions/checkout@v4',
+      '        with:',
+      '          fetch-depth: 0',
+      '      - name: Test',
+      '        run: |',
+      '          pnpm test',
+      '          pnpm lint',
+    ].join('\n'),
+  );
+  assert.deepEqual(doc.on.push.branches, ['main', 'release/**']);
+  assert.equal(doc.jobs.check['timeout-minutes'], 20);
+  assert.deepEqual(doc.jobs.check.steps[0], {
+    uses: 'actions/checkout@v4',
+    with: { 'fetch-depth': 0 },
+  });
+  assert.equal(doc.jobs.check.steps[1].run, 'pnpm test\npnpm lint');
+  assert.deepEqual(Object.keys(triggersOf(parseYaml('on: [push, pull_request]\n'))), [
+    'push',
+    'pull_request',
+  ]);
+  assert.deepEqual(Object.keys(triggersOf(parseYaml('on: push\n'))), ['push']);
+});
+
+test('CIC-2 what multiplies a workflow’s cost with a story per branch, each with its fix', async () => {
+  const { workflowFindings } = await import('../hooks/lib/ci.mjs');
+  const kinds = (text, base = 'main') => workflowFindings('ci.yml', text, base).map((f) => f.kind);
+  const job = (extra = '') =>
+    `jobs:\n  check:\n    runs-on: ubuntu-latest\n${extra}    steps:\n      - run: pnpm test\n`;
+  assert.deepEqual(kinds(`on:\n  push:\n    branches: [main]\n${job()}`), [
+    'every-merge',
+    'no-timeout',
+  ]);
+  assert.deepEqual(kinds(`on:\n  push:\n${job('    timeout-minutes: 30\n')}`), ['every-merge']);
+  assert.deepEqual(
+    kinds(`on:\n  push:\n    branches: [main]\n${job('    timeout-minutes: 30\n')}`, 'master'),
+    [],
+  );
+  assert.deepEqual(
+    kinds(`on:\n  push:\n    tags: ['v*']\n${job('    timeout-minutes: 30\n')}`),
+    [],
+  );
+  assert.deepEqual(kinds(`on:\n  pull_request:\n${job('    timeout-minutes: 30\n')}`), [
+    'every-pr',
+    'no-concurrency',
+  ]);
+  assert.deepEqual(
+    kinds(
+      `on:\n  pull_request:\n    paths: ['api/**']\nconcurrency:\n  group: x\n  cancel-in-progress: true\n${job('    timeout-minutes: 30\n')}`,
+    ),
+    [],
+  );
+  assert.deepEqual(
+    kinds(`on:\n  push:\n    branches: ['release/**']\n${job('    timeout-minutes: 30\n')}`),
+    [],
+  );
+  const old = `on:\n  pull_request:\nconcurrency:\n  group: x\n  cancel-in-progress: true\njobs:\n  verify:\n    timeout-minutes: 10\n    steps:\n      - run: >\n          npx --yes @warren-dean/code-kit@0.23.0 verify\n          --base origin/main\n`;
+  assert.deepEqual(kinds(old), ['code-kit-checks']);
+  assert.deepEqual(kinds(old.replace('verify\n', 'verify --no-checks\n')), []);
+  const [f] = workflowFindings(
+    'ci.yml',
+    `on:\n  push:\n    branches: [main]\n${job('    timeout-minutes: 9\n')}`,
+    'main',
+  );
+  assert.match(f.what, /runs on every push to main, so once per story merged/);
+  assert.match(f.fix, /release\/\*\*/);
+});
+
+test('CIC-4 the runs summed by workflow and trigger, most minutes first, cancelled and failed counted', async () => {
+  const { usageSummary } = await import('../hooks/lib/ci.mjs');
+  const run = (name, event, minutes, conclusion = 'success') => ({
+    name,
+    event,
+    conclusion,
+    run_started_at: '2026-10-20T00:00:00Z',
+    updated_at: new Date(Date.parse('2026-10-20T00:00:00Z') + minutes * 60000).toISOString(),
+  });
+  const u = usageSummary([
+    run('ci', 'push', 26),
+    run('ci', 'push', 27, 'failure'),
+    run('code-kit', 'pull_request', 1),
+    run('ci', 'pull_request', 20, 'cancelled'),
+  ]);
+  assert.equal(u.runs, 4);
+  assert.equal(u.minutes, 74);
+  assert.deepEqual(
+    u.rows.map((r) => `${r.workflow} ${r.event} ${r.runs} ${r.minutes} ${r.cancelled} ${r.failed}`),
+    ['ci push 2 53 0 1', 'ci pull_request 1 20 1 0', 'code-kit pull_request 1 1 0 0'],
+  );
+});

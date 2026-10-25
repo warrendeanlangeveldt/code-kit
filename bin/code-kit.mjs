@@ -41,6 +41,9 @@
 //                                    a working session's ad hoc task and the paths it leases
 //   lanes [--json] | lanes release <lane>
 //                                    the lanes running a story now, one each across sessions (spec 23)
+//   ci check [--json] | ci usage [--days N] [--json]
+//                                    what the project's CI spends and what multiplies it (spec 25)
+//   release <version>                cut release/<version> from the base and push it: the full CI runs there
 // --config <file> reads a draft (.claude/code-kit.draft.json) instead of .claude/code-kit.json.
 import { execFileSync, spawnSync } from 'node:child_process';
 import {
@@ -169,6 +172,7 @@ import {
   worktrees,
 } from '../hooks/lib/worktrees.mjs';
 import { decisionsFor, openDecisions } from '../hooks/lib/decisionstore.mjs';
+import { WORKFLOWS_DIR, ciFindings, ciUsage, releaseBranch } from '../hooks/lib/ci.mjs';
 import {
   appliesTo,
   projectStandards,
@@ -207,6 +211,7 @@ const callerSession = sessionId ?? process.env.CLAUDE_CODE_SESSION_ID ?? null;
 // A provider's command hears which session is calling, for that session's own live link.
 if (callerSession) process.env.CODE_KIT_SESSION = callerSession;
 const minutesGiven = option('--minutes');
+const daysGiven = option('--days');
 const answerGiven = option('--answer');
 const leaseGiven = option('--lease');
 const touchesGiven = option('--touches');
@@ -1327,6 +1332,73 @@ function settings() {
     out(
       `${r.key.padEnd(44)} ${JSON.stringify(r.value).padEnd(14)} ${r.value === r.default ? '' : `(default ${JSON.stringify(r.default)}) `}${r.about}`,
     );
+}
+
+/**
+ * CIC-2, CIC-4: `ci check` lists what in the project's workflows multiplies their cost with a story per
+ * branch; `ci usage` sums the Actions runs of the last days, by workflow and trigger.
+ */
+function ciCommand() {
+  const { config } = load();
+  const root = resolve('.');
+  const [sub] = rest;
+  if (sub === 'check') {
+    const found = ciFindings(root, config.branches.protected[0]);
+    if (flag('--json')) return out(JSON.stringify(found, null, 2));
+    if (!found.length)
+      return out(
+        existsSync(join(root, WORKFLOWS_DIR))
+          ? "Nothing in the project's workflows multiplies their cost: no full run per merge or pull request, every job has a time limit."
+          : `No workflows in ${WORKFLOWS_DIR}.`,
+      );
+    let last = null;
+    for (const f of found) {
+      if (f.file !== last) out(`${last ? '\n' : ''}${f.file}`);
+      last = f.file;
+      out(`  ${f.kind}: ${f.what}.\n    Fix: ${f.fix}.`);
+    }
+    out(
+      "\nChanging CI is the person's to approve (approval ci). A release then runs the full suite once: code-kit release <version>.",
+    );
+    return;
+  }
+  if (sub === 'usage') {
+    const days = Number(daysGiven ?? 7);
+    if (!Number.isFinite(days) || days <= 0) die('--days takes a number of days, such as 7.');
+    const u = ciUsage(root, { days });
+    if (u.error) die(u.error);
+    if (flag('--json')) return out(JSON.stringify(u, null, 2));
+    out(
+      `${u.repo}, the last ${days} day${days === 1 ? '' : 's'}: ${u.runs} run${u.runs === 1 ? '' : 's'}, about ${u.minutes} minutes of wall-clock time (GitHub bills each job, rounded up to the minute, so the bill is at least this).`,
+    );
+    for (const r of u.rows)
+      out(
+        `  ${String(r.minutes).padStart(6)} min  ${String(r.runs).padStart(4)} runs  ${r.workflow} (${r.event})${r.cancelled ? `, ${r.cancelled} cancelled` : ''}${r.failed ? `, ${r.failed} failed` : ''}`,
+      );
+    if (u.refused)
+      out(
+        `\nGitHub isn't starting this project's jobs: ${u.refused} The project's CI isn't running at all until that's resolved in the account's Billing settings.`,
+      );
+    return;
+  }
+  usage();
+}
+
+/** CIC-3: the release branch, cut from the base as committed and pushed, where the full CI runs once. */
+function releaseCommand(version) {
+  const { config } = load();
+  const from = base(config, false);
+  const r = releaseBranch(resolve('.'), version, { base: from });
+  if (!r.ok) die(`Not released: ${r.why}`);
+  if (flag('--json')) return out(JSON.stringify(r, null, 2));
+  out(
+    `Cut ${r.branch} from ${from} at ${r.commit.slice(0, 7)} and pushed it: the project's full CI runs on it now.`,
+  );
+  out(
+    r.stories.length
+      ? `Stories in it since ${r.since ?? 'the start'}: ${r.stories.join(', ')}.`
+      : `No story ids in its commits since ${r.since ?? 'the start'}.`,
+  );
 }
 
 /** Records the review's send-back of `branch` at its current commit (lib/reviews.mjs). */
@@ -2534,6 +2606,8 @@ const commands = {
   journal: journalCommand,
   timeline,
   'sent-back': () => (rest.length === 1 ? sentBackCommand(rest[0]) : usage()),
+  ci: ciCommand,
+  release: () => (rest.length === 1 ? releaseCommand(rest[0]) : usage()),
   trace: () => (rest.length ? trace(rest) : usage()),
   adapters,
   next,
@@ -2566,6 +2640,7 @@ function usage() {
       '              | lanes [--json] | lanes release <lane> | sessions [--json] | sessions lead\n' +
       '              | who | task "<what>" --touches globs | task done | task take <session>\n' +
       '              | decisions [--json] [--all]\n' +
+      '              | ci check [--json] | ci usage [--days N] [--json] | release <version>\n' +
       '              | hold <id> [--minutes N] | hold <id> --answer approved|refused\n' +
       '              | queue [--json] | queue add|drop <branch> | queue rules | queue merge --delegated|--person\n' +
       '              | loop [--json] | loop pause|resume | loop lead|release --session id [--take]\n' +
