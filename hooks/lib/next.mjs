@@ -14,6 +14,7 @@ import { instructionsState } from './instructions.mjs';
 import { SECURITY_AGENT_FILE } from './security.mjs';
 import { laneClaims } from './laneclaims.mjs';
 import { keptBecause, worktrees } from './worktrees.mjs';
+import { storyModels } from './dispatches.mjs';
 import { pickPerLane } from './schedule.mjs';
 
 export const DRAFT_FILE = '.claude/code-kit.draft.json';
@@ -79,7 +80,8 @@ const hasMarkdown = (dir) => {
 
 /**
  * { step, why, args, then, attention, brief, worktrees }. `brief`: the brief's open questions (ASK-4);
- * `worktrees`: the merged ones still holding changes, { branch, story, changes, files }, for the person (LEAN-8). `step` is a skill (spec-design, init, check, dispatch,
+ * `worktrees`: the merged ones still holding changes, { branch, story, changes, files }, for the person (LEAN-8);
+ * `models`: each story offered to a lane, with the model it runs on and why, { story, model, why } (SCHED-3). `step` is a skill (spec-design, init, check, dispatch,
  * review), `merge` (the head of the merge queue, where the lead merges), `wait` (lanes are
  * building) or `done`. `base(config)` resolves the branch lanes merge into.
  */
@@ -89,6 +91,8 @@ export function nextStep(root, base) {
   let briefQuestions = [];
   // LEAN-8: merged worktrees still holding changes, for the person to keep or discard.
   let holdingTrees = [];
+  // SCHED-3: the model each story offered to a lane runs on, and why.
+  let models = [];
   const result = (step, why, extra = {}) => ({
     step,
     why,
@@ -97,6 +101,7 @@ export function nextStep(root, base) {
     attention,
     brief: briefQuestions,
     worktrees: holdingTrees,
+    models,
     ...extra,
   });
   const isRepo = git(root, 'rev-parse', '--is-inside-work-tree') === 'true';
@@ -360,6 +365,12 @@ export function nextStep(root, base) {
   const then = [];
   // A sent-back story goes back to its lane with the review's findings, before new work starts.
   const toDispatch = [...fixes, ...ready];
+  const chosen = storyModels(
+    root,
+    config,
+    status.stories.filter((s) => toDispatch.includes(s.id)),
+  );
+  models = toDispatch.filter((id) => chosen[id]).map((id) => ({ story: id, ...chosen[id] }));
   if (review.length && forDesign.length) then.push({ step: 'design', args: forDesign.join(' ') });
   if (review.length && toDispatch.length)
     then.push({ step: 'dispatch', args: toDispatch.join(' ') });

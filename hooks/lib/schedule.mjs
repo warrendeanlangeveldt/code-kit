@@ -84,3 +84,49 @@ export function pickPerLane(stories, { fixes = [], ready = [], busy = new Set(),
     opened: startOrder,
   };
 }
+
+/** SCHED-3: the models a lane agent steps up through, smallest first. */
+export const STORY_MODELS = ['haiku', 'sonnet', 'opus'];
+/** SCHED-3: the sizes a story's `**Size:**` may give, and the model each starts on. */
+export const SIZE_MODELS = { small: 'haiku', medium: 'sonnet', large: 'opus' };
+
+/** SET-4: the `model:` an agent file's frontmatter names, or null. */
+export function agentFileModel(text) {
+  const front = /^---\r?\n([\s\S]*?)\r?\n---/.exec(String(text ?? ''))?.[1] ?? '';
+  return /^model:\s*['"]?([^'"\s]+)['"]?\s*$/m.exec(front)?.[1] ?? null;
+}
+
+const times = (n) => (n === 1 ? 'once' : n === 2 ? 'twice' : `${n} times`);
+
+/**
+ * SCHED-3: the model a story's lane agent runs on, and why, as { model, why }. The lane's agent file
+ * keeps its own model (other than `inherit`). Otherwise the story's size picks it (Sonnet without one),
+ * a security requirement raises it to Opus, a fix to Sonnet at least, and each send-back of its branch
+ * one step more, to Opus at most.
+ */
+export function storyModel({
+  size = null,
+  security = false,
+  fix = false,
+  sentBack = 0,
+  fileModel = null,
+} = {}) {
+  if (fileModel && fileModel !== 'inherit')
+    return { model: fileModel, why: `its lane's agent file names ${fileModel}` };
+  const rank = (m) => STORY_MODELS.indexOf(m);
+  let model = SIZE_MODELS[size] ?? 'sonnet';
+  const why = [SIZE_MODELS[size] ? `a ${size} story` : 'no size in the plan'];
+  const raise = (to, reason) => {
+    if (rank(to) <= rank(model)) return;
+    model = to;
+    why.push(reason);
+  };
+  if (security) raise('opus', 'it cites a security requirement');
+  if (fix) raise('sonnet', 'a fix proves its bug with a test');
+  if (sentBack > 0)
+    raise(
+      STORY_MODELS[Math.min(STORY_MODELS.length - 1, rank(model) + sentBack)],
+      `sent back ${times(sentBack)}`,
+    );
+  return { model, why: why.join(', ') };
+}

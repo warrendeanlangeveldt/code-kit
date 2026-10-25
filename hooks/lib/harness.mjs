@@ -60,9 +60,9 @@ export const SETTINGS = {
     problem: (v) =>
       v === null || (typeof v === 'string' && v.length > 0)
         ? null
-        : `must be a model (${MODELS.join(', ')}, or an id), or null for the session's`,
+        : `must be a model (${MODELS.join(', ')}, or an id), story for each story's size, or null for the session's`,
     about:
-      "The lane agents' model, set as each is dispatched; none means the session's. A lane's agent file with its own model keeps it",
+      "The lane agents' model, set as each is dispatched: story picks it from each story's size; none means the session's. A lane's agent file with its own model keeps it",
   },
   'agents.lanes.contextLimit': {
     default: 250000,

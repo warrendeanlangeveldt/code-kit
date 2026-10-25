@@ -20,7 +20,7 @@
 | `stall.restartMinutes`      | number  | 10           | Greater than `nudgeMinutes`                                                                                              |
 | `stall.maxRestarts`         | integer | 2            |                                                                                                                          |
 | `agents.reviewer`           | object  | off          | `{ on, model }`; model an alias (`haiku`, `sonnet`, `opus`) or an id; without one, the session's model                   |
-| `agents.lanes.model`        | string  | none         | The lane agents' model, an alias or an id; without one, the session's model (SET-4)                                      |
+| `agents.lanes.model`        | string  | none         | The lane agents' model, an alias or an id, or `story` for each story's size (23, SCHED-3); without one, the session's    |
 | `background.pauseAtPercent` | number  | 80           | Of the plan's 5-hour use (08)                                                                                            |
 | `report.on`                 | boolean | `false`      | Agents may draft bug reports for code-kit, which the person sends or discards (15, REPORT-1)                             |
 
@@ -48,7 +48,7 @@ Lanes, paths, layers and which paths are protected aren't editable in the pane; 
 
 ### SET-4 The lane agents' model
 
-With `agents.lanes.model` set, the mod sets that model on each lane agent as it starts (`agent.spawn`), so a cheaper model builds the stories while the lead, the reviewer and the security reviewer keep the session's. A model the lead's call names wins, and so does a model a lane's agent file sets (other than `inherit`). `/code-kit:init` asks for it, recommending `sonnet`; `/harness` changes it like any setting.
+With `agents.lanes.model` set, the mod sets that model on each lane agent as it starts (`agent.spawn`), so a cheaper model builds the stories while the lead, the reviewer and the security reviewer keep the session's. A model the lead's call names wins, and so does a model a lane's agent file sets (other than `inherit`). Set to `story`, each lane agent's model follows its story's size instead (spec 23, SCHED-3). `/code-kit:init` asks for it, recommending `story`; `/harness` changes it like any setting.
 
 **Acceptance**
 
