@@ -1466,7 +1466,11 @@ test('VIEW-2 and VIEW-3 the pictures: raster cells, poses, bars and their runs',
   assert.equal(poseOf(lane, { waiting: true }), 'waiting');
   assert.equal(poseOf(lane, { live: { level: 'quiet' } }), 'quiet');
   assert.equal(poseOf(lane, { flagged: true }), 'stalled');
-  assert.equal(poseOf({ ...lane, active: false }, { shown: 'queued' }), 'done');
+  assert.equal(poseOf({ ...lane, active: false }, { shown: 'queued' }), 'queued');
+  assert.equal(poseOf({ ...lane, active: false }, { shown: 'in review' }), 'reviewing');
+  assert.equal(poseOf({ ...lane, active: false }, { shown: 'merged' }), 'done');
+  assert.match(spriteSvg('idle', 0x4aa3ff), /dur="5s"/);
+  assert.match(spriteSvg('waiting', 0x4aa3ff), /dur="3.6s"/);
   assert.equal(poseOf({ ...lane, active: false, state: 'idle' }), 'idle');
   const now = 100 * 60000;
   const t = {
@@ -1491,6 +1495,11 @@ test('VIEW-2 and VIEW-3 the pictures: raster cells, poses, bars and their runs',
   assert.equal(merged[38], 'merged');
   assert.equal(merged[39], 'none');
   assert.equal(axisStart([], now), now - 3600000);
+  const { timelineSvg } = await import('../hooks/mod/art.mjs');
+  const activeSvg = timelineSvg([{ cells, active: true }]);
+  assert.match(activeSvg, /<circle/);
+  assert.match(activeSvg, /attributeName="opacity"/);
+  assert.doesNotMatch(timelineSvg([{ cells, active: false }]), /<circle/);
 });
 
 test('shell: a newline inside quotes ends no command', async () => {
@@ -1524,6 +1533,25 @@ test("VIEW-6 an idle lane: its stories in plan order, the one Enter opens, and t
   assert.equal(storyToOpen({ name: 'qa', story: null }, state), null);
   assert.equal(planProgress(state), '2 of 4 stories done');
   assert.equal(planProgress({ stories: [] }), null);
+});
+
+test('LANES presentation: stage rail reflects workflow position, not test results', async () => {
+  const { lanePhase, LANE_PHASES } = await import('../hooks/mod/view.mjs');
+  assert.deepEqual(LANE_PHASES, ['Plan', 'Build', 'Review', 'Queue', 'Merge']);
+  for (const [state, phase] of [
+    ['ready', 0],
+    ['blocked', 0],
+    ['waiting on you', 0],
+    ['building', 1],
+    ['sent back', 1],
+    ['in review', 2],
+    ['queued', 3],
+    ['merged', 4],
+    ['idle', null],
+    ['unknown', null],
+  ]) {
+    assert.equal(lanePhase(state), phase, state);
+  }
 });
 
 test('MAP-2 what a tool call touches, and which files glow', async () => {
