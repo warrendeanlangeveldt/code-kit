@@ -632,18 +632,32 @@ export function queueSection(loop, text, Box) {
     .filter((e) => !['waiting', 'merging'].includes(e.state))
     .slice(-3)
     .reverse();
-  const row = (e, label, style = {}) =>
-    Box({
+  const row = (e, label, style = {}) => {
+    const colour = e.state === 'merged' ? 'green' : e.state === 'sent back' ? 'magenta' : 'cyan';
+    return Box({
       key: `queue-${e.branch}-${e.state}`,
-      flexDirection: 'row',
-      columnGap: 2,
+      flexDirection: 'column',
+      borderStyle: 'round',
+      borderColor: colour,
+      paddingX: 1,
       children: [
-        text(label.padEnd(3), { dimColor: true }),
-        text(e.branch),
-        text(e.state, style),
-        ...(e.reason ? [text(e.reason, { dimColor: true })] : []),
+        Box({
+          flexDirection: 'row',
+          columnGap: 2,
+          flexWrap: 'wrap',
+          children: [
+            text(label.padEnd(3), { dimColor: true }),
+            text(e.branch, { bold: true }),
+            text(e.state, style),
+          ],
+        }),
+        // The queue pins the SHA that passed review. Do not imply release CI
+        // succeeded here: it is a separate gate with separate evidence.
+        ...(e.commit ? [text(`reviewed SHA ${e.commit.slice(0, 12)}`, { dimColor: true })] : []),
+        ...(e.reason ? [text(e.reason, { dimColor: true, wrap: 'wrap' })] : []),
       ],
     });
+  };
   return [
     Box({
       flexDirection: 'column',
