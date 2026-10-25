@@ -1151,6 +1151,18 @@ const RUN_STYLE = {
  * `view` holds { state, codeMap, ui, glow, art, surface, columns }; `on` holds onMapStory(id),
  * onMapFile(path), onOpenFile(path).
  */
+/** Aggregate only observed code-map facts. A glowing path means an observed
+ * recent tool touch, not successful verification or complete instrumentation.
+ */
+export function codeMapSummary(map, glow = {}) {
+  const files = map?.files ?? [];
+  return {
+    nodes: files.length,
+    layers: new Set(files.map((f) => f.layer).filter(Boolean)).size,
+    touched: files.filter((f) => Boolean(glow[f.path])).length,
+  };
+}
+
 export function codeTab(view, { Box, Text, Button, Svg }, on) {
   const text = (value, style = {}) => Text({ ...style, children: [value] });
   const { state, ui = DEFAULT_UI, codeMap: map = null, art = null } = view;
@@ -1228,6 +1240,20 @@ export function codeTab(view, { Box, Text, Button, Svg }, on) {
             }),
           ),
         });
+  const counts = codeMapSummary(map, glow);
+  const mapSummary = Box({
+    key: 'code-map-summary',
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    columnGap: 2,
+    children: [
+      text(`${counts.nodes} ${storyId === PROJECT ? 'folders / nodes' : 'changed code files'}`, { bold: true }),
+      text(`${counts.layers} architecture layers`, { color: 'cyan' }),
+      text(`${counts.touched} recently touched`, {
+        ...(counts.touched ? { color: 'green' } : { dimColor: true }),
+      }),
+    ],
+  });
   const at = map.files.findIndex((f) => f.path === selected);
   const file = map.files[at];
   const card = cardOf(file);
@@ -1241,7 +1267,17 @@ export function codeTab(view, { Box, Text, Button, Svg }, on) {
     paddingX: 1,
     children: [
       text(selected, { bold: true }),
-      text(`${file.layer}${file.lane ? ` · ${file.lane} lane` : ''}`, { dimColor: true }),
+      Box({
+        key: 'code-file-meta',
+        flexDirection: 'row',
+        columnGap: 2,
+        flexWrap: 'wrap',
+        children: [
+          text(`LAYER: ${file.layer}`, { color: 'cyan' }),
+          ...(file.lane ? [text(`OWNER: ${file.lane}`, { color: 'blue' })] : []),
+          ...(glow[selected] ? [text('RECENT TOOL ACTIVITY', { color: 'green' })] : []),
+        ],
+      }),
       ...(card
         ? [
             text(
@@ -1307,7 +1343,7 @@ export function codeTab(view, { Box, Text, Button, Svg }, on) {
       ),
     ),
   });
-  return [picker, drawing, legend, detail, keys];
+  return [picker, mapSummary, drawing, legend, detail, keys];
 }
 
 /** CARD-9: how many decision cards the list shows at once, around the selected one. */
