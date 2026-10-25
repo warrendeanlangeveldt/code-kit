@@ -11,11 +11,25 @@ const POSES = {
     ['..HH..', '.HEEH.', '..HH..', '.HHHH.', 'H.HH.H', '.H..H.'],
     ['..HH..', '.HEEH.', '..HH..', 'HHHHHH', '..HH..', '..HH..'],
   ],
-  waiting: [['..HH.H', '.HEEHH', '..HH..', '.HHH..', '..HH..', '.H..H.']],
+  // A held approval or person decision: a quiet, occasional raised hand.
+  waiting: [
+    ['..HH.H', '.HEEHH', '..HH..', '.HHH..', '..HH..', '.H..H.'],
+    ['..HH..', '.HEEH.', '..HH.H', '.HHHHH', '..HH..', '.H..H.'],
+  ],
+  // Quiet, stopped and queued are distinct from actively reviewing or completed.
   quiet: [['......', '..HH..', '.HLLH.', '..HH..', '.HHHH.', '.H..H.']],
   stalled: [['..HH..', '.HXXH.', '..HH..', '.HHHH.', '..HH..', '.H..H.']],
+  reviewing: [
+    ['..HH..', '.HEEH.', '..HH..', '.HHHH.', 'H.HH..', '.H..H.'],
+    ['..HH..', '.HEEH.', '..HH..', '.HHHH.', '..HH.H', '.H..H.'],
+  ],
+  queued: [['..HH..', '.HEEH.', '..HH..', '.HHHH.', '..HH..', '.H..H.']],
   done: [['H.HH.H', 'HHEEHH', '..HH..', '..HH..', '..HH..', '.H..H.']],
-  idle: [['......', '..HH..', '.HLLH.', '..HH..', '.HHHH.', '.H..H.']],
+  // An idle agent occasionally blinks on a capable SVG surface.
+  idle: [
+    ['......', '..HH..', '.HEEH.', '..HH..', '.HHHH.', '.H..H.'],
+    ['......', '..HH..', '.HLLH.', '..HH..', '.HHHH.', '.H..H.'],
+  ],
 };
 /** What a pose reads as without its picture, and in words. */
 export const POSE_GLYPH = {
@@ -23,6 +37,8 @@ export const POSE_GLYPH = {
   waiting: '?',
   quiet: '…',
   stalled: '✗',
+  reviewing: '◐',
+  queued: '◆',
   done: '✓',
   idle: '·',
 };
@@ -97,9 +113,13 @@ export function spriteSvg(pose, tint, { lead = false } = {}) {
         ),
       )
       .join('');
+  // A slow blink / raised hand reads as alive without flashing. The working sprite
+  // retains its original quick cadence; each animation is native to SVG (no JS timer).
+  const cycle = { working: 0.8, reviewing: 2, waiting: 3.6, idle: 5 };
+  const firstFrameUntil = ['idle', 'waiting'].includes(pose) ? 0.92 : 0.5;
   const groups = frames.map((g, f) =>
     frames.length > 1
-      ? `<g visibility="${f ? 'hidden' : 'visible'}"><animate attributeName="visibility" values="${f ? 'hidden;visible' : 'visible;hidden'}" dur="0.8s" repeatCount="indefinite" calcMode="discrete"/>${rects(g)}</g>`
+      ? `<g visibility="${f ? 'hidden' : 'visible'}"><animate attributeName="visibility" values="${f ? 'hidden;visible;hidden' : 'visible;hidden;visible'}" keyTimes="0;${firstFrameUntil};1" dur="${cycle[pose] ?? 1}s" repeatCount="indefinite" calcMode="discrete"/>${rects(g)}</g>`
       : `<g>${rects(g)}</g>`,
   );
   return `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" shape-rendering="crispEdges">${groups.join('')}</svg>`;
@@ -118,7 +138,9 @@ export function poseOf(
   if (waiting || shown === 'waiting on you') return 'waiting';
   if (live?.level === 'quiet') return 'quiet';
   if (lane.active) return 'working';
-  if (['in review', 'queued'].includes(shown)) return 'done';
+  if (shown === 'in review') return 'reviewing';
+  if (shown === 'queued') return 'queued';
+  if (shown === 'merged' || shown === 'done') return 'done';
   return 'idle';
 }
 
@@ -196,5 +218,15 @@ export function timelineSvg(rows, { width = 480, rowHeight = 10 } = {}) {
       ),
     )
     .join('');
-  return `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${rows.length * (rowHeight + 4)}" shape-rendering="crispEdges">${rects}</svg>`;
+  // Only a genuinely active worker gets a soft pulse at its observed timeline
+  // frontier. Static history and completed stories are never shown as moving.
+  const cursor = rows.map((r, y) => {
+    if (!r.active) return '';
+    const end = r.cells.findLastIndex((kind) => kind !== 'none');
+    if (end < 0) return '';
+    const x = ((end + 0.5) * cell).toFixed(1);
+    const cy = (y * (rowHeight + 4) + rowHeight / 2).toFixed(1);
+    return `<circle cx="${x}" cy="${cy}" r="3" fill="#ffffff"><animate attributeName="opacity" values="0.35;1;0.35" dur="1.8s" repeatCount="indefinite"/></circle>`;
+  }).join('');
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${rows.length * (rowHeight + 4)}" shape-rendering="crispEdges">${rects}${cursor}</svg>`;
 }
