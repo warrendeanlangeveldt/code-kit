@@ -135,6 +135,26 @@ export function shownState(lane, queue = []) {
   return lane.branch && waiting ? 'queued' : lane.state;
 }
 
+// Delivery stages are derived only from CodeKit's actual story/queue state. These
+// indicate workflow position, NOT test success, policy approval or release readiness.
+// In particular, a story in review may still fail its acceptance criteria.
+export const LANE_PHASES = ['Plan', 'Build', 'Review', 'Queue', 'Merge'];
+export function lanePhase(state) {
+  const phase = {
+    ready: 0,
+    blocked: 0,
+    'waiting on you': 0,
+    building: 1,
+    working: 1,
+    orchestrating: 1,
+    'sent back': 1,
+    'in review': 2,
+    queued: 3,
+    merged: 4,
+  };
+  return Object.hasOwn(phase, state) ? phase[state] : null;
+}
+
 /**
  * The Lanes tab's body, drawn with the elements `$.ui.resolve(e)` returned; `usage` is
  * usageSummary's, `plan` planOf's (USE-2), either null before there is any. `lanesOf` narrows and
@@ -155,6 +175,7 @@ export function lanesPane(
     art = null,
     combined = null,
     detail = null,
+    columns = 80,
   } = {},
 ) {
   const { Box, Text } = els;
@@ -231,6 +252,9 @@ export function lanesPane(
   // LANES-2: fixed columns that never wrap: name, state, then the story (and the agent's current tool
   // beneath it), then tokens; another tool's facts only when they aren't zero.
   const STATE_WIDTH = 13;
+  // Flightdeck-inspired presentation lives inside the *existing* Lanes tab.
+  // Preserve the dense original rows when the terminal / inline pane is narrow.
+  const detailedCards = Boolean(art && columns >= 92);
   const rows = shown.map((l) => {
     const s = shownState(l, loop?.queue);
     const facts = combined?.[l.name];
@@ -313,6 +337,89 @@ export function lanesPane(
       // LANES-3: the selected lane's stories as cards, then what it owns.
       ...(l.name === selected && detail ? laneDetail(detail, els, width) : []),
     ];
+    if (detailedCards) {
+      const phase = lanePhase(s);
+      const statusColour = s === 'queued' ? 'cyan' : STATE_COLOR[s] ?? 'gray';
+      const lastAction = live[l.name];
+      // Stages show where the story is, not that tests have passed.
+      const phaseRail =
+        phase === null || !l.story
+          ? []
+          : [
+              Box({
+                key: `flow-${l.name}`,
+                flexDirection: 'row',
+                flexWrap: 'wrap',
+                columnGap: 1,
+                children: LANE_PHASES.map((label, index) =>
+                  text(
+                    `${index < phase ? '■' : index === phase ? '◆' : '·'} ${label}`,
+                    index === phase
+                      ? { color: statusColour, bold: true }
+                      : index < phase
+                        ? { color: 'green' }
+                        : { dimColor: true },
+                  ),
+                ),
+              }),
+            ];
+      return Box({
+        key: `lane-${l.name}`,
+        flexDirection: 'column',
+        borderStyle: 'round',
+        borderColor: l.name === selected ? 'cyan' : l.active ? statusColour : 'gray',
+        paddingX: 1,
+        children: [
+          Box({
+            key: `lane-heading-${l.name}`,
+            flexDirection: 'row',
+            columnGap: 2,
+            children: [
+              character(l),
+              Box({
+                flexDirection: 'column',
+                flexGrow: 1,
+                flexShrink: 1,
+                children: [
+                  Box({
+                    flexDirection: 'row',
+                    columnGap: 2,
+                    flexWrap: 'wrap',
+                    children: [
+                      text(`${l.name === selected ? '› ' : ''}${l.name}`, {
+                        bold: true,
+                        ...(l.name === selected ? { color: 'cyan' } : {}),
+                      }),
+                      text(s, { color: statusColour }),
+                      ...(usage?.lanes[l.name]
+                        ? [text(tokens(usage.lanes[l.name]), { dimColor: true })]
+                        : []),
+                    ],
+                  }),
+                  text(story, { wrap: 'truncate-end', dimColor: !l.story }),
+                ],
+              }),
+            ],
+          }),
+          ...(lastAction
+            ? [
+                text(`↳ ${lastAction.tool} · ${lastAction.ago}`, {
+                  wrap: 'truncate-end',
+                  ...(LIVE[lastAction.level]
+                    ? { color: LIVE[lastAction.level] }
+                    : { dimColor: true }),
+                }),
+              ]
+            : []),
+          ...phaseRail,
+          ...bar(l),
+          ...(chips.length
+            ? [Box({ flexDirection: 'row', flexWrap: 'wrap', columnGap: 2, children: chips })]
+            : []),
+          ...(l.name === selected && detail ? laneDetail(detail, els, 0) : []),
+        ],
+      });
+    }
     return art
       ? Box({
           key: `lane-${l.name}`,
