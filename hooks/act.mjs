@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // Durable lanes (spec 26): the event log's writer. PreToolUse records each act's start, PostToolUse
 // its end and PostToolUseFailure its failure, and SubagentStop a lane agent handing back. It never
-// blocks a call (DUR-2): a write that fails is said once in the session, and the work goes on.
+// blocks a call (DUR-2): it runs in the background (`async` in hooks.json), so no call waits for it,
+// and a write that fails is said once in the session while the work goes on.
 import { existsSync, realpathSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative } from 'node:path';

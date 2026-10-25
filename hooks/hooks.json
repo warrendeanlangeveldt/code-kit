@@ -39,7 +39,8 @@
           {
             "type": "command",
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/act.mjs\" start",
-            "timeout": 5
+            "timeout": 5,
+            "async": true
           }
         ]
       }
@@ -71,7 +72,8 @@
           {
             "type": "command",
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/act.mjs\" end",
-            "timeout": 5
+            "timeout": 5,
+            "async": true
           }
         ]
       }
@@ -130,7 +132,8 @@
           {
             "type": "command",
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/act.mjs\" handback",
-            "timeout": 5
+            "timeout": 5,
+            "async": true
           }
         ]
       }
@@ -142,7 +145,8 @@
           {
             "type": "command",
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/act.mjs\" fail",
-            "timeout": 5
+            "timeout": 5,
+            "async": true
           }
         ]
       }
