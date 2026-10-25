@@ -7857,6 +7857,200 @@ else process.exit(1);
       0,
     );
   }
+
+  // --- CIC-1 to CIC-4: what CI costs ------------------------------------------------------------
+  {
+    const c = newRepo();
+    cleanups.push(c.dir);
+    const cPut = (rel, body = '') => {
+      mkdirSync(dirname(join(c.dir, rel)), { recursive: true });
+      writeFileSync(join(c.dir, rel), body);
+    };
+    const cCommit = (m) => {
+      c.git('add', '-A');
+      c.git('commit', '-q', '-m', m);
+    };
+    const cCli = (args, env = {}) =>
+      spawnSync('node', [join(here, '..', 'bin', 'code-kit.mjs'), ...args], {
+        cwd: c.dir,
+        encoding: 'utf8',
+        env: { ...process.env, ...env },
+      });
+    const template = readFileSync(join(here, '..', 'templates', 'github-workflow.yml'), 'utf8');
+    expect(
+      "CIC-1 code-kit's workflow checks the rules only, with a 10-minute limit and cancel-in-progress",
+      truth(
+        /verify --no-checks/.test(template) &&
+          /timeout-minutes: 10/.test(template) &&
+          /cancel-in-progress: true/.test(template),
+        template,
+      ),
+      0,
+    );
+    cPut(
+      '.github/workflows/ci.yml',
+      'name: ci\non:\n  push:\n    branches: [main]\n  pull_request:\njobs:\n  check:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n      - run: pnpm test\n',
+    );
+    cPut(
+      '.github/workflows/code-kit.yml',
+      template
+        .replace('{{code-kit version}}', '0.25.0')
+        .replace(/^\s*# \{\{init[\s\S]*?\}\}\n/m, ''),
+    );
+    cPut('docs/spec/01-x.md', '# 01. X\n\n### X-1 One\n');
+    cPut(
+      'docs/spec/plan.md',
+      '# Plan\n\n## M1\n\n### ST-1 One\n\n**Lane:** web\n**Requirements:** X-1\n**Depends on:** none\n**Status:** todo\n',
+    );
+    cPut('design/approved-screens.json', JSON.stringify({ screens: [] }));
+    cCommit('ST-1 plan and CI');
+    const checked = JSON.parse(cCli(['ci', 'check', '--json']).stdout || '[]');
+    expect(
+      "CIC-2 ci check lists a workflow's full run per merge and per pull request, its missing time limit and concurrency, and nothing for code-kit's own",
+      truth(
+        checked.map((f) => `${f.file} ${f.kind}`).join() ===
+          '.github/workflows/ci.yml every-merge,.github/workflows/ci.yml every-pr,.github/workflows/ci.yml no-timeout,.github/workflows/ci.yml no-concurrency' &&
+          checked.every((f) => f.fix),
+        JSON.stringify(checked),
+      ),
+      0,
+    );
+    const said = cCli(['ci', 'check']).stdout;
+    expect(
+      'CIC-2 and says each fix, and that changing CI is the person’s to approve',
+      truth(
+        said.includes(
+          "Fix: run it on the release branches instead: on: push: branches: ['release/**']",
+        ) && said.includes("Changing CI is the person's to approve"),
+        said,
+      ),
+      0,
+    );
+    expect(
+      'CIC-2 next mentions them as attention',
+      truth(
+        nextIn(c.dir).attention.some((a) =>
+          /4 things in the project's CI \(\.github\/workflows\/ci\.yml\) run once per story/.test(
+            a,
+          ),
+        ),
+        JSON.stringify(nextIn(c.dir).attention),
+      ),
+      0,
+    );
+    cPut(
+      '.github/workflows/ci.yml',
+      "name: ci\non:\n  push:\n    branches: ['release/**']\njobs:\n  check:\n    runs-on: ubuntu-latest\n    timeout-minutes: 30\n    steps:\n      - run: pnpm test\n",
+    );
+    cCommit('CI on release branches');
+    expect(
+      'CIC-2 a workflow on release branches with a time limit has nothing found',
+      truth(!JSON.parse(cCli(['ci', 'check', '--json']).stdout || '[1]').length),
+      0,
+    );
+    // CIC-3: a release branch, cut from the base as committed and pushed.
+    const remote = mkdtempSync(join(tmpdir(), 'code-kit-remote-'));
+    cleanups.push(remote);
+    execFileSync('git', ['init', '-q', '--bare', remote]);
+    c.git('remote', 'add', 'origin', remote);
+    c.git('push', '-q', 'origin', 'main');
+    c.git('branch', 'release/0.3.0');
+    c.git('push', '-q', 'origin', 'release/0.3.0');
+    cPut('apps/office/a.ts', 'export const a = 1;\n');
+    cCommit('ST-4 booking form');
+    cPut('apps/office/b.ts', 'export const b = 1;\n');
+    cCommit('ST-7 cancel a booking');
+    c.git('checkout', '-q', '-b', 'web/st-9');
+    const head = c.git('rev-parse', 'main').trim();
+    const released = cCli(['release', '0.4.0']);
+    const remoteHead = execFileSync('git', ['-C', remote, 'rev-parse', 'release/0.4.0'], {
+      encoding: 'utf8',
+    }).trim();
+    expect(
+      'CIC-3 release cuts release/<version> from the base as committed, pushes it, and names the stories since the last one',
+      truth(
+        released.status === 0 &&
+          remoteHead === head &&
+          c.git('rev-parse', '--abbrev-ref', 'HEAD').trim() === 'web/st-9' &&
+          released.stdout.includes(`Cut release/0.4.0 from main at ${head.slice(0, 7)}`) &&
+          released.stdout.includes('Stories in it since release/0.3.0: ST-4, ST-7.'),
+        released.stdout + released.stderr,
+      ),
+      0,
+    );
+    const again = cCli(['release', '0.4.0']);
+    expect(
+      'CIC-3 a release branch that exists already is refused, naming its commit',
+      truth(
+        again.status === 1 &&
+          again.stderr.includes(`release/0.4.0 already exists, at ${head.slice(0, 7)}`),
+        again.stderr,
+      ),
+      0,
+    );
+    // CIC-4: what it spent, through GitHub's CLI (a stand-in here, answering as GitHub does).
+    const ghDir = mkdtempSync(join(tmpdir(), 'code-kit-gh-'));
+    cleanups.push(ghDir);
+    const at = (min) => new Date(Date.parse('2026-10-20T00:00:00Z') + min * 60000).toISOString();
+    const runs = [
+      {
+        id: 9,
+        name: 'ci',
+        event: 'push',
+        conclusion: 'failure',
+        run_started_at: at(0),
+        created_at: at(0),
+        updated_at: at(0),
+      },
+      ...Array.from({ length: 3 }, (_, n) => ({
+        id: n + 1,
+        name: 'ci',
+        event: 'push',
+        conclusion: 'success',
+        run_started_at: at(0),
+        created_at: at(0),
+        updated_at: at(26),
+      })),
+      {
+        id: 5,
+        name: 'code-kit',
+        event: 'pull_request',
+        conclusion: 'cancelled',
+        run_started_at: at(0),
+        created_at: at(0),
+        updated_at: at(1),
+      },
+    ];
+    writeFileSync(
+      join(ghDir, 'gh'),
+      `#!/usr/bin/env node
+const a = process.argv.slice(2).join(' ');
+if (a.startsWith('repo view')) console.log('someone/booking');
+else if (a.includes('/actions/runs?')) for (const r of ${JSON.stringify(runs)}) console.log(JSON.stringify(r));
+else if (a.includes('/runs/9/jobs')) console.log('77');
+else if (a.includes('check-runs/77/annotations')) console.log('The job was not started because recent account payments have failed or your spending limit needs to be increased.');
+else process.exit(1);
+`,
+    );
+    chmodSync(join(ghDir, 'gh'), 0o755);
+    const spent = cCli(['ci', 'usage', '--days', '7'], { PATH: `${ghDir}:${process.env.PATH}` });
+    expect(
+      "CIC-4 ci usage sums the runs by workflow and trigger, and says when GitHub isn't starting jobs",
+      truth(
+        spent.status === 0 &&
+          /someone\/booking, the last 7 days: 5 runs, about 79 minutes of wall-clock time/.test(
+            spent.stdout,
+          ) &&
+          /\s78 min\s+4 runs\s+ci \(push\), 1 failed/.test(spent.stdout) &&
+          /1 min\s+1 runs\s+code-kit \(pull_request\), 1 cancelled/.test(spent.stdout) &&
+          spent.stdout.includes(
+            "GitHub isn't starting this project's jobs: The job was not started because recent account payments have failed",
+          ),
+        spent.stdout + spent.stderr,
+      ),
+      0,
+    );
+  }
 } finally {
   for (const d of cleanups) rmSync(d, { recursive: true, force: true });
 }

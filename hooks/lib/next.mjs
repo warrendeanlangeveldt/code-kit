@@ -14,6 +14,7 @@ import { instructionsState } from './instructions.mjs';
 import { SECURITY_AGENT_FILE } from './security.mjs';
 import { laneClaims } from './laneclaims.mjs';
 import { keptBecause, worktrees } from './worktrees.mjs';
+import { ciFindings } from './ci.mjs';
 import { storyModels } from './dispatches.mjs';
 import { pickPerLane } from './schedule.mjs';
 
@@ -288,6 +289,14 @@ export function nextStep(root, base) {
     );
   // ONB-8: code-kit's own instructions to the lead and the lanes, brought up to date before the next step:
   // a newer code-kit's rules reach the agents only through them.
+  // CIC-2: what in the project's workflows runs per story, or with no time limit.
+  const ci = ciFindings(root, config.branches.protected[0]);
+  if (ci.length) {
+    const files = [...new Set(ci.map((f) => f.file))];
+    attention.push(
+      `${ci.length} thing${ci.length === 1 ? '' : 's'} in the project's CI (${files.join(', ')}) ${ci.length === 1 ? 'runs' : 'run'} once per story or without a time limit; \`code-kit ci check\` says what, and the fix for the person to approve.`,
+    );
+  }
   const instructions = instructionsState(root, config);
   const behind = instructions.filter((f) => ['stale', 'legacy'].includes(f.state));
   // A file with no code-kit part may be one the project keeps without it: said, not insisted on.

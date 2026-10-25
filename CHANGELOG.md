@@ -2,6 +2,15 @@
 
 What changed in each release of code-kit, newest first. Versions follow the plugin manifest and the npm package `@warren-dean/code-kit`. Each release is also on [GitHub Releases](https://github.com/warrendeanlangeveldt/code-kit/releases).
 
+## 0.25.0 (2026-10-25)
+
+code-kit spends far fewer GitHub Actions minutes: a project's full CI runs once per release instead of once per story, and you can see what it costs.
+
+- code-kit's own workflow now checks the rules only (`verify --no-checks`): ownership, layers, approvals, the design gate and the standards, which take seconds. The project's checks already ran in the merge queue before each story merged. The job stops after 10 minutes, and a new push cancels the run it replaces. A project whose workflow was written before this keeps it until you approve the change.
+- `code-kit ci check` reads the project's workflows and lists what costs most with code-kit's way of working, with the fix for each: a workflow that runs on every push to the base branch, a slow workflow on every pull request, a job with no time limit, a pull request workflow that doesn't cancel the run a new push replaces, and code-kit's older workflow running the checks again. init runs it and proposes the changes, applied only as you approve them (approval `ci`), and `code-kit next` mentions them.
+- `code-kit release <version>` cuts `release/<version>` from the base branch's head and pushes it, so the project's full CI runs there once. It names the stories merged since the last release branch, and refuses a branch that already exists. Releasing stays your decision: the lead never cuts one unasked.
+- `code-kit ci usage [--days 7]` lists the project's Actions runs by workflow and trigger, with their minutes and how many were cancelled or failed. It says plainly when GitHub has stopped starting jobs for the account's billing.
+
 ## 0.24.0 (2026-10-25)
 
 Each lane agent can run on the model its story needs, instead of one model for every lane.

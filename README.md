@@ -418,7 +418,7 @@ It's a preview: it's tested end to end against a stand-in for GitHub, and has be
 
 ## Enforce it in CI
 
-The hooks only see Claude Code sessions. For everything else, init offers `.github/workflows/code-kit.yml` (from `templates/github-workflow.yml`). It runs `verify` on every pull request, through `npx @warren-dean/code-kit@<version>`, pinned so CI doesn't change under you. It needs no secret. Two settings to make: mark the `code-kit` check as required on the protected branches, and make sure the workflow installs what the project's checks run, since a check whose tool is missing is skipped, and listed as not run, unless it sets `ifMissing: "fail"`. Add gitleaks to the workflow for the secret scan of commits' content.
+The hooks only see Claude Code sessions. For everything else, init offers `.github/workflows/code-kit.yml` (from `templates/github-workflow.yml`). It runs `verify --no-checks` on every pull request, through `npx @warren-dean/code-kit@<version>`, pinned so CI doesn't change under you: the rules, in seconds, with a 10-minute limit, and a new push cancels the run it replaces. The project's checks aren't run again there, because the merge queue ran them before each merge; the project's full CI runs on its release branches instead, once per release (`code-kit release <version>` cuts one). `code-kit ci check` says what in the project's own workflows still runs once per story, and `code-kit ci usage` what the project spent. The workflow needs no secret. Mark the `code-kit` check as required on the protected branches, and keep its install step: a fix story's test is run without its fix (REG-1). Add gitleaks to the workflow for the secret scan of commits' content.
 
 `verify` can't see spec-check reports, because `.claude/state/` isn't committed. Review covers those.
 
@@ -466,6 +466,9 @@ code-kit report "<title>" --what "…" [--expected …] [--command …] [--refus
 code-kit report [--json] | report send|discard <id>          # the drafts; sending files it on code-kit's GitHub with your gh, which only you do
 code-kit stops [--session id] [--json]                       # finish checks that refused an agent's last stop and still fail
 code-kit sent-back <branch> [--reason "…"]                    # record a review's send-back: status shows the story as sent back until the branch moves on
+code-kit ci check [--json]                                     # what in the project's workflows runs once per story, or without a time limit, and the fix
+code-kit ci usage [--days N] [--json]                          # the project's GitHub Actions runs and minutes, by workflow and trigger
+code-kit release <version>                                     # cut release/<version> from the base and push it: the project's full CI runs there once
 code-kit decisions [--json] [--all]                          # what waits on you in this session, and a count in each other one; --all lists every session's
 code-kit who                                                 # which session this is, whether it leads the project, and its task
 code-kit sessions [--json]                                   # the sessions working the project, which one leads, and each one's task
