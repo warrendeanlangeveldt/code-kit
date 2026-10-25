@@ -725,14 +725,21 @@ export function usageSection(usage, plan, text, Box) {
     );
   if (usage?.total) {
     const flagged = new Map(usage.outliers.map((o) => [o.id, o.ratio]));
-    for (const [id, n] of Object.entries(usage.stories).sort((a, b) => b[1] - a[1]))
+    const stories = Object.entries(usage.stories).sort((a, b) => b[1] - a[1]);
+    const busiest = Math.max(1, ...stories.map(([, n]) => n));
+    // Relative comparison, not a model quota or context window percentage.
+    // Every lane's exact token count remains visible beside its bar.
+    for (const [id, n] of stories) {
+      const filled = Math.min(12, Math.max(0, Math.round((n / busiest) * 12)));
       lines.push(
         Box({
           key: `usage-${id}`,
           flexDirection: 'row',
           columnGap: 2,
+          flexWrap: 'wrap',
           children: [
-            text(id),
+            text(id, { bold: true }),
+            text(`${'█'.repeat(filled)}${'░'.repeat(12 - filled)}`, { color: 'cyan' }),
             text(tokens(n), { dimColor: true }),
             ...(flagged.has(id)
               ? [text(`${flagged.get(id)}× the usual`, { color: 'yellow' })]
@@ -740,6 +747,8 @@ export function usageSection(usage, plan, text, Box) {
           ],
         }),
       );
+    }
+    lines.push(text('Bars relative to the highest-token story in this session.', { dimColor: true }));
     if (usage.background)
       lines.push(
         text(
