@@ -2484,6 +2484,42 @@ test('SCHED-1 a lane whose agent still runs keeps its claim', async ($, on) => {
   expect(w.acts.filter((a: string[]) => a[0] === 'lanes')).toEqual([]);
 });
 
+// An agent that has not finished can have a pending, waiting or idle status. In each
+// state its lane claim still protects the paths, even after the claim grace period.
+for (const status of ['pending', 'waiting', 'idle']) {
+  test(`SCHED-1 a ${status} lane agent retains its claim`, async ($, on) => {
+    const w = project();
+    w.next = { step: 'wait', args: '', then: [] };
+    w.laneClaims = [
+      { lane: 'web', story: 'ST-4', session: 's1', since: new Date(0).toISOString() },
+    ];
+    w.agents = [
+      { id: 'a1', type: 'web-engineer', description: 'ST-4 booking form', status },
+    ];
+    const clock = await start($, on, w);
+    await clock.advance(64000);
+    expect(w.acts.filter((a: string[]) => a[0] === 'lanes')).toEqual([]);
+  });
+}
+
+for (const status of ['completed', 'failed', 'killed']) {
+  test(`SCHED-1 a ${status} lane agent may release its stale claim`, async ($, on) => {
+    const w = project();
+    w.next = { step: 'wait', args: '', then: [] };
+    w.laneClaims = [
+      { lane: 'web', story: 'ST-4', session: 's1', since: new Date(0).toISOString() },
+    ];
+    w.agents = [
+      { id: 'a1', type: 'web-engineer', description: 'ST-4 booking form', status },
+    ];
+    const clock = await start($, on, w);
+    await clock.advance(64000);
+    expect(w.acts.filter((a: string[]) => a[0] === 'lanes')).toEqual([
+      ['lanes', 'release', 'web'],
+    ]);
+  });
+}
+
 test('LEAN-5 a lane agent past its context limit is told to wrap up, and its story goes on with a fresh agent', async ($, on) => {
   const w = project();
   w.next = { step: 'wait', args: '', then: [] };
