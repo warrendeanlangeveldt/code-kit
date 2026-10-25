@@ -303,6 +303,7 @@ export function lanesFrame(view, els, on) {
                           }
                         : null,
                       combined: view.combined ?? null,
+                      columns: view.columns ?? 80,
                     }),
                   ];
   const empty =
