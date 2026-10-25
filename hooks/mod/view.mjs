@@ -212,7 +212,7 @@ export function lanesPane(
     if (art.surface !== 'terminal' && els.Svg)
       return [
         els.Svg({
-          source: timelineSvg([{ cells }], { width: art.svgWidth ?? 480 }),
+          source: timelineSvg([{ cells, active: l.active }], { width: art.svgWidth ?? 480 }),
           alt: `${l.name}'s timeline`,
         }),
       ];
