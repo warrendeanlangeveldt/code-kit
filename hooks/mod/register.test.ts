@@ -1898,6 +1898,8 @@ test('CARD-9 many decisions read as short cards, a few at a time, with the selec
   await band.unmount();
   const ui = await pane($, PANE);
   expect((await ui.find({ key: 'decision-kinds' }))?.text).toBe('8 approvals · 1 question');
+  expect(await ui.find({ key: 'decision-context-header' })).toBeDefined();
+  expect(await ui.find({ key: 'decision-options-heading' })).toBeDefined();
   // Five cards at a time, each a headline and a line under it; the command cut at its pipe, on one line.
   expect(await ui.find({ key: 'decision-item-4' })).toBeDefined();
   expect(await ui.find({ key: 'decision-item-5' })).toBeUndefined();
@@ -2082,6 +2084,8 @@ test('JOURNAL-1 the Journal tab tells the lineage, from the request to now, with
   expect((await ui.find({ key: 'tab-journal' }))?.props.hotkey).toBe('3');
   await press($, 'tab-journal', PANE);
   const journal = await ui.find({ key: 'journal' });
+  expect(await ui.find({ key: 'journal-rail-1' })).toBeDefined();
+  expect(await ui.find({ type: 'Text', text: /reconstructed from Git and CodeKit records/ })).toBeDefined();
   expect(journal?.text).toMatch(
     /2026-10-01[\s\S]*You asked for “Bookings”[\s\S]*handed to the web lane[\s\S]*2026-10-02[\s\S]*You approved adding the package dayjs[\s\S]*merged into main/,
   );
@@ -3495,6 +3499,8 @@ test("MAP-1 the Code map shows the selected lane's story by layer, its imports, 
   await press($, 'tab-code', PANE);
   await clock.advance(1);
   expect((await ui.find({ key: 'map-story-ST-4' }))?.props.variant).toBe('primary');
+  expect(await ui.find({ key: 'code-map-summary' })).toBeDefined();
+  expect(await ui.find({ key: 'code-file-meta' })).toBeDefined();
   const drawn = (await ui.find({ key: 'code-map' }))?.text ?? '';
   for (const name of [
     'domain',
@@ -4033,6 +4039,8 @@ test('TRACE-1 the map: a cell per requirement, a row per spec, and a legend with
   expect((await ui.find({ key: 'tab-map' }))?.props.hotkey).toBe('5');
   await press($, 'tab-map', PANE);
   const legend = (await ui.find({ key: 'map-legend' }))?.text ?? '';
+  expect(await ui.find({ key: 'trail-receipt' })).toBeDefined();
+  expect(await ui.find({ key: 'trace-named-tests' })).toBeDefined();
   expect(legend).toMatch(/■ 20 done and tested/);
   expect(legend).toMatch(/✗ 3 without a story/);
   expect((await ui.find({ key: 'map-row-01-booking' }))?.text.replace(/\s/g, '')).toBe(
