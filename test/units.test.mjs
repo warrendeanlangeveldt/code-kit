@@ -1554,6 +1554,34 @@ test('LANES presentation: stage rail reflects workflow position, not test result
   }
 });
 
+test('DETAIL views distinguish trace links from actual verified outcomes', async () => {
+  const { requirementReceipt, codeMapSummary } = await import('../hooks/mod/panes.mjs');
+  const linked = requirementReceipt(
+    { id: 'BOOK-1', stories: ['ST-4'], tests: ['test/booking.test.ts'] },
+    { files: ['src/booking.ts'] },
+    true,
+  );
+  assert.deepEqual(linked.map((e) => e.state), ['present', 'present', 'present', 'present']);
+  assert.match(linked.at(-1).value, /1 named/);
+  const unknown = requirementReceipt({ id: 'BOOK-2', stories: [], tests: [] }, null, false);
+  assert.deepEqual(unknown.map((e) => e.state), ['present', 'gap', 'unknown', 'gap']);
+  const absent = requirementReceipt({ id: 'BOOK-3', stories: ['ST-5'], tests: [] }, null, true);
+  assert.equal(absent[2].state, 'gap');
+  assert.deepEqual(
+    codeMapSummary(
+      {
+        files: [
+          { path: 'src/api.ts', layer: 'api' },
+          { path: 'src/domain.ts', layer: 'domain' },
+          { path: 'src/other.ts', layer: 'domain' },
+        ],
+      },
+      { 'src/api.ts': { lane: 'web', verb: 'edit' } },
+    ),
+    { nodes: 3, layers: 2, touched: 1 },
+  );
+});
+
 test('MAP-2 what a tool call touches, and which files glow', async () => {
   const { touchOf, glowOf } = await import('../hooks/mod/codemap.mjs');
   assert.deepEqual(touchOf({ tool: 'Read', file_path: '/r/src/a.ts' }, '/r'), {
