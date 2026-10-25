@@ -19,10 +19,9 @@ const POSES = {
   // Quiet, stopped and queued are distinct from actively reviewing or completed.
   quiet: [['......', '..HH..', '.HLLH.', '..HH..', '.HHHH.', '.H..H.']],
   stalled: [['..HH..', '.HXXH.', '..HH..', '.HHHH.', '..HH..', '.H..H.']],
-  reviewing: [
-    ['..HH..', '.HEEH.', '..HH..', '.HHHH.', 'H.HH..', '.H..H.'],
-    ['..HH..', '.HEEH.', '..HH..', '.HHHH.', '..HH.H', '.H..H.'],
-  ],
+  // In review means awaiting a reviewer, not necessarily that an agent is
+  // currently running; its pose is intentionally static rather than feigning work.
+  reviewing: [['..HH..', '.HEEH.', '..HH..', '.HHHH.', 'H.HH..', '.H..H.']],
   queued: [['..HH..', '.HEEH.', '..HH..', '.HHHH.', '..HH..', '.H..H.']],
   done: [['H.HH.H', 'HHEEHH', '..HH..', '..HH..', '..HH..', '.H..H.']],
   // An idle agent occasionally blinks on a capable SVG surface.
