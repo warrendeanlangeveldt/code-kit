@@ -2,6 +2,15 @@
 
 What changed in each release of code-kit, newest first. Versions follow the plugin manifest and the npm package `@warren-dean/code-kit`. Each release is also on [GitHub Releases](https://github.com/warrendeanlangeveldt/code-kit/releases).
 
+## 0.26.2 (2026-10-26)
+
+The lanes pane tells the truth about what's being built, and is easier to read.
+
+- A lane no longer says "building" when nothing is building it. A story whose branch had merged, but whose line in the plan hadn't moved on, read as in progress forever and held its lane, so nothing new was sent to it. Now a story is in progress only while an agent's claim names it or you have its branch checked out. One whose work has merged counts as done, and `code-kit next` lists the plan lines that are out of date. One whose agent stopped before its first commit is ready again, and `next` sends it to a fresh agent and says why.
+- In a project with a long history, the plan's git reads no longer come back empty.
+- The lane characters are smaller, 8 by 8 pixels (four rows), and every pose is redrawn. A resting lane shows a "z".
+- The keys line shows each key once (`j: down · k: up · ⏎: open · f: filter · l: journal`), and a lane's action buttons no longer show their key twice.
+
 ## 0.26.1 (2026-10-26)
 
 `/lanes` opens in large projects again.
