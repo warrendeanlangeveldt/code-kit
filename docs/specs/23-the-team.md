@@ -144,6 +144,11 @@ A lane runs one story at a time across every session in the project. `code-kit n
 - Given the web lane running ST-3 in one session, when another session starts a web agent for ST-7, then it's refused, naming ST-3 and the first session.
 - Given ST-3's agent finished and ST-3 in review, then the web lane is free and `next` offers ST-4.
 
+A lane is busy only while something builds its story. A story's branch level with the base is in progress while its lane's claim names it or a person has it checked out. With nothing on it, the branch either had commits that merged (it moved since it was made, or the base names the story), and the story is done whatever the plan says yet, or it never had a commit, and the story is stopped: ready again for a fresh agent on the same branch, which `next` says.
+
+- Given web/st-3 merged into the base with the plan still saying in progress, then ST-3 is done, the web lane is free, and `next` says the plan's line is out of date.
+- Given web/st-3 made by an agent that stopped before committing, with no claim and nobody on it, then ST-3 is ready, `next` dispatches it again and says why, and the web lane isn't held by it.
+
 ### SCHED-2 Slices
 
 A story may belong to a slice (`**Slice:** <name>`): a feature that can be shown working, built across lanes. `harness.slices.open` (default 1) is how many slices are in focus. For each free lane, `next` offers, in order: a ready story in an open slice; a ready story in the next slice in plan order, opening it if fewer than `slices.open` are open; any other ready story, marked as ahead of its slice. A slice closes when every story in it is merged. The Lanes pane and `status` show each story's slice, and `report` carries it.

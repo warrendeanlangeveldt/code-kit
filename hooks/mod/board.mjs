@@ -3,7 +3,7 @@
 // built right?), Queue and Log, each with a status line first and no room taken when it has nothing to
 // say; the full views opened from a story or a command; three layouts. Pure functions from what the
 // mod already holds to elements, so they're tested with node at every width (UI-13).
-import { charactersOf, characterFrame, characterSvg, POSES, workOf } from './characters.mjs';
+import { SIZE, charactersOf, characterFrame, characterSvg, POSES, workOf } from './characters.mjs';
 import { BAR, rasterCells, runs, timelineSvg } from './art.mjs';
 import { goalOf } from './mission.mjs';
 import { CELL, cellOf, laneActions, laneStories, storyToOpen } from './panes.mjs';
@@ -370,8 +370,8 @@ export function poseFor(lane, { live = null, waiting = false, stalled = false, q
 export const layoutOf = (placement, columns) =>
   placement === 'inline' ? 'inline' : columns >= 110 ? 'wide' : 'docked';
 
-/** The rows a lane card takes: a character's six, and its border. */
-export const CARD_ROWS = 8;
+/** The rows a lane card takes: its five lines of words (the character's four beside them), and its border. */
+export const CARD_ROWS = 7;
 /** The columns a lane card takes where cards sit side by side: its character, its words, its frame. */
 export const CARD_COLUMNS = 44;
 /** The fewest columns a card is drawn in. */
@@ -473,7 +473,10 @@ export function keysFor(sel, { acts = [], view = null, loop = null, story = fals
       ...(view === 'trail' ? [{ key: '←→', label: 'requirement' }] : []),
       { key: 'esc', label: 'back' },
     ];
-  const keys = [{ key: 'j/k', label: 'move' }];
+  const keys = [
+    { key: 'j', label: 'down' },
+    { key: 'k', label: 'up' },
+  ];
   if (sel) keys.push({ key: '⏎', label: 'open' });
   if (sel?.kind === 'lane' && story) {
     keys.push({ key: 't', label: 'trail' }, { key: 'c', label: 'map' });
@@ -547,14 +550,19 @@ export function board(view, els, on) {
   const still = (name, pose) => {
     const grid = characterFrame(pose, 0, looks[name], { motion: 'off' });
     if (surface === 'terminal' && els.Raster)
-      return els.Raster({ key: `char-${name}`, columns: 12, rows: 6, cells: rasterCells(grid) });
+      return els.Raster({
+        key: `char-${name}`,
+        columns: SIZE,
+        rows: SIZE / 2,
+        cells: rasterCells(grid),
+      });
     if (els.Svg)
       return els.Svg({
         key: `char-${name}`,
         source: characterSvg(pose, looks[name], { motion: 'off' }),
         alt: `${name}: ${POSES[pose]?.words ?? pose}`,
-        width: 36,
-        height: 36,
+        width: SIZE * 3,
+        height: SIZE * 3,
       });
     return text(POSES[pose]?.glyph ?? '·');
   };
@@ -566,16 +574,16 @@ export function board(view, els, on) {
         key: `char-${name}`,
         module: './surface/character.mjs',
         props: { look: looks[name], pose, move, motion },
-        width: 12,
-        height: 6,
+        width: SIZE,
+        height: SIZE / 2,
       });
     if (surface === 'desktop' && els.Svg && motion !== 'off' && !faulted)
       return els.Svg({
         key: `char-${name}-${move?.key ?? pose}`,
         source: characterSvg(move ? move.kind : pose, looks[name]),
         alt: `${name}: ${POSES[move?.kind ?? pose]?.words ?? pose}`,
-        width: 36,
-        height: 36,
+        width: SIZE * 3,
+        height: SIZE * 3,
       });
     return still(name, pose);
   };
@@ -832,7 +840,7 @@ export function board(view, els, on) {
         : []),
     ];
   };
-  const cardRoom = Math.max(4, (layout === 'docked' ? columns : CARD_COLUMNS) - 19);
+  const cardRoom = Math.max(4, (layout === 'docked' ? columns : CARD_COLUMNS) - (SIZE + 7));
   const chips = (l, story) =>
     mapChips(view.maps?.[story?.id], view.trouble?.[l.name]).map((c, i) =>
       text(c.layer, {
@@ -1036,7 +1044,8 @@ export function board(view, els, on) {
             ...acts.map((a) =>
               Button({
                 key: `act-${a.id}`,
-                label: `${a.label} ${ACT_KEY[a.id] ?? ''}`.trim(),
+                // Drawn as "w: Watch": the hotkey shows once, before the word.
+                label: a.label,
                 ...(ACT_KEY[a.id] ? { hotkey: ACT_KEY[a.id] } : {}),
                 plain: true,
                 onPress: () => on.onLane(a.id, l),
@@ -1335,54 +1344,31 @@ export function board(view, els, on) {
     loop,
     story: Boolean(selectedLane && storyOf(selectedLane)),
   });
+  // A key the pane answers itself is a Button, drawn as its hotkey and word; the rest are words alike.
+  const bound = {
+    j: ['move-next', () => on.onMove(1)],
+    k: ['move-prev', () => on.onMove(-1)],
+    f: ['filter-focus', () => on.onFocusSearch()],
+    l: ['open-journal', () => on.onView('journal')],
+  };
   const keysLine = Box({
     key: 'keys',
     flexDirection: 'row',
     columnGap: 1,
     flexWrap: 'wrap',
-    children: [
-      Button({
-        key: 'move-next',
-        label: 'j',
-        hotkey: 'j',
-        plain: true,
-        dimColor: true,
-        onPress: () => on.onMove(1),
-      }),
-      Button({
-        key: 'move-prev',
-        label: 'k',
-        hotkey: 'k',
-        plain: true,
-        dimColor: true,
-        onPress: () => on.onMove(-1),
-      }),
-      Button({
-        key: 'filter-focus',
-        label: 'f',
-        hotkey: 'f',
-        plain: true,
-        dimColor: true,
-        onPress: () => on.onFocusSearch(),
-      }),
-      Button({
-        key: 'open-journal',
-        label: 'l',
-        hotkey: 'l',
-        plain: true,
-        dimColor: true,
-        onPress: () => on.onView('journal'),
-      }),
-      Box({
-        flexShrink: 1,
-        children: [
-          text(keys.map((k) => `${k.key} ${k.label}`).join(' · '), {
+    children: keys.flatMap((k, i) => [
+      ...(i ? [text('·', { key: `keys-dot-${i}`, dimColor: true })] : []),
+      bound[k.key]
+        ? Button({
+            key: bound[k.key][0],
+            label: k.label,
+            hotkey: k.key,
+            plain: true,
             dimColor: true,
-            wrap: 'truncate-end',
-          }),
-        ],
-      }),
-    ],
+            onPress: bound[k.key][1],
+          })
+        : text(`${k.key}: ${k.label}`, { key: `keys-${k.key}`, dimColor: true }),
+    ]),
   });
 
   // --- the layouts (UI-10) ---
@@ -1666,8 +1652,8 @@ export function sheetView(lanes, els, { surface = 'terminal', motion = 'while-ac
         key: `sheet-${name}-${pose}`,
         source: characterSvg(pose, looks[name], { motion }),
         alt: `${name}: ${POSES[pose].words}`,
-        width: 36,
-        height: 36,
+        width: SIZE * 3,
+        height: SIZE * 3,
       });
     return text(POSES[pose].glyph);
   };
@@ -1724,7 +1710,7 @@ export function viewFrame(
     children: [
       ...(head ? [viewHead(title, els, on)] : []),
       ...(Array.isArray(body) ? body : [body]),
-      text(keys.map((k) => `${k.key} ${k.label}`).join(' · '), { dimColor: true }),
+      text(keys.map((k) => `${k.key}: ${k.label}`).join(' · '), { dimColor: true }),
     ],
   });
 }

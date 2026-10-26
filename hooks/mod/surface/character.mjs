@@ -9,7 +9,7 @@ const hex = (rgb) => `#${rgb.toString(16).padStart(6, '0')}`;
 /** Each instance's timer and frame, by its surface (the same object across its calls). */
 const running = new WeakMap();
 
-/** A 12 by 12 grid as six rows of half-blocks: a run of cells sharing colours is one Text. */
+/** A character's grid as half-block rows, two pixels a cell: a run of cells sharing colours is one Text. */
 export function halfBlocks(grid, { Box, Text }) {
   const rows = [];
   for (let y = 0; y < grid.length; y += 2) {

@@ -265,6 +265,13 @@ export function nextStep(root, base) {
       `The plan's status lines are out of date for ${status.drift.map((d) => d.story).join(', ')}.`,
     );
 
+  // A lane's story whose agent stopped before its first commit is ready again, for a fresh agent.
+  const stopped = status.stories.filter((s) => s.stopped).map((s) => s.id);
+  if (stopped.length)
+    attention.push(
+      `${stopped.join(', ')} ${stopped.length === 1 ? 'has its branch but no commits, and no agent on it' : 'have their branches but no commits, and no agent on them'}: ${stopped.length === 1 ? 'it goes' : 'they go'} to a fresh agent, on the same branch.`,
+    );
+
   // A branch already in the merge queue has passed its review: it isn't reviewed again.
   const queued = waiting(readQueue(root)).map((e) => e.branch);
   const ids = (state) =>
