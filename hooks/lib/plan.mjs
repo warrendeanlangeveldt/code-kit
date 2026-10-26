@@ -51,9 +51,23 @@ const field = (lines, name) =>
     .find(Boolean)?.[1]
     .trim() ?? '';
 
+/** The first paragraph under a story's `**Field:**` lines, on one line, or null. */
+function summaryOf(body) {
+  const start = body.findIndex((l) => l.trim() && !/^\*\*[^*]+:\*\*/.test(l.trim()));
+  if (start < 0) return null;
+  const end = body.findIndex((l, j) => j > start && !l.trim());
+  const text = body
+    .slice(start, end < 0 ? undefined : end)
+    .join(' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return text || null;
+}
+
 /**
- * Every story in the plan: [{ id, title, lane, requirements, dependsOn, status, fixes, milestone, slice, size }]. A story's
- * milestone is the `## ` heading above it ("Milestone 5: Your own key"), or null.
+ * Every story in the plan: [{ id, title, lane, requirements, dependsOn, status, fixes, milestone, slice, size, summary }].
+ * A story's milestone is the `## ` heading above it ("Milestone 5: Your own key"), or null; its summary the
+ * paragraph under its fields, on one line, or null.
  */
 export function readStories(root, planPath) {
   const stories = [];
@@ -87,6 +101,7 @@ export function readStories(root, planPath) {
           field(body, 'Size')
             .toLowerCase()
             .match(/^(small|medium|large)\b/)?.[1] ?? null,
+        summary: summaryOf(body),
       });
     });
   }

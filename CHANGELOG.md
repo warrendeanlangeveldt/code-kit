@@ -2,6 +2,22 @@
 
 What changed in each release of code-kit, newest first. Versions follow the plugin manifest and the npm package `@warren-dean/code-kit`. Each release is also on [GitHub Releases](https://github.com/warrendeanlangeveldt/code-kit/releases).
 
+## 0.26.0 (2026-10-26)
+
+The lanes pane is redesigned around what needs you, a lane's work survives its agent stopping, and merged work reaches the remote.
+
+- **The pane.** `/lanes` is one page of panels with no tabs: Build (the milestone, by requirements tested), Needs you (everything waiting on you, most urgent first, one line each), Lanes (a card per lane at work, with a cell per requirement on its trail and a chip per layer of its code map), Queue and Log. When the cards don't fit, the lanes become swimlanes. It fits at any width, docked, inline or on Desktop.
+- **The band** above the prompt is at most three lines while something needs you, one line while the build moves, and gone otherwise. A digit presses the button showing it, the same in the band and the pane.
+- **Views.** On a story, `t` opens its Trail and `c` its Code map, and Escape comes back. `/lanes trail`, `/lanes map`, `/lanes journal`, `/lanes usage` and `/lanes characters` open those views directly.
+- **Characters.** Each lane has a small animated character, drawn from the lane's name, so any number of lanes gets its own. Each one shows what its agent is doing, and plays a move when a story arrives, is handed back, is sent back or merges. `harness.motion: off` keeps them still.
+- **Durable lanes.** Every tool call is logged per story in `.claude/state/events/` (paths, commands with credentials masked, results and commits, never file contents or prompts). `code-kit replay <story>` rebuilds where a story got to. When an agent stops partway, `next`, a session's start and `code-kit reconcile` check what it left open against git: what's done is marked done, what's safe runs again, and a command that can't safely run twice is put to the lead to find out, never rerun. A fresh agent on the story starts from a hand-over brief.
+- **Merges reach the remote.** `branches.publish` says how: `push` pushes the base, and `pull-request` opens (or updates) a pull request from code-kit's own branch, for a base that GitHub only changes through pull requests. `code-kit publish` tries again when GitHub won't merge yet. A story branch merges only into the base: an agent's merge of one into any other branch is refused, pointing to the queue.
+- **Worktrees** of stories merged on the remote's base are now cleaned up even when the local base is behind it.
+- **A lane's claim** is no longer released while its agent is pending, waiting or idle, so a second agent can't start on the same paths. Only an agent that has ended frees it.
+- **Reports** to a team provider (report version 4) carry each story's summary, the paragraph under its fields in the plan (at most 600 characters, cut at a sentence), and each requirement's title.
+- code-kit's part of CLAUDE.md is updated for the band and the pane: `code-kit instructions` shows the change.
+- The npm package no longer includes the mod's test file.
+
 ## 0.25.0 (2026-10-25)
 
 code-kit spends far fewer GitHub Actions minutes: a project's full CI runs once per release instead of once per story, and you can see what it costs.

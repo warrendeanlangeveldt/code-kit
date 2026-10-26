@@ -6189,7 +6189,7 @@ else process.exit(1);
     expect(
       'SCHED-2 and the report carries the slices, and still passes its allow-list',
       truth(
-        reported.version === 3 &&
+        reported.version >= 3 &&
           reported.slices?.some(
             (sl) => sl.name === 'Book a class' && sl.open && sl.stories.join() === 'ST-1,ST-2',
           ) &&
@@ -7977,7 +7977,7 @@ else process.exit(1);
     );
     writeFileSync(
       join(repo, 'docs/spec/plan.md'),
-      '# Plan\n\n## Milestone 1: Booking\n\n**Target:** 2026-11-30\n\n### ST-4 Booking list\n\n**Lane:** web\n**Requirements:** BOOK-1\n**Status:** todo\n',
+      '# Plan\n\n## Milestone 1: Booking\n\n**Target:** 2026-11-30\n\n### ST-4 Booking list\n\n**Lane:** web\n**Requirements:** BOOK-1\n**Status:** todo\n\nThe list of bookings for a day,\nnewest first.\n',
     );
     g('add', '-A');
     g('commit', '-q', '-m', 'init');
@@ -8055,6 +8055,10 @@ else process.exit(1);
             snapshot.milestones[0].target === '2026-11-30' &&
             snapshot.requirements[0].id === 'BOOK-1' &&
             snapshot.rules.layers.length > 0 &&
+            snapshot.version === 4 &&
+            snapshot.stories[0].summary === 'The list of bookings for a day, newest first.' &&
+            typeof snapshot.requirements[0].title === 'string' &&
+            snapshot.requirements[0].title.length > 0 &&
             !/diff|prompt|contents/.test(Object.keys(snapshot).join()),
           JSON.stringify(snapshotProblems(snapshot)) + dry.stdout.slice(0, 400),
         ),
