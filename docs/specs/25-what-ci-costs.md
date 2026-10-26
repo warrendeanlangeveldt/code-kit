@@ -7,10 +7,10 @@
 
 Three private projects built with code-kit used about 5,400 minutes of GitHub Actions in one week. At that rate GitHub Pro's 3,000 included minutes a month last four days, and GitHub then stopped starting jobs at all.
 
-- **my-aila ran its full CI on every push to `main`:** 61 runs in a week, about 80 minutes each. It ran lint, typecheck, unit tests and two integration suites, all of which had already run in the story's pull request and in the merge queue.
-- **edrei-platform's jobs had no time limit.** A backend job ran for 290 minutes before someone cancelled it, and a Playwright step failed after almost two hours.
-- **code-kit's own workflow ran each project's checks again.** Its template ran `verify` with the checks, so in edrei-platform the code-kit job took 32 minutes a pull request, repeating the test suite.
-- **ask-wez ran two end-to-end suites on every pull request** from every lane branch.
+- **One project ran its full CI on every push to `main`:** 61 runs in a week, about 80 minutes each. It ran lint, typecheck, unit tests and two integration suites, all of which had already run in the story's pull request and in the merge queue.
+- **Another project's jobs had no time limit.** A backend job ran for 290 minutes before someone cancelled it, and a Playwright step failed after almost two hours.
+- **code-kit's own workflow ran each project's checks again.** Its template ran `verify` with the checks, so in one project the code-kit job took 32 minutes a pull request, repeating the test suite.
+- **A third project ran two end-to-end suites on every pull request** from every lane branch.
 
 Each story is its own branch, pull request and merge, so whatever CI does per pull request or per merge happens once per story. code-kit's merge queue already runs the project's checks locally before a story merges (spec 09), so the base branch only receives commits whose checks passed. Running the full suite again on GitHub at each merge repeats that work. It belongs at the point where a version is about to ship.
 

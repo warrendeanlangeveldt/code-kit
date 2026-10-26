@@ -1713,10 +1713,10 @@ test("ASK-4 the brief's open questions are the person's decisions: answered to t
   expect(await ui.find({ type: 'Text', text: 'The product domain' })).toBeDefined();
   await press($, 'decide-answerBrief', PANE);
   const box = await pane($, 'code-kit-answer');
-  await $.ui.input({ plugin: 'code-kit', key: 'answer-text', text: 'myaila.com.au' });
+  await $.ui.input({ plugin: 'code-kit', key: 'answer-text', text: 'example.com' });
   await box.unmount();
   expect(w.prompts.at(-1)).toBe(
-    'The person answered an open question in docs/brief.md, "The product domain": myaila.com.au. Record it in the brief\'s decision log, take it out of the open questions, and carry on with it.',
+    'The person answered an open question in docs/brief.md, "The product domain": example.com. Record it in the brief\'s decision log, take it out of the open questions, and carry on with it.',
   );
   await ui.unmount();
   const after = await bandUi($);
@@ -1744,7 +1744,7 @@ test("ASK-5 a brief's question shows as a question, with who decides and what it
       {
         at: 1,
         kind: 'request',
-        text: 'You asked for “My Aila”: a household’s default parent carries the mental load. Things get missed.',
+        text: 'You asked for “Shared Rota”: a small team’s shifts live in a spreadsheet. Swaps get missed.',
       },
     ],
   };
@@ -1766,7 +1766,7 @@ test("ASK-5 a brief's question shows as a question, with who decides and what it
   expect(
     await ui.find({
       type: 'Text',
-      text: '“My Aila”: a household’s default parent carries the mental load.',
+      text: '“Shared Rota”: a small team’s shifts live in a spreadsheet.',
     }),
   ).toBeDefined();
   expect(await ui.find({ type: 'Text', text: /dep-rrule/ })).toBeUndefined();
@@ -1801,7 +1801,7 @@ test('ASK-2 and ASK-4 an answer closes its decision at once, though the lead hea
   expect(await ui.find({ type: 'Text', text: /Which weather provider/ })).toBeUndefined();
   await press($, 'decide-answerBrief', PANE);
   box = await pane($, 'code-kit-answer');
-  await $.ui.input({ plugin: 'code-kit', key: 'answer-text', text: 'myaila.com.au' });
+  await $.ui.input({ plugin: 'code-kit', key: 'answer-text', text: 'example.com' });
   await box.unmount();
   expect(w.prompts).toHaveLength(2);
   // UI-3: with nothing left to decide, the view gives way to the panels, and Needs you takes no room.
@@ -5032,9 +5032,9 @@ test('HUBR-6 a team on GitHub sends no pulse', async ($, on) => {
 test('TRACE-2 a project with more requirements than a list holds still draws its trail', async ($, on) => {
   const w = project();
   w.requirements = Array.from({ length: 134 }, (_, i) => ({
-    id: `AILA-${i + 1}`,
+    id: `ROTA-${i + 1}`,
     title: `Requirement ${i + 1}`,
-    file: 'docs/spec/03-aila.md',
+    file: 'docs/spec/03-rota.md',
     removed: false,
     state: 'todo',
     stories: ['ST-4'],
