@@ -2,10 +2,43 @@
 // records: when its branch was made, its commits, its merge into the base, its send-backs and the
 // approvals its commits logged. The mod draws these as a bar per lane on a shared time axis.
 import { execFileSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
+import { isAbsolute, join } from 'node:path';
 import { APPROVAL_LOG } from './rules.mjs';
 import { sendBacks } from './reviews.mjs';
 
 const escape = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+/**
+ * Each object asked for, read by one `git cat-file --batch`: { name: text }, a missing one left out.
+ * One process for every branch's approval log, where a `git show` each outlasts the mod's 30 seconds.
+ */
+export function readObjects(root, names) {
+  if (!names.length) return {};
+  let out;
+  try {
+    out = execFileSync('git', ['-C', root, 'cat-file', '--batch'], {
+      input: `${names.join('\n')}\n`,
+      stdio: ['pipe', 'pipe', 'ignore'],
+      maxBuffer: 256 * 1024 * 1024,
+    });
+  } catch {
+    return {};
+  }
+  const found = {};
+  let at = 0;
+  for (const name of names) {
+    const eol = out.indexOf(10, at);
+    if (eol < 0) break;
+    const header = out.subarray(at, eol).toString('utf8').split(' ');
+    at = eol + 1;
+    if (header[1] === 'missing' || header.length < 3) continue;
+    const size = Number(header[2]);
+    found[name] = out.subarray(at, at + size).toString('utf8');
+    at += size + 1;
+  }
+  return found;
+}
 
 /**
  * For each story with a branch, or done: { id, lane, branch, state, started, lastCommit, merged,
@@ -29,49 +62,66 @@ export function storyTimes(root, stories, base) {
     return { at: Number(t) * 1000, subject: subject.join('\t') };
   });
   const backs = sendBacks(root);
-  const logged = (ref) => new Set(lines(git('show', `${ref}:${APPROVAL_LOG}`)));
-  const onBase = logged(base);
-  return stories
-    .filter((s) => s.branchExists || s.state === 'done')
-    .map((s) => {
-      const b = s.branch;
-      // The reflog's oldest entry is the branch's making, when it's still there.
-      const made = s.branchExists
-        ? lines(git('reflog', 'show', '--format=%ct', `refs/heads/${b}`))
+  const onBase = new Set(lines(git('show', `${base}:${APPROVAL_LOG}`)));
+  const shown = stories.filter((s) => s.branchExists || s.state === 'done');
+  const refOf = (s) => s.ref ?? `refs/heads/${s.branch}`;
+  const logs = readObjects(
+    root,
+    shown.filter((s) => s.branchExists).map((s) => `${refOf(s)}:${APPROVAL_LOG}`),
+  );
+  const common = git('rev-parse', '--git-common-dir');
+  const reflogs = common ? (isAbsolute(common) ? common : join(root, common)) : null;
+  // When a branch was made: its reflog's oldest entry, read from the file git keeps it in (or from git,
+  // where the file isn't there), in milliseconds; null once the reflog is gone.
+  const madeAt = (b) => {
+    let first = null;
+    try {
+      first = readFileSync(join(reflogs, 'logs/refs/heads', b), 'utf8').split('\n')[0];
+    } catch {
+      const at = lines(git('reflog', 'show', '--date=unix', '--format=%gd', `refs/heads/${b}`))
+        .at(-1)
+        ?.match(/@\{(\d+)\}$/)?.[1];
+      return at ? Number(at) * 1000 : null;
+    }
+    const at = first?.split('\t')[0].match(/> (\d+) [+-]\d{4}$/)?.[1];
+    return at ? Number(at) * 1000 : null;
+  };
+  return shown.map((s) => {
+    const b = s.branch;
+    // A branch only on origin has no reflog here.
+    const local = s.branchExists && refOf(s).startsWith('refs/heads/');
+    const made = local && reflogs ? madeAt(b) : null;
+    // Only a branch ahead of the base has commits of its own.
+    const commits =
+      s.branchExists && s.ahead !== 0
+        ? lines(git('log', '--format=%ct', `${base}..${refOf(s)}`)).map((t) => Number(t) * 1000)
         : [];
-      const commits = s.branchExists
-        ? lines(git('log', '--format=%ct', `${base}..${b}`)).map((t) => Number(t) * 1000)
-        : [];
-      const named = new RegExp(`(^|[\\s'"])${escape(b)}($|[\\s'"])`);
-      const merged = merges.find((m) => named.test(m.subject))?.at ?? null;
-      const approvals = s.branchExists
-        ? [...logged(b)]
-            .filter((l) => !onBase.has(l))
-            .flatMap((l) => {
-              try {
-                const e = JSON.parse(l);
-                return e.grantedAt || e.at
-                  ? [{ at: Date.parse(e.grantedAt ?? e.at), names: [e.approval].filter(Boolean) }]
-                  : [];
-              } catch {
-                return [];
-              }
-            })
-        : [];
-      return {
-        id: s.id,
-        lane: s.lane,
-        branch: b,
-        state: s.state,
-        started: made.length
-          ? Number(made.at(-1)) * 1000
-          : commits.length
-            ? Math.min(...commits)
-            : null,
-        lastCommit: commits.length ? Math.max(...commits) : null,
-        merged,
-        sentBack: backs.filter((x) => x.branch === b).map((x) => Date.parse(x.at)),
-        approvals,
-      };
-    });
+    const named = new RegExp(`(^|[\\s'"])${escape(b)}($|[\\s'"])`);
+    const merged = merges.find((m) => named.test(m.subject))?.at ?? null;
+    const approvals = s.branchExists
+      ? lines(logs[`${refOf(s)}:${APPROVAL_LOG}`] ?? '')
+          .filter((l) => !onBase.has(l))
+          .flatMap((l) => {
+            try {
+              const e = JSON.parse(l);
+              return e.grantedAt || e.at
+                ? [{ at: Date.parse(e.grantedAt ?? e.at), names: [e.approval].filter(Boolean) }]
+                : [];
+            } catch {
+              return [];
+            }
+          })
+      : [];
+    return {
+      id: s.id,
+      lane: s.lane,
+      branch: b,
+      state: s.state,
+      started: made ? made : commits.length ? Math.min(...commits) : null,
+      lastCommit: commits.length ? Math.max(...commits) : null,
+      merged,
+      sentBack: backs.filter((x) => x.branch === b).map((x) => Date.parse(x.at)),
+      approvals,
+    };
+  });
 }
