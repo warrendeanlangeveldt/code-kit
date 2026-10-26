@@ -1,6 +1,7 @@
-// Panes v2 (docs/specs/11-panes.md): the Lanes pane's frame. A counts header, tabs, what needs the
-// person, the tab's body and the keys, as pure functions of what the mod already holds. The Lanes
-// tab's body is view.mjs's lanesPane; the Queue and Usage tabs reuse its sections.
+// The full views the pane opens over its panels (docs/specs/27-the-mod-redesigned.md, UI-6): a story's
+// drill-down (VIEW-7), the Trail (TRAIL-1, spec 10's map), the Code map (MAP-1 to MAP-5), the
+// decisions with their lineage (DECIDE-2) and the Journal (JOURNAL-1), and a lane's acts and liveness,
+// as pure functions of what the mod already holds.
 import { trailRows as trailRowsDrawn, trailSvg } from './trail.mjs';
 import {
   MAP_LEGEND,
@@ -12,67 +13,7 @@ import {
   mapSvg,
   neighboursOf,
 } from './codemap.mjs';
-import {
-  NOT_CODE_KIT,
-  STATE_COLOR,
-  ago,
-  lanesPane,
-  queueSection,
-  shownState,
-  tokens,
-  usageSection,
-} from './view.mjs';
-
-export const TABS = [
-  { id: 'lanes', label: 'Lanes', hotkey: '1' },
-  { id: 'decisions', label: 'Decisions', hotkey: '2' },
-  { id: 'journal', label: 'Journal', hotkey: '3' },
-  { id: 'code', label: 'Code map', hotkey: '4' },
-  { id: 'map', label: 'Trail', hotkey: '5' },
-  { id: 'queue', label: 'Queue', hotkey: '6' },
-  { id: 'usage', label: 'Usage', hotkey: '7' },
-];
-
-/** The pane's own state, kept by the mod between draws. */
-export const DEFAULT_UI = { tab: 'lanes', selected: null, filter: null, search: '', cell: null };
-
-/** The glyph each state carries besides its colour (spec 11's quality target). */
-const GLYPH = {
-  building: '●',
-  working: '▶',
-  'in review': '◐',
-  queued: '◆',
-  'sent back': '↩',
-  'waiting on you': '?',
-  blocked: '■',
-  idle: '·',
-  ready: '○',
-  merged: '✓',
-};
-
-/**
- * VIEW-1: the stories counted by state, in the order a build moves through them, only those there
- * are: [{ state, n, glyph }]. Lanes give building, in review, queued, sent back and blocked; the plan
- * gives ready and merged.
- */
-export function countsOf(state, queue = []) {
-  if (state?.kind !== 'ok') return [];
-  const lanes = state.lanes.map((l) => shownState(l, queue));
-  const n = (s) => lanes.filter((x) => x === s).length;
-  const counts = [
-    ['building', n('building')],
-    ['working', n('working')],
-    ['in review', n('in review')],
-    ['queued', n('queued')],
-    ['sent back', n('sent back')],
-    ['waiting on you', n('waiting on you')],
-    ['blocked', n('blocked')],
-    ['ready', state.ready.length],
-    ['merged', (state.stories ?? []).filter((s) => s.state === 'done').length],
-    ['idle', n('idle')],
-  ];
-  return counts.filter(([, k]) => k > 0).map(([s, k]) => ({ state: s, n: k, glyph: GLYPH[s] }));
-}
+import { ago, shownState, tokens } from './view.mjs';
 
 /** A lane's stories in plan order. */
 export const laneStories = (lane, state) =>
@@ -84,27 +25,6 @@ export function storyToOpen(lane, state) {
   const own = laneStories(lane, state);
   return own.find((s) => s.state !== 'done') ?? own.at(-1) ?? null;
 }
-
-/** VIEW-1: how much of the plan is done, as words: "3 of 25 stories done". */
-export function planProgress(state) {
-  const all = state?.stories ?? [];
-  return all.length
-    ? `${all.filter((s) => s.state === 'done').length} of ${all.length} stories done`
-    : null;
-}
-
-/** VIEW-6's letters for the band's actions, as the needs-you strip draws them. */
-const LETTER = {
-  approve: 'a',
-  approveHeld: 'a',
-  review: 'r',
-  merge: 'm',
-  mergeQueue: 'm',
-  go: 'g',
-  keepGoing: 'g',
-  pause: 'p',
-  resume: 'p',
-};
 
 /** The selected lane's own acts (VIEW-6), as its state allows them: [{ id, label, hotkey }]. */
 export function laneActions(lane, { queue = [], held = [], requests = [] } = {}) {
@@ -126,296 +46,6 @@ export function laneActions(lane, { queue = [], held = [], requests = [] } = {})
     acts.push({ id: 'stop', label: 'Stop', hotkey: 'x' });
   }
   return acts;
-}
-
-/**
- * The Lanes pane (spec 11). `view` holds what to draw: { state, usage, plan, loop, needs, live,
- * held, requests, ui, placement }; `needs` are the band's lines (VIEW-5). `on` acts: onTab(id),
- * onFilter(state), onMove(step), onNeed(id, line), onLane(id, lane), onSearch(text).
- */
-export function lanesFrame(view, els, on) {
-  const { Box, Text, Button, Input } = els;
-  const text = (value, style = {}) => Text({ ...style, children: [value] });
-  const { state, ui = DEFAULT_UI, loop = null, plan = null } = view;
-  if (!state || state.kind === 'none') return text(NOT_CODE_KIT, { dimColor: true });
-  if (state.kind === 'invalid')
-    return text('The config is invalid: run code-kit check.', { color: 'red' });
-  const queue = loop?.queue ?? [];
-
-  // VIEW-1: the counts, each a filter; the loop's state and the plan's use.
-  const loopWord =
-    loop?.state === 'off'
-      ? 'loop off'
-      : loop?.state === 'paused'
-        ? 'loop paused'
-        : loop?.state === 'done'
-          ? 'milestone done'
-          : 'loop on';
-  const header = Box({
-    key: 'header',
-    flexDirection: 'row',
-    columnGap: 2,
-    flexWrap: 'wrap',
-    children: [
-      ...countsOf(state, queue).map((c) =>
-        Button({
-          key: `count-${c.state}`,
-          label: `${c.glyph} ${c.n} ${c.state}`,
-          plain: true,
-          ...(ui.filter && ui.filter !== c.state ? { dimColor: true } : {}),
-          onPress: () => on.onFilter(c.state),
-        }),
-      ),
-      ...(planProgress(state) ? [text(planProgress(state), { dimColor: true })] : []),
-      text(loopWord, { color: loop?.state === 'paused' ? 'yellow' : 'green' }),
-      ...(plan?.percent != null
-        ? [
-            text(`plan ${plan.percent}%`, {
-              color: plan.paused ? 'red' : undefined,
-              dimColor: !plan.paused,
-            }),
-          ]
-        : []),
-    ],
-  });
-
-  // VIEW-5: what waits on the person, pinned at the top with VIEW-6's letters.
-  const used = new Set();
-  const needs = (view.needs ?? []).map((line) => {
-    const actions = line.actions.filter((a) => a.id !== 'lanes');
-    return Box({
-      key: `need-${line.kind}`,
-      flexDirection: 'row',
-      columnGap: 2,
-      children: [
-        text('!', { color: 'yellow', bold: true }),
-        text(line.text, { bold: true }),
-        // DECIDE-2: which story it's for.
-        ...(line.context ? [text(line.context, { dimColor: true, wrap: 'truncate-end' })] : []),
-        ...actions.map((a) => {
-          const letter = LETTER[a.id] && !used.has(LETTER[a.id]) ? LETTER[a.id] : undefined;
-          if (letter) used.add(letter);
-          return Button({
-            key: `need-${a.id}`,
-            label: a.label,
-            ...(letter ? { hotkey: letter } : {}),
-            variant: 'primary',
-            onPress: () => on.onNeed(a.id, line),
-          });
-        }),
-      ],
-    });
-  });
-
-  // VIEW-8: inline, the header, what needs the person and one line per lane.
-  if (view.placement === 'inline')
-    return Box({
-      flexDirection: 'column',
-      children: [
-        header,
-        ...needs,
-        ...state.lanes.map((l) => {
-          const live = view.live?.[l.name];
-          const s = shownState(l, queue);
-          return Box({
-            key: `lane-${l.name}`,
-            flexDirection: 'row',
-            columnGap: 1,
-            children: [
-              text(l.name, { bold: true }),
-              text(s, STATE_COLOR[s] ? { color: STATE_COLOR[s] } : { dimColor: true }),
-              ...(l.story ? [text(l.story.id, { dimColor: true })] : []),
-              ...(live
-                ? [
-                    text(`${live.tool} · ${live.ago}`, {
-                      wrap: 'truncate-end',
-                      ...(live.level === 'stalled'
-                        ? { color: 'red' }
-                        : live.level === 'quiet'
-                          ? { color: 'yellow' }
-                          : { dimColor: true }),
-                    }),
-                  ]
-                : []),
-            ],
-          });
-        }),
-      ],
-    });
-
-  // VIEW-6: the tabs, on 1 to 4.
-  const tabs = Box({
-    key: 'tabs',
-    flexDirection: 'row',
-    columnGap: 1,
-    children: TABS.map((t) =>
-      Button({
-        key: `tab-${t.id}`,
-        label: t.label,
-        hotkey: t.hotkey,
-        ...(ui.tab === t.id ? { variant: 'primary' } : { dimColor: true }),
-        onPress: () => on.onTab(t.id),
-      }),
-    ),
-  });
-
-  // VIEW-7: a story's drill-down takes the tabs' place; Back (b, or Escape) returns.
-  if (ui.story && view.story)
-    return Box({
-      flexDirection: 'column',
-      rowGap: 1,
-      children: [
-        header,
-        ...(needs.length ? [Box({ key: 'needs', flexDirection: 'column', children: needs })] : []),
-        storyPane(view.story, els, on.story),
-      ],
-    });
-
-  const selected = state.lanes.find((l) => l.name === ui.selected) ?? null;
-  const body =
-    ui.tab === 'decisions'
-      ? decisionsTab(view.cards ?? [], ui, els, on)
-      : ui.tab === 'journal'
-        ? journalTab(view.journal ?? [], els, view.now)
-        : ui.tab === 'code'
-          ? codeTab(view, els, on)
-          : ui.tab === 'map'
-            ? mapTab(view.status, ui.cell, els, on, view.trail, {
-                surface: view.surface,
-                columns: view.columns,
-              })
-            : ui.tab === 'queue'
-              ? queueSection(loop, text, Box)
-              : ui.tab === 'usage'
-                ? usageSection(view.usage, plan, text, Box)
-                : [
-                    lanesPane(state, els, view.usage, plan, loop, {
-                      filter: ui.filter,
-                      search: ui.search,
-                      selected: ui.selected,
-                      live: view.live ?? {},
-                      art: view.art ?? null,
-                      detail: selected
-                        ? {
-                            agent: selected.agent ?? null,
-                            owns: view.paths?.[selected.name] ?? [],
-                            stories: laneStories(selected, state),
-                          }
-                        : null,
-                      combined: view.combined ?? null,
-                    }),
-                  ];
-  const empty =
-    ui.tab === 'decisions'
-      ? 'Nothing needs you. The lead is handling the build.'
-      : ui.tab === 'journal'
-        ? 'Nothing recorded yet: the journal starts with the brief.'
-        : ui.tab === 'queue'
-          ? 'The merge queue is empty.'
-          : ui.tab === 'usage'
-            ? 'No usage measured yet this session.'
-            : null;
-
-  // VIEW-6: j/k move between lanes; the selected lane's acts; f filters.
-  const opening = selected ? storyToOpen(selected, state) : null;
-  const keys =
-    ui.tab === 'lanes'
-      ? [
-          Box({
-            key: 'keys',
-            flexDirection: 'row',
-            columnGap: 1,
-            flexWrap: 'wrap',
-            children: [
-              ...(opening
-                ? [
-                    Button({
-                      key: 'open-story',
-                      label: `Open ${opening.id}`,
-                      hotkey: 'o',
-                      variant: 'primary',
-                      autoFocus: true,
-                      onPress: () => on.onOpen({ ...selected, story: opening }),
-                    }),
-                  ]
-                : []),
-              Button({
-                key: 'lane-next',
-                label: 'Next lane',
-                hotkey: 'j',
-                plain: true,
-                onPress: () => on.onMove(1),
-              }),
-              Button({
-                key: 'lane-prev',
-                label: 'Previous',
-                hotkey: 'k',
-                plain: true,
-                onPress: () => on.onMove(-1),
-              }),
-              ...(selected
-                ? laneActions(selected, { queue, held: view.held, requests: view.requests }).map(
-                    (a) =>
-                      Button({
-                        key: `act-${a.id}`,
-                        label: `${a.label} ${selected.name}`,
-                        hotkey: used.has(a.hotkey) ? undefined : a.hotkey,
-                        plain: true,
-                        onPress: () => on.onLane(a.id, selected),
-                      }),
-                  )
-                : []),
-              ...(!used.has('p') && loop?.state !== 'off' && loop?.state !== 'done'
-                ? [
-                    Button({
-                      key: 'loop-toggle',
-                      label: loop?.state === 'paused' ? 'Resume loop' : 'Pause loop',
-                      hotkey: 'p',
-                      plain: true,
-                      onPress: () => on.onNeed(loop?.state === 'paused' ? 'resume' : 'pause', null),
-                    }),
-                  ]
-                : []),
-            ],
-          }),
-          // One row: f puts the keys in the filter.
-          Box({
-            key: 'filter-row',
-            flexDirection: 'row',
-            columnGap: 1,
-            children: [
-              Button({
-                key: 'filter-focus',
-                label: 'Filter',
-                hotkey: 'f',
-                plain: true,
-                onPress: () => on.onFocusSearch(),
-              }),
-              Input({
-                key: 'filter',
-                label: '',
-                value: ui.search,
-                placeholder: 'lane, agent or story',
-                submitLabel: 'Filter',
-                onInput: (v) => on.onSearch(v),
-                onSubmit: (v) => on.onSearch(v),
-              }),
-            ],
-          }),
-        ]
-      : [];
-
-  return Box({
-    flexDirection: 'column',
-    rowGap: 1,
-    children: [
-      header,
-      ...(needs.length ? [Box({ key: 'needs', flexDirection: 'column', children: needs })] : []),
-      tabs,
-      ...(body.length ? body : [text(empty, { dimColor: true })]),
-      ...keys,
-    ],
-  });
 }
 
 /** A tool call as the liveness column reads it (VIEW-4): "Bash npm test", "Edit apps/web/a.ts". */
@@ -511,12 +141,30 @@ const SEVERITY_TITLE = { blocker: 'Blockers', concern: 'Concerns', nit: 'Nits' }
  * it; `actions` the lane's acts. `on`: onBack(), onFile(path), onAct(id).
  */
 export function storyPane(
-  { story, review, tokens: usedTokens, outlier, steps, actions, file, now, understanding = null },
+  {
+    story,
+    review,
+    tokens: usedTokens,
+    outlier,
+    steps,
+    actions,
+    file,
+    now,
+    understanding = null,
+    columns = 100,
+  },
   els,
   on,
 ) {
   const { Box, Text, Button, Code } = els;
-  const text = (value, style = {}) => Text({ ...style, children: [value] });
+  // UI-13: words wrap rather than spill, unless they say otherwise.
+  const text = (value, style = {}) => Text({ wrap: 'wrap', ...style, children: [value] });
+  /** A path that fits on a button: its last parts, where the whole won't. */
+  const fitPath = (path, room) => {
+    if (path.length <= room) return path;
+    const tail = path.split('/').slice(-2).join('/');
+    return tail.length + 2 <= room ? `…/${tail}` : `…/${path.split('/').pop()}`;
+  };
   const section = (key, title, children) =>
     Box({ key, flexDirection: 'column', children: [text(title, { bold: true }), ...children] });
   const d = story.data;
@@ -524,6 +172,7 @@ export function storyPane(
     key: 'story-head',
     flexDirection: 'row',
     columnGap: 2,
+    flexWrap: 'wrap',
     children: [
       Button({
         key: 'story-back',
@@ -639,7 +288,7 @@ export function storyPane(
             children: d.diff.files.map((f, i) =>
               Button({
                 key: `file-${i}`,
-                label: `${f.path} +${f.added} -${f.removed}`,
+                label: `${fitPath(f.path, columns - 12)} +${f.added} -${f.removed}`,
                 plain: true,
                 ...(shown?.path === f.path ? {} : { dimColor: true }),
                 onPress: () => on.onFile(f.path),
@@ -793,10 +442,6 @@ export function storyPane(
   });
 }
 
-/** VIEW-6: the person's Escape on an open story goes back to the lanes instead of closing the pane. */
-export const closeGoesBack = (e, paneId, ui) =>
-  e.id === paneId && e.origin?.kind === 'person' && Boolean(ui.story);
-
 // --- the traceability map (spec 10) ------------------------------------------------------------
 
 /** Each cell state's glyph, colour and words (TRACE-1, TRACE-4: the glyph reads without colour). */
@@ -874,7 +519,8 @@ export function mapTab(
   trail = null,
   { surface = 'terminal', columns = 100 } = {},
 ) {
-  const text = (value, style = {}) => Text({ ...style, children: [value] });
+  // UI-13: words wrap rather than spill, unless they say otherwise.
+  const text = (value, style = {}) => Text({ wrap: 'wrap', ...style, children: [value] });
   const requirements = status?.requirements ?? [];
   if (!requirements.length)
     return [
@@ -904,19 +550,24 @@ export function mapTab(
         flexDirection: 'row',
         columnGap: 1,
         children: [
-          text(label(row.spec).padEnd(width), { dimColor: true }),
-          ...row.requirements.map((r) => {
-            const c = CELL[cellOf(r)];
-            // Keyed by its Box: a Text keeps no key of its own.
-            return Box({
-              key: `cell-${r.id}`,
-              children: [
-                text(c.glyph, {
-                  ...(c.color ? { color: c.color } : { dimColor: cellOf(r) === 'removed' }),
-                  ...(r.id === selected.id ? { inverse: true, bold: true } : {}),
-                }),
-              ],
-            });
+          text(label(row.spec).padEnd(width), { dimColor: true, wrap: 'truncate-end' }),
+          Box({
+            flexDirection: 'row',
+            flexWrap: 'wrap',
+            flexShrink: 1,
+            children: row.requirements.map((r) => {
+              const c = CELL[cellOf(r)];
+              // Keyed by its Box: a Text keeps no key of its own.
+              return Box({
+                key: `cell-${r.id}`,
+                children: [
+                  text(c.glyph, {
+                    ...(c.color ? { color: c.color } : { dimColor: cellOf(r) === 'removed' }),
+                    ...(r.id === selected.id ? { inverse: true, bold: true } : {}),
+                  }),
+                ],
+              });
+            }),
           }),
         ],
       }),
@@ -926,6 +577,7 @@ export function mapTab(
     key: 'map-keys',
     flexDirection: 'row',
     columnGap: 1,
+    flexWrap: 'wrap',
     children: [
       Button({
         key: 'cell-prev',
@@ -1047,19 +699,32 @@ export function mapTab(
               Box({
                 key: `trail-${trailRows[i].id}`,
                 flexDirection: 'row',
-                children: runs.map((r) => text(r.text, TONE[r.style] ?? {})),
+                // The links keep their places; the last (the test that names it) is cut to fit.
+                children: runs.map((r, j) =>
+                  j === runs.length - 1
+                    ? Box({
+                        flexShrink: 1,
+                        children: [
+                          text(r.text, { ...(TONE[r.style] ?? {}), wrap: 'truncate-end' }),
+                        ],
+                      })
+                    : text(r.text, { ...(TONE[r.style] ?? {}), wrap: undefined }),
+                ),
               }),
           ),
         });
-  const trailBox = trailRows.length
-    ? [
-        Box({
-          key: 'trail',
-          flexDirection: 'column',
-          children: [text(`Trail · ${label(spec)}`, { bold: true }), flow],
-        }),
-      ]
-    : [];
+  // The flow's columns need the room: in a narrower pane the detail below gives the same links.
+  const flowFits = surface !== 'terminal' || columns >= 64;
+  const trailBox =
+    trailRows.length && flowFits
+      ? [
+          Box({
+            key: 'trail',
+            flexDirection: 'column',
+            children: [text(`Trail · ${label(spec)}`, { bold: true }), flow],
+          }),
+        ]
+      : [];
   return [legend, grid, keys, ...trailBox, detail];
 }
 
@@ -1102,7 +767,7 @@ const RUN_STYLE = {
  */
 export function codeTab(view, { Box, Text, Button, Svg }, on) {
   const text = (value, style = {}) => Text({ ...style, children: [value] });
-  const { state, ui = DEFAULT_UI, codeMap: map = null, art = null } = view;
+  const { state, ui = {}, codeMap: map = null, art = null } = view;
   let glow = view.glow ?? {};
   const storyId = mapStoryOf(state, ui.selected, ui.mapStory);
   const project = { id: PROJECT, title: 'Whole project' };
@@ -1120,7 +785,8 @@ export function codeTab(view, { Box, Text, Button, Svg }, on) {
     children: choices.map((s) =>
       Button({
         key: `map-story-${s.id}`,
-        label: s.id === PROJECT ? s.title : `${s.id} ${s.title}`,
+        // The story's title where the pane has room for it; its id alone in a narrow one.
+        label: s.id === PROJECT ? s.title : view.columns >= 90 ? `${s.id} ${s.title}` : s.id,
         ...(s.id === storyId ? { variant: 'primary' } : { plain: true }),
         onPress: () => on.onMapStory(s.id),
       }),
@@ -1169,6 +835,8 @@ export function codeTab(view, { Box, Text, Button, Svg }, on) {
       : Box({
           key: 'code-map',
           flexDirection: 'column',
+          // UI-13: a drawing wider than the pane is cut at its edge, not spilled past it.
+          overflow: 'hidden',
           children: codeRows(map, { glow, selected, width }).map((runs, y) =>
             Box({
               key: `code-row-${y}`,
@@ -1189,8 +857,11 @@ export function codeTab(view, { Box, Text, Button, Svg }, on) {
     borderColor: 'gray',
     paddingX: 1,
     children: [
-      text(selected, { bold: true }),
-      text(`${file.layer}${file.lane ? ` · ${file.lane} lane` : ''}`, { dimColor: true }),
+      text(selected, { bold: true, wrap: 'wrap' }),
+      text(`${file.layer}${file.lane ? ` · ${file.lane} lane` : ''}`, {
+        dimColor: true,
+        wrap: 'wrap',
+      }),
       ...(card
         ? [
             text(
@@ -1200,15 +871,25 @@ export function codeTab(view, { Box, Text, Button, Svg }, on) {
               card.state === 'current' ? {} : { color: 'yellow' },
             ),
             ...(card.state === 'stale'
-              ? [text('The file changed since its why was written.', { dimColor: true })]
+              ? [
+                  text('The file changed since its why was written.', {
+                    dimColor: true,
+                    wrap: 'wrap',
+                  }),
+                ]
               : []),
           ]
         : []),
       ...(near.imports.length
-        ? [text(`imports ${near.imports.map(short).join(', ')}`, { dimColor: true })]
+        ? [text(`imports ${near.imports.map(short).join(', ')}`, { dimColor: true, wrap: 'wrap' })]
         : []),
       ...(near.importers.length
-        ? [text(`imported by ${near.importers.map(short).join(', ')}`, { dimColor: true })]
+        ? [
+            text(`imported by ${near.importers.map(short).join(', ')}`, {
+              dimColor: true,
+              wrap: 'wrap',
+            }),
+          ]
         : []),
     ],
   });
@@ -1250,10 +931,12 @@ export function codeTab(view, { Box, Text, Button, Svg }, on) {
     columnGap: 2,
     flexWrap: 'wrap',
     children: MAP_LEGEND.map((l) =>
-      text(
-        l.text,
-        l.style === 'glow' ? { color: tints[file.lane] ?? 'cyan' } : (RUN_STYLE[l.style] ?? {}),
-      ),
+      text(l.text, {
+        wrap: 'wrap',
+        ...(l.style === 'glow'
+          ? { color: tints[file.lane] ?? 'cyan' }
+          : (RUN_STYLE[l.style] ?? {})),
+      }),
     ),
   });
   return [picker, drawing, legend, detail, keys];
@@ -1302,16 +985,22 @@ export function decisionsTab(cards, ui, { Box, Text, Button }, on) {
           borderColor: i === at ? 'yellow' : 'gray',
           paddingX: 1,
           children: [
+            // UI-7: its kind in sentence case, pressed to choose it; then the headline, cut to fit.
             Box({
+              key: `decision-head-${i}`,
               flexDirection: 'row',
               columnGap: 1,
               children: [
-                text(c.tag.toUpperCase(), { color: i === at ? 'yellow' : 'cyan', bold: true }),
                 Button({
                   key: `decision-pick-${i}`,
-                  label: c.headline,
+                  label: c.tag,
                   plain: true,
+                  ...(i === at ? {} : { dimColor: true }),
                   onPress: () => on.onDecision(i),
+                }),
+                Box({
+                  flexShrink: 1,
+                  children: [text(c.headline, { bold: i === at, wrap: 'truncate-end' })],
                 }),
               ],
             }),
@@ -1423,7 +1112,7 @@ export function decisionsTab(cards, ui, { Box, Text, Button }, on) {
   return [
     text(
       `${cards.length} decision${cards.length === 1 ? '' : 's'} need${cards.length === 1 ? 's' : ''} you. Everything else is the lead's.`,
-      { bold: true },
+      { bold: true, wrap: 'wrap' },
     ),
     Box({
       key: 'decision-kinds',
@@ -1432,7 +1121,7 @@ export function decisionsTab(cards, ui, { Box, Text, Button }, on) {
           [...kinds]
             .map(([tag, n]) => `${n} ${tag}${n === 1 || tag.endsWith('brief') ? '' : 's'}`)
             .join(' · '),
-          { dimColor: true },
+          { dimColor: true, wrap: 'wrap' },
         ),
       ],
     }),
@@ -1498,7 +1187,7 @@ export function journalTab(events, { Box, Text }, now = Date.now()) {
   return [
     text(
       `From your request to now: ${events.length} event${events.length === 1 ? '' : 's'}${events.length > shown.length ? `, the latest ${shown.length} shown` : ''}. Yours are in yellow.`,
-      { dimColor: true },
+      { dimColor: true, wrap: 'wrap' },
     ),
     Box({ key: 'journal', flexDirection: 'column', children: rows }),
   ];

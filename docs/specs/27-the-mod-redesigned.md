@@ -157,7 +157,7 @@ Desktop draws the same panels, with the characters, the bars and the time axis a
 
 ### UI-11 Characters
 
-Each lane has its own character, fixed by its place in the config, with its own shape as well as its tint so lanes read apart without colour; the lead's wears a crown. They're drawn at 12 by 12 pixels (six rows of half-blocks in the terminal, SVG on Desktop), with poses for:
+Each lane has its own character, whatever lanes the project's config names, with its own shape as well as its tint so lanes read apart without colour; the lead's wears a crown. A lane's look comes from its name and is kept apart from the lanes before it in the config, so adding a lane never changes another's: the first six lanes get six shapes, and past six each also wears a mark (glasses, a scarf, a belt), up to 24 apart. They're drawn at 12 by 12 pixels (six rows of half-blocks in the terminal, SVG on Desktop), with poses for:
 
 - **work, by its kind**, from the agent's current tool: writing (Edit, Write), running (Bash, a check or a test), reading (Read, Grep, Glob), thinking (a model turn with no tool), each its own loop of four frames;
 - **waiting on the person**, a raised hand, still;
@@ -173,6 +173,7 @@ The set is drawn as a sheet, every lane in every pose and move, in the terminal 
 - Given the web agent running `npm test`, then web's character plays the running loop; when its next tool is Edit, it plays the writing loop.
 - Given ST-4 merged, then web's character cheers once and then rests.
 - Given a no-colour terminal, then web's and api's characters differ by shape.
+- Given a project with nine lanes, then no two have the same shape and mark; given a tenth lane added to the config, then the first nine keep their looks.
 
 ### UI-12 Motion
 

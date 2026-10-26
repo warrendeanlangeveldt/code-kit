@@ -53,7 +53,7 @@ For each, read the lane's change request (its report, in `.claude/state/reports/
 
 ## 4. The person's requests
 
-A request `by: "person"` is a guardrail the lane hit: a spec, a contract, a design, CI, or a weakened test. Check the lane really needs it first: often the story can be done inside the guardrail, and you tell the lane how and drop the request. If it does need it, the request is already in the person's Decisions tab. Add your recommendation with `ask` when the choice isn't obvious from the request alone.
+A request `by: "person"` is a guardrail the lane hit: a spec, a contract, a design, CI, or a weakened test. Check the lane really needs it first: often the story can be done inside the guardrail, and you tell the lane how and drop the request. If it does need it, the request is already waiting for the person, in their band and the pane's Needs you. Add your recommendation with `ask` when the choice isn't obvious from the request alone.
 
 ## 5. Report
 
