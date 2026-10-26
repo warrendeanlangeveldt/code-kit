@@ -1793,7 +1793,17 @@ test('HUBR-6 and HUBR-7 a hosted provider in the config: its address, its comman
 });
 
 test('HUBR-2 a report holds only the fields its allow-list names', async () => {
-  const { snapshotProblems, snapshotHash, EVENT_PARTS } = await import('../hooks/lib/snapshot.mjs');
+  const { snapshotProblems, snapshotHash, EVENT_PARTS, reportedSummary } =
+    await import('../hooks/lib/snapshot.mjs');
+  // A summary longer than 600 characters is cut after the last sentence that fits.
+  const sentence = 'The list of bookings for a day. ';
+  const long = sentence.repeat(30);
+  const cut = reportedSummary(long);
+  assert.ok(cut.length <= 600 && cut.endsWith('day.') && long.startsWith(cut));
+  assert.equal(reportedSummary('a\n  b'), 'a b');
+  assert.equal(reportedSummary(''), null);
+  const words = reportedSummary('word '.repeat(200));
+  assert.ok(words.length <= 600 && words.endsWith('word…'));
   const good = {
     version: 1,
     project: { repository: 'o/r', base: 'main', codeKit: '0.19.0', at: 1_700_000_000_000 },
@@ -1845,6 +1855,13 @@ test('HUBR-2 a report holds only the fields its allow-list names', async () => {
     },
   };
   assert.deepEqual(snapshotProblems(good), []);
+  // Version 4: a story's summary and a requirement's title; a report without them is still valid.
+  const v4 = structuredClone(good);
+  v4.stories[0].summary = 'The list of bookings for a day, newest first.';
+  v4.requirements[0].title = 'Bookings are listed by day';
+  assert.deepEqual(snapshotProblems(v4), []);
+  v4.stories[0].summary = 'x'.repeat(601);
+  assert.match(snapshotProblems(v4)[0], /summary: not a summary/);
   // Nowhere for code, a diff or a prompt to go.
   const withDiff = structuredClone(good);
   withDiff.stories[0].diff = '--- a/x\n+++ b/x';
@@ -2323,6 +2340,23 @@ test('REG-1 the plan says what a story fixes', async () => {
     const [one, two] = readStories(dir, 'plan.md');
     assert.equal(one.fixes, 'two people could book one slot');
     assert.equal(two.fixes, null);
+    assert.equal(one.summary, null);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("HUBR-2 a story's summary is the paragraph under its fields, on one line", async () => {
+  const { readStories } = await import('../hooks/lib/plan.mjs');
+  const dir = mkdtempSync(join(tmpdir(), 'code-kit-plan-'));
+  try {
+    writeFileSync(
+      join(dir, 'plan.md'),
+      "### ST-1 Booking list\n\n**Lane:** web\n**Status:** todo\n\nThe day's bookings,\nnewest first.\n\nA second paragraph.\n\n### ST-2 Other\n\n**Lane:** web\n",
+    );
+    const [one, two] = readStories(dir, 'plan.md');
+    assert.equal(one.summary, "The day's bookings, newest first.");
+    assert.equal(two.summary, null);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

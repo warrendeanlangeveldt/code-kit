@@ -26,8 +26,11 @@ import {
 
 import { slicesOf } from './schedule.mjs';
 
-/** 2 adds the project's standards (code-kit spec 22); 3 the plan's slices (spec 23, SCHED-2). */
-export const SNAPSHOT_VERSION = 3;
+/**
+ * 2 adds the project's standards (code-kit spec 22); 3 the plan's slices (spec 23, SCHED-2); 4 each
+ * story's summary and each requirement's title.
+ */
+export const SNAPSHOT_VERSION = 4;
 
 /** A story's stage, as a report names it. */
 export const STAGES = [
@@ -45,7 +48,8 @@ export const AGENT_KINDS = ['lead', 'lane', 'reviewer', 'security-reviewer', 'ba
 /**
  * The allow-list. A leaf is a kind: `id` (ST-4, API-2), `handle` (a GitHub login), `name` (a lane, a
  * layer, a milestone, an approval: one line, at most 120 characters), `title` (one line, at most 200),
- * `line` (a send-back's reason: one line, at most 200), `path` (a file path or glob: one line, at most
+ * `line` (a send-back's reason: one line, at most 200), `summary` (a story's summary: one line, at most
+ * 600), `path` (a file path or glob: one line, at most
  * 300), `ms` (a time in milliseconds), `date` (YYYY-MM-DD), `count` (a whole number, 0 or more),
  * `bool`, `enum:a|b`. A trailing `?` allows null. An array holds one shape; an object holds only the
  * keys it lists.
@@ -73,12 +77,16 @@ export const SNAPSHOT_SCHEMA = {
         merged: 'ms?',
       },
       claimedBy: 'handle?',
+      // Added in version 4.
+      summary: 'summary?',
     },
   ],
   sendBacks: [{ story: 'id', at: 'ms', reason: 'line?' }],
   requirements: [
     {
       id: 'id',
+      // Added in version 4.
+      title: 'title?',
       stories: ['id'],
       built: ['path'],
       tested: ['path'],
@@ -123,6 +131,25 @@ export const SNAPSHOT_SCHEMA = {
 /** Parts a report from an older code-kit doesn't have yet: valid when missing, checked when there. */
 export const LATER_PARTS = ['standards', 'slices'];
 
+export const SUMMARY_MAX = 600;
+
+/**
+ * A story's summary as a report holds it: on one line, and when longer than 600 characters, cut after
+ * the last sentence that fits (or, with no sentence ending in reach, at the last word, with an ellipsis).
+ */
+export function reportedSummary(text) {
+  const s = String(text ?? '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!s) return null;
+  if (s.length <= SUMMARY_MAX) return s;
+  const head = s.slice(0, SUMMARY_MAX + 1);
+  const ends = [...head.matchAll(/[.!?](?=\s)/g)].map((m) => m.index + 1);
+  if (ends.length) return s.slice(0, ends.at(-1));
+  const word = s.slice(0, SUMMARY_MAX).lastIndexOf(' ');
+  return `${s.slice(0, word > 0 ? word : SUMMARY_MAX - 1).trimEnd()}…`;
+}
+
 const ONE_LINE = (max) => (v) => typeof v === 'string' && v.length <= max && !/[\r\n]/.test(v);
 const KINDS = {
   id: (v) => typeof v === 'string' && /^[A-Za-z][A-Za-z0-9]*-\d+$/.test(v),
@@ -130,6 +157,7 @@ const KINDS = {
   name: ONE_LINE(120),
   title: ONE_LINE(200),
   line: ONE_LINE(200),
+  summary: ONE_LINE(SUMMARY_MAX),
   path: ONE_LINE(300),
   ms: (v) => Number.isInteger(v) && v > 0,
   date: (v) => typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v),
@@ -303,6 +331,7 @@ export function buildSnapshot({
         merged: ms(t.merged),
       },
       claimedBy: claimed.get(s.id) ?? null,
+      summary: reportedSummary(s.summary),
     };
   });
 
@@ -329,6 +358,7 @@ export function buildSnapshot({
         if (CHECKS.includes(row.status)) checks.set(row.requirement, row.status);
   const requirements = trail(root, status, base).map((r) => ({
     id: r.id,
+    title: line(r.title),
     stories: r.stories.map((s) => s.id),
     built: r.files.filter((f) => KINDS.path(f)),
     tested: r.tests.filter((f) => KINDS.path(f)),

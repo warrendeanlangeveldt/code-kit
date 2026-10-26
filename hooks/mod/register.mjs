@@ -15,6 +15,7 @@ import {
   RESULT_ID,
   SETTINGS_ID,
   approvalsText,
+  agentsAlive,
   agentsAtWork,
   shownState,
   attribution,
@@ -1829,8 +1830,9 @@ export function register(on) {
         beaten = at;
         await $.process.run(['node', cli, 'sessions', 'beat', '--session', session], { cwd });
       },
-      // SCHED-1: a lane this session's agent claimed, with no agent of that lane still running here for a
-      // minute (stopped with TaskStop, or gone without its finish), is released for its next story.
+      // SCHED-1: a lane this session's agent claimed, with no agent of that lane left here for a minute
+      // (ended, stopped with TaskStop, or gone without its finish), is released for its next story. One
+      // pending, waiting or idle is still alive, and keeps it.
       freeLanes: async () => {
         const at = await $.clock.now();
         // The first look only starts the clock: a session's first minute frees nothing.
@@ -1839,14 +1841,10 @@ export function register(on) {
         lanesFreed = at;
         const claims = ((await json('lanes')) ?? []).filter((c) => c.session === session);
         if (!claims.length) return;
-        const running = new Set(
-          ((await $.agent.list().catch(() => [])) ?? [])
-            .filter((a) => a.status === 'running')
-            .map((a) => a.type),
-        );
+        const alive = agentsAlive(await $.agent.list().catch(() => []));
         for (const c of claims) {
           const type = model.check?.lanes?.[c.lane]?.agent;
-          if (!type || running.has(type) || at - Date.parse(c.since) < LANES_FREE_MS) continue;
+          if (!type || alive.has(type) || at - Date.parse(c.since) < LANES_FREE_MS) continue;
           await $.process.run(['node', cli, 'lanes', 'release', c.lane], { cwd }).catch(() => {});
           await act.record('free', `${c.lane}${c.story ? ` · ${c.story}` : ''}`);
         }

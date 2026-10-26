@@ -20,6 +20,17 @@ export function parseJson(stdout) {
 /** The agent statuses that mean an agent is at work in the session now. */
 const AT_WORK = new Set(['pending', 'running', 'waiting']);
 
+/** The agent statuses that mean an agent has ended: anything else may still act, idle included. */
+const ENDED = new Set(['completed', 'failed', 'killed']);
+
+/**
+ * The subagent types not yet ended, from `$.agent.list()`: an idle or waiting agent can still write,
+ * so its lane's claim stays (SCHED-1). A status Claude Code adds later counts as alive.
+ */
+export function agentsAlive(agents) {
+  return new Set((agents ?? []).filter((a) => !ENDED.has(a.status)).map((a) => a.type));
+}
+
 /** The subagent types at work, from `$.agent.list()`. */
 export function agentsAtWork(agents) {
   return new Set((agents ?? []).filter((a) => AT_WORK.has(a.status)).map((a) => a.type));
