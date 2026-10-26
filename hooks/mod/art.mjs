@@ -5,49 +5,6 @@
 
 // --- the characters (VIEW-3) ---------------------------------------------------------------------
 
-/** Each pose, 6 by 6 pixels: H the lane's tint, E eyes, X stalled eyes, L closed eyes, C a crown. */
-const POSES = {
-  working: [
-    ['..HH..', '.HEEH.', '..HH..', '.HHHH.', 'H.HH.H', '.H..H.'],
-    ['..HH..', '.HEEH.', '..HH..', 'HHHHHH', '..HH..', '..HH..'],
-  ],
-  waiting: [['..HH.H', '.HEEHH', '..HH..', '.HHH..', '..HH..', '.H..H.']],
-  quiet: [['......', '..HH..', '.HLLH.', '..HH..', '.HHHH.', '.H..H.']],
-  stalled: [['..HH..', '.HXXH.', '..HH..', '.HHHH.', '..HH..', '.H..H.']],
-  done: [['H.HH.H', 'HHEEHH', '..HH..', '..HH..', '..HH..', '.H..H.']],
-  idle: [['......', '..HH..', '.HLLH.', '..HH..', '.HHHH.', '.H..H.']],
-};
-/** What a pose reads as without its picture, and in words. */
-export const POSE_GLYPH = {
-  working: '⚙',
-  waiting: '?',
-  quiet: '…',
-  stalled: '✗',
-  done: '✓',
-  idle: '·',
-};
-
-/** Each lane's tint, fixed by its place in the config so the person learns them; the lead's is gold. */
-const TINTS = [0x4aa3ff, 0x5cc85c, 0xd070e0, 0x40c8c8, 0xff9a40, 0xff6070, 0xa0a0ff];
-export function tintOf(lane, lanes) {
-  if (lane === 'lead') return 0xd8a840;
-  const i = lanes.filter((l) => l !== 'lead').indexOf(lane);
-  return TINTS[(i < 0 ? 0 : i) % TINTS.length];
-}
-
-const dim = (rgb) =>
-  (((rgb >> 16) & 0xff) >> 1) * 0x10000 + (((rgb >> 8) & 0xff) >> 1) * 0x100 + ((rgb & 0xff) >> 1);
-
-/** The pose's frame as a grid of colours (null for none), the lead crowned. */
-export function sprite(pose, frame, tint, { lead = false } = {}) {
-  const frames = POSES[pose] ?? POSES.idle;
-  const rows = frames[frame % frames.length].map((r) => [...r]);
-  if (lead) rows[0] = [...'C.CC.C'];
-  const body = pose === 'quiet' || pose === 'idle' ? dim(tint) : tint;
-  const colour = { H: body, E: 0x202020, X: 0xff3030, L: 0x707070, C: 0xffcc00 };
-  return rows.map((r) => r.map((c) => colour[c] ?? null));
-}
-
 const DEFAULT = 0x01000000;
 const B64 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
 function base64(bytes) {
@@ -83,44 +40,6 @@ export function rasterCells(grid) {
 }
 
 const hex = (rgb) => `#${rgb.toString(16).padStart(6, '0')}`;
-
-/** A sprite as SVG for Desktop, the working pose's frames alternating (SMIL), 4 px a pixel. */
-export function spriteSvg(pose, tint, { lead = false } = {}) {
-  const frames = (POSES[pose] ?? POSES.idle).map((_, f) => sprite(pose, f, tint, { lead }));
-  const rects = (grid) =>
-    grid
-      .flatMap((row, y) =>
-        row.map((c, x) =>
-          c === null
-            ? ''
-            : `<rect x="${x * 4}" y="${y * 4}" width="4" height="4" fill="${hex(c)}"/>`,
-        ),
-      )
-      .join('');
-  const groups = frames.map((g, f) =>
-    frames.length > 1
-      ? `<g visibility="${f ? 'hidden' : 'visible'}"><animate attributeName="visibility" values="${f ? 'hidden;visible' : 'visible;hidden'}" dur="0.8s" repeatCount="indefinite" calcMode="discrete"/>${rects(g)}</g>`
-      : `<g>${rects(g)}</g>`,
-  );
-  return `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" shape-rendering="crispEdges">${groups.join('')}</svg>`;
-}
-
-/**
- * A lane's pose (VIEW-3): stalled when flagged or quiet past the restart time, waiting while a call
- * of its is held, its request is open or its story waits on the person's answer, working while its agent is at work, quiet when it has
- * gone quiet, done once its branch is finished, idle otherwise.
- */
-export function poseOf(
-  lane,
-  { live = null, waiting = false, flagged = false, shown = lane.state } = {},
-) {
-  if (flagged || live?.level === 'stalled') return 'stalled';
-  if (waiting || shown === 'waiting on you') return 'waiting';
-  if (live?.level === 'quiet') return 'quiet';
-  if (lane.active) return 'working';
-  if (['in review', 'queued'].includes(shown)) return 'done';
-  return 'idle';
-}
 
 // --- the timelines (VIEW-2) ----------------------------------------------------------------------
 

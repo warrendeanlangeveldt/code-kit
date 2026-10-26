@@ -19,7 +19,6 @@ import {
   NOT_CODE_KIT,
   agentsAtWork,
   bandLines,
-  lanesPane,
   parseJson,
   commandItself,
   prefilledReason,
@@ -361,7 +360,12 @@ test('approvals.delegate is validated, with defaults for the dependency rule', (
 const el = {
   Box: (props) => ({ type: 'Box', props, children: props.children ?? [] }),
   Text: (props) => ({ type: 'Text', props, children: props.children ?? [] }),
+  Button: (props) => ({ type: 'Button', props, children: [] }),
+  Input: (props) => ({ type: 'Input', props, children: [] }),
 };
+const { board } = await import('../hooks/mod/board.mjs');
+const pane = (state, extra = {}) =>
+  board({ state, loop: null, needs: [], journal: [], now: 0, ...extra }, el, {});
 const texts = (node) =>
   node.type === 'Text' ? node.children : node.children.flatMap((c) => texts(c));
 
@@ -371,9 +375,9 @@ test("the mod: CARD-4 and PANE-5, what the Lanes pane shows for the project's st
   assert.deepEqual(projectState({ exists: false, valid: false, problems: [] }, null), {
     kind: 'none',
   });
-  assert.deepEqual(texts(lanesPane(projectState(null, null), el)), [NOT_CODE_KIT]);
+  assert.deepEqual(texts(pane(projectState(null, null))), [NOT_CODE_KIT]);
   const invalid = projectState({ exists: true, valid: false, problems: ['x'] }, null);
-  assert.deepEqual(texts(lanesPane(invalid, el)), ['The config is invalid: run code-kit check.']);
+  assert.deepEqual(texts(pane(invalid)), ['The config is invalid: run code-kit check.']);
   const check = {
     exists: true,
     valid: true,
@@ -385,11 +389,11 @@ test("the mod: CARD-4 and PANE-5, what the Lanes pane shows for the project's st
     ok.lanes.map((l) => l.name),
     ['lead', 'web'],
   );
-  const shown = texts(lanesPane(ok, el));
-  assert.ok(shown.includes('web-engineer') && shown.includes('the main session'));
+  const shown = texts(pane(ok));
+  assert.ok(shown.includes('lead, web'));
   assert.ok(!shown.some((s) => s.includes('gap')));
-  const gaps = texts(lanesPane(projectState(check, { problems: ['ST-1 has no **Lane:**'] }), el));
-  assert.equal(gaps[0], 'The plan has 1 gap(s): run code-kit status.');
+  const gaps = texts(pane(projectState(check, { problems: ['ST-1 has no **Lane:**'] })));
+  assert.ok(gaps.includes('The plan has 1 gap(s): run code-kit status.'));
 });
 
 test('the mod: PANE-2 a row per lane, with its story, branch and state, and PANE-3 what is ready', () => {
@@ -445,10 +449,14 @@ test('the mod: PANE-2 a row per lane, with its story, branch and state, and PANE
       ['ST-7', 'lead'],
     ],
   );
-  const shown = texts(lanesPane(finished, el));
-  assert.ok(shown.some((s) => s.includes('ST-4 Story ST-4 · web/st-4')));
-  assert.ok(shown.some((s) => s.includes('waits on ST-4')));
-  assert.equal(shown.filter((s) => s === "the lead's own").length, 2);
+  const shown = texts(pane(finished));
+  assert.ok(shown.includes('ST-4 Story ST-4'));
+  assert.ok(shown.includes('◐ in review'));
+  assert.ok(shown.includes('web/st-4 · web-engineer'));
+  assert.ok(shown.includes("ready: ST-9 (core), ST-6 (the lead's own), ST-7 (the lead's own)"));
+  // A blocked lane rests; selected, its story says what it waits on.
+  const chosen = texts(pane(finished, { ui: { sel: { kind: 'lane', id: 'core' } } }));
+  assert.ok(chosen.includes('waits on ST-4'));
   assert.deepEqual(
     [
       ...agentsAtWork([
@@ -1052,12 +1060,16 @@ test('SET-1 the harness settings: defaults, validation and typed values', async 
     background: { pauseAtPercent: 80 },
     compact: { at: 40, milestone: 'ask' },
     notify: { on: true },
+    motion: 'while-active',
     report: { on: false },
   });
   assert.match(
     harnessProblems({ compact: { milestone: 'sometimes' } }).join(' '),
     /ask, auto, off/,
   );
+  // UI-12: the characters, clocks and rail move while work flows, or stay still.
+  assert.equal(harnessSettings({ motion: 'off' }).motion, 'off');
+  assert.match(harnessProblems({ motion: 'always' }).join(' '), /while-active, off/);
   assert.equal(
     harnessSettings({ autonomy: 'propose', stall: { nudgeMinutes: 3 } }).stall.nudgeMinutes,
     3,
@@ -1318,8 +1330,8 @@ test("REVW-3 the reviewer's report: graded findings, a failed verify a blocker, 
   );
 });
 
-test("VIEW-1, VIEW-4, VIEW-6 panes v2: counts, liveness and the selected lane's acts", async () => {
-  const { countsOf, laneActions, toolLine, liveLevel } = await import('../hooks/mod/panes.mjs');
+test("VIEW-4, UI-8 liveness and the selected lane's acts", async () => {
+  const { laneActions, toolLine, liveLevel } = await import('../hooks/mod/panes.mjs');
   const state = {
     kind: 'ok',
     lanes: [
@@ -1339,11 +1351,6 @@ test("VIEW-1, VIEW-4, VIEW-6 panes v2: counts, liveness and the selected lane's 
     stories: [{ id: 'ST-1', state: 'done' }],
   };
   const queue = [{ branch: 'core/st-6', state: 'waiting' }];
-  assert.deepEqual(
-    countsOf(state, queue).map((c) => `${c.glyph} ${c.n} ${c.state}`),
-    ['● 1 building', '◐ 1 in review', '◆ 1 queued', '○ 1 ready', '✓ 1 merged', '· 1 idle'],
-  );
-  assert.deepEqual(countsOf({ kind: 'none' }), []);
   const ids = (lane, extra) =>
     laneActions(lane, { queue, ...extra }).map((a) => `${a.hotkey}:${a.id}`);
   assert.deepEqual(ids(state.lanes[1]), ['w:watch', 'n:nudge', 'x:stop']);
@@ -1371,7 +1378,8 @@ test("VIEW-1, VIEW-4, VIEW-6 panes v2: counts, liveness and the selected lane's 
 });
 
 test('VIEW-7 the drill-down: a diff per file, the spec-check table, and Escape going back', async () => {
-  const { fileDiffs, closeGoesBack } = await import('../hooks/mod/panes.mjs');
+  const { fileDiffs } = await import('../hooks/mod/panes.mjs');
+  const { escapeGoesBack } = await import('../hooks/mod/board.mjs');
   const { specCheckRows } = await import('../hooks/lib/plan.mjs');
   const diff = [
     'diff --git a/a.ts b/a.ts',
@@ -1406,11 +1414,13 @@ test('VIEW-7 the drill-down: a diff per file, the spec-check table, and Escape g
     ],
   );
   assert.deepEqual(specCheckRows('no table'), []);
+  // UI-6: Escape on a full view goes back to the panels; on the panels, it closes the pane.
   const person = { id: 'lanes', origin: { kind: 'person' } };
-  assert.equal(closeGoesBack(person, 'lanes', { story: 'ST-4' }), true);
-  assert.equal(closeGoesBack(person, 'lanes', { story: null }), false);
+  assert.equal(escapeGoesBack(person, 'lanes', { view: 'story' }), true);
+  assert.equal(escapeGoesBack(person, 'lanes', { view: 'trail' }), true);
+  assert.equal(escapeGoesBack(person, 'lanes', { view: null }), false);
   assert.equal(
-    closeGoesBack({ ...person, origin: { kind: 'plugin' } }, 'lanes', { story: 'ST-4' }),
+    escapeGoesBack({ ...person, origin: { kind: 'plugin' } }, 'lanes', { view: 'story' }),
     false,
   );
 });
@@ -1441,9 +1451,9 @@ test('TRACE-1 and TRACE-4 the map: cell states, rows by spec, the legend, moving
   assert.equal(moveCell([], 'A-1', 1), null);
 });
 
-test('VIEW-2 and VIEW-3 the pictures: raster cells, poses, bars and their runs', async () => {
-  const { rasterCells, sprite, poseOf, barCells, runs, axisStart, spriteSvg, tintOf } =
-    await import('../hooks/mod/art.mjs');
+test('VIEW-2 and UI-11 the pictures: raster cells, poses, bars and their runs', async () => {
+  const { rasterCells, barCells, runs, axisStart } = await import('../hooks/mod/art.mjs');
+  const { poseFor } = await import('../hooks/mod/board.mjs');
   // Two pixels a cell: a half block coloured top over bottom, the terminal's default where empty.
   const grid = [
     [0xff0000, null],
@@ -1456,20 +1466,16 @@ test('VIEW-2 and VIEW-3 the pictures: raster cells, poses, bars and their runs',
     rasterCells(half),
     Buffer.from(new Uint32Array([0x2584, 0x0000ff, 0x01000000]).buffer).toString('base64'),
   );
-  assert.equal(sprite('working', 0, 0x4aa3ff).length, 6);
-  assert.notDeepEqual(sprite('working', 0, 1), sprite('working', 1, 1));
-  assert.deepEqual(sprite('working', 0, 1, { lead: true })[0].filter(Boolean).length, 4);
-  assert.match(spriteSvg('working', 0x4aa3ff), /<animate attributeName="visibility"/);
-  assert.doesNotMatch(spriteSvg('quiet', 0x4aa3ff), /<animate/);
-  assert.equal(tintOf('web', ['lead', 'web', 'api']), tintOf('web', ['lead', 'web', 'api']));
-  assert.notEqual(tintOf('web', ['lead', 'web', 'api']), tintOf('api', ['lead', 'web', 'api']));
+  // UI-11: a lane's pose is the kind of work its agent's tool is, else its state.
   const lane = { name: 'web', state: 'building', active: true };
-  assert.equal(poseOf(lane), 'working');
-  assert.equal(poseOf(lane, { waiting: true }), 'waiting');
-  assert.equal(poseOf(lane, { live: { level: 'quiet' } }), 'quiet');
-  assert.equal(poseOf(lane, { flagged: true }), 'stalled');
-  assert.equal(poseOf({ ...lane, active: false }, { shown: 'queued' }), 'done');
-  assert.equal(poseOf({ ...lane, active: false, state: 'idle' }), 'idle');
+  assert.equal(poseFor(lane, { live: { tool: 'Bash npm test' } }), 'running');
+  assert.equal(poseFor(lane, { live: { tool: 'Edit apps/web/a.ts' } }), 'writing');
+  assert.equal(poseFor(lane, { live: { tool: 'Grep booking' } }), 'reading');
+  assert.equal(poseFor(lane), 'thinking');
+  assert.equal(poseFor(lane, { waiting: true }), 'waiting');
+  assert.equal(poseFor(lane, { live: { level: 'quiet', tool: 'Bash x' } }), 'quiet');
+  assert.equal(poseFor(lane, { stalled: true }), 'stalled');
+  assert.equal(poseFor({ ...lane, active: false, state: 'in review' }), 'resting');
   const now = 100 * 60000;
   const t = {
     state: 'review',
@@ -1505,8 +1511,8 @@ test('shell: a newline inside quotes ends no command', async () => {
   );
 });
 
-test("VIEW-6 an idle lane: its stories in plan order, the one Enter opens, and the plan's progress", async () => {
-  const { laneStories, storyToOpen, planProgress } = await import('../hooks/mod/panes.mjs');
+test('LANES-3 an idle lane: its stories in plan order, and the one Enter opens', async () => {
+  const { laneStories, storyToOpen } = await import('../hooks/mod/panes.mjs');
   const state = {
     stories: [
       { id: 'ST-1', lane: 'web', state: 'done' },
@@ -1524,8 +1530,6 @@ test("VIEW-6 an idle lane: its stories in plan order, the one Enter opens, and t
   assert.equal(storyToOpen({ name: 'api', story: null }, state).id, 'ST-2');
   assert.equal(storyToOpen({ name: 'web', story: { id: 'ST-9' } }, state).id, 'ST-9');
   assert.equal(storyToOpen({ name: 'qa', story: null }, state), null);
-  assert.equal(planProgress(state), '2 of 4 stories done');
-  assert.equal(planProgress({ stories: [] }), null);
 });
 
 test('MAP-2 what a tool call touches, and which files glow', async () => {
@@ -1589,8 +1593,8 @@ test('MAP-1 the code map: every file drawn once, in its layer, with lines betwee
   );
 });
 
-test('MISSION-1 to MISSION-3 the goal, the next step in words, and other tools only when not zero', async () => {
-  const { goalOf, nextText, missionLines } = await import('../hooks/mod/mission.mjs');
+test('MISSION-1 and MISSION-3 the goal, the next step in words, and other tools only when not zero', async () => {
+  const { goalOf, nextText } = await import('../hooks/mod/mission.mjs');
   assert.deepEqual(
     goalOf([
       { id: 'ST-1', state: 'done', milestone: 'Milestone 1: A' },
@@ -1605,25 +1609,21 @@ test('MISSION-1 to MISSION-3 the goal, the next step in words, and other tools o
     nextText({ step: 'wait', why: 'lanes are building' }),
     'waiting: lanes are building',
   );
+  // MISSION-3: another tool's facts show on the lane's card only when they aren't zero.
   const state = {
     kind: 'ok',
     stories: [],
+    ready: [],
     lanes: [
-      { name: 'lead', active: true },
-      { name: 'web', active: false },
+      { name: 'lead', state: 'idle', active: false },
+      { name: 'web', state: 'building', active: true, agent: 'web-engineer' },
     ],
   };
-  const quiet = missionLines({ state, leadBusy: true, combined: { web: { without: 0, owed: 0 } } });
-  assert.equal(
-    quiet.some((r) => r.kind === 'facts'),
-    false,
-  );
-  const loud = missionLines({ state, leadBusy: true, combined: { web: { without: 2, owed: 0 } } });
-  assert.equal(
-    loud.find((r) => r.kind === 'facts')?.text,
-    'web edited 2 files without understanding them',
-  );
-  assert.deepEqual(missionLines({ state: { ...state, lanes: [] } }), []);
+  const quiet = texts(pane(state, { combined: { web: { without: 0, owed: 0 } } }));
+  assert.ok(!quiet.some((t) => /understanding|owed/.test(t)));
+  const loud = texts(pane(state, { combined: { web: { without: 2, owed: 1 } } }));
+  assert.ok(loud.includes('2 edited without understanding'));
+  assert.ok(loud.includes('1 card owed'));
 });
 
 test('TRAIL-1 the trail drawn: requirements a story shares meet at one node, and gaps are dashed', async () => {
@@ -2909,8 +2909,11 @@ test('UI-11 the characters: a look per lane from its name, every pose and move, 
     assert.equal(frames.length, POSES[pose].frames);
     for (const g of frames) assert.ok(g.length === 12 && g.every((r) => r.length === 12));
   }
-  for (const pose of ['writing', 'running', 'reading', 'thinking'])
-    assert.notDeepEqual(characterFrame(pose, 0, c), characterFrame(pose, 1, c));
+  // Every frame of a loop is its own, so it never seems to stall or repeat early.
+  for (const pose of ['writing', 'running', 'reading', 'thinking']) {
+    const frames = characterFrames(pose, c).map((g) => JSON.stringify(g));
+    assert.equal(new Set(frames).size, 4, pose);
+  }
   // Without colour, shapes differ: the lit pixels of two lanes' resting pose aren't the same.
   const lit = (g) => g.map((r) => r.map((x) => (x === null ? 0 : 1)).join('')).join('/');
   assert.notEqual(
@@ -2941,4 +2944,491 @@ test('UI-11 the characters: a look per lane from its name, every pose and move, 
     ['lead', 'web', 'api'],
   );
   assert.equal(s.poses.length, 12);
+});
+
+// --- spec 27: the mod, redesigned ---------------------------------------------------------------------
+
+/** Stand-ins for every element the pane draws. */
+const drawing = {
+  ...el,
+  Client: (props) => ({ type: 'Client', props, children: [] }),
+  Raster: (props) => ({ type: 'Raster', props, children: [] }),
+  Svg: (props) => ({ type: 'Svg', props, children: [] }),
+  Select: (props) => ({ type: 'Select', props, children: [] }),
+  Code: (props) => ({ type: 'Code', props, children: [] }),
+};
+
+/**
+ * UI-13: the fewest columns a tree can be laid out in: text that wraps or is cut takes one, fixed text
+ * its length, a row the sum of its children (or the widest, where it wraps), a column the widest, a
+ * drawing cut at its edge one, each with its frame.
+ */
+function minWidth(n) {
+  if (!n || typeof n !== 'object') return 0;
+  const p = n.props ?? {};
+  const frame = (p.borderStyle ? 2 : 0) + 2 * (p.paddingX ?? 0) + (p.marginLeft ?? 0);
+  if (n.type === 'Text') return p.wrap ? 1 : [...String(n.children.join(''))].length;
+  if (n.type === 'Button') return [...String(p.label)].length + (p.plain ? 0 : 2);
+  if (n.type === 'Input' || n.type === 'Select') return 12;
+  if (n.type === 'Code') return 1;
+  if (n.type === 'Client' || n.type === 'Raster') return p.width ?? p.columns ?? 6;
+  if (n.type === 'Svg') return Math.ceil((p.width ?? 48) / 8);
+  if (p.overflow === 'hidden') return frame + 1;
+  const kids = n.children.filter(Boolean).map(minWidth);
+  const row = (p.flexDirection ?? 'row') === 'row' && p.flexWrap !== 'wrap';
+  const inner = !kids.length
+    ? 0
+    : row
+      ? kids.reduce((a, b) => a + b, 0) + (p.columnGap ?? 0) * (kids.length - 1)
+      : Math.max(...kids);
+  const fixed = typeof p.width === 'number' && p.flexShrink !== 1 ? p.width : 0;
+  return Math.max(fixed, inner + frame);
+}
+
+/** A busy project: five lanes, three at work, long titles, ten requirements each, a queue and a log. */
+async function busyProject() {
+  const { needsOf } = await import('../hooks/mod/board.mjs');
+  const names = ['web', 'api', 'payments', 'notifications', 'core'];
+  const lanes = Object.fromEntries(names.map((n) => [n, { agent: `${n}-engineer`, paths: [] }]));
+  const stories = names.map((lane, i) => ({
+    id: `ST-${i + 4}`,
+    title: `A long story title for the ${lane} lane that goes on and on`,
+    lane,
+    state: i < 3 ? 'in progress' : i === 3 ? 'review' : 'blocked',
+    branch: `${lane}/st-${i + 4}`,
+    requirements: Array.from({ length: 10 }, (_, r) => `BOOK-${r + 1}`),
+    waitingOn: i === 4 ? ['ST-4'] : [],
+    milestone: 'Milestone 3: Booking and payments for classes',
+  }));
+  const status = {
+    problems: [],
+    stories,
+    requirements: Array.from({ length: 10 }, (_, i) => ({
+      id: `BOOK-${i + 1}`,
+      state: i < 4 ? 'done' : 'in progress',
+      tests: i < 2 ? ['b.test.ts'] : [],
+      stories: ['ST-4'],
+    })),
+  };
+  const state = projectState(
+    { exists: true, valid: true, problems: [], lanes },
+    status,
+    null,
+    new Set(['web-engineer', 'api-engineer', 'payments-engineer']),
+  );
+  const request = {
+    at: 'x',
+    actor: 'web-engineer',
+    lane: 'web',
+    names: ['dep-dayjs'],
+    what: 'npm install dayjs --save-exact',
+  };
+  const needs = needsOf(
+    bandLines({
+      state,
+      requests: { open: [request, { ...request, lane: 'api', names: ['dep-zod'] }] },
+      stops: [],
+      held: [
+        {
+          id: 'h',
+          who: 'payments',
+          kind: 'dependency',
+          names: ['dep-stripe'],
+          lane: 'payments',
+          what: 'npm i stripe',
+          since: 0,
+          minutes: 2,
+        },
+      ],
+      now: 0,
+      loop: { state: 'running' },
+    }),
+  );
+  return {
+    state,
+    status,
+    needs,
+    loop: {
+      state: 'running',
+      started: true,
+      nextText: 'Review ST-7, then Dispatch ST-9 ST-10 ST-11',
+      laneNotes: { api: 'nudged' },
+      reviews: [],
+      queue: [
+        { branch: 'notifications/st-7', commit: 'abcdef123', state: 'waiting' },
+        { branch: 'core/st-2', state: 'sent back', reason: 'conflicts with main after a merge' },
+      ],
+    },
+    live: {
+      web: { tool: 'Bash npm test -- --run apps/web/booking', ago: 'now', at: 0 },
+      api: { tool: 'Edit apps/api/booking/routes.ts', ago: '12s ago', at: 0, level: 'quiet' },
+    },
+    leadBusy: true,
+    journal: Array.from({ length: 8 }, (_, i) => ({
+      at: i * 60000,
+      kind: i % 2 ? 'merge' : 'dispatch',
+      story: `ST-${4 + (i % 5)}`,
+      text: 'x',
+    })),
+    art: { surface: 'terminal', motion: 'while-active', bars: { web: Array(40).fill('building') } },
+    now: 60000,
+    combined: { web: { without: 2, owed: 3 } },
+    usage: { lanes: { web: 120000 } },
+  };
+}
+
+test('UI-13 nothing in the pane spills past its box, docked, inline or on Desktop, at every width from 24 to 120', async () => {
+  const { board, bandOf } = await import('../hooks/mod/board.mjs');
+  const view = await busyProject();
+  const spills = [];
+  for (let columns = 24; columns <= 120; columns++) {
+    for (const [name, extra] of [
+      ['docked, web selected', { ui: { sel: { kind: 'lane', id: 'web' } }, rows: 200 }],
+      ['docked, a resting lane selected', { ui: { sel: { kind: 'lane', id: 'core' } }, rows: 200 }],
+      ['docked, few rows', { rows: 20 }],
+      ['inline', { placement: 'inline' }],
+      ['desktop', { art: { surface: 'desktop', motion: 'while-active' }, rows: 200 }],
+    ]) {
+      const tree = board({ ...view, placement: 'dock', columns, ...extra }, drawing, {});
+      if (minWidth(tree) > columns) spills.push(`${name} at ${columns}: ${minWidth(tree)}`);
+    }
+    const band = bandOf({ ...view, columns }, drawing, () => {});
+    if (minWidth(band) > columns) spills.push(`band at ${columns}: ${minWidth(band)}`);
+  }
+  assert.deepEqual(spills, []);
+});
+
+test('UI-13 nothing in the full views spills past its box at every width from 24 to 120', async () => {
+  const { sheetView, viewFrame } = await import('../hooks/mod/board.mjs');
+  const { journalTab, decisionsTab, mapTab, codeTab, storyPane } =
+    await import('../hooks/mod/panes.mjs');
+  const { decisionCards } = await import('../hooks/mod/decisions.mjs');
+  const { state, needs } = await busyProject();
+  const cards = decisionCards(needs, { state, status: { requirements: [] }, check: {} });
+  const requirements = Array.from({ length: 30 }, (_, i) => ({
+    id: `BOOK-${i + 1}`,
+    title: `Requirement number ${i + 1} with words`,
+    file: 'docs/specs/01-booking.md',
+    state: i < 20 ? 'done' : 'todo',
+    tests: i < 10 ? ['a.test.ts'] : [],
+    stories: ['ST-4'],
+  }));
+  const trail = {
+    requirements: requirements.slice(0, 5).map((r) => ({
+      ...r,
+      spec: '01-booking.md',
+      stories: [{ id: 'ST-4', state: 'in progress', lane: 'web' }],
+      files: ['apps/web/a.ts'],
+    })),
+  };
+  const map = {
+    story: { id: 'ST-4', title: 'Booking form', lane: 'web', state: 'in progress' },
+    layers: ['domain', 'services', 'tests'],
+    files: [
+      { path: 'apps/web/domain/booking.ts', layer: 'domain', lane: 'web', imports: [] },
+      { path: 'apps/web/services/book.ts', layer: 'services', lane: 'web', imports: [] },
+      { path: 'apps/web/e2e/book.spec.ts', layer: 'tests', lane: 'web', imports: [] },
+    ],
+  };
+  const story = {
+    id: 'ST-4',
+    title: 'Booking form for classes with a long title',
+    lane: 'web',
+    state: 'review',
+    branch: 'web/st-4-booking-form',
+    requirements: [
+      {
+        id: 'BOOK-1',
+        title: 'Request a booking',
+        spec: 'docs/spec/01.md',
+        state: 'todo',
+        tests: [],
+      },
+    ],
+    specCheck: { rows: [{ requirement: 'BOOK-1', status: 'partial', where: 'a.tsx', note: 'x' }] },
+    diff: {
+      files: [{ path: 'apps/web/components/booking/very/deep/form.tsx', added: 2, removed: 0 }],
+      text: 'diff --git a/a b/a\n--- /dev/null\n+++ b/a\n@@ -0,0 +1 @@\n+a\n',
+    },
+    verify: { checks: false, where: 'a worktree', problems: { Ownership: ['x'], Checks: [] } },
+  };
+  const views = {
+    characters: () => sheetView(['web', 'api', 'payments'], drawing),
+    journal: () =>
+      journalTab(
+        Array.from({ length: 6 }, (_, i) => ({
+          at: i * 3600000,
+          kind: 'merge',
+          text: 'x '.repeat(40),
+        })),
+        drawing,
+        0,
+      ),
+    decision: () => decisionsTab(cards, { decision: 0 }, drawing, {}),
+    trail: (columns) =>
+      mapTab({ requirements }, 'BOOK-3', drawing, {}, trail, { surface: 'terminal', columns }),
+    code: (columns) =>
+      codeTab(
+        {
+          state,
+          ui: { selected: 'web', mapStory: 'ST-4' },
+          codeMap: map,
+          art: { tints: {} },
+          columns,
+        },
+        drawing,
+        {},
+      ),
+    story: (columns) =>
+      storyPane(
+        {
+          story: { id: 'ST-4', lane: 'web', data: story },
+          steps: [],
+          actions: [{ id: 'review', label: 'Review', hotkey: 'r' }],
+          now: 0,
+          columns,
+        },
+        drawing,
+        {},
+      ),
+  };
+  const spills = [];
+  for (const [name, draw] of Object.entries(views))
+    for (let columns = 24; columns <= 120; columns++) {
+      const tree = viewFrame(name, draw(columns), drawing, {});
+      if (minWidth(tree) > columns) spills.push(`${name} at ${columns}: ${minWidth(tree)}`);
+    }
+  assert.deepEqual(spills, []);
+});
+
+test('UI-10 the layout for each space, and when the lanes are cards or swimlanes', async () => {
+  const { layoutOf, lanesAs, CARD_ROWS } = await import('../hooks/mod/board.mjs');
+  assert.equal(layoutOf('inline', 200), 'inline');
+  assert.equal(layoutOf('dock', 109), 'docked');
+  assert.equal(layoutOf('dock', 110), 'wide');
+  assert.equal(lanesAs(3, { columns: 80, rows: 3 * CARD_ROWS }), 'cards');
+  assert.equal(lanesAs(3, { columns: 80, rows: 3 * CARD_ROWS - 1 }), 'swimlanes');
+  assert.equal(lanesAs(4, { columns: 100, rows: 2 * CARD_ROWS }), 'cards');
+  assert.equal(lanesAs(1, { columns: 30, rows: 100 }), 'swimlanes');
+  // Inline, the pane is at most four lines.
+  const { board } = await import('../hooks/mod/board.mjs');
+  const inline = board({ ...(await busyProject()), placement: 'inline', columns: 80 }, drawing, {});
+  assert.ok(inline.children.length <= 4);
+});
+
+test('UI-2 the Build bar: requirements by kind, the milestone the plan names, untested not done', async () => {
+  const { buildProgress, buildBar, buildWords, buildState } =
+    await import('../hooks/mod/board.mjs');
+  const state = {
+    stories: [
+      { id: 'ST-1', state: 'done', milestone: 'M1', requirements: ['A-1'] },
+      { id: 'ST-2', state: 'review', milestone: 'M2', requirements: ['B-1', 'B-2', 'B-3'] },
+    ],
+  };
+  const status = {
+    requirements: [
+      { id: 'A-1', state: 'done', tests: ['a'] },
+      { id: 'B-1', state: 'done', tests: ['b'] },
+      { id: 'B-2', state: 'done', tests: [] },
+      { id: 'B-3', state: 'todo', tests: [] },
+      { id: 'X-1', state: 'removed', tests: [] },
+    ],
+  };
+  const p = buildProgress(state, status);
+  assert.deepEqual(
+    { name: p.name, total: p.total, tested: p.tested, untested: p.untested, todo: p.todo },
+    { name: 'M2', total: 3, tested: 1, untested: 1, todo: 1 },
+  );
+  assert.equal(buildWords(p), 'M2 · 1 of 3 tested · 1 untested');
+  const runs = buildBar(p, 12);
+  assert.deepEqual(
+    runs.map((r) => `${r.kind}:${r.n}:${r.glyph}`),
+    ['tested:4:■', 'untested:4:□', 'todo:4:○'],
+  );
+  assert.equal(
+    runs.reduce((n, r) => n + r.n, 0),
+    12,
+  );
+  assert.equal(buildProgress(state, { requirements: [] }), null);
+  assert.equal(buildState({ state: 'running' }, { atWork: 2 }), 'moving');
+  assert.equal(buildState({ state: 'running' }), 'still');
+  assert.equal(buildState({ state: 'paused' }, { atWork: 2 }), 'paused');
+});
+
+test('UI-3 and UI-8 what needs the person, most urgent first, each its own line, numbered in that order', async () => {
+  const { needsOf } = await import('../hooks/mod/board.mjs');
+  const line = (kind, actions = ['x']) => ({
+    kind,
+    text: kind,
+    actions: actions.map((id) => ({ id, label: id })),
+  });
+  const ordered = needsOf([
+    line('usage', ['lanes']),
+    line('approvals', ['approve']),
+    {
+      ...line('held', ['approveHeld', 'refuseHeld']),
+      calls: [
+        { text: 'a', held: {} },
+        { text: 'b', held: {} },
+      ],
+    },
+    line('question', ['openDecision']),
+    { kind: 'goal', mission: true, text: 'goal', actions: [] },
+  ]);
+  assert.deepEqual(
+    ordered.map((l) => `${l.kind}:${l.text}`),
+    ['held:a', 'held:b', 'question:question', 'approvals:approvals', 'usage:usage'],
+  );
+  assert.deepEqual(
+    ordered.flatMap((l) => l.actions.map((a) => a.hotkey)),
+    ['1', '2', '3', '4', '5', '6', '7'],
+  );
+});
+
+test("UI-4 a story's trail and map in miniature", async () => {
+  const { trailCells, mapChips, lanesAtWork } = await import('../hooks/mod/board.mjs');
+  const status = {
+    requirements: [
+      { id: 'A-1', state: 'done', tests: ['a'] },
+      { id: 'A-2', state: 'todo', tests: [] },
+    ],
+  };
+  assert.deepEqual(
+    trailCells({ requirements: ['A-1', 'A-2', 'A-9'] }, status).map((c) => `${c.cell}${c.glyph}`),
+    ['tested■', 'todo○', 'todo○'],
+  );
+  const map = {
+    layers: ['ui', 'domain'],
+    files: [
+      { path: 'a.tsx', layer: 'ui', adapters: { cg: { card: { state: 'current' } } } },
+      { path: 'b.ts', layer: 'domain', adapters: { cg: { card: { state: 'stale' } } } },
+    ],
+  };
+  assert.deepEqual(
+    mapChips(map).map((c) => `${c.layer}:${c.tone}`),
+    ['ui:null', 'domain:amber'],
+  );
+  assert.deepEqual(
+    mapChips(map, { refused: [{ layer: 'ui', path: 'a.tsx' }] }).map((c) => `${c.layer}:${c.tone}`),
+    ['ui:red', 'domain:amber'],
+  );
+  assert.deepEqual(
+    mapChips(map, { refused: [{ layer: null, path: 'x' }] }).map((c) => c.layer),
+    ['ui', 'domain', 'refused'],
+  );
+  assert.deepEqual(
+    mapChips({ layers: ['ui'], files: [{ path: 'a.tsx', layer: 'ui' }] }, { owed: ['a.tsx'] }).map(
+      (c) => c.tone,
+    ),
+    ['amber'],
+  );
+  const state = {
+    lanes: [
+      { name: 'lead', state: 'idle' },
+      { name: 'web', state: 'building', active: true },
+      { name: 'api', state: 'idle' },
+      { name: 'core', state: 'idle' },
+    ],
+  };
+  const { atWork, resting } = lanesAtWork(state, [], { core: 'nudged' });
+  assert.deepEqual(
+    atWork.map((l) => l.name),
+    ['web', 'core'],
+  );
+  assert.deepEqual(
+    resting.map((l) => l.name),
+    ['lead', 'api'],
+  );
+});
+
+test('UI-5 and UI-7 the log, a line each, and one word, colour and glyph per state everywhere', async () => {
+  const { logLines, STATE } = await import('../hooks/mod/board.mjs');
+  const lines = logLines(
+    [
+      {
+        at: Date.parse('2026-10-26T14:01:00Z'),
+        kind: 'approval',
+        who: 'person',
+        text: 'You approved dayjs.',
+      },
+      {
+        at: Date.parse('2026-10-26T14:02:00Z'),
+        kind: 'merge',
+        story: 'ST-4',
+        text: 'ST-4 was merged.',
+      },
+    ],
+    [{ id: 'ST-4', lane: 'web' }],
+  );
+  assert.deepEqual(
+    lines.map((l) => `${l.time} ${l.glyph} ${l.text}${l.yours ? ' (yours)' : ''}`),
+    ['14:01 ✔ You approved dayjs (yours)', '14:02 ✓ ST-4 merged · web'],
+  );
+  assert.equal(lines[1].color, STATE.merged.color);
+  // Every state has its own glyph or shares it only with its twin, and is said in sentence case.
+  for (const s of Object.values(STATE)) assert.equal(s.word, s.word.toLowerCase());
+});
+
+test('UI-8 the keys that work for what is selected, and only those', async () => {
+  const { keysFor, moveSelection, selectable } = await import('../hooks/mod/board.mjs');
+  const keys = (...a) =>
+    keysFor(...a)
+      .map((k) => k.key)
+      .join(' ');
+  assert.equal(
+    keys(
+      { kind: 'lane', id: 'web' },
+      {
+        story: true,
+        loop: { state: 'running' },
+        acts: [
+          { id: 'review', label: 'Review' },
+          { id: 'merge', label: 'Merge' },
+          { id: 'sendBack', label: 'Send back' },
+        ],
+      },
+    ),
+    'j/k ⏎ t c r m s p f l esc',
+  );
+  assert.equal(keys(null, { loop: { state: 'off' } }), 'j/k f l esc');
+  assert.equal(keys(null, { view: 'trail' }), '←→ esc');
+  const order = selectable([{}, {}], [{ name: 'web' }, { name: 'api' }]);
+  assert.deepEqual(moveSelection(order, null, 1), { kind: 'need', id: '0' });
+  assert.deepEqual(moveSelection(order, null, -1), { kind: 'lane', id: 'api' });
+  assert.deepEqual(moveSelection(order, { kind: 'need', id: '1' }, 1), { kind: 'lane', id: 'web' });
+  assert.deepEqual(moveSelection(order, { kind: 'lane', id: 'api' }, 1), { kind: 'need', id: '0' });
+});
+
+test('UI-12 the surface modules: a clock that ticks only while its agent works, and the rail', async () => {
+  const { elapsed } = await import('../hooks/mod/surface/clock.mjs');
+  const { railText } = await import('../hooks/mod/surface/rail.mjs');
+  assert.equal(elapsed(12000), '12s');
+  assert.equal(elapsed(312000), '5:12');
+  assert.equal(elapsed(3 * 3600000 + 5 * 60000), '3h 5m');
+  assert.equal(railText(6, null), '─────▸');
+  assert.equal(railText(6, 2), '──•──▸');
+  assert.equal(railText(6, 7), '──•──▸');
+});
+
+test('UI-11 the character as half-blocks in a surface module: two pixels a cell, one Text a run', async () => {
+  const { halfBlocks } = await import('../hooks/mod/surface/character.mjs');
+  const tree = halfBlocks(
+    [
+      [0xff0000, 0xff0000, null],
+      [0x00ff00, 0x00ff00, null],
+    ],
+    el,
+  );
+  const [row] = tree.children;
+  assert.deepEqual(
+    row.children.map((t) => [
+      t.children[0],
+      t.props.color ?? null,
+      t.props.backgroundColor ?? null,
+    ]),
+    [
+      ['▀▀', '#ff0000', '#00ff00'],
+      [' ', null, null],
+    ],
+  );
 });

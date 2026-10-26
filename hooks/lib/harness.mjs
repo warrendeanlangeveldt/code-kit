@@ -8,6 +8,8 @@ export const MODELS = ['haiku', 'sonnet', 'opus'];
 /** Each setting by its dotted key: its default, and why a value is wrong (or null when it's right). */
 /** LEAN-3: what the loop does with the lead's context when a milestone finishes. */
 export const COMPACT = ['ask', 'auto', 'off'];
+/** UI-12: whether the mod's characters and clocks move while work flows, or stay still. */
+export const MOTION = ['while-active', 'off'];
 
 export const SETTINGS = {
   autonomy: {
@@ -102,6 +104,12 @@ export const SETTINGS = {
     problem: (v) => (typeof v === 'boolean' ? null : 'must be true or false'),
     about:
       'A system notification when something new needs you: an approval, a question, a stalled lane',
+  },
+  motion: {
+    default: 'while-active',
+    problem: (v) => (MOTION.includes(v) ? null : `must be one of ${MOTION.join(', ')}`),
+    about:
+      "Whether the pane's characters, clocks and the lead's rail move while work flows, or stay still",
   },
   'report.on': {
     default: false,

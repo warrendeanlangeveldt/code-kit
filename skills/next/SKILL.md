@@ -59,7 +59,7 @@ After a step finishes, run `next --json` again and carry on with the new step, w
 - the step is `wait` or `done`;
 - the same step comes back twice in a row with nothing changed. Report what's stuck instead of looping.
 
-**Ask the person through code-kit, not only in chat.** Anything you can't settle yourself and the person has to decide or do (a product choice, an account or key only they can create, wording or a design only they can sign off, whether to keep something private) goes to their Decisions tab, where it waits until they answer instead of scrolling away:
+**Ask the person through code-kit, not only in chat.** Anything you can't settle yourself and the person has to decide or do (a product choice, an account or key only they can create, wording or a design only they can sign off, whether to keep something private) goes to their band and the pane's Needs you, where it waits until they answer instead of scrolling away:
 
 ```
 node "${CLAUDE_PLUGIN_ROOT}/bin/code-kit.mjs" ask "<the question, in a sentence>" [--story ST-n --blocks] [--why "<why you can't settle it>"] --option "<choice>: <what it does>" --option "…"

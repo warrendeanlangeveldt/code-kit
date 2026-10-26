@@ -264,10 +264,16 @@ function compose({ shape, mark = null }, pose, frame) {
       break;
     }
     case 'running': {
-      // Turning a gear on the left, bobbing as it works.
+      // Turning a crank on the left, its bar spinning a quarter a frame, bobbing as it works.
       const bob = f % 2;
       whole(0, bob, 'open');
-      paint(g, f % 2 ? ['P.P', '.K.', 'P.P'] : ['.P.', 'PKP', '.P.'], { top: 7 });
+      const spin = [
+        ['.P.', '.K.', '.P.'],
+        ['..P', '.K.', 'P..'],
+        ['...', 'PKP', '...'],
+        ['P..', '.K.', '..P'],
+      ];
+      paint(g, spin[f], { top: 7 });
       break;
     }
     case 'reading': {

@@ -1,6 +1,5 @@
-// The mission band (docs/specs/14-mission-and-maps.md, MISSION-1 to MISSION-3), the pure parts: the
-// goal, what the lead is doing now, the loop's next step, each agent at work with its tool, and a line
-// from another tool only when it has something to say. The band draws these above what needs the person.
+// The mission (docs/specs/14-mission-and-maps.md, MISSION-1): the milestone being built, and the words
+// for the loop's next step. The Build panel and the band's one line draw them (spec 27, UI-2 and UI-9).
 import { stepLabel } from './loop.mjs';
 
 /**
@@ -29,94 +28,4 @@ export function nextText(step) {
     ? `${step.step} (yours to run)`
     : stepLabel(step);
   return `${label}${then.length ? `, then ${then.join(', ')}` : ''}`;
-}
-
-/** At most this many agents get a line of their own; the rest are counted. */
-const AGENT_LINES = 5;
-
-/**
- * MISSION-1 to MISSION-3: the band's mission rows, or none while nothing is happening (no lead turn,
- * no agent at work, the loop not started). Each row is { kind, mission: true, label, text, ... }:
- * goal; now (with Pause or Resume while the loop runs); next; agents, with one entry per lane at work
- * ({ lane, tool, ago, level }); and a line per adapter fact worth the person's attention.
- */
-export function missionLines({
-  state,
-  loop = null,
-  leadBusy = false,
-  live = {},
-  nextStep = null,
-  combined = null,
-}) {
-  if (state?.kind !== 'ok') return [];
-  const working = state.lanes.filter((l) => l.name !== 'lead' && l.active && live[l.name]);
-  const away = ['elsewhere', 'unled'].includes(loop?.state);
-  const loopOn = Boolean(loop?.started) && !['off', 'stopped'].includes(loop?.state) && !away;
-  if (!leadBusy && !working.length && !loopOn) return [];
-  const rows = [];
-  const goal = goalOf(state.stories);
-  if (goal)
-    rows.push({
-      kind: 'goal',
-      label: 'goal',
-      text: `${goal.name} · ${goal.done} of ${goal.total} ${goal.total === 1 ? 'story' : 'stories'} done`,
-    });
-  const lead = leadBusy
-    ? `lead ${live.lead?.tool ? `at work: ${live.lead.tool}` : 'at work'}`
-    : 'lead idle';
-  const loopWord =
-    loop?.state === 'elsewhere'
-      ? 'the lead is in another session'
-      : loop?.state === 'unled'
-        ? 'no session leads the project'
-        : loop?.state === 'paused'
-          ? 'loop paused'
-          : loop?.state === 'off'
-            ? 'loop off'
-            : loop?.state === 'done'
-              ? 'milestone done'
-              : loopOn
-                ? `loop ${loop.autonomy === 'propose' ? 'proposing' : 'on'}${loop.last ? ` · last: ${loop.last}` : ''}`
-                : null;
-  rows.push({
-    kind: 'now',
-    label: 'now',
-    text: [lead, loopWord].filter(Boolean).join(' · '),
-    actions: away
-      ? [{ id: 'leadHere', label: 'Lead from here' }]
-      : loop?.state === 'paused'
-        ? [{ id: 'resume', label: 'Resume' }]
-        : loopOn && loop?.state === 'running'
-          ? [{ id: 'pause', label: 'Pause' }]
-          : [],
-  });
-  const next = nextText(nextStep);
-  if (next && loop?.state !== 'done') rows.push({ kind: 'next', label: 'next', text: next });
-  if (working.length)
-    rows.push({
-      kind: 'agents',
-      label: 'agents',
-      text: `${working.length} at work`,
-      agents: working.slice(0, AGENT_LINES).map((l) => ({
-        lane: l.name,
-        tool: live[l.name].tool,
-        ago: live[l.name].ago,
-        level: live[l.name].level ?? null,
-      })),
-      more: Math.max(0, working.length - AGENT_LINES),
-    });
-  // MISSION-3: another tool's line only when it isn't zero: edits made before the file was understood.
-  const unread = Object.entries(combined ?? {}).filter(([, f]) => f.without > 0);
-  if (unread.length)
-    rows.push({
-      kind: 'facts',
-      label: 'context',
-      text: unread
-        .map(
-          ([lane, f]) =>
-            `${lane} edited ${f.without} file${f.without === 1 ? '' : 's'} without understanding ${f.without === 1 ? 'it' : 'them'}`,
-        )
-        .join(' · '),
-    });
-  return rows.map((r) => ({ actions: [], ...r, mission: true }));
 }

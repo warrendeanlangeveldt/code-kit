@@ -2,7 +2,7 @@
 // which `npm test` runs when it's available. The CLI, git and the agents are stubbed with what they
 // report; the CLI itself is tested in test/hooks.test.mjs, and the drawing in test/units.test.mjs.
 import { expect, mock, test } from 'claude-code/testing';
-import { rasterCells, sprite, tintOf } from './art.mjs';
+import { charactersOf } from './characters.mjs';
 
 const PANE = 'code-kit-lanes';
 const APPROVE = 'code-kit-approve';
@@ -575,7 +575,7 @@ const bandUi = ($: any) =>
   });
 const press = ($: any, key: string, requestId?: string) =>
   $.ui.press({ plugin: 'code-kit', key, ...(requestId ? { requestId } : {}) });
-const lanes = ($: any) => $.command.run({ command: 'lanes', args: '' });
+const lanes = ($: any, args = '') => $.command.run({ command: 'lanes', args });
 const teamCmd = ($: any) => $.command.run({ command: 'team', args: '' });
 const dayjs = {
   at: '2026-10-06T00:00:00.000Z',
@@ -608,15 +608,18 @@ test('PANE-1 after Escape closes the pane, /lanes opens it again', async ($, on)
   expect(w.opened).toEqual([PANE, PANE]);
 });
 
-test('PANE-2 each lane shows its agent, story, branch and state', async ($, on) => {
+test('PANE-2 and UI-4 each lane at work is a card with its story, state, branch and agent; the rest rest', async ($, on) => {
   const w = project();
   await start($, on, w);
   await lanes($);
   const ui = await pane($, PANE);
-  expect(await ui.find({ key: 'lane-web' })).toBeDefined();
-  expect(await ui.find({ type: 'Text', text: 'ST-4 Booking form · web/st-4' })).toBeDefined();
-  expect(await ui.find({ type: 'Text', text: /building/ })).toBeDefined();
-  expect(await ui.find({ type: 'Text', text: /idle/ })).toBeDefined();
+  expect(await ui.find({ key: 'card-web' })).toBeDefined();
+  expect(await ui.find({ type: 'Text', text: 'ST-4 Booking form' })).toBeDefined();
+  expect(await ui.find({ type: 'Text', text: '● building' })).toBeDefined();
+  expect(await ui.find({ type: 'Text', text: 'web/st-4 · web-engineer' })).toBeDefined();
+  // UI-4: lanes with nothing at work fold into one line.
+  expect(await ui.find({ type: 'Text', text: 'lead, api, core' })).toBeDefined();
+  expect(await ui.find({ key: 'card-api' })).toBeUndefined();
   await ui.unmount();
 });
 
@@ -625,9 +628,12 @@ test('PANE-3 the ready stories are listed with their lanes, the lead stories as 
   await start($, on, w);
   await lanes($);
   const ui = await pane($, PANE);
-  for (const id of ['ST-6', 'ST-7', 'ST-9'])
-    expect(await ui.find({ key: `ready-${id}` })).toBeDefined();
-  expect(await ui.findAll({ type: 'Text', text: "the lead's own" })).toHaveLength(2);
+  expect(
+    await ui.find({
+      type: 'Text',
+      text: "ready: ST-9 (core), ST-6 (the lead's own), ST-7 (the lead's own)",
+    }),
+  ).toBeDefined();
   await ui.unmount();
 });
 
@@ -661,8 +667,8 @@ test('PANE-4 with nothing changed it reads the project every 10 seconds while th
   // The fifth reads it all (check, status, next, requests, stops, queue, timeline, the lead's questions,
   // the reports waiting, and which session runs the loop, while this one doesn't) between two looks at git.
   await clock.advance(2000);
-  // OWN-1: and this session's decisions.
-  expect(w.runs - before).toBe(17);
+  // OWN-1: and this session's decisions; UI-4, UI-5: the story map of each card and the journal, for the Log.
+  expect(w.runs - before).toBe(19);
 });
 
 test('CARD-4 outside a code-kit project, /lanes says so, opens nothing, and there is no band', async ($, on) => {
@@ -686,7 +692,7 @@ test('PANE-5 an invalid config shows one line and no lanes', async ($, on) => {
   expect(
     await ui.find({ type: 'Text', text: /The config is invalid: run code-kit check\./ }),
   ).toBeDefined();
-  expect(await ui.find({ key: 'lane-web' })).toBeUndefined();
+  expect(await ui.find({ key: 'card-web' })).toBeUndefined();
   await ui.unmount();
 });
 
@@ -854,7 +860,8 @@ test('ACT-1 a grant that fails approves nothing, and the band says why', async (
   expect(
     await after.find({ type: 'Text', text: /Nothing was approved: approve needs --reason/ }),
   ).toBeDefined();
-  expect(await after.find({ type: 'Text', text: '1 approval waiting' })).toBeDefined();
+  // UI-9: the failure is the most urgent; the approval still waits, counted beneath it.
+  expect(await after.find({ type: 'Text', text: '1 more waiting · /lanes' })).toBeDefined();
   await after.unmount();
 });
 
@@ -1343,10 +1350,11 @@ test("USE-1 a lane agent's requests show on its lane's row and its story", async
   await request($, 'a1', 80);
   await clock.advance(2000);
   const ui = await pane($, PANE);
-  expect((await ui.find({ key: 'lane-web' }))?.text).toContain('200k');
-  await press($, 'tab-usage', PANE);
+  expect((await ui.find({ key: 'card-web' }))?.text).toContain('200k');
+  // UI-6: the Usage view, from /lanes usage.
+  await lanes($, 'usage');
   expect((await ui.find({ key: 'usage-ST-4' }))?.text).toContain('200k');
-  expect((await ui.find({ key: 'lane-api' }))?.text).not.toMatch(/\d+k/);
+  expect(await ui.find({ type: 'Text', text: 'Lanes  web 200k' })).toBeDefined();
   await ui.unmount();
 });
 
@@ -1358,9 +1366,9 @@ test("USE-1 the lead's requests are the lead's; an agent's brief names its story
   await request($, undefined, 30);
   await request($, 'a2', 50);
   const ui = await pane($, PANE);
-  expect((await ui.find({ key: 'lane-lead' }))?.text).toContain('30k');
-  expect((await ui.find({ key: 'lane-core' }))?.text).toContain('50k');
-  await press($, 'tab-usage', PANE);
+  expect((await ui.find({ key: 'card-core' }))?.text).toContain('50k');
+  await lanes($, 'usage');
+  expect(await ui.find({ type: 'Text', text: 'Lanes  lead 30k · core 50k' })).toBeDefined();
   expect((await ui.find({ key: 'usage-ST-9' }))?.text).toContain('50k');
   await ui.unmount();
 });
@@ -1377,7 +1385,7 @@ test("USE-2 the background agents' share and the plan's 5-hour use", async ($, o
   await request($, 'a1', 150);
   await request($, 'r1', 50);
   const ui = await pane($, PANE);
-  await press($, 'tab-usage', PANE);
+  await lanes($, 'usage');
   expect(await ui.find({ type: 'Text', text: 'Background agents  50k (25%)' })).toBeDefined();
   expect(await ui.find({ type: 'Text', text: '62% of the 5-hour window' })).toBeDefined();
   expect(await ui.find({ type: 'Text', text: 'This session  200k tokens' })).toBeDefined();
@@ -1610,10 +1618,12 @@ test("ASK-2 the lead's question waits in the band and as a card; an option answe
     }),
   ];
   await start($, on, w);
+  // UI-3, UI-9: each question is its own; the band holds the first and counts the other.
   const band = await bandUi($);
   expect(
-    await band.find({ type: 'Text', text: /^2 questions from the lead: Which weather provider/ }),
+    await band.find({ type: 'Text', text: /^The lead asks: Which weather provider/ }),
   ).toBeDefined();
+  expect(await band.find({ type: 'Text', text: '1 more waiting · /lanes' })).toBeDefined();
   await press($, 'band-openDecision');
   await band.unmount();
   const ui = await pane($, PANE);
@@ -1690,9 +1700,10 @@ test("ASK-4 the brief's open questions are the person's decisions: answered to t
   expect(
     await band.find({
       type: 'Text',
-      text: '2 open questions in your brief: Accounts: AWS, Supabase, Fly',
+      text: 'An open question in your brief: Accounts: AWS, Supabase, Fly',
     }),
   ).toBeDefined();
+  expect(await band.find({ type: 'Text', text: '1 more waiting · /lanes' })).toBeDefined();
   await press($, 'band-openDecision');
   await band.unmount();
   const ui = await pane($, PANE);
@@ -1793,9 +1804,9 @@ test('ASK-2 and ASK-4 an answer closes its decision at once, though the lead hea
   await $.ui.input({ plugin: 'code-kit', key: 'answer-text', text: 'myaila.com.au' });
   await box.unmount();
   expect(w.prompts).toHaveLength(2);
-  expect(
-    await ui.find({ type: 'Text', text: 'Nothing needs you. The lead is handling the build.' }),
-  ).toBeDefined();
+  // UI-3: with nothing left to decide, the view gives way to the panels, and Needs you takes no room.
+  expect(await ui.find({ key: 'panel-needs' })).toBeUndefined();
+  expect(await ui.find({ key: 'panel-build' })).toBeDefined();
   await ui.unmount();
 });
 
@@ -1819,7 +1830,7 @@ test('OWN-2 sixty calls Claude Code refused, each followed by the lead finding a
   expect(w.asked).toEqual([]);
   await lanes($);
   const ui = await pane($, PANE);
-  expect((await ui.find({ key: 'lane-lead' }))?.text).toMatch(
+  expect((await ui.find({ key: 'card-lead' }))?.text).toMatch(
     /Claude Code refused `pnpm db:migrate/,
   );
   await ui.unmount();
@@ -1840,7 +1851,13 @@ test('CARD-8 two approvals waiting are two decisions, each approved or dropped o
   ];
   await start($, on, w);
   const band = await bandUi($);
-  expect(await band.find({ type: 'Text', text: '2 approvals waiting' })).toBeDefined();
+  expect(
+    await band.find({
+      type: 'Text',
+      text: 'Approve dayjs for the web lane: npm install dayjs',
+    }),
+  ).toBeDefined();
+  expect(await band.find({ type: 'Text', text: '1 more waiting · /lanes' })).toBeDefined();
   await press($, 'band-decide');
   await band.unmount();
   const ui = await pane($, PANE);
@@ -1866,13 +1883,15 @@ test('CARD-9 many decisions read as short cards, a few at a time, with the selec
   await press($, 'band-decide');
   await band.unmount();
   const ui = await pane($, PANE);
-  expect((await ui.find({ key: 'decision-kinds' }))?.text).toBe('8 approvals · 1 question');
+  // UI-3: most urgent first: the lead's question before the approvals.
+  expect((await ui.find({ key: 'decision-kinds' }))?.text).toBe('1 question · 8 approvals');
+  await press($, 'decision-next', PANE);
   // Five cards at a time, each a headline and a line under it; the command cut at its pipe, on one line.
   expect(await ui.find({ key: 'decision-item-4' })).toBeDefined();
   expect(await ui.find({ key: 'decision-item-5' })).toBeUndefined();
   expect(await ui.find({ type: 'Text', text: '  ↓ 4 more' })).toBeDefined();
-  expect((await ui.find({ key: 'decision-pick-0' }))?.props.label).toBe(
-    'Approve pkg0, a, b and 1 more',
+  expect((await ui.find({ key: 'decision-head-1' }))?.text).toMatch(
+    /approval\s*Approve pkg0, a, b and 1 more/,
   );
   expect(
     await ui.find({
@@ -1887,7 +1906,7 @@ test('CARD-9 many decisions read as short cards, a few at a time, with the selec
   await press($, 'decision-next', PANE);
   await press($, 'decision-next', PANE);
   expect(await ui.find({ type: 'Text', text: /↑ \d+ more/ })).toBeDefined();
-  expect((await ui.findAll({ type: 'Text' })).some((t: any) => t.text === '4 of 9')).toBe(true);
+  expect((await ui.findAll({ type: 'Text' })).some((t: any) => t.text === '5 of 9')).toBe(true);
   await ui.unmount();
 });
 
@@ -2048,8 +2067,12 @@ test('JOURNAL-1 the Journal tab tells the lineage, from the request to now, with
   await start($, on, w);
   await lanes($);
   const ui = await pane($, PANE);
-  expect((await ui.find({ key: 'tab-journal' }))?.props.hotkey).toBe('3');
-  await press($, 'tab-journal', PANE);
+  // UI-5: the Log holds the latest, a line each, your own in yellow.
+  expect((await ui.find({ key: 'log-3' }))?.text).toMatch(/11:00\s*✓\s*ST-4 merged · web/);
+  expect((await ui.find({ key: 'log-2' }))?.text).toMatch(/You approved adding the package dayjs/);
+  // UI-6: l opens the Journal over the panels.
+  expect((await ui.find({ key: 'open-journal' }))?.props.hotkey).toBe('l');
+  await press($, 'open-journal', PANE);
   const journal = await ui.find({ key: 'journal' });
   expect(journal?.text).toMatch(
     /2026-10-01[\s\S]*You asked for “Bookings”[\s\S]*handed to the web lane[\s\S]*2026-10-02[\s\S]*You approved adding the package dayjs[\s\S]*merged into main/,
@@ -2231,7 +2254,10 @@ test('LOOP-1 and LOOP-2 with the lead idle, the loop dispatches every ready stor
   ]);
   await lanes($);
   const ui = await pane($, PANE);
-  expect((await ui.find({ key: 'loop-step-0' }))?.text).toMatch(/dispatch ST-9 ST-10 ST-11 ST-12/);
+  // UI-5: the step is in the Log.
+  expect((await ui.find({ key: 'panel-log' }))?.text).toMatch(
+    /The loop asked the lead to hand out ST-9 ST-10 ST-11 ST-12/,
+  );
   await ui.unmount();
 });
 
@@ -2251,11 +2277,13 @@ test('LOOP-9 the loop never asks for a story an agent is still on: it waits, and
   await leadTurn($, 't-2');
   await settle(clock);
   expect(w.prompts).toHaveLength(1);
-  const band = await bandUi($);
-  expect(
-    await band.find({ type: 'Text', text: /waiting: ST-4, ST-9 are still with their agents/ }),
-  ).toBeDefined();
-  await band.unmount();
+  // UI-2: the Build panel says what's next, and why the loop waits.
+  await lanes($);
+  const ui = await pane($, PANE);
+  expect((await ui.find({ key: 'build-loop' }))?.text).toMatch(
+    /waiting: ST-4, ST-9 are still with their agents/,
+  );
+  await ui.unmount();
   // The web agent finishes: ST-4 is reviewed; ST-9 is still being built, so it isn't dispatched again.
   w.agents = [{ ...w.agents[0], status: 'completed' }, w.agents[1]];
   await clock.advance(2000);
@@ -2360,14 +2388,17 @@ test('LOOP-6 Pause stops new steps until Resume', async ($, on) => {
   const clock = await start($, on, w);
   await leadTurn($);
   await settle(clock);
-  let ui = await bandUi($);
-  expect(await ui.find({ type: 'Text', text: 'loop on · last: review ST-4' })).toBeDefined();
-  await press($, 'band-pause');
+  // UI-2: Pause is p on the Build panel.
+  await lanes($);
+  let ui = await pane($, PANE);
+  expect((await ui.find({ key: 'loop-toggle' }))?.props.hotkey).toBe('p');
+  await press($, 'loop-toggle', PANE);
   await ui.unmount();
   w.next = { step: 'dispatch', args: 'ST-9', then: [] };
   await leadTurn($, 't-2');
   await settle(clock);
   expect(w.prompts).toEqual(['Review ST-4: run /code-kit:review ST-4.']);
+  // UI-9: a paused loop is said in the band, with Resume.
   ui = await bandUi($);
   expect(await ui.find({ type: 'Text', text: 'loop paused' })).toBeDefined();
   await press($, 'band-resume');
@@ -2388,8 +2419,9 @@ test('LOOP-6 the pause is recorded for other tools, and a new session starts wit
   await leadTurn($);
   await settle(clock);
   w.acts = [];
-  let ui = await bandUi($);
-  await press($, 'band-pause');
+  await lanes($);
+  let ui = await pane($, PANE);
+  await press($, 'loop-toggle', PANE);
   await ui.unmount();
   expect(w.acts).toEqual([['loop', 'pause']]);
   ui = await bandUi($);
@@ -2423,14 +2455,14 @@ test(
     ]);
     await lanes($);
     let ui = await pane($, PANE);
-    expect((await ui.find({ key: 'lane-web' }))?.text).toMatch(/nudged/);
+    expect((await ui.find({ key: 'card-web' }))?.text).toMatch(/nudged/);
     await ui.unmount();
     await clock.advance(5 * 60000);
     expect(w.prompts[0]).toMatch(
       /^web-engineer \(agent a1\) on ST-4 has made no tool call for 10 minutes\. Stop it with TaskStop.*\/code-kit:dispatch ST-4$/,
     );
     ui = await pane($, PANE);
-    expect((await ui.find({ key: 'lane-web' }))?.text).toMatch(/restarted 1\/2/);
+    expect((await ui.find({ key: 'card-web' }))?.text).toMatch(/restarted 1\/2/);
     await ui.unmount();
     // The lane's agent is started again, and stalls again, twice more.
     for (const id of ['a2', 'a3']) {
@@ -2696,16 +2728,24 @@ test('SESS-2 and SESS-3 a working session never prompts its lead, asks nothing, 
   await clock.advance(4000);
   expect(w.prompts).toEqual([]);
   expect(w.asked).toEqual([]);
+  // UI-9: the task heads the band, then the most urgent of its own, and how many more wait.
   const ui = await bandUi($);
-  expect(await ui.find({ type: 'Text', text: 'the lead is in another session' })).toBeDefined();
   expect(
     await ui.find({
       type: 'Text',
       text: 'your task: Integration readiness · leasing src/integrations/**',
     }),
   ).toBeDefined();
+  expect(
+    await ui.find({ type: 'Text', text: 'The lead asks: Which payment provider?' }),
+  ).toBeDefined();
   expect(await ui.find({ type: 'Text', text: /web\/st-4 is next to merge/ })).toBeUndefined();
   await ui.unmount();
+  await lanes($);
+  const pn = await pane($, PANE);
+  expect((await pn.find({ key: 'panel-needs' }))?.text).toMatch(/the lead is in another session/);
+  expect((await pn.find({ key: 'panel-needs' }))?.text).not.toMatch(/next to merge/);
+  await pn.unmount();
 });
 
 test('SESS-2 with no session leading, a working session says so and offers Lead from here', async ($, on) => {
@@ -3326,7 +3366,7 @@ test('REVW-1 with the reviewer on, a finished branch has the lead start one in t
   await clock.advance(3 * 60000);
   await lanes($);
   const ui = await pane($, PANE);
-  expect((await ui.find({ key: 'review-web/st-4' }))?.text).toMatch(/running 3m/);
+  expect((await ui.find({ key: 'card-web' }))?.text).toMatch(/review running 3m/);
   await ui.unmount();
   // While it runs, the lead isn't asked to review.
   await leadTurn($, 't-2');
@@ -3369,7 +3409,7 @@ test("REVW-3 and REVW-4 the reviewer's findings, a failed verify as a blocker, g
   );
   await lanes($);
   const ui = await pane($, PANE);
-  expect((await ui.find({ key: 'review-web/st-4' }))?.text).toMatch(/done · 1 blocker, 1 nit/);
+  expect((await ui.find({ key: 'card-web' }))?.text).toMatch(/review done · 1 blocker, 1 nit/);
   await ui.unmount();
 });
 
@@ -3406,8 +3446,8 @@ test('USE-4 past the pause point no reviewer starts: the review is skipped and t
   ]);
   await lanes($);
   const ui = await pane($, PANE);
-  expect((await ui.find({ key: 'review-web/st-4' }))?.text).toMatch(
-    /skipped: background agents paused/,
+  expect((await ui.find({ key: 'card-web' }))?.text).toMatch(
+    /review skipped: background agents paused/,
   );
   await ui.unmount();
 });
@@ -3461,7 +3501,9 @@ test("MAP-1 the Code map shows the selected lane's story by layer, its imports, 
   const clock = await start($, on, w);
   await lanes($);
   const ui = await pane($, PANE);
-  await press($, 'tab-code', PANE);
+  // UI-6: c on the selected story's card opens its Code map.
+  await press($, 'move-next', PANE);
+  await press($, 'open-map', PANE);
   await clock.advance(1);
   expect((await ui.find({ key: 'map-story-ST-4' }))?.props.variant).toBe('primary');
   const drawn = (await ui.find({ key: 'code-map' }))?.text ?? '';
@@ -3498,7 +3540,9 @@ test('MAP-2 a file a lane reads or edits glows in the code map, in the lane, and
   const clock = await start($, on, w);
   await lanes($);
   const ui = await pane($, PANE);
-  await press($, 'tab-code', PANE);
+  // UI-6: c on the selected story's card opens its Code map.
+  await press($, 'move-next', PANE);
+  await press($, 'open-map', PANE);
   await $.tool.call({ tool: 'Bash', tool_use_id: 'tu-w', command: 'ls', agentId: 'a1' } as any);
   await clock.advance(2000);
   await $.tool
@@ -3566,7 +3610,7 @@ test('TRAIL-1 the Trail tab follows each requirement of the spec to its stories,
   const clock = await start($, on, w);
   await lanes($);
   const ui = await pane($, PANE);
-  await press($, 'tab-map', PANE);
+  await lanes($, 'trail');
   await clock.advance(1);
   expect((await ui.find({ key: 'trail-BOOK-1' }))?.text).toMatch(
     /BOOK-1\s*Request\s*─+\s*● ST-4\s*─+\s*1 file\s*─+\s*✓ book\.spec\.ts/,
@@ -3654,10 +3698,10 @@ test('MQ-4 the pane shows the queue in order, what it merged and sent back, and 
   await start($, on, w);
   await lanes($);
   const ui = await pane($, PANE);
-  expect((await ui.find({ key: 'lane-web' }))?.text).toMatch(/queued/);
-  await press($, 'tab-queue', PANE);
+  expect((await ui.find({ key: 'card-web' }))?.text).toMatch(/queued/);
+  expect((await ui.find({ key: 'status-queue' }))?.text).toMatch(/Queue\s*·\s*waiting\s*1/);
   expect((await ui.find({ key: 'queue-web/st-4-waiting' }))?.text).toMatch(
-    /1\.\s*web\/st-4\s*waiting/,
+    /1\.\s*web\/st-4\s*ST-4\s*◇ waiting/,
   );
   expect((await ui.find({ key: 'queue-api/st-3-sent back' }))?.text).toMatch(
     /conflicts with main after api\/st-2/,
@@ -3677,32 +3721,53 @@ const inlinePane = ($: any) =>
     props: { title: PANE, isFocused: true, bodyColumns: 80, placement: 'inline' },
   });
 
-test('VIEW-1 the header counts the stories by state, and a count filters the lanes', async ($, on) => {
-  const w = project();
-  w.stories = [
-    { id: 'ST-1', title: 'Done', lane: 'api', state: 'done', branch: 'api/st-1', waitingOn: [] },
-    ...w.stories,
+/** A milestone's requirements: BOOK-1 tested, BOOK-2 built but untested, BOOK-3 in progress, BOOK-4 todo. */
+function milestone(w: any, name = 'Milestone 3: Booking') {
+  w.requirements = [
+    { id: 'BOOK-1', title: 'a', state: 'done', tests: ['b1.test.ts'], stories: ['ST-4'] },
+    { id: 'BOOK-2', title: 'b', state: 'done', tests: [], stories: ['ST-4'] },
+    { id: 'BOOK-3', title: 'c', state: 'in progress', tests: [], stories: ['ST-4'] },
+    { id: 'BOOK-4', title: 'd', state: 'todo', tests: [], stories: ['ST-9'] },
   ];
-  w.limits = [{ kind: 'five_hour', percentUsed: 40 }];
+  w.stories = w.stories.map((x: any) => ({
+    ...x,
+    milestone: name,
+    requirements:
+      x.id === 'ST-4' ? ['BOOK-1', 'BOOK-2', 'BOOK-3'] : x.id === 'ST-9' ? ['BOOK-4'] : [],
+  }));
+}
+
+test('UI-2 the Build panel counts the milestone in requirements tested, as a bar with the counts beside it', async ($, on) => {
+  const w = project();
+  milestone(w);
   await start($, on, w);
   await lanes($);
   const ui = await pane($, PANE);
-  expect((await ui.find({ key: 'count-building' }))?.props.label).toBe('● 1 building');
-  expect((await ui.find({ key: 'count-ready' }))?.props.label).toBe('○ 3 ready');
-  expect((await ui.find({ key: 'count-merged' }))?.props.label).toBe('✓ 1 merged');
-  expect(await ui.find({ type: 'Text', text: 'plan 40%' })).toBeDefined();
-  await press($, 'count-building', PANE);
-  expect(await ui.find({ key: 'lane-web' })).toBeDefined();
-  expect(await ui.find({ key: 'lane-api' })).toBeUndefined();
-  await press($, 'count-building', PANE);
-  expect(await ui.find({ key: 'lane-api' })).toBeDefined();
+  const build = (await ui.find({ key: 'panel-build' }))?.text ?? '';
+  expect(build).toMatch(/^Build/);
+  expect(build).toContain('Milestone 3: Booking · 1 of 4 tested · 1 untested');
+  expect(build).toContain('1/4');
+  // One segment per kind there is, each its own glyph, the counts beside the bar.
+  expect((await ui.find({ key: 'build-bar' }))?.text).toMatch(/^■+□+◐+○+$/);
+  expect(build).toContain('■ 1 tested  □ 1 untested  ◐ 1 in progress  ○ 1 todo');
   await ui.unmount();
 });
 
-test('MISSION-1 the band shows the goal, what the lead is doing, the next step and each agent at work', async ($, on) => {
+test('UI-2 a milestone with every story merged and requirements untested says untested, not done', async ($, on) => {
   const w = project();
-  w.stories = w.stories.map((x: any) => ({ ...x, milestone: 'Milestone 2: Bookings' }));
-  w.stories[0] = { ...w.stories[0], state: 'done' };
+  milestone(w);
+  w.stories = w.stories.map((x: any) => ({ ...x, state: 'done' }));
+  w.requirements = w.requirements.map((r: any) => ({ ...r, state: 'done' }));
+  await start($, on, w);
+  await lanes($);
+  const ui = await pane($, PANE);
+  expect((await ui.find({ key: 'panel-build' }))?.text).toContain('1 of 4 tested · 3 untested');
+  await ui.unmount();
+});
+
+test('UI-9 while the build moves and nothing needs the person, the band is one line: the milestone, its bar, and the agents at work', async ($, on) => {
+  const w = project();
+  milestone(w, 'Milestone 2: Bookings');
   w.next = { step: 'review', args: 'ST-9', then: [{ step: 'dispatch', args: 'ST-10' }] };
   w.agents = [{ id: 'a1', type: 'web-engineer', description: 'ST-4', status: 'running' }];
   const clock = await start($, on, w);
@@ -3717,29 +3782,26 @@ test('MISSION-1 the band shows the goal, what the lead is doing, the next step a
   await $.turn.start({ turnId: 't-busy', text: '' } as any);
   await clock.advance(3000);
   const ui = await bandUi($);
+  expect(await ui.find({ key: 'band-line' })).toBeDefined();
+  expect(await ui.find({ key: 'band-first' })).toBeUndefined();
   const rows = (await ui.findAll({ type: 'Text' })).map((t: any) => t.text);
-  expect(rows).toContain('Milestone 2: Bookings · 1 of 4 stories done');
-  expect(rows.some((t: string) => /^lead at work · loop on · last: review ST-9$/.test(t))).toBe(
-    true,
-  );
-  expect(rows).toContain('Review ST-9, then Dispatch ST-10');
-  expect(rows).toContain('web     ');
-  expect(rows).toContain('Bash npm run test:e2e');
+  expect(rows).toContain('Milestone 2: Bookings');
+  expect(rows).toContain('1/4');
+  expect(rows).toContain('moving · 1 agent at work');
   expect(await ui.find({ key: 'band-pause' })).toBeDefined();
   await ui.unmount();
 });
 
-test('MISSION-1 with nothing happening the band has no mission rows', async ($, on) => {
+test('UI-9 with nothing happening and nothing waiting, there is no band', async ($, on) => {
   const w = project();
   w.next = { step: 'wait', args: '', then: [] };
   await start($, on, w);
   const ui = await bandUi($);
-  const rows = (await ui.findAll({ type: 'Text' })).map((t: any) => t.text);
-  expect(rows.some((t: string) => /^(goal|now|next) +$/.test(t))).toBe(false);
+  expect(await ui.find({ type: 'Text' })).toBeUndefined();
   await ui.unmount();
 });
 
-test("VIEW-4 each lane shows its agent's last tool call and the time since, amber once quiet", async ($, on) => {
+test("VIEW-4 each card shows its agent's last tool call and the time since, its clock amber once quiet", async ($, on) => {
   const w = project();
   w.next = { step: 'wait', args: '', then: [] };
   w.agents = [{ id: 'a1', type: 'web-engineer', description: 'ST-4', status: 'running' }];
@@ -3753,29 +3815,36 @@ test("VIEW-4 each lane shows its agent's last tool call and the time since, ambe
   await clock.advance(12000);
   await lanes($);
   let ui = await pane($, PANE);
-  const live = await ui.find({ type: 'Text', text: /^Bash npm test · / });
-  expect(live?.text).toBe('Bash npm test · 12s ago');
-  expect(live?.props.color).toBeUndefined();
+  const tool = await ui.find({ type: 'Text', text: 'Bash npm test' });
+  expect(tool?.props.color).toBeUndefined();
+  expect((await ui.find({ type: 'Text', in: 'clock-web' } as any))?.text).toBe('12s');
   await ui.unmount();
   await clock.advance(5 * 60000);
   ui = await pane($, PANE);
-  expect((await ui.find({ type: 'Text', text: /^Bash npm test · 5m ago$/ }))?.props.color).toBe(
-    'yellow',
-  );
+  expect((await ui.find({ type: 'Text', text: 'Bash npm test' }))?.props.color).toBe('yellow');
+  const quiet = await ui.find({ type: 'Text', in: 'clock-web' } as any);
+  expect(quiet?.text).toBe('5:12');
+  expect(quiet?.props.color).toBe('yellow');
   await ui.unmount();
 });
 
-test('VIEW-5 what needs the person is pinned at the top with its letter: a held install, a on Approve', async ($, on) => {
+test('UI-3 and UI-8 Needs you holds a held install open, its Approve on 1 in the pane as in the band', async ($, on) => {
   const w = project();
   w.refusal = webInstall;
   const clock = await start($, on, w);
   const { call } = await heldCall($, w, clock);
   await lanes($);
   const ui = await pane($, PANE);
-  expect((await ui.find({ key: 'need-held' }))?.text).toMatch(
-    /web wants to install dayjs · 2:00for ST-4 Booking form/,
-  );
-  expect((await ui.find({ key: 'need-approveHeld' }))?.props.hotkey).toBe('a');
+  expect((await ui.find({ key: 'status-needs' }))?.text).toMatch(/Needs you\s*·\s*1 waiting/);
+  const open = (await ui.find({ key: 'need-open' }))?.text ?? '';
+  expect(open).toMatch(/held call\s*web wants to install dayjs · 2:00/);
+  expect(open).toMatch(/for ST-4 Booking form/);
+  const approve = await ui.find({ key: 'need-approveHeld' });
+  expect(approve?.props.hotkey).toBe('1');
+  expect(approve?.props.label).toBe('1 Approve');
+  const band = await bandUi($);
+  expect((await band.find({ key: 'band-approveHeld' }))?.props.hotkey).toBe('1');
+  await band.unmount();
   await press($, 'need-approveHeld', PANE);
   expect(w.opened).toContain(APPROVE);
   await ui.unmount();
@@ -3784,21 +3853,27 @@ test('VIEW-5 what needs the person is pinned at the top with its letter: a held 
   expect(refused(await call)).toBe(true);
 });
 
-test('VIEW-6 tabs on 1 to 7, j and k move between lanes, and the selected lane has its keys', async ($, on) => {
+test('UI-1 and UI-8 one pane of panels with no tabs; j and k move through the lanes, and the selected card has its keys', async ($, on) => {
   const w = project();
   w.agents = [{ id: 'a1', type: 'web-engineer', description: 'ST-4', status: 'running' }];
   await start($, on, w);
   await lanes($);
   const ui = await pane($, PANE);
-  expect((await ui.find({ key: 'tab-queue' }))?.props.hotkey).toBe('6');
-  expect((await ui.find({ key: 'tab-code' }))?.props.hotkey).toBe('4');
-  await press($, 'tab-queue', PANE);
-  expect(await ui.find({ type: 'Text', text: 'The merge queue is empty.' })).toBeDefined();
-  await press($, 'tab-lanes', PANE);
-  expect((await ui.find({ key: 'lane-next' }))?.props.hotkey).toBe('j');
-  await press($, 'lane-next', PANE);
-  await press($, 'lane-next', PANE);
-  expect((await ui.find({ key: 'lane-web' }))?.text).toMatch(/^›/);
+  expect(await ui.find({ key: 'tabs' })).toBeUndefined();
+  // UI-1: nothing waiting and an empty queue take no room.
+  expect(await ui.find({ key: 'panel-build' })).toBeDefined();
+  expect(await ui.find({ key: 'panel-lanes' })).toBeDefined();
+  expect(await ui.find({ key: 'panel-log' })).toBeDefined();
+  expect(await ui.find({ key: 'panel-needs' })).toBeUndefined();
+  expect(await ui.find({ key: 'panel-queue' })).toBeUndefined();
+  expect((await ui.find({ key: 'status-lanes' }))?.text).toMatch(/Lanes\s*·\s*1 at work\s*4/);
+  expect((await ui.find({ key: 'move-next' }))?.props.hotkey).toBe('j');
+  await press($, 'move-next', PANE);
+  expect((await ui.find({ key: 'card-web' }))?.props.borderColor).toBe('cyan');
+  // UI-8: the last line lists the keys that work for what's selected.
+  expect((await ui.find({ key: 'keys' }))?.text).toMatch(
+    /j\/k move · ⏎ open · t trail · c map · w Watch · n Nudge · x Stop/,
+  );
   // WATCH-1: w puts the lane agent's transcript in the main view.
   expect((await ui.find({ key: 'act-watch' }))?.props.hotkey).toBe('w');
   await press($, 'act-watch', PANE);
@@ -3813,8 +3888,11 @@ test('VIEW-6 tabs on 1 to 7, j and k move between lanes, and the selected lane h
   expect(w.prompts.at(-1)).toMatch(
     /^The person asked to stop web-engineer \(agent a1\) on ST-4: stop it with TaskStop/,
   );
-  await press($, 'lane-prev', PANE);
-  expect((await ui.find({ key: 'lane-lead' }))?.text).toMatch(/^›/);
+  // j moves on to the resting lanes, the lead's first; k comes back.
+  await press($, 'move-next', PANE);
+  expect((await ui.find({ key: 'card-lead' }))?.props.borderColor).toBe('cyan');
+  await press($, 'move-prev', PANE);
+  expect((await ui.find({ key: 'card-web' }))?.props.borderColor).toBe('cyan');
   await ui.unmount();
 });
 
@@ -3848,8 +3926,7 @@ test('VIEW-6 s sends the selected story back, with the reason the person gives',
   await start($, on, w);
   await lanes($);
   const ui = await pane($, PANE);
-  await press($, 'lane-next', PANE);
-  await press($, 'lane-next', PANE);
+  await press($, 'move-next', PANE);
   expect((await ui.find({ key: 'act-sendBack' }))?.props.hotkey).toBe('s');
   await press($, 'act-sendBack', PANE);
   expect(w.opened).toContain('code-kit-sendback');
@@ -3873,20 +3950,26 @@ test('VIEW-6 f puts the keys in the filter, which narrows the lanes by name, age
   await lanes($);
   const ui = await pane($, PANE);
   expect((await ui.find({ key: 'filter-focus' }))?.props.hotkey).toBe('f');
+  await press($, 'filter-focus', PANE);
   await $.ui.input({ plugin: 'code-kit', key: 'filter', text: 'api-eng', kind: 'change' });
-  expect(await ui.find({ key: 'lane-api' })).toBeDefined();
-  expect(await ui.find({ key: 'lane-web' })).toBeUndefined();
+  expect(await ui.find({ type: 'Text', text: 'api' })).toBeDefined();
+  expect(await ui.find({ key: 'card-web' })).toBeUndefined();
   await ui.unmount();
 });
 
-test('VIEW-8 inline, the pane is the header, what needs the person and one line per lane', async ($, on) => {
+test('UI-10 inline, the pane is at most four lines: the Build bar, a cell per lane by its state, and the first thing waiting', async ($, on) => {
   const w = project();
+  milestone(w);
+  w.requests = [dayjs];
   await start($, on, w);
   await lanes($);
   const ui = await inlinePane($);
-  expect(await ui.find({ key: 'count-building' })).toBeDefined();
-  expect(await ui.find({ key: 'tabs' })).toBeUndefined();
-  expect((await ui.find({ key: 'lane-web' }))?.text).toMatch(/^web\s*building\s*ST-4/);
+  const drawn: any = await ui.drawn();
+  expect((drawn.children ?? drawn.props?.children ?? []).length).toBeLessThanOrEqual(4);
+  expect((await ui.find({ key: 'inline-build' }))?.text).toMatch(/1\/4 tested/);
+  expect((await ui.find({ key: 'inline-lanes' }))?.text).toMatch(/·lead\s*●web\s*·api\s*·core/);
+  expect((await ui.find({ key: 'inline-need' }))?.text).toMatch(/1 approval waiting/);
+  expect((await ui.find({ key: 'need-approve' }))?.props.hotkey).toBe('1');
   await ui.unmount();
 });
 
@@ -3896,8 +3979,7 @@ test('VIEW-8 inline, the pane is the header, what needs the person and one line 
 async function onWeb($: any) {
   await lanes($);
   const ui = await pane($, PANE);
-  await press($, 'lane-next', PANE);
-  await press($, 'lane-next', PANE);
+  await press($, 'move-next', PANE);
   return ui;
 }
 
@@ -3906,9 +3988,9 @@ test('VIEW-7 Enter on a lane opens its story: requirements with the spec-check, 
   w.stories[0] = { ...w.stories[0], state: 'review' };
   await start($, on, w);
   const ui = await onWeb($);
+  // UI-8: Enter opens what's selected: its Open button has the focus.
   const open = await ui.find({ key: 'open-story' });
-  expect(open?.props.label).toBe('Open ST-4');
-  expect(open?.props.hotkey).toBe('o');
+  expect(open?.props.label).toBe('Open');
   expect(open?.props.autoFocus).toBe(true);
   await press($, 'open-story', PANE);
   expect((await ui.find({ key: 'story-head' }))?.text).toMatch(
@@ -3926,8 +4008,10 @@ test('VIEW-7 Enter on a lane opens its story: requirements with the spec-check, 
   );
   expect((await ui.find({ key: 'story-review' }))?.props.hotkey).toBe('r');
   expect((await ui.find({ key: 'story-sendBack' }))?.props.hotkey).toBe('s');
+  // UI-6: Back (or Escape) returns to the panels, the story still selected.
   await press($, 'story-back', PANE);
-  expect(await ui.find({ key: 'tabs' })).toBeDefined();
+  expect(await ui.find({ key: 'panel-lanes' })).toBeDefined();
+  expect((await ui.find({ key: 'card-web' }))?.props.borderColor).toBe('cyan');
   await ui.unmount();
 });
 
@@ -3997,10 +4081,10 @@ test('TRACE-1 the map: a cell per requirement, a row per spec, and a legend with
   w.requirements = requirementsMap();
   await start($, on, w);
   await lanes($);
+  // UI-6: the Trail opens over the panels from /lanes trail.
+  await lanes($, 'trail');
   const ui = await pane($, PANE);
-  expect((await ui.find({ key: 'tab-map' }))?.props.label).toBe('Trail');
-  expect((await ui.find({ key: 'tab-map' }))?.props.hotkey).toBe('5');
-  await press($, 'tab-map', PANE);
+  expect(await ui.find({ type: 'Text', text: 'Trail' })).toBeDefined();
   const legend = (await ui.find({ key: 'map-legend' }))?.text ?? '';
   expect(legend).toMatch(/■ 20 done and tested/);
   expect(legend).toMatch(/✗ 3 without a story/);
@@ -4019,7 +4103,7 @@ test('TRACE-2 selecting a cell, by keys or the list, shows its spec, stories wit
   await start($, on, w);
   await lanes($);
   const ui = await pane($, PANE);
-  await press($, 'tab-map', PANE);
+  await lanes($, 'trail');
   expect((await ui.find({ key: 'map-detail' }))?.text).toMatch(/BOOK-1 Requirement 1/);
   await press($, 'cell-next', PANE);
   expect(JSON.stringify((await ui.find({ key: 'cell-BOOK-2' }))?.children)).toMatch(
@@ -4050,7 +4134,7 @@ test('TRACE-3 the map follows the project: a commit that finishes a requirement 
   const clock = await start($, on, w);
   await lanes($);
   const ui = await pane($, PANE);
-  await press($, 'tab-map', PANE);
+  await lanes($, 'trail');
   w.requirements = w.requirements.map((r) =>
     r.id === 'BOOK-31' ? { ...r, state: 'done', tests: ['t'] } : r,
   );
@@ -4084,16 +4168,18 @@ test('VIEW-2 a lane dispatched 40 minutes ago and in review for 5 shows 35 minut
   await clock.advance(2000);
   await lanes($);
   const ui = await pane($, PANE);
+  // VIEW-2: the selected lane's story on the time axis, 40 cells to now.
+  await press($, 'move-next', PANE);
   const bar = (await ui.find({ key: 'bar-web' }))?.text.trim() ?? '';
   const building = [...bar].filter((c) => c === '█').length;
   const review = [...bar].filter((c) => c === '▒').length;
-  expect(building + review).toBe(66);
-  expect(Math.abs(building - (66 * 35) / 40)).toBeLessThanOrEqual(1);
+  expect(building + review).toBe(40);
+  expect(Math.abs(building - (40 * 35) / 40)).toBeLessThanOrEqual(1);
   expect(bar.endsWith('▒')).toBe(true);
   await ui.unmount();
 });
 
-test('VIEW-3 each lane has its character: web works, api waits on a held call, the lead rests', async ($, on) => {
+test('UI-11 and UI-12 each lane at work has its character: web runs a test and animates on its own clock, api waits on a held call, still', async ($, on) => {
   const w = project();
   w.refusal =
     'Blocked: a new dependency (zod) needs a person\'s approval. Write a short change request for the lead.\n  ! echo "<what you are approving>" > .claude/approvals/api/dep-zod\n(a person runs it; it allows installing it for the api lane, until the install is committed, at most 7 days)\nCommand: npm install zod';
@@ -4103,6 +4189,12 @@ test('VIEW-3 each lane has its character: web works, api waits on a held call, t
   ];
   const clock = await start($, on, w);
   w.holdWaits = true;
+  const running = $.tool.call({
+    tool: 'Bash',
+    tool_use_id: 'tu-t',
+    command: 'npm test',
+    agentId: 'a1',
+  } as any);
   const call = $.tool.call({
     tool: 'Bash',
     tool_use_id: 'tu-z',
@@ -4110,32 +4202,66 @@ test('VIEW-3 each lane has its character: web works, api waits on a held call, t
     agentId: 'a2',
   } as any);
   for (let i = 0; i < 50 && !w.waiting.has('tu-z'); i++) await clock.advance(1);
+  await clock.advance(2000); // the next look finds each agent's lane
   await lanes($);
   const ui = await pane($, PANE);
-  const names = ['lead', 'web', 'api', 'core'];
-  const cells = async (lane: string) => (await ui.find({ key: `char-${lane}` }))?.props.cells;
-  expect(await cells('web')).toBe(rasterCells(sprite('working', 0, tintOf('web', names))));
-  expect(await cells('api')).toBe(rasterCells(sprite('waiting', 0, tintOf('api', names))));
-  expect(await cells('lead')).toBe(
-    rasterCells(sprite('idle', 0, tintOf('lead', names), { lead: true })),
-  );
-  // The working character repaints in place; the waiting one doesn't.
-  await clock.advance(2000);
-  await clock.advance(1200);
-  expect(w.blits).toContain('char-web');
-  expect(w.blits).not.toContain('char-api');
+  const looks = charactersOf(['lead', 'web', 'api', 'core']);
+  const web = await ui.find({ key: 'char-web' });
+  expect(web?.type).toBe('Client');
+  expect(String(web?.props.module)).toMatch(/surface\/character\.mjs$/);
+  expect(web?.props.props).toEqual({
+    look: looks.web,
+    pose: 'running',
+    move: null,
+    motion: 'while-active',
+  });
+  expect((await ui.find({ key: 'char-api' }))?.props.props.pose).toBe('waiting');
+  // The running loop moves on the surface's own clock; the waiting one stays still.
+  const before = JSON.stringify(await ui.drawn({ in: 'char-web' } as any));
+  const still = JSON.stringify(await ui.drawn({ in: 'char-api' } as any));
+  await ui.advance(400);
+  expect(JSON.stringify(await ui.drawn({ in: 'char-web' } as any))).not.toBe(before);
+  expect(JSON.stringify(await ui.drawn({ in: 'char-api' } as any))).toBe(still);
   await ui.unmount();
   w.waiting.get('tu-z')?.('timed out');
+  w.waiting.get('tu-t')?.('timed out');
   await call;
+  await running;
 });
 
-test('VIEW-3 nothing repaints when no agent is working', async ($, on) => {
+test('UI-12 with harness.motion off, the agent at work is drawn in its first running frame, still', async ($, on) => {
   const w = project();
+  (w.check as any).harness = { motion: 'off' };
+  w.agents = [{ id: 'a1', type: 'web-engineer', description: 'ST-4', status: 'running' }];
   const clock = await start($, on, w);
+  w.holdWaits = true;
+  const running = $.tool.call({
+    tool: 'Bash',
+    tool_use_id: 'tu-t',
+    command: 'npm test',
+    agentId: 'a1',
+  } as any);
+  await clock.advance(1);
   await lanes($);
   const ui = await pane($, PANE);
-  await clock.advance(6000);
-  expect(w.blits).toEqual([]);
+  expect((await ui.find({ key: 'char-web' }))?.props.props.motion).toBe('off');
+  const before = JSON.stringify(await ui.drawn({ in: 'char-web' } as any));
+  await ui.advance(2000);
+  expect(JSON.stringify(await ui.drawn({ in: 'char-web' } as any))).toBe(before);
+  await ui.unmount();
+  await running;
+});
+
+test('UI-12 with no agent at work, nothing in the pane redraws on a timer', async ($, on) => {
+  const w = project();
+  w.stories[0] = { ...w.stories[0], state: 'review' };
+  await start($, on, w);
+  await lanes($);
+  const ui = await pane($, PANE);
+  expect((await ui.find({ key: 'char-web' }))?.props.props.pose).toBe('resting');
+  const before = JSON.stringify(await ui.drawn({ in: 'char-web' } as any));
+  await ui.advance(5000);
+  expect(JSON.stringify(await ui.drawn({ in: 'char-web' } as any))).toBe(before);
   await ui.unmount();
 });
 
@@ -4170,9 +4296,14 @@ test('VIEW-2 and VIEW-3 on Desktop the characters and timelines are SVG', async 
   });
   const svgs = await ui.findAll({ type: 'Svg' });
   expect(
-    svgs.some((s) => s.props.alt === 'web: working' && String(s.props.source).includes('<animate')),
+    svgs.some(
+      (s) => s.props.alt === 'web: thinking' && String(s.props.source).includes('<animate'),
+    ),
   ).toBe(true);
-  expect(svgs.some((s) => s.props.alt === "web's timeline")).toBe(true);
+  await press($, 'move-next', PANE);
+  expect((await ui.findAll({ type: 'Svg' })).some((s) => s.props.alt === "web's timeline")).toBe(
+    true,
+  );
   await ui.unmount();
 });
 
@@ -4220,14 +4351,14 @@ test('JOIN-2 each lane shows its edits without understanding, red above zero, an
   await start($, on, w);
   await lanes($);
   const ui = await pane($, PANE);
-  expect((await ui.find({ key: 'lane-web' }))?.text).toMatch(
+  expect((await ui.find({ key: 'card-web' }))?.text).toMatch(
     /1 edited without understanding\s*2 cards owed/,
   );
   expect(
     (await ui.find({ type: 'Text', text: '1 edited without understanding' }))?.props.color,
   ).toBe('red');
-  // LANES-2: a lane whose facts are all zero shows none of them.
-  expect((await ui.find({ key: 'lane-api' }))?.text).not.toMatch(/understanding|owed/);
+  // A lane whose facts are all zero shows none of them.
+  expect((await ui.find({ key: 'panel-lanes' }))?.text).not.toMatch(/0 edited|0 cards/);
   await ui.unmount();
 });
 
@@ -4236,7 +4367,7 @@ test('JOIN-1 without an adapter that knows, the lanes show no such slots', async
   await start($, on, w);
   await lanes($);
   const ui = await pane($, PANE);
-  expect((await ui.find({ key: 'lane-web' }))?.text).not.toMatch(/understanding|owed/);
+  expect((await ui.find({ key: 'card-web' }))?.text).not.toMatch(/understanding|owed/);
   await ui.unmount();
 });
 
@@ -4270,7 +4401,7 @@ test("with no session bound (claude -p before it mounts), the agent list's failu
   w.refs += ' abc refs/heads/web/st-4-done\n';
   await clock.advance(2000);
   const ui = await pane($, PANE);
-  expect((await ui.find({ key: 'lane-web' }))?.text).toMatch(/in review/);
+  expect((await ui.find({ key: 'card-web' }))?.text).toMatch(/in review/);
   await ui.unmount();
 });
 
@@ -4377,7 +4508,7 @@ test('Off records off, and the loop does nothing', async ($, on) => {
 
 // --- an idle lane's detail --------------------------------------------------------------------------
 
-test('VIEW-6 a selected idle lane shows what it owns and its stories, Enter opens its next one, and the header counts it', async ($, on) => {
+test('LANES-3 and UI-8 a selected resting lane opens as a card: what it owns and its stories, Enter opens its next one', async ($, on) => {
   const w = project();
   w.stories = [
     { id: 'ST-1', title: 'Schema', lane: 'api', state: 'done', branch: 'api/st-1', waitingOn: [] },
@@ -4401,18 +4532,18 @@ test('VIEW-6 a selected idle lane shows what it owns and its stories, Enter open
   await start($, on, w);
   await lanes($);
   const ui = await pane($, PANE);
-  expect(await ui.find({ type: 'Text', text: '1 of 3 stories done' })).toBeDefined();
-  expect((await ui.find({ key: 'count-idle' }))?.props.label).toMatch(/· \d+ idle/);
-  for (let i = 0; i < 3; i++) await press($, 'lane-next', PANE);
-  const api = (await ui.find({ key: 'lane-api' }))?.text ?? '';
+  expect((await ui.find({ key: 'status-lanes' }))?.text).toMatch(/all resting/);
+  for (let i = 0; i < 3; i++) await press($, 'move-next', PANE);
+  const api = (await ui.find({ key: 'card-api' }))?.text ?? '';
   expect(api).toMatch(/owns\s*apps\/api\/\*\*/);
   expect(api).toMatch(/agent\s*api-engineer/);
   // LANES-3: the lane's stories as cards.
-  expect((await ui.find({ key: 'card-ST-1' }))?.text).toMatch(/ST-1\s*merged\s*Schema/);
+  expect((await ui.find({ key: 'card-ST-1' }))?.text).toMatch(/ST-1\s*✓ merged\s*Schema/);
   expect((await ui.find({ key: 'card-ST-2' }))?.text).toMatch(
-    /ST-2\s*blocked\s*Endpoints.*waits on ST-9/,
+    /ST-2\s*■ blocked\s*Endpoints.*waits on ST-9/,
   );
-  expect((await ui.find({ key: 'open-story' }))?.props.label).toBe('Open ST-2');
+  expect((await ui.find({ key: 'card-api' }))?.text).toMatch(/ST-2 Endpoints/);
+  expect((await ui.find({ key: 'open-story' }))?.props.label).toBe('Open');
   await press($, 'open-story', PANE);
   expect(await ui.find({ key: 'story-head' })).toBeDefined();
   await ui.unmount();
@@ -4423,6 +4554,9 @@ test('VIEW-6 the filter is one row, its key beside the box', async ($, on) => {
   await start($, on, w);
   await lanes($);
   const ui = await pane($, PANE);
+  // UI-8: f opens the filter, one row, its box focused.
+  expect(await ui.find({ key: 'filter-row' })).toBeUndefined();
+  await press($, 'filter-focus', PANE);
   const row = await ui.find({ key: 'filter-row' });
   expect(row).toBeDefined();
   expect((await ui.find({ key: 'filter-focus' }))?.props.hotkey).toBe('f');
@@ -4438,14 +4572,14 @@ test('the lead reads orchestrating while its turn runs, and idle once it ends; a
   const clock = await start($, on, w);
   await lanes($);
   const ui = await pane($, PANE);
-  expect((await ui.find({ key: 'lane-api' }))?.text).toMatch(/api\s*working/);
+  expect((await ui.find({ key: 'card-api' }))?.text).toMatch(/▶ working/);
+  expect((await ui.find({ key: 'card-api' }))?.text).not.toMatch(/ST-/);
   await $.turn.start({ turnId: 't-1', text: '' } as any);
-  // LANES-2: the lead mid-turn is orchestrating, not a lane at work on nothing.
-  expect((await ui.find({ key: 'lane-lead' }))?.text).toMatch(/lead\s*orchestrating/);
-  expect((await ui.find({ key: 'count-working' }))?.props.label).toBe('▶ 1 working');
+  // The lead mid-turn is orchestrating, not a lane at work on nothing.
+  expect((await ui.find({ key: 'card-lead' }))?.text).toMatch(/◆ orchestrating/);
   await $.turn.complete({ turnId: 't-1', answer: '', durationMs: 1, isAborted: false } as any);
   await settle(clock);
-  expect((await ui.find({ key: 'lane-lead' }))?.text).toMatch(/lead\s*idle/);
+  expect(await ui.find({ key: 'card-lead' })).toBeUndefined();
   await ui.unmount();
 });
 
@@ -4504,25 +4638,26 @@ test('TEAM-7 and TEAM-9 the band names what of the team needs you: your stale cl
   (w.check as any).team = { techLead: 'alex' };
   (w.check as any).lanes.web.paths = ['apps/web/**'];
   await start($, on, w);
+  // UI-9: the band holds the first, with its buttons, and counts the rest.
   const band = await bandUi($);
   expect(
     await band.find({ type: 'Text', text: 'Still on ST-4? Nothing on it since Tuesday' }),
   ).toBeDefined();
-  expect(
-    await band.find({ type: 'Text', text: "ST-4 and kim's ST-9 both change apps/web/booking/**" }),
-  ).toBeDefined();
-  expect(
-    await band.find({ type: 'Text', text: 'kim intends: Split the booking form (touches yours)' }),
-  ).toBeDefined();
-  expect(
-    await band.find({
-      type: 'Text',
-      text: "kim's #14 Booking list is in your web lane and waits for your review",
-    }),
-  ).toBeDefined();
+  expect(await band.find({ type: 'Text', text: '3 more waiting · /lanes' })).toBeDefined();
   await press($, 'band-keepClaim');
   expect(w.acts).toContainEqual(['team', 'keep', 'ST-4']);
   await band.unmount();
+  // UI-3: Needs you lists them all.
+  await lanes($);
+  const ui = await pane($, PANE);
+  const needs = (await ui.find({ key: 'panel-needs' }))?.text ?? '';
+  for (const said of [
+    "ST-4 and kim's ST-9 both change apps/web/booking/**",
+    'kim intends: Split the booking form (touches yours)',
+    "kim's #14 Booking list is in your web lane and waits for your review",
+  ])
+    expect(needs).toContain(said);
+  await ui.unmount();
 });
 
 test('TEAM-5 the tech lead sees every open intent with Agree and Drop, which act as them', async ($, on) => {
@@ -4814,20 +4949,23 @@ test("with a live provider (the hub), the band says when it fell back to GitHub,
   };
   (w.check as any).team = { techLead: 'alex' };
   await start($, on, w);
-  const band = await bandUi($);
-  expect(
-    await band.find({
-      type: 'Text',
-      text: "team: the team's provider can't be reached, so claims are checked through GitHub until it's back",
-    }),
-  ).toBeDefined();
-  expect(
-    await band.find({ type: 'Text', text: 'drift on web/st-9: BOOK-2 now holds prices in cents.' }),
-  ).toBeDefined();
-  expect(await band.find({ type: 'Text', text: /only a note/ })).toBeUndefined();
-  // The drift line's Team button (the second: the collision's comes first) opens the Team pane on the drift.
-  await press($, 'band-team-2', 'above-prompt');
-  expect(w.opened).toEqual([TEAM]);
+  await lanes($);
+  const lanesUi = await pane($, PANE);
+  const needs = (await lanesUi.find({ key: 'panel-needs' }))?.text ?? '';
+  expect(needs).toContain(
+    "team: the team's provider can't be reached, so claims are checked through GitHub until it's back",
+  );
+  expect(needs).toContain('drift on web/st-9: BOOK-2 now holds prices in cents.');
+  expect(needs).not.toMatch(/only a note/);
+  // UI-3: choosing the drift opens it in its place; its Team button opens the Team pane on the drift.
+  const rows = await lanesUi.findAll({ type: 'Box' });
+  const drift = rows.find(
+    (b: any) => /^need-row-/.test(String(b.key)) && /drift on web\/st-9/.test(b.text),
+  );
+  await press($, String(drift!.key).replace('need-row-', 'need-line-'), PANE);
+  await press($, 'need-team', PANE);
+  await lanesUi.unmount();
+  expect(w.opened).toEqual([PANE, TEAM]);
   const ui = await pane($, TEAM);
   expect((await ui.find({ key: 'team-provider' }))?.text).toMatch(
     /can't be reached \(code-kit hub can't be reached\.\): claims are checked through GitHub/,
@@ -4905,7 +5043,7 @@ test('TRACE-2 a project with more requirements than a list holds still draws its
   await start($, on, w);
   await lanes($);
   const ui = await pane($, PANE);
-  await press($, 'tab-map', PANE);
+  await lanes($, 'trail');
   expect((await ui.find({ key: 'map-select' }))?.props.options.length).toBe(64);
   await ui.unmount();
 });
@@ -4924,9 +5062,230 @@ test('MAP-5 with no story at work, the code map shows the whole project, by fold
   await start($, on, w);
   await lanes($);
   const ui = await pane($, PANE);
-  await press($, 'tab-code', PANE);
+  await lanes($, 'map');
   expect((await ui.find({ key: 'map-story-project' }))?.props.variant).toBe('primary');
   expect(await ui.find({ type: 'Text', text: /hasn't changed any code yet/ })).toBeUndefined();
   expect(JSON.stringify(await ui.find({ key: 'map-stories' }))).toMatch(/Whole project/);
+  await ui.unmount();
+});
+
+// --- spec 27: the mod, redesigned -------------------------------------------------------------------
+
+const zod = {
+  ...dayjs,
+  at: '2026-10-06T00:05:00.000Z',
+  actor: 'api-engineer',
+  lane: 'api',
+  names: ['dep-zod'],
+  what: 'npm install zod',
+};
+const axios = {
+  ...dayjs,
+  at: '2026-10-06T00:06:00.000Z',
+  actor: 'core-engineer',
+  lane: 'core',
+  names: ['dep-axios'],
+  what: 'npm install axios',
+};
+
+test('UI-3 and UI-9 a held call and two approvals: the held call is open with Approve and Refuse, the approvals a line each; the band says 2 more', async ($, on) => {
+  const w = project();
+  w.refusal = webInstall;
+  w.requests = [zod, axios];
+  const clock = await start($, on, w);
+  const { call } = await heldCall($, w, clock);
+  await lanes($);
+  const ui = await pane($, PANE);
+  expect((await ui.find({ key: 'need-open' }))?.text).toMatch(
+    /held call\s*web wants to install dayjs/,
+  );
+  expect((await ui.find({ key: 'need-approveHeld' }))?.props.label).toBe('1 Approve');
+  expect((await ui.find({ key: 'need-refuseHeld' }))?.props.label).toBe('2 Refuse');
+  expect((await ui.find({ key: 'need-row-1' }))?.text).toMatch(
+    /approval\s*Approve zod for the api lane: npm install zod/,
+  );
+  expect((await ui.find({ key: 'need-row-2' }))?.text).toMatch(
+    /approval\s*Approve axios for the core lane: npm install axios/,
+  );
+  // Choosing one opens it in its place, its own button numbered as in the band.
+  await press($, 'need-line-2', PANE);
+  expect((await ui.find({ key: 'need-open' }))?.text).toMatch(/Approve axios for the core lane/);
+  expect((await ui.find({ key: 'need-approve' }))?.props.label).toBe('4 Approve…');
+  await ui.unmount();
+  const band = await bandUi($);
+  expect(await band.find({ type: 'Text', text: /web wants to install dayjs/ })).toBeDefined();
+  expect(await band.find({ key: 'band-refuseHeld' })).toBeDefined();
+  expect(await band.find({ type: 'Text', text: '2 more waiting · /lanes' })).toBeDefined();
+  await band.unmount();
+  w.waiting.get('tu-h1')?.('timed out');
+  await call;
+});
+
+test("UI-4 a story's card holds its trail and its map: a cell per requirement, a chip per layer, red while a layer rule refuses its edit", async ($, on) => {
+  const w = project();
+  w.requirements = [
+    { id: 'BOOK-1', title: 'a', state: 'done', tests: ['b1.test.ts'], stories: ['ST-4'] },
+    { id: 'BOOK-2', title: 'b', state: 'todo', tests: [], stories: ['ST-4'] },
+  ];
+  w.stories[0] = { ...w.stories[0], requirements: ['BOOK-1', 'BOOK-2'] };
+  w.map = storyMap();
+  w.agents = [{ id: 'a1', type: 'web-engineer', description: 'ST-4', status: 'running' }];
+  const clock = await start($, on, w);
+  await lanes($);
+  await clock.advance(2000);
+  const ui = await pane($, PANE);
+  expect((await ui.find({ key: 'card-trail' }))?.text).toBe('■○');
+  expect((await ui.find({ key: 'card-map' }))?.text).toMatch(/domain\s*services\s*tests/);
+  const chip = async (layer: string) =>
+    (await ui.findAll({ type: 'Text', text: layer })).find((t: any) => t.text === layer)?.props;
+  expect((await chip('domain'))?.dimColor).toBe(true);
+  // A changed file whose card is out of date, or missing, is amber.
+  expect((await chip('services'))?.color).toBe('yellow');
+  // The lane's edit is refused for its layer rules: the chip is red until the file is written.
+  w.refusal =
+    'Blocked: this edit would break the layer rules (.claude/code-kit.json › layers):\n  apps/web/domain/booking.ts (domain) imports ../services/book (services); domain may depend on no other layer.\nDepend only on the layers listed, or ask the lead to change the rule.';
+  await $.tool
+    .call({
+      tool: 'Write',
+      tool_use_id: 'tu-layer',
+      file_path: '/work/apps/web/domain/booking.ts',
+      content: 'x',
+      agentId: 'a1',
+    } as any)
+    .catch(() => {});
+  await clock.advance(1);
+  expect((await chip('domain'))?.color).toBe('red');
+  w.refusal = '';
+  await $.tool.call({
+    tool: 'Write',
+    tool_use_id: 'tu-fixed',
+    file_path: '/work/apps/web/domain/booking.ts',
+    content: 'y',
+    agentId: 'a1',
+  } as any);
+  await clock.advance(1);
+  expect((await chip('domain'))?.color).toBeUndefined();
+  // The lanes with nothing at work fold into one line.
+  expect(await ui.find({ type: 'Text', text: 'lead, api, core' })).toBeDefined();
+  await ui.unmount();
+});
+
+test('UI-6 t on a story opens the Trail on its requirements; Escape comes back to the panels with the story still selected', async ($, on) => {
+  const w = project();
+  w.requirements = requirementsMap();
+  w.stories[0] = { ...w.stories[0], requirements: ['BOOK-3'] };
+  await start($, on, w);
+  await lanes($);
+  const ui = await pane($, PANE);
+  await press($, 'move-next', PANE);
+  expect((await ui.find({ key: 'open-trail' }))?.props.hotkey).toBe('t');
+  await press($, 'open-trail', PANE);
+  expect(await ui.find({ type: 'Text', text: 'Trail' })).toBeDefined();
+  expect((await ui.find({ key: 'map-detail' }))?.text).toMatch(/BOOK-3/);
+  await press($, 'view-back', PANE);
+  expect(w.closed).not.toContain(PANE);
+  expect(await ui.find({ key: 'panel-lanes' })).toBeDefined();
+  expect((await ui.find({ key: 'card-web' }))?.props.borderColor).toBe('cyan');
+  await ui.unmount();
+});
+
+test('UI-10 docked at 120 columns, Build is across the top, Lanes on the left and Needs you beside it', async ($, on) => {
+  const w = project();
+  w.requests = [dayjs];
+  await start($, on, w);
+  await lanes($);
+  const ui = await $.ui.mount({
+    plugin: 'code-kit',
+    component: 'Pane',
+    requestId: PANE,
+    surface: 'terminal',
+    viewport: { columns: 200, rows: 50 },
+    props: { title: PANE, isFocused: true, bodyColumns: 120, placement: 'dock' },
+  });
+  expect((await ui.find({ key: 'left' }))?.text).toMatch(/^Lanes/);
+  expect((await ui.find({ key: 'right' }))?.text).toMatch(/^Needs you/);
+  await ui.unmount();
+});
+
+test('UI-11 /lanes characters draws the sheet: every lane of the project in every pose and move', async ($, on) => {
+  const w = project();
+  await start($, on, w);
+  await lanes($, 'characters');
+  const ui = await pane($, PANE);
+  for (const lane of ['lead', 'web', 'api', 'core'])
+    for (const pose of ['writing', 'running', 'reading', 'thinking', 'waiting', 'merged'])
+      expect(await ui.find({ key: `sheet-${lane}-${pose}` })).toBeDefined();
+  expect((await ui.find({ key: 'sheet-web-merged' }))?.props.props.move).toEqual({
+    kind: 'merged',
+    key: 'merged',
+  });
+  expect(await ui.find({ type: 'Text', text: 'web · cat' })).toBeDefined();
+  await ui.unmount();
+  const res = await lanes($, 'dance');
+  expect(res.text).toMatch(
+    /isn't a view: try \/lanes, or \/lanes trail, map, journal, usage or characters/,
+  );
+});
+
+test('UI-11 a story arriving at a lane plays its arrival once; a story merged plays the cheer, and the card stays while it plays', async ($, on) => {
+  const w = project();
+  w.agents = [{ id: 'a1', type: 'web-engineer', description: 'ST-4', status: 'running' }];
+  const clock = await start($, on, w);
+  await lanes($);
+  // core starts ST-9.
+  w.stories[3] = { ...w.stories[3], state: 'in progress' };
+  w.refs += ' ggg refs/heads/core/st-9\n';
+  await clock.advance(2000);
+  let ui = await pane($, PANE);
+  expect((await ui.find({ key: 'char-core' }))?.props.props.move?.kind).toBe('arriving');
+  await ui.unmount();
+  // web's ST-4 is merged: web cheers, though nothing of it is at work any more.
+  w.agents = [];
+  w.stories[0] = { ...w.stories[0], state: 'done' };
+  w.refs += ' hhh refs/heads/main-2\n';
+  await clock.advance(2000);
+  ui = await pane($, PANE);
+  expect((await ui.find({ key: 'char-web' }))?.props.props.move?.kind).toBe('merged');
+  await ui.unmount();
+  // Once it has played, the lane rests.
+  await clock.advance(2000);
+  ui = await pane($, PANE);
+  expect(await ui.find({ key: 'char-web' })).toBeUndefined();
+  await ui.unmount();
+});
+
+test('UI-4 when the cards no longer fit the panel, the lanes are swimlanes on the time axis, a line each with its state, trail and character', async ($, on) => {
+  const w = project();
+  w.agents = [
+    { id: 'a1', type: 'web-engineer', description: 'ST-4', status: 'running' },
+    { id: 'a2', type: 'api-engineer', description: 'logs', status: 'running' },
+    { id: 'a3', type: 'core-engineer', description: 'ST-9', status: 'running' },
+  ];
+  await start($, on, w);
+  await lanes($);
+  const mount = (rows: number) =>
+    $.ui.mount({
+      plugin: 'code-kit',
+      component: 'Pane',
+      requestId: PANE,
+      surface: 'terminal',
+      viewport: { columns: 120, rows },
+      props: {
+        title: PANE,
+        isFocused: true,
+        bodyColumns: 80,
+        placement: 'dock',
+        scroll: { offset: 0, bodyRows: rows },
+      },
+    });
+  let ui = await mount(60);
+  expect(await ui.find({ key: 'card-web' })).toBeDefined();
+  await ui.unmount();
+  ui = await mount(24);
+  expect(await ui.find({ key: 'card-web' })).toBeUndefined();
+  expect((await ui.find({ key: 'lane-web' }))?.text).toMatch(
+    /web\s*● building\s*ST-4 Booking form/,
+  );
+  expect((await ui.find({ key: 'lane-api' }))?.text).toMatch(/api\s*▶ working/);
   await ui.unmount();
 });

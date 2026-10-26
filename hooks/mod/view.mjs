@@ -7,8 +7,6 @@ export const NOT_CODE_KIT = "This project doesn't use code-kit.";
 const LEAD = 'lead';
 
 /** A CLI run's stdout as JSON, or null when it printed none. */
-import { BAR, POSE_GLYPH, rasterCells, runs, sprite, spriteSvg, timelineSvg } from './art.mjs';
-import { missionLines, nextText } from './mission.mjs';
 import { teamLines } from './teamview.mjs';
 
 export function parseJson(stdout) {
@@ -108,17 +106,6 @@ export function projectState(check, status, next = null, atWork = new Set()) {
   };
 }
 
-export const STATE_COLOR = {
-  building: 'blue',
-  working: 'green',
-  orchestrating: 'yellow',
-  'in review': 'yellow',
-  'sent back': 'magenta',
-  'waiting on you': 'cyan',
-  blocked: 'red',
-  idle: undefined,
-};
-
 /**
  * A lane's state as the pane shows it: `queued` while its branch waits in the merge queue (MQ-4), and
  * `working` while its agent (or the lead, mid-turn) is at work on nothing the plan names.
@@ -135,378 +122,6 @@ export function shownState(lane, queue = []) {
   return lane.branch && waiting ? 'queued' : lane.state;
 }
 
-/**
- * The Lanes tab's body, drawn with the elements `$.ui.resolve(e)` returned; `usage` is
- * usageSummary's, `plan` planOf's (USE-2), either null before there is any. `lanesOf` narrows and
- * marks the rows (VIEW-1, VIEW-6): { filter, search, selected }, and `live` is each lane's last tool
- * call (VIEW-4): { [lane]: { tool, ago, level } }, level null, 'quiet' or 'stalled'.
- */
-export function lanesPane(
-  state,
-  els,
-  usage = null,
-  plan = null,
-  loop = null,
-  {
-    filter = null,
-    search = '',
-    selected = null,
-    live = {},
-    art = null,
-    combined = null,
-    detail = null,
-  } = {},
-) {
-  const { Box, Text } = els;
-  const text = (value, style = {}) => Text({ ...style, children: [value] });
-  if (!state || state.kind === 'none') return text(NOT_CODE_KIT, { dimColor: true });
-  if (state.kind === 'invalid')
-    return text('The config is invalid: run code-kit check.', { color: 'red' });
-  const width = Math.max(...state.lanes.map((l) => l.name.length));
-  // VIEW-3: the lane's character: half-block cells in the terminal, SVG on Desktop, its glyph elsewhere.
-  const character = (l) => {
-    const pose = art.poses[l.name] ?? 'idle';
-    const lead = l.name === LEAD;
-    if (art.surface === 'terminal' && els.Raster)
-      return els.Raster({
-        key: `char-${l.name}`,
-        columns: 6,
-        rows: 3,
-        cells: rasterCells(sprite(pose, art.frame, art.tints[l.name], { lead })),
-      });
-    if (els.Svg)
-      return els.Svg({
-        source: spriteSvg(pose, art.tints[l.name], { lead }),
-        alt: `${l.name}: ${pose}`,
-        width: 24,
-        height: 24,
-        ...(pose === 'working' ? { isInteractive: true } : {}),
-      });
-    return text(POSE_GLYPH[pose]);
-  };
-  // VIEW-2: the lane's story on the shared time axis.
-  const bar = (l) => {
-    const cells = art?.bars?.[l.name];
-    if (!cells) return [];
-    if (art.surface !== 'terminal' && els.Svg)
-      return [
-        els.Svg({
-          source: timelineSvg([{ cells }], { width: art.svgWidth ?? 480 }),
-          alt: `${l.name}'s timeline`,
-        }),
-      ];
-    return [
-      Box({
-        key: `bar-${l.name}`,
-        flexDirection: 'row',
-        children: [
-          text('    '),
-          ...runs(cells).map((run) =>
-            text(
-              BAR[run.kind].glyph.repeat(run.n),
-              BAR[run.kind].color ? { color: BAR[run.kind].color } : {},
-            ),
-          ),
-        ],
-      }),
-    ];
-  };
-  const inQueue = new Set(
-    (loop?.queue ?? [])
-      .filter((e) => ['waiting', 'merging'].includes(e.state))
-      .map((e) => e.branch),
-  );
-  // MQ-4: a branch in the merge queue is shown as queued, not as waiting for review.
-  const queued = (l) => Boolean(l.branch && inQueue.has(l.branch));
-  const needle = search.trim().toLowerCase();
-  const shown = state.lanes.filter(
-    (l) =>
-      (!filter || shownState(l, loop?.queue) === filter) &&
-      (!needle ||
-        [l.name, l.agent, l.story?.id, l.story?.title, l.branch]
-          .filter(Boolean)
-          .some((s) => s.toLowerCase().includes(needle))),
-  );
-  const LIVE = { quiet: 'yellow', stalled: 'red' };
-  // LANES-2: fixed columns that never wrap: name, state, then the story (and the agent's current tool
-  // beneath it), then tokens; another tool's facts only when they aren't zero.
-  const STATE_WIDTH = 13;
-  const rows = shown.map((l) => {
-    const s = shownState(l, loop?.queue);
-    const facts = combined?.[l.name];
-    const chips = [
-      ...(facts?.without
-        ? [text(`${facts.without} edited without understanding`, { color: 'red' })]
-        : []),
-      ...(facts?.owed
-        ? [text(`${facts.owed} card${facts.owed === 1 ? '' : 's'} owed`, { color: 'yellow' })]
-        : []),
-      ...(loop?.laneNotes?.[l.name]
-        ? [
-            text(loop.laneNotes[l.name], {
-              color: loop.laneNotes[l.name] === 'stalled' ? 'red' : 'yellow',
-            }),
-          ]
-        : []),
-    ];
-    const story = l.story
-      ? `${l.story.id} ${l.story.title}${
-          l.story.state === 'blocked' && l.story.waitingOn?.length
-            ? ` · waits on ${l.story.waitingOn.join(', ')}`
-            : l.branch
-              ? ` · ${l.branch}`
-              : ''
-        }${l.story.slice ? ` · slice ${l.story.slice}` : ''}`
-      : l.name === LEAD
-        ? 'the main session'
-        : (l.agent ?? '');
-    const lines = [
-      Box({
-        flexDirection: 'row',
-        columnGap: 1,
-        children: [
-          text(l.name === selected ? '›' : l.active ? '●' : ' ', {
-            color: l.name === selected ? 'cyan' : 'green',
-          }),
-          text(l.name.padEnd(width), {
-            bold: true,
-            ...(l.name === selected ? { color: 'cyan' } : {}),
-          }),
-          text(
-            s.padEnd(STATE_WIDTH),
-            s === 'queued'
-              ? { color: 'cyan' }
-              : STATE_COLOR[s]
-                ? { color: STATE_COLOR[s] }
-                : { dimColor: true },
-          ),
-          Box({
-            flexGrow: 1,
-            flexShrink: 1,
-            children: [text(story, { wrap: 'truncate-end', dimColor: !l.story })],
-          }),
-          ...chips,
-          ...(usage?.lanes[l.name]
-            ? [text(tokens(usage.lanes[l.name]).padStart(6), { dimColor: true })]
-            : []),
-        ],
-      }),
-      // VIEW-4: what its agent is doing now, and since when, beneath the story.
-      ...(live[l.name]
-        ? [
-            Box({
-              flexDirection: 'row',
-              columnGap: 1,
-              children: [
-                text(''.padEnd(width + STATE_WIDTH + 3)),
-                text(`${live[l.name].tool} · ${live[l.name].ago}`, {
-                  wrap: 'truncate-end',
-                  ...(LIVE[live[l.name].level]
-                    ? { color: LIVE[live[l.name].level] }
-                    : { dimColor: true }),
-                }),
-              ],
-            }),
-          ]
-        : []),
-      ...bar(l),
-      // LANES-3: the selected lane's stories as cards, then what it owns.
-      ...(l.name === selected && detail ? laneDetail(detail, els, width) : []),
-    ];
-    return art
-      ? Box({
-          key: `lane-${l.name}`,
-          flexDirection: 'row',
-          columnGap: 1,
-          children: [character(l), Box({ flexDirection: 'column', flexGrow: 1, children: lines })],
-        })
-      : Box({ key: `lane-${l.name}`, flexDirection: 'column', children: lines });
-  });
-  const notes = [];
-  if (state.planGaps)
-    notes.push(
-      text(`The plan has ${state.planGaps} gap(s): run code-kit status.`, { color: 'yellow' }),
-    );
-  const ready = state.ready.length
-    ? [
-        text('Ready', { bold: true }),
-        ...state.ready.map((r) =>
-          Box({
-            key: `ready-${r.id}`,
-            flexDirection: 'row',
-            columnGap: 2,
-            children: [
-              text(r.id),
-              text(r.title, { wrap: 'truncate-end' }),
-              text(r.lane === LEAD ? "the lead's own" : (r.lane ?? ''), { dimColor: true }),
-            ],
-          }),
-        ),
-      ]
-    : [text('Nothing is ready to start.', { dimColor: true })];
-  return Box({
-    flexDirection: 'column',
-    rowGap: 1,
-    children: [
-      ...loopCard(loop, els),
-      ...notes,
-      Box({
-        flexDirection: 'column',
-        children: rows.length ? rows : [text('No lane matches the filter.', { dimColor: true })],
-      }),
-      Box({ flexDirection: 'column', children: ready }),
-      ...reviewsSection(loop, text, Box),
-    ],
-  });
-}
-
-const CARD_STATE = {
-  done: { label: 'merged', color: 'gray' },
-  review: { label: 'in review', color: 'yellow' },
-  'in progress': { label: 'building', color: 'blue' },
-  'sent back': { label: 'sent back', color: 'magenta' },
-  'waiting on you': { label: 'waiting on you', color: 'cyan' },
-  blocked: { label: 'blocked', color: 'red' },
-  ready: { label: 'ready', color: 'green' },
-  todo: { label: 'to do', color: 'gray' },
-};
-
-/**
- * LANES-3: a lane's stories as cards (id and state, title, requirements, and what it waits on or its
- * branch), wrapping across the pane, then its agent and the paths it owns. `detail` is { agent, owns,
- * stories }.
- */
-export function laneDetail(detail, { Box, Text }, indent = 0) {
-  const text = (value, style = {}) => Text({ ...style, children: [value] });
-  const cards = detail.stories.map((s) => {
-    const st = CARD_STATE[s.state] ?? { label: s.state, color: 'gray' };
-    return Box({
-      key: `card-${s.id}`,
-      flexDirection: 'column',
-      borderStyle: 'round',
-      borderColor: st.color,
-      ...(s.state === 'done' ? { borderDimColor: true } : {}),
-      paddingX: 1,
-      width: 30,
-      children: [
-        Box({
-          flexDirection: 'row',
-          justifyContent: 'space-between',
-          children: [
-            text(s.id, { bold: true, dimColor: s.state === 'done' }),
-            text(st.label, { color: st.color }),
-          ],
-        }),
-        text(s.title, { wrap: 'truncate-end', dimColor: s.state === 'done' }),
-        ...(s.requirements?.length
-          ? [text(s.requirements.join(' '), { dimColor: true, wrap: 'truncate-end' })]
-          : []),
-        ...(s.state === 'blocked' && s.waitingOn?.length
-          ? [text(`waits on ${s.waitingOn.join(', ')}`, { color: 'red', wrap: 'truncate-end' })]
-          : s.branch && s.state !== 'done'
-            ? [text(s.branch, { dimColor: true, wrap: 'truncate-end' })]
-            : []),
-      ],
-    });
-  });
-  return [
-    Box({
-      key: 'lane-cards',
-      flexDirection: 'row',
-      flexWrap: 'wrap',
-      columnGap: 1,
-      marginLeft: Math.min(indent + 2, 8),
-      children: cards.length
-        ? cards
-        : [text('No stories in the plan for this lane.', { dimColor: true })],
-    }),
-    Box({
-      key: 'lane-owns',
-      flexDirection: 'row',
-      flexWrap: 'wrap',
-      columnGap: 2,
-      marginLeft: Math.min(indent + 2, 8),
-      children: [
-        ...(detail.agent ? [text('agent', { dimColor: true }), text(detail.agent)] : []),
-        text('owns', { dimColor: true }),
-        ...(detail.owns.length
-          ? detail.owns.map((p) => text(p, { color: 'cyan' }))
-          : [text('nothing yet', { dimColor: true })]),
-      ],
-    }),
-  ];
-}
-
-/**
- * LANES-1: the loop as a card at the top of the Lanes tab: its mode, then the steps it took, the one
- * running and the one it takes next. None while the loop is off and has taken no step.
- */
-export function loopCard(loop, { Box, Text }) {
-  if (!loop || (loop.state === 'off' && !loop.steps?.length)) return [];
-  const text = (value, style = {}) => Text({ ...style, children: [value] });
-  const mode =
-    loop.state === 'paused'
-      ? { word: 'paused', color: 'yellow' }
-      : loop.state === 'off'
-        ? { word: 'off', color: 'gray' }
-        : loop.state === 'done' || loop.state === 'stopped'
-          ? { word: 'milestone done', color: 'green' }
-          : {
-              word:
-                loop.autonomy === 'propose'
-                  ? 'asks before each step'
-                  : 'acts while the lead is idle',
-              color: 'green',
-            };
-  // The step running now has its own chip; the ones before it are what the loop did.
-  const steps = [...(loop.steps ?? [])].slice(0, loop.current ? -1 : undefined).slice(-4);
-  const chip = (key, value, color, extra = {}) =>
-    Box({
-      key,
-      borderStyle: 'single',
-      borderColor: color,
-      paddingX: 1,
-      children: [text(value, { wrap: 'truncate-end', ...extra })],
-    });
-  return [
-    Box({
-      key: 'loop-card',
-      flexDirection: 'column',
-      borderStyle: 'round',
-      borderColor: 'gray',
-      paddingX: 1,
-      children: [
-        Box({
-          flexDirection: 'row',
-          columnGap: 2,
-          children: [
-            text('loop', { bold: true, color: 'yellow' }),
-            text(mode.word, { color: mode.color }),
-          ],
-        }),
-        Box({
-          flexDirection: 'row',
-          flexWrap: 'wrap',
-          columnGap: 1,
-          children: [
-            ...steps.map((s, i) =>
-              chip(
-                `loop-step-${i}`,
-                `${ago(loop.now - s.at).replace(' ago', '')} ${s.kind} ${s.target}`,
-                'gray',
-                { dimColor: true },
-              ),
-            ),
-            ...(loop.nextText
-              ? [chip('loop-next', `next: ${loop.nextText}`, 'cyan', { color: 'cyan' })]
-              : []),
-          ],
-        }),
-      ],
-    }),
-  ];
-}
-
 /** How long ago, as a person reads it: now, 40s ago, 12m ago, 2h ago. */
 export function ago(ms) {
   const s = Math.max(0, Math.round(ms / 1000));
@@ -514,75 +129,6 @@ export function ago(ms) {
   if (s < 60) return `${s}s ago`;
   if (s < 3600) return `${Math.floor(s / 60)}m ago`;
   return `${Math.floor(s / 3600)}h ago`;
-}
-
-/** MQ-4: the merge queue in order, then what it merged or sent back lately. */
-export function queueSection(loop, text, Box) {
-  const entries = loop?.queue ?? [];
-  if (!entries.length) return [];
-  const open = entries.filter((e) => ['waiting', 'merging'].includes(e.state));
-  const settled = entries
-    .filter((e) => !['waiting', 'merging'].includes(e.state))
-    .slice(-3)
-    .reverse();
-  const row = (e, label, style = {}) =>
-    Box({
-      key: `queue-${e.branch}-${e.state}`,
-      flexDirection: 'row',
-      columnGap: 2,
-      children: [
-        text(label.padEnd(3), { dimColor: true }),
-        text(e.branch),
-        text(e.state, style),
-        ...(e.reason ? [text(e.reason, { dimColor: true })] : []),
-      ],
-    });
-  return [
-    Box({
-      flexDirection: 'column',
-      children: [
-        text('Merge queue', { bold: true }),
-        ...open.map((e, i) => row(e, `${i + 1}.`, { color: 'cyan' })),
-        ...settled.map((e) => row(e, '·', { color: e.state === 'merged' ? 'green' : 'magenta' })),
-      ],
-    }),
-  ];
-}
-
-/** REVW-1: each branch's background review, running with its clock, or what it found. */
-export function reviewsSection(loop, text, Box) {
-  const reviews = loop?.reviews ?? [];
-  if (!reviews.length) return [];
-  const said = (r) =>
-    r.state === 'running'
-      ? `running ${ago(loop.now - r.startedAt).replace(' ago', '')}`
-      : r.state === 'done'
-        ? `done · ${r.summary}`
-        : r.state === 'skipped'
-          ? `skipped: ${r.why}`
-          : `failed: ${r.error}`;
-  return [
-    Box({
-      flexDirection: 'column',
-      children: [
-        text('Reviews', { bold: true }),
-        ...reviews.map((r) =>
-          Box({
-            key: `review-${r.branch}`,
-            flexDirection: 'row',
-            columnGap: 2,
-            children: [
-              text(r.branch),
-              text(said(r), {
-                color: r.blockers ? 'red' : r.state === 'running' ? 'blue' : undefined,
-                dimColor: r.state === 'skipped',
-              }),
-            ],
-          }),
-        ),
-      ],
-    }),
-  ];
 }
 
 /** USE-2: the plan's 5-hour use as a bar, each story's tokens, and the background agents' share. */
@@ -597,7 +143,7 @@ export function usageSection(usage, plan, text, Box) {
         children: [
           text('Plan'),
           text(planBar(plan.percent), { color: plan.paused ? 'red' : 'green' }),
-          text(`${plan.percent}% of the 5-hour window`, { dimColor: true }),
+          text(`${plan.percent}% of the 5-hour window`, { dimColor: true, wrap: 'wrap' }),
           ...(plan.paused ? [text('background agents paused', { color: 'red' })] : []),
         ],
       }),
@@ -619,14 +165,24 @@ export function usageSection(usage, plan, text, Box) {
           ],
         }),
       );
+    // USE-1: each lane's share, the lead's own requests its own.
+    const lanes = Object.entries(usage.lanes ?? {}).filter(([, n]) => n > 0);
+    if (lanes.length)
+      lines.push(
+        text(`Lanes  ${lanes.map(([lane, n]) => `${lane} ${tokens(n)}`).join(' · ')}`, {
+          dimColor: true,
+        }),
+      );
     if (usage.background)
       lines.push(
         text(
           `Background agents  ${tokens(usage.background)} (${Math.round((usage.background / usage.total) * 100)}%)`,
-          { dimColor: true },
+          { dimColor: true, wrap: 'wrap' },
         ),
       );
-    lines.push(text(`This session  ${tokens(usage.total)} tokens`, { dimColor: true }));
+    lines.push(
+      text(`This session  ${tokens(usage.total)} tokens`, { dimColor: true, wrap: 'wrap' }),
+    );
   }
   return lines.length
     ? [Box({ flexDirection: 'column', children: [text('Usage', { bold: true }), ...lines] })]
@@ -734,11 +290,10 @@ export function bandLines({
   task = null,
   elsewhere = [],
 }) {
+  // SESS-3: a working session's lines are only its own: no queue, reviews or team. The build's own
+  // progress, the loop's state and the agents at work are the Build panel's and the band's one line
+  // (spec 27, UI-2 and UI-9), not lines here.
   const lines = [];
-  // MISSION-1: the goal, now, next and the agents at work, above what needs the person. SESS-3: a working
-  // session's band holds only its own: no mission, queue, reviews or team.
-  const mission = working ? [] : missionLines({ state, loop, leadBusy, live, nextStep, combined });
-  lines.push(...mission);
   // SESS-4: a working session's task, or that it records one before changing code.
   if (working)
     lines.push({
@@ -923,17 +478,14 @@ export function bandLines({
       worktrees,
       actions: [{ id: 'openDecision', label: 'Look…' }],
     });
-  // LOOP-7: the milestone is done; LOOP-6: the loop's own state, with Pause or Resume.
+  // LOOP-7: the milestone is done; SESS-2: where the loop is led from, when it isn't this session.
   if (loop?.state === 'done')
     lines.push({
       kind: 'done',
       text: `Milestone done: ${plural(loop.doneCount, 'story', 'stories')} merged`,
       actions: [{ id: 'dismissDone', label: 'Dismiss' }],
     });
-  // With the mission rows drawn, the loop's state and its Pause or Resume are on the `now` row.
-  else if (mission.length) {
-    // nothing more
-  } else if (loop?.state === 'elsewhere' || loop?.state === 'unled')
+  else if (loop?.state === 'elsewhere' || loop?.state === 'unled')
     // SESS-2: another session leads the project, or none does; this one never prompts its lead.
     lines.push({
       kind: 'loop',
@@ -942,14 +494,6 @@ export function bandLines({
           ? 'the lead is in another session'
           : 'no session leads the project: the loop waits for one',
       actions: [{ id: 'leadHere', label: 'Lead from here' }],
-    });
-  else if (loop?.state === 'paused')
-    lines.push({ kind: 'loop', text: 'loop paused', actions: [{ id: 'resume', label: 'Resume' }] });
-  else if (loop?.state === 'running' && loop.started)
-    lines.push({
-      kind: 'loop',
-      text: `loop on${loop.last ? ` · last: ${loop.last}` : ''}`,
-      actions: [{ id: 'pause', label: 'Pause' }],
     });
   // OWN-1: another session's decisions are answered there: here, only how many.
   for (const e of elsewhere)
@@ -1007,134 +551,6 @@ export function waitingOf(waiting) {
     };
   return null;
 }
-
-/** The band, drawn with the elements `$.ui.resolve(e)` returned; `onAction(id, line)` acts. */
-export function band(lines, { Box, Text, Button }, onAction) {
-  const COLOR = {
-    notice: 'red',
-    held: 'yellow',
-    queue: 'blue',
-    stalled: 'red',
-    proposal: 'cyan',
-    waiting: 'cyan',
-    designing: 'blue',
-    loop: 'green',
-    done: 'green',
-    approvals: 'yellow',
-    review: 'blue',
-    finish: 'red',
-    usage: 'yellow',
-    paused: 'yellow',
-    facts: 'yellow',
-    question: 'cyan',
-    brief: 'cyan',
-    report: 'magenta',
-    stuck: 'yellow',
-  };
-  const LIVE = { quiet: 'yellow', stalled: 'red' };
-  const LABEL = 8;
-  // Two lines can share a kind or an action (two drift findings, each with Team): the second and later
-  // get a number, so every row and button keeps its own key.
-  const counter = () => {
-    const seen = new Map();
-    return (key) => {
-      const n = (seen.get(key) ?? 0) + 1;
-      seen.set(key, n);
-      return n === 1 ? key : `${key}-${n}`;
-    };
-  };
-  const uniqueButton = counter();
-  const uniqueRow = counter();
-  const buttons = (line) =>
-    line.actions.map((a) =>
-      Button({
-        key: uniqueButton(`band-${a.id}`),
-        label: a.hotkey ? `${a.hotkey} ${a.label}` : a.label,
-        hotkey: a.hotkey,
-        onPress: () => onAction(a.id, line),
-      }),
-    );
-  // MISSION-2: what waits on the person is labelled "you", once, above its first line.
-  let saidYou = false;
-  const rows = lines.map((line) => {
-    if (line.kind === 'agents')
-      return Box({
-        key: 'band-agents',
-        flexDirection: 'column',
-        children: [
-          ...line.agents.map((a) =>
-            Box({
-              key: `band-agent-${a.lane}`,
-              flexDirection: 'row',
-              columnGap: 1,
-              children: [
-                Text({
-                  dimColor: true,
-                  children: [(a === line.agents[0] ? line.label : '').padEnd(LABEL)],
-                }),
-                Text({ color: a.level ? LIVE[a.level] : 'green', children: ['●'] }),
-                Text({ bold: true, children: [a.lane.padEnd(8)] }),
-                Text({ wrap: 'truncate-end', children: [a.tool] }),
-                Text({ dimColor: true, children: [a.ago] }),
-              ],
-            }),
-          ),
-          ...(line.more
-            ? [Text({ dimColor: true, children: [`${''.padEnd(LABEL)}  and ${line.more} more`] })]
-            : []),
-        ],
-      });
-    // DECIDE-3: what needs the person is labelled "you", once; notes (usage, the plan's pause) are "note".
-    const note = NOTE_KINDS.has(line.kind);
-    const label = line.mission ? line.label : note ? 'note' : saidYou ? '' : 'you';
-    if (!line.mission && !note) saidYou = true;
-    return Box({
-      key: uniqueRow(`band-${line.kind}`),
-      flexDirection: 'row',
-      columnGap: 1,
-      children: [
-        Text({
-          ...(line.mission ? { dimColor: true } : { color: COLOR[line.kind] ?? 'yellow' }),
-          children: [label.padEnd(LABEL)],
-        }),
-        Text({
-          wrap: 'truncate-end',
-          ...(line.kind === 'facts' ? { color: COLOR.facts } : {}),
-          children: [line.text],
-        }),
-        // DECIDE-2: which story it's for, so it isn't a fragment.
-        ...(line.context
-          ? [Text({ dimColor: true, wrap: 'truncate-end', children: [line.context] })]
-          : []),
-        ...buttons(line),
-      ],
-    });
-  });
-  // DECIDE-3: one key opens the decisions as cards, each with its lineage and what each choice does.
-  const first = lines.find((l) => !l.mission && !NOTE_KINDS.has(l.kind));
-  if (first)
-    rows.push(
-      Box({
-        key: 'band-why',
-        flexDirection: 'row',
-        columnGap: 1,
-        children: [
-          Text({ children: [''.padEnd(LABEL)] }),
-          Button({
-            key: 'band-decide',
-            label: 'Why, and what each choice does',
-            hotkey: 'd',
-            plain: true,
-            onPress: () => onAction('decide', first),
-          }),
-        ],
-      }),
-    );
-  return Box({ flexDirection: 'column', children: rows });
-}
-
-/** Band lines that inform rather than ask: they never need the person's answer. */
-const NOTE_KINDS = new Set(['usage', 'paused', 'finish', 'done', 'teamDown']);
 
 /** The Approve… confirmation (ACT-1): what it grants, to whom, for how long, and the reason. */
 export function approvePane(
@@ -1536,6 +952,7 @@ const CHOICES = {
   'agents.reviewer.model': ['', 'haiku', 'sonnet', 'opus'],
   'agents.lanes.model': ['', 'story', 'haiku', 'sonnet', 'opus'],
   'compact.milestone': ['ask', 'auto', 'off'],
+  motion: ['while-active', 'off'],
 };
 const shown = (v) =>
   v === null || v === ''

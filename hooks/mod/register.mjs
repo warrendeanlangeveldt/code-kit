@@ -23,7 +23,6 @@ import {
   approvePane,
   questionAsidePrompt,
   commandItself,
-  band,
   bandLines,
   finishedStories,
   ago,
@@ -35,23 +34,40 @@ import {
   refusalView,
   resultPane,
   settingsView,
+  usageSection,
   usageSummary,
   usageForReport,
   presenceOf,
   withUsage,
 } from './view.mjs';
 import { holdable } from './hold.mjs';
-import { axisStart, barCells, poseOf, rasterCells, sprite, tintOf } from './art.mjs';
+import { axisStart, barCells } from './art.mjs';
 import {
-  DEFAULT_UI,
   SENDBACK_ID,
-  closeGoesBack,
+  codeTab,
+  decisionsTab,
+  journalTab,
   laneActions,
-  lanesFrame,
   liveLevel,
+  mapTab,
   sendBackPane,
+  storyPane,
   toolLine,
 } from './panes.mjs';
+import {
+  BOARD_UI,
+  bandOf,
+  board,
+  escapeGoesBack,
+  lanesAtWork,
+  moveSelection,
+  needsOf,
+  poseFor,
+  selectable,
+  sheetView,
+  viewFrame,
+} from './board.mjs';
+import { charactersOf } from './characters.mjs';
 import {
   agentFileModel,
   answeredPrompt,
@@ -196,16 +212,27 @@ const activityOf = (agentId, now) => {
 const harness = () => harnessSettings(model.check?.harness);
 // Panes v2 (spec 11): the Lanes pane's own state, the lead's last tool call, and a send-back waiting
 // for the person's reason.
-let paneUi = { ...DEFAULT_UI };
+let paneUi = { ...BOARD_UI };
 let leadLast = null; // { tool, at }
 let sendingBack = null; // { lane, branch, story, reason, error }
 let storyOpen = null; // the drill-down's story (VIEW-7): { id, lane, data, error }
 const personAsks = []; // prompts the person asked for (stop an agent), waiting for the lead to be idle
-// VIEW-3: the characters' animation, and the surface the Lanes pane was last drawn on.
-let frame = 0;
-let animation = null; // the timer repainting working characters, while one works
+// The surface the Lanes pane was last drawn on, and its room.
 let paneSurface = null;
 let paneColumns = 80;
+let paneRows = 40;
+let paneOpen = false; // whether the Lanes pane is open, as the last look found it
+// UI-11: each lane's one-off move at an event, while it plays: lane → { kind, key, at }; UI-2: the
+// requirements that turned tested, while their segment fills: id → at.
+const moves = new Map();
+const freshTested = new Map();
+const MOVE_MS = 1500;
+// UI-12: the surfaces a surface module failed on, which draw everything still from then on.
+const faulted = {};
+// UI-4: each card's story map (`code-kit map <story> --json`), and each lane's refusals not yet
+// resolved: lane → [{ layer, path }].
+const storyMaps = {};
+const troubles = new Map();
 let codeMap = null; // MAP-1: `code-kit map <story> --json` for the Code map tab's story
 let trailData = null; // TRAIL-1: `code-kit trail --json` while the Trail tab shows
 let journalData = null; // JOURNAL-1: `code-kit journal --json`, for the Journal tab and the decisions
@@ -227,7 +254,9 @@ export function register(on) {
     await $.command
       .register({
         name: 'lanes',
-        description: "code-kit's lanes: agents, stories, branches and what's ready",
+        description:
+          "code-kit's pane: the build, what needs you, the lanes, the queue and the log; or a view: trail, map, journal, usage, characters",
+        argumentHint: '[trail|map|journal|usage|characters]',
         immediate: true,
       })
       .catch(unavailable('lanes'));
@@ -361,6 +390,7 @@ export function register(on) {
             : null;
         // The agents at work; none where the session has none bound (claude -p before it mounts).
         const atWork = agentsAtWork(await $.agent.list().catch(() => []));
+        const before = { state: model.state, status: model.status, queue: model.queue };
         model = {
           state: projectState(check, status, nextStep, atWork),
           requests,
@@ -387,14 +417,61 @@ export function register(on) {
           elsewhere: owned?.elsewhere ?? [],
         };
         if (model.state.kind === 'ok') await act.registerReviewer();
+        await act.events(before, await $.clock.now());
         await act.readMaps();
         $.ui.invalidate('ui.render');
+      },
+      // UI-11: a lane's one-off move at each event (a story arriving, handed back, sent back or
+      // merged); UI-2: the requirements that turned tested. Each plays once, then the pane is still.
+      events: async (before, now) => {
+        if (before.state?.kind !== 'ok' || model.state?.kind !== 'ok') return;
+        const was = new Map(before.state.lanes.map((l) => [l.name, l]));
+        const done = new Set(
+          (model.state.stories ?? []).filter((s) => s.state === 'done').map((s) => s.id),
+        );
+        for (const l of model.state.lanes) {
+          const prev = was.get(l.name);
+          if (!prev) continue;
+          const then = shownState(prev, before.queue ?? []);
+          const nowShown = shownState(l, model.queue ?? []);
+          let kind = null;
+          if (prev.story?.id && prev.story.id !== l.story?.id && done.has(prev.story.id))
+            kind = 'merged';
+          else if (l.story?.id && l.story.id !== prev.story?.id && l.state === 'building')
+            kind = 'arriving';
+          else if (nowShown === 'sent back' && then !== 'sent back') kind = 'sent-back';
+          else if (['in review', 'queued'].includes(nowShown) && then === 'building')
+            kind = 'handed-back';
+          if (!kind) continue;
+          moves.set(l.name, {
+            kind,
+            key: `${kind}:${l.story?.id ?? prev.story?.id}:${now}`,
+            at: now,
+          });
+          // A story merged or moved on leaves no refusal of the lane's standing.
+          if (kind === 'merged' || kind === 'arriving') troubles.delete(l.name);
+        }
+        const tested = (status) =>
+          new Set(
+            (status?.requirements ?? [])
+              .filter((r) => r.state === 'done' && r.tests?.length)
+              .map((r) => r.id),
+          );
+        if (before.status) {
+          const old = tested(before.status);
+          for (const id of tested(model.status)) if (!old.has(id)) freshTested.set(id, now);
+        }
+        if (moves.size || freshTested.size)
+          $.clock
+            .sleep(MOVE_MS + 100)
+            .then(() => $.ui.invalidate('ui.render'))
+            .catch(() => {});
       },
       // MAP-1, TRAIL-1: what the Code map and Trail tabs draw, read while they show.
       readMaps: async () => {
         if (model.state?.kind !== 'ok') return;
-        if (paneUi.tab === 'code') {
-          const id = mapStoryOf(stateNow(), paneUi.selected, paneUi.mapStory);
+        if (paneUi.view === 'code') {
+          const id = mapStoryOf(stateNow(), selectedLaneName(), paneUi.mapStory);
           // MAP-5: the whole project reads every code file, so at most every 30 seconds.
           const now = await $.clock.now();
           const fresh =
@@ -404,13 +481,24 @@ export function register(on) {
             if (id === 'project') projectRead = now;
           }
         }
-        if (paneUi.tab === 'map') trailData = (await json('trail')) ?? trailData;
+        if (paneUi.view === 'trail') trailData = (await json('trail')) ?? trailData;
+        // UI-4: each card's story map, for the layers its changed files are in.
+        if (paneOpen)
+          for (const l of lanesAtWork(stateNow(), model.queue ?? []).atWork) {
+            const id = l.story?.id;
+            if (id && l.story.state !== 'done')
+              storyMaps[id] = (await json('map', id)) ?? storyMaps[id];
+          }
         // TEAM-6: since you last looked, read once each time its tab opens, which marks it read.
         if (teamUi.tab === 'activity' && model.check?.team && !teamSince)
           teamSince = (await json('team', 'since')) ?? { people: {} };
         // JOURNAL-1, DECIDE-2: the lineage, for the Journal tab and the decisions' cards.
         const deciding = held.size > 0 || (model.requests?.open ?? []).length > 0;
-        if (model.check?.docs?.plan && (['journal', 'decisions'].includes(paneUi.tab) || deciding))
+        // UI-5: the Log reads it whenever the pane is open.
+        if (
+          model.check?.docs?.plan &&
+          (paneOpen || ['journal', 'decision'].includes(paneUi.view) || deciding)
+        )
           journalData = (await json('journal')) ?? journalData;
       },
       // REVW-2: the reviewer, read-only by the hooks' rule for agents outside the lanes. Registered
@@ -558,13 +646,43 @@ export function register(on) {
           [...agentsAtWork(await $.agent.list().catch(() => []))].sort().join(','),
         ].join('\n');
       },
-      // PANE-1: open the Lanes pane, or close it when it's open.
-      lanes: async () => {
+      // PANE-1: open the Lanes pane, or close it when it's open. UI-6: `/lanes trail`, `map`,
+      // `journal`, `usage` and `characters` open that view, over the panels.
+      lanes: async (args = '') => {
+        const asked = (typeof args === 'string' ? args : '').trim().split(/\s+/)[0].toLowerCase();
+        const views = {
+          trail: 'trail',
+          map: 'code',
+          journal: 'journal',
+          usage: 'usage',
+          characters: 'characters',
+        };
+        if (asked && !views[asked])
+          return {
+            text: `/lanes ${asked} isn't a view: try /lanes, or /lanes trail, map, journal, usage or characters.`,
+          };
         // Asked, not remembered: the person may have closed it with Escape.
-        if ((await $.ui.panes()).some((p) => p.id === PANE_ID)) {
+        const isOpen = (await $.ui.panes()).some((p) => p.id === PANE_ID);
+        if (isOpen && !asked) {
           await $.ui.close({ id: PANE_ID });
+          paneOpen = false;
           return {};
         }
+        if (asked) {
+          paneUi = {
+            ...paneUi,
+            view: views[asked],
+            ...(asked === 'map' ? { mapStory: 'project', mapFile: null } : {}),
+          };
+          storyOpen = null;
+        }
+        if (isOpen) {
+          $.ui.invalidate('ui.render');
+          await act.readMaps();
+          $.ui.invalidate('ui.render');
+          return {};
+        }
+        paneOpen = true;
         await act.reload();
         if (model.state.kind === 'none') return { text: NOT_CODE_KIT };
         const placed = await $.ui.open({
@@ -580,11 +698,16 @@ export function register(on) {
       // DECIDE-3: the Decisions tab, on the decision the person asked about.
       decide: async (line) => {
         const cards = cardsNow(await $.clock.now());
+        // UI-3: the card of the very line chosen, else the first of its kind.
+        const exact = cards.findIndex(
+          (c) => c.source?.kind === line?.kind && c.source?.text === line?.text,
+        );
         const at = Math.max(
           0,
-          cards.findIndex((c) => c.line.kind === line?.kind),
+          exact >= 0 ? exact : cards.findIndex((c) => c.line.kind === line?.kind),
         );
-        paneUi = { ...paneUi, tab: 'decisions', decision: at, story: null };
+        paneUi = { ...paneUi, view: 'decision', decision: at };
+        storyOpen = null;
         if (!(await $.ui.panes()).some((p) => p.id === PANE_ID))
           await $.ui.open({ id: PANE_ID, title: 'Lanes', focus: true, closeOnEscape: true });
         $.ui.invalidate('ui.render');
@@ -1805,34 +1928,6 @@ export function register(on) {
         }
         if (loop.pending.length) await act.step('tick');
       },
-      // VIEW-3: working characters repaint in place while the pane shows them; nothing runs otherwise.
-      animate: async () => {
-        const open = (await $.ui.panes()).some((p) => p.id === PANE_ID);
-        const now = await $.clock.now();
-        const art = artNow(now, liveNow(now));
-        const working = Object.keys(art.poses).filter((n) => art.poses[n] === 'working');
-        if (!open || paneSurface !== 'terminal' || !working.length) {
-          animation?.cancel();
-          animation = null;
-          return;
-        }
-        if (animation) return;
-        animation = $.clock.every(400, async () => {
-          frame = (frame + 1) % 2;
-          const at = await $.clock.now();
-          const still = artNow(at, liveNow(at));
-          for (const name of Object.keys(still.poses).filter((n) => still.poses[n] === 'working'))
-            await $.ui
-              .blit({
-                requestId: PANE_ID,
-                key: `char-${name}`,
-                cells: rasterCells(
-                  sprite('working', frame, still.tints[name], { lead: name === 'lead' }),
-                ),
-              })
-              .catch(() => {});
-        });
-      },
       // --- panes v2: the selected lane's acts (VIEW-6) ----------------------------------------
       // A prompt the person asked for: submitted now if the lead is idle, else when it next is.
       askLead: async (prompt, kind, target) => {
@@ -1935,7 +2030,7 @@ export function register(on) {
       openStory: async (lane) => {
         if (!lane.story) return;
         const id = lane.story.id;
-        paneUi = { ...paneUi, story: id, file: null };
+        paneUi = { ...paneUi, view: 'story', file: null };
         storyOpen = { id, lane: lane.name, data: null, error: null };
         $.ui.invalidate('ui.render');
         const ran = await $.process.run(['node', cli, 'story', id, '--json'], {
@@ -1953,7 +2048,7 @@ export function register(on) {
         $.ui.invalidate('ui.render');
       },
       closeStory: () => {
-        paneUi = { ...paneUi, story: null, file: null };
+        paneUi = { ...paneUi, view: null, file: null };
         storyOpen = null;
         $.ui.invalidate('ui.render');
       },
@@ -1998,11 +2093,11 @@ export function register(on) {
         await act.beat().catch(() => {});
         await act.stalls();
         await act.freeLanes().catch(() => {});
-        await act.animate();
+        paneOpen = (await $.ui.panes()).some((p) => p.id === PANE_ID);
         const now = await act.fingerprint();
-        const paneOpen = (await $.ui.panes()).some((p) => [PANE_ID, TEAM_ID].includes(p.id));
+        const anyPane = (await $.ui.panes()).some((p) => [PANE_ID, TEAM_ID].includes(p.id));
         quiet += 1;
-        if (now === seen && quiet < (paneOpen ? 5 : 30)) return;
+        if (now === seen && quiet < (anyPane ? 5 : 30)) return;
         quiet = 0;
         await act.reload();
         // Taken again: what it covers (the plan) can change with what was read.
@@ -2043,7 +2138,9 @@ export function register(on) {
   const starting = (name) => ({
     text: `code-kit is still starting; try /${name} again in a moment.`,
   });
-  on('command.run', { command: 'lanes' }, async ($, e) => (act ? act.lanes() : starting('lanes')));
+  on('command.run', { command: 'lanes' }, async ($, e) =>
+    act ? act.lanes(e.args) : starting('lanes'),
+  );
   on('command.run', { command: 'team' }, async ($, e) =>
     act ? act.team(null, { toggle: true }) : starting('team'),
   );
@@ -2130,7 +2227,7 @@ export function register(on) {
     if (touch && touchLane) {
       touches.push({ ...touch, lane: touchLane, at: calledAt });
       if (touches.length > TOUCHES_KEPT) touches.shift();
-      if (paneUi.tab === 'code') $.ui.invalidate('ui.render');
+      if (paneUi.view === 'code') $.ui.invalidate('ui.render');
     }
     try {
       const res = await next(e);
@@ -2151,6 +2248,15 @@ export function register(on) {
       if (text && refusalCard(text)) {
         refusals.set(e.tool_use_id, text);
         if (refusals.size > REFUSALS_KEPT) refusals.delete(refusals.keys().next().value);
+      }
+      // UI-4: a refusal the lane hasn't resolved turns its story's map chip red, until the same file
+      // is written; a write refused for its layer rules names the layer.
+      const troubleLane = busy ? busy.lane : e.agentId ? null : 'lead';
+      if (troubleLane && touch?.verb === 'edit') {
+        const found = text ? troubleOf(text, touch.path) : [];
+        const kept = (troubles.get(troubleLane) ?? []).filter((t) => t.path !== touch.path);
+        troubles.set(troubleLane, [...kept, ...found]);
+        $.ui.invalidate('ui.render');
       }
       const ask = text ? holdable(text) : null;
       const settings = model.check?.harness;
@@ -2193,6 +2299,14 @@ export function register(on) {
       }
     }
   }).catch(($, e, next) => next(e)); // whatever fails here, the call goes on as it would
+  // UI-4: what a refused write leaves unresolved: each layer rule it would break, or the write itself.
+  const troubleOf = (text, path) => {
+    const layers = [
+      ...String(text).matchAll(/^\s+(\S+) \(([^()]+)\) (?:imports|may not import)/gm),
+    ];
+    if (layers.length) return layers.map((m) => ({ layer: m[2], path: m[1] }));
+    return refusalCard(text)?.kind === 'write' ? [{ layer: null, path }] : [];
+  };
   // A refused call's text: kept from its tool.call, or the output its row carries (what the model read).
   const refusalOf = (id, output) =>
     refusalCard(refusals.get(id) ?? (typeof output === 'string' ? output : null));
@@ -2459,10 +2573,10 @@ export function register(on) {
       }),
     );
   };
-  // VIEW-2, VIEW-3: each lane's pose and tint, and its story's bar on the shared axis.
+  // UI-4, UI-11, UI-12: each lane's pose and the move it's playing, its story's bar on the shared
+  // axis (for swimlanes), the requirements newly tested, and the surfaces drawn still.
   const artNow = (now, live) => {
     const lanesNow = stateNow()?.kind === 'ok' ? stateNow().lanes : [];
-    const names = lanesNow.map((l) => l.name);
     const queue = model.queue ?? [];
     const asking = new Set([
       ...[...held.values()].map((c) => c.lane ?? 'lead'),
@@ -2473,23 +2587,34 @@ export function register(on) {
       lanesNow.some((l) => l.story?.id === t.id),
     );
     const start = axisStart(times, now);
-    const width = Math.max(10, Math.min(120, paneColumns - 14));
+    // VIEW-2: the time axis, as wide as a card's text has room for.
+    const width = Math.max(10, Math.min(40, paneColumns - 40));
     const poses = {};
-    const tints = {};
     const bars = {};
+    const playing = {};
+    for (const [lane, m] of moves) if (now - m.at < MOVE_MS) playing[lane] = m;
     for (const l of lanesNow) {
-      poses[l.name] = poseOf(l, {
+      poses[l.name] = poseFor(l, {
         live: live[l.name],
         waiting: asking.has(l.name),
-        flagged: stalled.has(l.name),
-        shown: shownState(l, queue),
+        stalled: stalled.has(l.name),
+        queue,
       });
-      tints[l.name] = tintOf(l.name, names);
       const t = times.find((x) => x.id === l.story?.id);
       if (t) bars[l.name] = barCells(t, { start, now, width });
     }
-    return { surface: paneSurface, frame, poses, tints, bars, svgWidth: width * 6 };
+    return {
+      surface: paneSurface,
+      motion: harness().motion,
+      poses,
+      moves: playing,
+      bars,
+      faulted,
+      fresh: [...freshTested].filter(([, at]) => now - at < MOVE_MS).map(([id]) => id),
+    };
   };
+  /** The lane selected in the pane, if a lane is. */
+  const selectedLaneName = () => (paneUi.sel?.kind === 'lane' ? paneUi.sel.id : null);
   const liveNow = (now) => {
     const stall = harness().stall;
     const live = {};
@@ -2586,119 +2711,51 @@ export function register(on) {
       return card ? { ...l, context: contextOf(card) } : l;
     });
   };
+  // UI-3, UI-8: most urgent first, every action numbered in that order, wherever they're shown.
   const linesNowRaw = (now) =>
-    bandLines({
-      ...model,
-      reviewing,
-      notice,
-      ...usageNow(),
-      held: [...held.values()],
-      now,
-      loop: loopNow(now),
-      leadBusy: Boolean(leadTurn),
-      live: liveNow(now),
-      nextStep: loop.nextStep,
-      combined: combinedNow(),
-      team: model.team ?? null,
-    });
+    needsOf(
+      bandLines({
+        ...model,
+        reviewing,
+        notice,
+        ...usageNow(),
+        held: [...held.values()],
+        now,
+        loop: loopNow(now),
+        leadBusy: Boolean(leadTurn),
+        live: liveNow(now),
+        nextStep: loop.nextStep,
+        combined: combinedNow(),
+        team: model.team ?? null,
+      }),
+    );
 
   on('ui.render', { component: 'Pane', requestId: PANE_ID }, async ($, e) => {
     const now = await $.clock.now();
     paneSurface = e.surface;
     paneColumns = e.props.bodyColumns ?? paneColumns;
+    paneRows = e.props.scroll?.bodyRows ?? paneRows;
+    paneOpen = true;
+    const els = $.ui.resolve(e);
     const { usage, plan } = usageNow();
-    const lanesNow = stateNow()?.kind === 'ok' ? stateNow().lanes : [];
-    return lanesFrame(
-      {
-        state: stateNow(),
-        usage,
-        plan,
-        loop: { ...loopNow(now), queue: model.queue ?? [] },
-        needs: linesNow(now).filter((l) => !l.mission),
-        cards: cardsNow(now),
-        journal: journalNow(),
-        now,
-        live: liveNow(now),
-        held: [...held.values()],
-        requests: model.requests?.open ?? [],
-        ui: paneUi,
-        status: model.status ?? null,
-        // VIEW-6: what each lane owns, for the selected lane's detail.
-        paths: {
-          lead: model.check?.lead?.paths ?? [],
-          ...Object.fromEntries(
-            Object.entries(model.check?.lanes ?? {}).map(([n, l]) => [n, l.paths ?? []]),
-          ),
-        },
-        art: artNow(now, liveNow(now)),
-        combined: combinedNow(),
-        codeMap,
-        trail: trailData,
-        glow: glowOf(touches, now),
-        surface: paneSurface,
-        columns: paneColumns,
-        placement: e.props.placement,
-        story: storyOpen ? storyNow(storyOpen, now, usage) : null,
-      },
-      $.ui.resolve(e),
-      {
-        onTab: (tab) => {
-          paneUi = { ...paneUi, tab };
-          $.ui.invalidate('ui.render');
-          act?.readMaps().then(() => $.ui.invalidate('ui.render'));
-        },
-        onDecision: (i) => {
-          paneUi = { ...paneUi, decision: i };
-          $.ui.invalidate('ui.render');
-        },
-        onMapStory: (id) => {
-          paneUi = { ...paneUi, mapStory: id, mapFile: null };
-          $.ui.invalidate('ui.render');
-          act?.readMaps().then(() => $.ui.invalidate('ui.render'));
-        },
-        onMapFile: (path) => {
-          paneUi = { ...paneUi, mapFile: path };
-          $.ui.invalidate('ui.render');
-        },
-        // MAP-3: the file in Context Graph's own view, through the command its adapter names.
-        onOpenFile: (path) => {
-          const command = codeMap?.open?.command;
-          if (!command) return;
-          $.command.run({ command, args: path }).catch((err) => {
-            notice = `Couldn't open ${path}: ${err?.message ?? err}`;
-            $.ui.invalidate('ui.render');
-          });
-        },
-        onFilter: (state) => {
-          paneUi = { ...paneUi, filter: paneUi.filter === state ? null : state };
-          $.ui.invalidate('ui.render');
-        },
-        onMove: (step) => {
-          if (!lanesNow.length) return;
-          const at = lanesNow.findIndex((l) => l.name === paneUi.selected);
-          const to =
-            at < 0
-              ? step > 0
-                ? 0
-                : lanesNow.length - 1
-              : (at + step + lanesNow.length) % lanesNow.length;
-          paneUi = { ...paneUi, selected: lanesNow[to].name };
-          $.ui.invalidate('ui.render');
-          // VIEW-6: Enter opens the selected lane's story: the focus waits on its Open button.
-          if (
-            lanesNow[to].story ||
-            (model.state?.stories ?? []).some((s) => s.lane === lanesNow[to].name)
-          )
-            $.ui.focus({ requestId: PANE_ID, key: 'open-story' }).catch(() => {});
-        },
-        onOpen: (lane) => act?.openStory(lane),
-        // TRACE-2: a cell selected by its keys or the requirement list.
-        onCell: (cell) => {
-          paneUi = { ...paneUi, cell };
-          $.ui.invalidate('ui.render');
-        },
-        story: {
-          onBack: () => act?.closeStory(),
+    const state = stateNow();
+    const live = liveNow(now);
+    const needs = needsOf(linesNow(now));
+    const loopView = { ...loopNow(now), queue: model.queue ?? [] };
+    const lanesNow = state?.kind === 'ok' ? state.lanes : [];
+    const back = () => {
+      if (paneUi.view === 'story') return act?.closeStory();
+      paneUi = { ...paneUi, view: null };
+      $.ui.invalidate('ui.render');
+    };
+    const looks = charactersOf(lanesNow.map((l) => l.name));
+    const tints = Object.fromEntries(Object.entries(looks).map(([n, c]) => [n, c.tint]));
+    // UI-6: the full views, over the panels; Escape (or Back) returns.
+    if (paneUi.view === 'story' && storyOpen)
+      return viewFrame(
+        `${storyOpen.id}`,
+        storyPane({ ...storyNow(storyOpen, now, usage), columns: paneColumns }, els, {
+          onBack: back,
           onFile: (file) => {
             paneUi = { ...paneUi, file };
             $.ui.invalidate('ui.render');
@@ -2713,23 +2770,245 @@ export function register(on) {
             const lane = lanesNow.find((l) => l.name === storyOpen?.lane);
             if (lane) act?.laneAct(id, lane);
           },
+        }),
+        els,
+        { onBack: back },
+        [{ key: 'esc', label: 'back' }],
+        { head: false },
+      );
+    if (paneUi.view === 'trail')
+      return viewFrame(
+        'Trail',
+        mapTab(
+          model.status ?? null,
+          paneUi.cell,
+          els,
+          {
+            onCell: (cell) => {
+              paneUi = { ...paneUi, cell };
+              $.ui.invalidate('ui.render');
+            },
+          },
+          trailData,
+          { surface: paneSurface, columns: paneColumns },
+        ),
+        els,
+        { onBack: back },
+        [
+          { key: '←→', label: 'requirement' },
+          { key: 'esc', label: 'back' },
+        ],
+      );
+    if (paneUi.view === 'code')
+      return viewFrame(
+        'Code map',
+        codeTab(
+          {
+            state,
+            ui: {
+              selected: selectedLaneName(),
+              mapStory: paneUi.mapStory,
+              mapFile: paneUi.mapFile,
+            },
+            codeMap,
+            art: { tints },
+            glow: glowOf(touches, now),
+            surface: paneSurface,
+            columns: paneColumns,
+          },
+          els,
+          {
+            onMapStory: (id) => {
+              paneUi = { ...paneUi, mapStory: id, mapFile: null };
+              $.ui.invalidate('ui.render');
+              act?.readMaps().then(() => $.ui.invalidate('ui.render'));
+            },
+            onMapFile: (path) => {
+              paneUi = { ...paneUi, mapFile: path };
+              $.ui.invalidate('ui.render');
+            },
+            // MAP-3: the file in Context Graph's own view, through the command its adapter names.
+            onOpenFile: (path) => {
+              const command = codeMap?.open?.command;
+              if (!command) return;
+              $.command.run({ command, args: path }).catch((err) => {
+                notice = `Couldn't open ${path}: ${err?.message ?? err}`;
+                $.ui.invalidate('ui.render');
+              });
+            },
+          },
+        ),
+        els,
+        { onBack: back },
+      );
+    if (paneUi.view === 'journal') {
+      const events = journalNow();
+      return viewFrame(
+        'Journal',
+        events.length
+          ? journalTab(events, els, now)
+          : [
+              els.Text({
+                dimColor: true,
+                children: ['Nothing recorded yet: the journal starts with the brief.'],
+              }),
+            ],
+        els,
+        { onBack: back },
+      );
+    }
+    if (paneUi.view === 'usage') {
+      const body = usageSection(
+        usage,
+        plan,
+        (v, st = {}) => els.Text({ ...st, children: [v] }),
+        els.Box,
+      );
+      return viewFrame(
+        'Usage',
+        body.length
+          ? body
+          : [els.Text({ dimColor: true, children: ['No usage measured yet this session.'] })],
+        els,
+        { onBack: back },
+      );
+    }
+    if (paneUi.view === 'decision') {
+      const cards = cardsNow(now);
+      if (cards.length)
+        return viewFrame(
+          'Decision',
+          decisionsTab(cards, paneUi, els, {
+            onDecision: (i) => {
+              paneUi = { ...paneUi, decision: i };
+              $.ui.invalidate('ui.render');
+            },
+            onNeed: (id, line) => act?.[id]?.(line),
+          }),
+          els,
+          { onBack: back },
+          [
+            { key: 'j/k', label: 'decision' },
+            { key: 'esc', label: 'back' },
+          ],
+        );
+      paneUi = { ...paneUi, view: null };
+    }
+    if (paneUi.view === 'characters')
+      return viewFrame(
+        'Characters',
+        sheetView(
+          lanesNow.map((l) => l.name),
+          els,
+          { surface: faulted[paneSurface] ? 'still' : paneSurface, motion: harness().motion },
+        ),
+        els,
+        { onBack: back },
+      );
+    const order = () => {
+      const { atWork, resting } = lanesAtWork(state, model.queue ?? [], {
+        ...(loopView.laneNotes ?? {}),
+        ...artNow(now, live).moves,
+      });
+      return selectable(needs, [...atWork, ...resting]);
+    };
+    return board(
+      {
+        state,
+        status: model.status ?? null,
+        loop: loopView,
+        needs,
+        live,
+        held: [...held.values()],
+        requests: model.requests?.open ?? [],
+        leadBusy: Boolean(leadTurn),
+        journal: journalNow(),
+        maps: storyMaps,
+        combined: combinedNow(),
+        usage,
+        // LANES-3: what each lane owns, for the selected lane's detail.
+        paths: {
+          lead: model.check?.lead?.paths ?? [],
+          ...Object.fromEntries(
+            Object.entries(model.check?.lanes ?? {}).map(([n, l]) => [n, l.paths ?? []]),
+          ),
         },
+        trouble: Object.fromEntries(
+          lanesNow.map((l) => {
+            const f = (model.adapters ?? []).some((a) => a.lanes) ? factsOf(l) : null;
+            return [l.name, { refused: troubles.get(l.name) ?? [], owed: f?.cardsOwed ?? [] }];
+          }),
+        ),
+        art: artNow(now, live),
+        now,
+        ui: paneUi,
+        placement: e.props.placement,
+        columns: paneColumns,
+        rows: paneRows,
+      },
+      els,
+      {
         onNeed: (id, line) => act?.[id]?.(line),
-        onLane: (id, lane) => act?.laneAct(id, lane),
-        onSearch: (search) => {
-          paneUi = { ...paneUi, search };
+        onDecide: (i, line) => act?.decide(line),
+        onSelect: (sel) => {
+          paneUi = { ...paneUi, sel, ...(sel.kind === 'need' ? { need: Number(sel.id) } : {}) };
           $.ui.invalidate('ui.render');
         },
-        onFocusSearch: () => $.ui.focus({ requestId: PANE_ID, key: 'filter' }).catch(() => {}),
+        onMove: (step) => {
+          const sel = moveSelection(order(), paneUi.sel, step);
+          if (!sel) return;
+          paneUi = { ...paneUi, sel, ...(sel.kind === 'need' ? { need: Number(sel.id) } : {}) };
+          $.ui.invalidate('ui.render');
+          // UI-8: Enter opens what's selected: the focus waits on its button.
+          $.ui
+            .focus({ requestId: PANE_ID, key: sel.kind === 'need' ? 'need-why' : 'open-story' })
+            .catch(() => {});
+        },
+        onOpen: (lane) => act?.openStory(lane),
+        onView: (view, at = null) => {
+          const reqs = at?.story?.requirements ?? [];
+          paneUi = {
+            ...paneUi,
+            view,
+            ...(view === 'trail' && reqs.length ? { cell: reqs[0] } : {}),
+            ...(view === 'code' && at?.story ? { mapStory: at.story.id, mapFile: null } : {}),
+          };
+          $.ui.invalidate('ui.render');
+          act?.readMaps().then(() => $.ui.invalidate('ui.render'));
+        },
+        onLane: (id, lane) => act?.laneAct(id, lane),
+        onSearch: (search) => {
+          paneUi = { ...paneUi, search, filtering: Boolean(search) || paneUi.filtering };
+          $.ui.invalidate('ui.render');
+        },
+        onFocusSearch: () => {
+          paneUi = { ...paneUi, filtering: true };
+          $.ui.invalidate('ui.render');
+          $.ui.focus({ requestId: PANE_ID, key: 'filter' }).catch(() => {});
+        },
       },
     );
   });
 
-  // VIEW-6: Escape on a story goes back to the lanes; on the lanes, it closes the pane.
+  // UI-6: Escape on a full view goes back to the panels; on the panels, it closes the pane.
   on('ui.close', async ($, e, next) => {
-    if (closeGoesBack(e, PANE_ID, paneUi)) {
-      act?.closeStory();
+    if (escapeGoesBack(e, PANE_ID, paneUi)) {
+      if (paneUi.view === 'story') act?.closeStory();
+      else {
+        paneUi = { ...paneUi, view: null };
+        $.ui.invalidate('ui.render');
+      }
       return;
+    }
+    if (e.id === PANE_ID) paneOpen = false;
+    return next(e);
+  });
+
+  // UI-12: a surface module that fails draws everything still on that surface from then on.
+  on('ui.fault', async ($, e, next) => {
+    if (String(e.module ?? '').includes('surface/')) {
+      faulted[e.surface] = true;
+      $.ui.invalidate('ui.render');
     }
     return next(e);
   });
@@ -2745,12 +3024,25 @@ export function register(on) {
     }),
   );
 
-  // BAND-2: absent when nothing waits. Its lines go above whatever else the band holds (another
-  // plugin's lines, such as Context Graph's, or Claude Code's own), which it keeps.
+  // UI-9: the band speaks only when it's needed: what needs the person, else one line while the
+  // build moves, else nothing. Its lines go above whatever else the band holds (another plugin's, such
+  // as Context Graph's, or Claude Code's own), which it keeps.
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
-    const lines = linesNow(await $.clock.now());
-    if (!lines.length || !act) return next(e);
-    const ours = band(lines, $.ui.resolve(e), (id, line) => act[id](line));
+    if (!act) return next(e);
+    const now = await $.clock.now();
+    const ours = bandOf(
+      {
+        state: stateNow(),
+        status: model.status ?? null,
+        loop: { ...loopNow(now), queue: model.queue ?? [] },
+        needs: needsOf(linesNow(now)),
+        leadBusy: Boolean(leadTurn),
+        columns: e.props.bodyColumns,
+      },
+      $.ui.resolve(e),
+      (id, line) => act[id](line),
+    );
+    if (!ours) return next(e);
     const below = await next(e);
     return below ? $.ui.resolve(e).Box({ flexDirection: 'column', children: [ours, below] }) : ours;
   });
