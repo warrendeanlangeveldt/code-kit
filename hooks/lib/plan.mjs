@@ -161,11 +161,28 @@ const git = (root, ...args) => {
   }
 };
 
+/**
+ * Every local and origin branch in one read: { ref: { sha, ahead } }, `ahead` the commits it has that
+ * `base` hasn't. A project with hundreds of stories has hundreds of branches, and a git call each
+ * outlasts the mod's 30 seconds. Git before 2.41 can't count them in the same read: `ahead` is then
+ * null, and counted for each branch as it's asked for.
+ */
+export function branchRefs(root, base) {
+  const read = (format) =>
+    git(root, 'for-each-ref', `--format=${format}`, 'refs/heads', 'refs/remotes/origin');
+  const counted = read(`%(refname)%09%(objectname)%09%(ahead-behind:${base})`);
+  const out = counted ?? read('%(refname)%09%(objectname)') ?? '';
+  const refs = {};
+  for (const line of out.split('\n').filter(Boolean)) {
+    const [ref, sha, aheadBehind] = line.split('\t');
+    refs[ref] = { sha, ahead: counted === null ? null : Number(aheadBehind.split(' ')[0]) };
+  }
+  return refs;
+}
+
 /** The ref of a branch, local first, then on origin; null when neither exists. */
-function branchRef(root, branch) {
-  for (const ref of [`refs/heads/${branch}`, `refs/remotes/origin/${branch}`])
-    if (git(root, 'rev-parse', '--verify', '--quiet', ref) !== null) return ref;
-  return null;
+function branchRef(refs, branch) {
+  return [`refs/heads/${branch}`, `refs/remotes/origin/${branch}`].find((r) => refs[r]) ?? null;
 }
 
 /** Worktree path of each checked-out branch: { branch: path }. */
@@ -193,13 +210,16 @@ function worktrees(root) {
 export function storyStates(root, stories, base) {
   const trees = worktrees(root);
   const backs = sentBack(root);
+  const refs = branchRefs(root, base);
   const states = stories.map((story) => {
     const branch = storyBranch(story);
-    const ref = story.lane ? branchRef(root, branch) : null;
-    const ahead = ref ? Number(git(root, 'rev-list', '--count', `${base}..${ref}`) ?? 0) : 0;
+    const ref = story.lane ? branchRef(refs, branch) : null;
+    const ahead = !ref
+      ? 0
+      : (refs[ref].ahead ?? Number(git(root, 'rev-list', '--count', `${base}..${ref}`) ?? 0));
     let state = story.status;
     if (ref && story.status !== 'done') {
-      const head = backs[branch] ? git(root, 'rev-parse', ref) : null;
+      const head = backs[branch] ? refs[ref].sha : null;
       if (head && head === backs[branch].sha) state = 'sent back';
       else if (ahead > 0) state = 'review';
       else state = story.status === 'review' ? 'done' : 'in progress';
@@ -208,6 +228,7 @@ export function storyStates(root, stories, base) {
       ...story,
       branch,
       branchExists: Boolean(ref),
+      ref,
       ahead,
       worktree: trees[branch] ?? null,
       state,

@@ -8611,6 +8611,89 @@ else process.exit(1);
       0,
     );
   }
+
+  // The reads the mod makes stay a few git calls however many stories there are: one each outlasted
+  // the mod's 30 seconds in a project with 500 stories.
+  {
+    const r = newRepo();
+    cleanups.push(r.dir);
+    const put = (rel, body = '') => {
+      mkdirSync(dirname(join(r.dir, rel)), { recursive: true });
+      writeFileSync(join(r.dir, rel), body);
+    };
+    const commit = (m) => {
+      r.git('add', '-A');
+      r.git('commit', '-q', '-m', m);
+    };
+    const STORIES = 40;
+    put('docs/spec/01-booking.md', '# 01. Booking\n\n### BOOK-1 Book a slot\n');
+    put(
+      'docs/spec/plan.md',
+      `# Plan\n\n## Milestone 1: Booking\n\n${Array.from(
+        { length: STORIES },
+        (_, i) =>
+          `### ST-${i + 1} Story ${i + 1}\n\n**Lane:** web\n**Requirements:** BOOK-1\n**Status:** ${i + 1 === 2 ? 'in progress' : 'done'}\n`,
+      ).join('\n')}`,
+    );
+    commit('plan');
+    for (let i = 1; i <= STORIES; i++) {
+      r.git('checkout', '-q', '-b', `web/st-${i}`, 'main');
+      put(`apps/office/st${i}.ts`, `export const s${i} = ${i};\n`);
+      commit(`ST-${i} story ${i}`);
+      r.git('checkout', '-q', 'main');
+      if (i !== 2) r.git('merge', '-q', '--no-ff', '-m', `Merge web/st-${i}`, `web/st-${i}`);
+    }
+    const counter = join(r.dir, '.claude/state/count.cjs');
+    put(
+      '.claude/state/count.cjs',
+      `const cp = require('child_process'); const fs = require('fs');
+for (const fn of ['spawnSync', 'execFileSync']) { const o = cp[fn]; cp[fn] = function (cmd, ...rest) {
+  if (cmd === 'git') fs.appendFileSync(process.env.GIT_COUNT, 'git\\n'); return o.call(this, cmd, ...rest); }; }`,
+    );
+    const counted = (command) => {
+      const log = join(r.dir, `.claude/state/${command}.count`);
+      const ran = spawnSync('node', ['--require', counter, kitCli, command, '--json'], {
+        cwd: r.dir,
+        encoding: 'utf8',
+        env: { ...process.env, GIT_COUNT: log },
+      });
+      const calls = existsSync(log)
+        ? readFileSync(log, 'utf8').split('\n').filter(Boolean).length
+        : 0;
+      return { out: JSON.parse(ran.stdout || '{}'), calls, err: ran.stderr };
+    };
+    const status = counted('status');
+    const timeline = counted('timeline');
+    const trailed = counted('trail');
+    const st = (id) => status.out.stories?.find((x) => x.id === id);
+    const booking = (trailed.out.requirements ?? trailed.out).find?.((x) => x.id === 'BOOK-1');
+    expect(
+      `status, timeline and trail read ${STORIES} story branches in a few git calls, not one or more each`,
+      truth(
+        status.calls < 15 && timeline.calls < 15 && trailed.calls < 15,
+        `status ${status.calls}, timeline ${timeline.calls}, trail ${trailed.calls} git calls`,
+      ),
+      0,
+    );
+    expect(
+      'and they say the same: the open branch in review, the merged ones done, the merged files on the trail',
+      truth(
+        st('ST-2')?.state === 'review' &&
+          st('ST-2').ahead === 1 &&
+          st('ST-1')?.state === 'done' &&
+          st('ST-1').ahead === 0 &&
+          timeline.out.stories?.find((x) => x.id === 'ST-2')?.lastCommit > 0 &&
+          timeline.out.stories.find((x) => x.id === 'ST-2').started > 0 &&
+          timeline.out.stories.find((x) => x.id === 'ST-1').lastCommit === null &&
+          // The open story's file is on its branch only: the trail lists the files the checkout has.
+          booking?.files.length === STORIES - 1 &&
+          booking.files.includes('apps/office/st12.ts') &&
+          !booking.files.includes('apps/office/st2.ts'),
+        JSON.stringify({ st2: st('ST-2'), booking: booking?.files.length }) + status.err,
+      ),
+      0,
+    );
+  }
 } finally {
   for (const d of cleanups) rmSync(d, { recursive: true, force: true });
 }

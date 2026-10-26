@@ -297,9 +297,16 @@ export function register(on) {
     // The held call's answer, for the `code-kit hold` it waits in.
     const answerHeld = (id, answer) =>
       $.process.run(['node', cli, 'hold', id, '--answer', answer], { cwd });
+    // A read that fails or outlasts its time is null, like one that can't say: one slow read never
+    // takes the band or the pane down with it.
     const json = async (...args) => {
-      const ran = await $.process.run(['node', cli, ...args, '--json'], { cwd });
-      return ran.exitCode === 0 ? parseJson(ran.stdout) : null;
+      const ran = await $.process.run(['node', cli, ...args, '--json'], { cwd }).catch((err) => {
+        $.ui.log(`code-kit: \`code-kit ${args[0]}\` didn't answer: ${err?.message ?? err}`, {
+          to: 'debug',
+        });
+        return null;
+      });
+      return ran?.exitCode === 0 ? parseJson(ran.stdout) : null;
     };
     // What a CLI run said, in a line: why it refused, for a notice.
     const firstLine = (ran) => (ran.stderr || ran.stdout).trim().split('\n')[0];

@@ -178,6 +178,8 @@ function project() {
     sideReply: { isAnswered: true, text: 'dayjs formats the booking dates.', usage: null } as any,
     holdWaits: false, // false: the hold ends at once, as if timed out (tests about cards, not hold)
     waiting: new Map<string, (answer: string) => void>(),
+    // The CLI commands that never answer: their run rejects, as one past its time does.
+    timesOut: new Set<string>(),
   };
 }
 type World = ReturnType<typeof project>;
@@ -190,6 +192,7 @@ function stub(on: any, w: World) {
       value: { exitCode, stdout, stderr },
     });
     const sub = argv[2];
+    if (w.timesOut.has(sub)) return { deny: `node ${sub} is still running after 30000ms` };
     if (argv[0] === 'git' && argv[1] === 'rev-parse') return ran(0, w.heads[argv.at(-1)!] ?? '');
     if (argv[0] === 'git') return ran(0, w.refs);
     if (sub === 'check') return ran(w.check.valid ? 0 : 1, JSON.stringify(w.check));
@@ -5057,6 +5060,17 @@ test('HUBR-6 a team on GitHub sends no pulse', async ($, on) => {
   await $.tool.call({ tool: 'Bash', tool_use_id: 'tu-q', command: 'ls' } as any);
   await clock.advance(60000);
   expect(w.acts.some((a) => a[0] === 'team' && a[1] === 'pulse')).toBe(false);
+});
+
+test('a CLI read that never answers leaves out what it would show, and /lanes still opens', async ($, on) => {
+  const w = project();
+  w.timesOut = new Set(['timeline', 'journal']);
+  await start($, on, w);
+  await lanes($);
+  const ui = await pane($, PANE);
+  expect(await ui.find({ key: 'panel-build' })).toBeDefined();
+  expect(await ui.find({ key: 'panel-lanes' })).toBeDefined();
+  await ui.unmount();
 });
 
 test('TRACE-2 a project with more requirements than a list holds still draws its trail', async ($, on) => {

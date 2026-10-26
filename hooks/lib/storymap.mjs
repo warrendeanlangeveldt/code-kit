@@ -12,7 +12,7 @@ const git = (root, ...args) => {
     return execFileSync('git', ['-C', root, ...args], {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
-      maxBuffer: 64 * 1024 * 1024,
+      maxBuffer: 256 * 1024 * 1024,
     });
   } catch {
     return '';
@@ -24,27 +24,63 @@ const KIT = /^(\.claude|\.ctx|\.github)\//;
 const isCode = (rel) => CODE.test(rel) && !KIT.test(rel);
 
 /**
+ * Every story's files from one pass over the history: { id: Set of files }, from the commits on any
+ * branch whose message names it, as `storyFiles` finds them one story at a time. A project with hundreds
+ * of stories outlasts the mod's 30 seconds with a `git log --all` each.
+ */
+export function namedFiles(root) {
+  const byStory = {};
+  const log = git(root, 'log', '--all', '--no-merges', '--format=%x1e%B%x1f', '--name-only');
+  for (const commit of log.split('\x1e')) {
+    const end = commit.indexOf('\x1f');
+    if (end < 0) continue;
+    // As storyFiles' grep: "ST-1" mustn't match "ST-12", nor "XST-1".
+    const ids = new Set(
+      [...commit.slice(0, end).matchAll(/(?:^|[^A-Za-z0-9-])(ST-\d+)(?!\d)/gm)].map((m) => m[1]),
+    );
+    if (!ids.size) continue;
+    const files = commit
+      .slice(end + 1)
+      .split('\n')
+      .filter(Boolean);
+    for (const id of ids) {
+      byStory[id] ??= new Set();
+      for (const f of files) byStory[id].add(f);
+    }
+  }
+  return byStory;
+}
+
+/**
  * The code files a story changed: those in commits whose message names it (on any branch, so a merged
  * story still has its files) and, while its branch is open, its diff against the base. Only files that
- * still exist, in path order.
+ * still exist, in path order. `named` is `namedFiles`', where the caller reads every story.
  */
-export function storyFiles(root, story, from) {
+export function storyFiles(root, story, from, named = null) {
   const found = new Set();
   const id = story.id;
-  const log = git(
-    root,
-    'log',
-    '--all',
-    '--no-merges',
-    '-E',
-    // POSIX ERE has no \b: "ST-1" mustn't match "ST-12".
-    `--grep=(^|[^A-Za-z0-9-])${id}([^0-9]|$)`,
-    '--format=',
-    '--name-only',
-  );
+  const log = named
+    ? [...(named[id] ?? [])].join('\n')
+    : git(
+        root,
+        'log',
+        '--all',
+        '--no-merges',
+        '-E',
+        // POSIX ERE has no \b: "ST-1" mustn't match "ST-12".
+        `--grep=(^|[^A-Za-z0-9-])${id}([^0-9]|$)`,
+        '--format=',
+        '--name-only',
+      );
   for (const f of log.split('\n')) if (f) found.add(f);
-  if (story.branchExists && story.branch)
-    for (const f of git(root, 'diff', '--name-only', `${from}...${story.branch}`).split('\n'))
+  // A branch the base already holds has nothing of its own to diff.
+  if (story.branchExists && story.branch && story.ahead !== 0)
+    for (const f of git(
+      root,
+      'diff',
+      '--name-only',
+      `${from}...${story.ref ?? story.branch}`,
+    ).split('\n'))
       if (f) found.add(f);
   return [...found].filter((f) => isCode(f) && existsSync(join(root, f))).sort();
 }
@@ -133,8 +169,9 @@ export function storyMap(root, story, config, from) {
  */
 export function trail(root, status, from) {
   const byStory = new Map();
+  const named = namedFiles(root);
   const filesOf = (s) => {
-    if (!byStory.has(s.id)) byStory.set(s.id, storyFiles(root, s, from));
+    if (!byStory.has(s.id)) byStory.set(s.id, storyFiles(root, s, from, named));
     return byStory.get(s.id);
   };
   return status.requirements
