@@ -2,6 +2,14 @@
 
 What changed in each release of code-kit, newest first. Versions follow the plugin manifest and the npm package `@warren-dean/code-kit`. Each release is also on [GitHub Releases](https://github.com/warrendeanlangeveldt/code-kit/releases).
 
+## 0.26.1 (2026-10-26)
+
+`/lanes` opens in large projects again.
+
+- In a project with hundreds of stories, `/lanes` failed to open: reading the project's state made a git call or more per story, and took longer than the 30 seconds Claude Code gives a mod's command. `code-kit status`, `timeline`, `journal` and `trail` now read every branch in a few git calls, and answer in a couple of seconds however many stories there are.
+- A read that doesn't answer in time no longer stops the pane opening: the pane shows everything else.
+- A story's start on the lanes' timelines is now when its branch was made, not the time of the commit it branched from.
+
 ## 0.26.0 (2026-10-26)
 
 The lanes pane is redesigned around what needs you, a lane's work survives its agent stopping, and merged work reaches the remote.
