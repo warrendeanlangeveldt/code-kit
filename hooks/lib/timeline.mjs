@@ -2,8 +2,7 @@
 // records: when its branch was made, its commits, its merge into the base, its send-backs and the
 // approvals its commits logged. The mod draws these as a bar per lane on a shared time axis.
 import { execFileSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
-import { isAbsolute, join } from 'node:path';
+import { branchMaking } from './plan.mjs';
 import { APPROVAL_LOG } from './rules.mjs';
 import { sendBacks } from './reviews.mjs';
 
@@ -69,28 +68,12 @@ export function storyTimes(root, stories, base) {
     root,
     shown.filter((s) => s.branchExists).map((s) => `${refOf(s)}:${APPROVAL_LOG}`),
   );
-  const common = git('rev-parse', '--git-common-dir');
-  const reflogs = common ? (isAbsolute(common) ? common : join(root, common)) : null;
-  // When a branch was made: its reflog's oldest entry, read from the file git keeps it in (or from git,
-  // where the file isn't there), in milliseconds; null once the reflog is gone.
-  const madeAt = (b) => {
-    let first = null;
-    try {
-      first = readFileSync(join(reflogs, 'logs/refs/heads', b), 'utf8').split('\n')[0];
-    } catch {
-      const at = lines(git('reflog', 'show', '--date=unix', '--format=%gd', `refs/heads/${b}`))
-        .at(-1)
-        ?.match(/@\{(\d+)\}$/)?.[1];
-      return at ? Number(at) * 1000 : null;
-    }
-    const at = first?.split('\t')[0].match(/> (\d+) [+-]\d{4}$/)?.[1];
-    return at ? Number(at) * 1000 : null;
-  };
+  const making = branchMaking(root);
   return shown.map((s) => {
     const b = s.branch;
     // A branch only on origin has no reflog here.
     const local = s.branchExists && refOf(s).startsWith('refs/heads/');
-    const made = local && reflogs ? madeAt(b) : null;
+    const made = local ? (making(b)?.at ?? null) : null;
     // Only a branch ahead of the base has commits of its own.
     const commits =
       s.branchExists && s.ahead !== 0

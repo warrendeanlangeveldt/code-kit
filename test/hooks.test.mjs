@@ -6148,6 +6148,8 @@ else process.exit(1);
     );
     qCommit('slices');
     q.git('branch', '-q', 'backend/st-1');
+    // The backend lane's agent is at work on ST-1: its claim says so.
+    startAgent('ST-1', 'eeee5555-s', 'backend-engineer');
     const sliced = nextIn(q.dir);
     expect(
       'SCHED-2 the backend lane, running the open slice, takes nothing; the web lane takes its story outside a slice first',
@@ -6914,7 +6916,13 @@ else process.exit(1);
     ),
     0,
   );
-  // A story with commits whose dependency isn't done is blocked on it, not finished.
+  // A story with commits whose dependency isn't done is blocked on it, not finished: ST-1 has work
+  // the base hasn't merged.
+  const onBranch = v.git('rev-parse', '--abbrev-ref', 'HEAD').trim();
+  v.git('switch', '-q', 'web/st-1');
+  vPut('apps/office/lib/more.ts', 'export const more = 1;\n');
+  vCommit('ST-1 more');
+  v.git('switch', '-q', onBranch);
   const planNow = readFileSync(join(v.dir, 'docs/spec/plan.md'), 'utf8');
   vPut(
     'docs/spec/plan.md',
@@ -6936,6 +6944,7 @@ else process.exit(1);
     truth(!nextIn(v.dir).args.split(' ').includes('ST-2'), JSON.stringify(nextIn(v.dir))),
     0,
   );
+  v.git('branch', '-f', 'web/st-1', 'web/st-1~1');
   vPut('docs/spec/plan.md', planNow);
   const donePlan = plan('done')
     .replace('**Depends on:** ST-1\n**Status:** todo', '**Depends on:** ST-1\n**Status:** done')
@@ -8670,7 +8679,7 @@ for (const fn of ['spawnSync', 'execFileSync']) { const o = cp[fn]; cp[fn] = fun
     expect(
       `status, timeline and trail read ${STORIES} story branches in a few git calls, not one or more each`,
       truth(
-        status.calls < 15 && timeline.calls < 15 && trailed.calls < 15,
+        status.calls < 20 && timeline.calls < 20 && trailed.calls < 20,
         `status ${status.calls}, timeline ${timeline.calls}, trail ${trailed.calls} git calls`,
       ),
       0,
@@ -8690,6 +8699,94 @@ for (const fn of ['spawnSync', 'execFileSync']) { const o = cp[fn]; cp[fn] = fun
           booking.files.includes('apps/office/st12.ts') &&
           !booking.files.includes('apps/office/st2.ts'),
         JSON.stringify({ st2: st('ST-2'), booking: booking?.files.length }) + status.err,
+      ),
+      0,
+    );
+  }
+
+  // A branch level with the base: merged, being built, or left with nothing on it.
+  {
+    const r = newRepo();
+    cleanups.push(r.dir);
+    const put = (rel, body = '') => {
+      mkdirSync(dirname(join(r.dir, rel)), { recursive: true });
+      writeFileSync(join(r.dir, rel), body);
+    };
+    const commit = (m) => {
+      r.git('add', '-A');
+      r.git('commit', '-q', '-m', m);
+    };
+    put('docs/spec/01-booking.md', '# 01. Booking\n\n### BOOK-1 Book a slot\n');
+    put(
+      'docs/spec/plan.md',
+      `# Plan\n\n## Milestone 1: Booking\n\n${[1, 2, 3, 4]
+        .map(
+          (i) =>
+            `### ST-${i} Story ${i}\n\n**Lane:** web\n**Requirements:** BOOK-1\n**Status:** in progress\n`,
+        )
+        .join('\n')}`,
+    );
+    commit('plan');
+    // ST-1: built and merged, the plan not moved on yet.
+    r.git('branch', 'web/st-1');
+    r.git('switch', '-q', 'web/st-1');
+    put('apps/office/one.ts', 'export const one = 1;\n');
+    commit('ST-1 the first');
+    r.git('switch', '-q', 'main');
+    r.git('merge', '-q', '--no-ff', '-m', 'Merge web/st-1', 'web/st-1');
+    // ST-2: an agent made its branch and stopped before a commit. ST-3: the same, but an agent of its
+    // lane holds it. ST-4: the same, checked out where the person works.
+    for (const i of [2, 3, 4]) r.git('branch', `web/st-${i}`);
+    put(
+      '.claude/state/lanes/web.json',
+      JSON.stringify({
+        lane: 'web',
+        story: 'ST-3',
+        session: 's1',
+        since: new Date().toISOString(),
+      }),
+    );
+    r.git('switch', '-q', 'web/st-4');
+    const states = JSON.parse(
+      spawnSync('node', [kitCli, 'status', '--json'], { cwd: r.dir, encoding: 'utf8' }).stdout ||
+        '{}',
+    ).stories;
+    const of = (id) => states?.find((x) => x.id === id);
+    expect(
+      'a branch whose commits merged is done, though the plan still says in progress',
+      truth(of('ST-1')?.state === 'done' && !of('ST-1').stopped, JSON.stringify(of('ST-1'))),
+      0,
+    );
+    expect(
+      'a branch with no commits and nothing on it is stopped, and ready again',
+      truth(
+        of('ST-2')?.state === 'ready' && of('ST-2').stopped === true,
+        JSON.stringify(of('ST-2')),
+      ),
+      0,
+    );
+    expect(
+      "one its lane's agent holds, or the person has checked out, is in progress",
+      truth(
+        of('ST-3')?.state === 'in progress' && of('ST-4')?.state === 'in progress',
+        JSON.stringify([of('ST-3'), of('ST-4')]),
+      ),
+      0,
+    );
+    // With the claim gone and the person back on main, next sends the stopped story to a fresh agent.
+    rmSync(join(r.dir, '.claude/state/lanes/web.json'));
+    r.git('switch', '-q', 'main');
+    const next = JSON.parse(
+      spawnSync('node', [kitCli, 'next', '--json'], { cwd: r.dir, encoding: 'utf8' }).stdout ||
+        '{}',
+    );
+    expect(
+      'next dispatches a stopped story again, and says why',
+      truth(
+        next.step === 'dispatch' &&
+          next.args.split(/[ ,]+/).includes('ST-2') &&
+          next.attention.some((a) => /ST-2.*no commits, and no agent on/.test(a)),
+        JSON.stringify(next),
       ),
       0,
     );

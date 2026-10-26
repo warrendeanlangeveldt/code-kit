@@ -34,6 +34,7 @@ What code-kit shows that no agent dashboard can is whether the work is what was 
 | 2026-10-26 | Motion means work, as VIEW-3 says, plus a short one-off at each event                | Constant motion is noise; a story arriving, handed back, sent back or merged is news                                                                  |
 | 2026-10-26 | Animation runs on the surface's own frame clock, in surface modules                  | Only the character or the line moving redraws, without a round trip through the hooks module every frame                                              |
 | 2026-10-26 | Pull requests #89 and #90 close                                                      | They added a second way of drawing the same lanes, decorated the tabs this spec removes, and animated waiting and idle characters against VIEW-3      |
+| 2026-10-26 | Characters drawn at 8 by 8, not 12 by 12                                             | At 12 by 12 each card was six rows of figure beside five of words, and the figures crowded out the lanes                                              |
 
 ## In scope
 
@@ -130,7 +131,7 @@ One table gives each state its word, colour and glyph, and every panel and view 
 
 **Acceptance**
 
-- Given a story in review selected, then its card shows Review (r), Merge (m) and Send back (s), and the last line lists j/k, Enter, t, c, r, m, s, p and Escape.
+- Given a story in review selected, then its card shows Review (r), Merge (m) and Send back (s), and the last line lists j, k, Enter, t, c, r, m, s, p and Escape, each key once (`j: down`).
 - Given the band showing Approve as 1 and the pane open, then 1 presses Approve in both, and never switches a view.
 
 ### UI-9 The band only speaks when it's needed
@@ -157,7 +158,7 @@ Desktop draws the same panels, with the characters, the bars and the time axis a
 
 ### UI-11 Characters
 
-Each lane has its own character, whatever lanes the project's config names, with its own shape as well as its tint so lanes read apart without colour; the lead's wears a crown. A lane's look comes from its name and is kept apart from the lanes before it in the config, so adding a lane never changes another's: the first six lanes get six shapes, and past six each also wears a mark (glasses, a scarf, a belt), up to 24 apart. They're drawn at 12 by 12 pixels (six rows of half-blocks in the terminal, SVG on Desktop), with poses for:
+Each lane has its own character, whatever lanes the project's config names, with its own shape as well as its tint so lanes read apart without colour; the lead's wears a crown. A lane's look comes from its name and is kept apart from the lanes before it in the config, so adding a lane never changes another's: the first six lanes get six shapes, and past six each also wears a mark (glasses, a scarf, a belt), up to 24 apart. They're drawn at 8 by 8 pixels (four rows of half-blocks in the terminal, SVG on Desktop), small enough to sit beside a card's lines, with poses for:
 
 - **work, by its kind**, from the agent's current tool: writing (Edit, Write), running (Bash, a check or a test), reading (Read, Grep, Glob), thinking (a model turn with no tool), each its own loop of four frames;
 - **waiting on the person**, a raised hand, still;

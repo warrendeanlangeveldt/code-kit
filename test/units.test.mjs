@@ -2936,12 +2936,12 @@ test('UI-11 the characters: a look per lane from its name, every pose and move, 
   for (const l of nine) assert.deepEqual(more[l], looks[l]);
   // The look comes from the name, not the place: the same lane alone looks the same as first.
   assert.deepEqual(charactersOf(['lead', 'frontend']).frontend, looks.frontend);
-  // Every pose and move draws 12 by 12; loops have four frames that differ.
+  // Every pose and move draws 8 by 8; loops have four frames that differ.
   const c = looks.frontend;
   for (const pose of Object.keys(POSES)) {
     const frames = characterFrames(pose, c);
     assert.equal(frames.length, POSES[pose].frames);
-    for (const g of frames) assert.ok(g.length === 12 && g.every((r) => r.length === 12));
+    for (const g of frames) assert.ok(g.length === 8 && g.every((r) => r.length === 8));
   }
   // Every frame of a loop is its own, so it never seems to stall or repeat early.
   for (const pose of ['writing', 'running', 'reading', 'thinking']) {
@@ -3422,9 +3422,9 @@ test('UI-8 the keys that work for what is selected, and only those', async () =>
         ],
       },
     ),
-    'j/k ⏎ t c r m s p f l esc',
+    'j k ⏎ t c r m s p f l esc',
   );
-  assert.equal(keys(null, { loop: { state: 'off' } }), 'j/k f l esc');
+  assert.equal(keys(null, { loop: { state: 'off' } }), 'j k f l esc');
   assert.equal(keys(null, { view: 'trail' }), '←→ esc');
   const order = selectable([{}, {}], [{ name: 'web' }, { name: 'api' }]);
   assert.deepEqual(moveSelection(order, null, 1), { kind: 'need', id: '0' });

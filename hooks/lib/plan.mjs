@@ -6,9 +6,11 @@
 // `**Requirements:** none` marks a story that delivers no requirement, such as a spike.
 import { execFileSync } from 'node:child_process';
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
-import { join } from 'node:path';
+import { isAbsolute, join } from 'node:path';
+import { laneClaims } from './laneclaims.mjs';
 import { waitingStories } from './questions.mjs';
 import { sentBack } from './reviews.mjs';
+import { WORKTREES_DIR } from './worktrees.mjs';
 
 export const REQUIREMENT = /\b(?!ST-)([A-Z][A-Z0-9]*-\d+)\b/g;
 const STORY_HEADING = /^###\s+(ST-\d+)\b\s*(.*)$/;
@@ -155,6 +157,8 @@ const git = (root, ...args) => {
     return execFileSync('git', ['-C', root, ...args], {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
+      // A long-lived project's log runs to megabytes.
+      maxBuffer: 256 * 1024 * 1024,
     }).trim();
   } catch {
     return null;
@@ -180,6 +184,35 @@ export function branchRefs(root, base) {
   return refs;
 }
 
+/**
+ * How each local branch was made, from its reflog's oldest entry: (branch) => { sha, at } (the commit
+ * it was made at, and when, in milliseconds), or null once the reflog is gone. Read from the file git
+ * keeps it in, or from git where there's no file (a reftable repository).
+ */
+export function branchMaking(root) {
+  const common = git(root, 'rev-parse', '--git-common-dir');
+  const dir = common ? (isAbsolute(common) ? common : join(root, common)) : null;
+  return (branch) => {
+    if (!dir) return null;
+    try {
+      const first = readFileSync(join(dir, 'logs/refs/heads', branch), 'utf8').split('\n')[0];
+      const [head] = first.split('\t');
+      const sha = head.split(' ')[1];
+      const at = head.match(/> (\d+) [+-]\d{4}$/)?.[1];
+      return sha && at ? { sha, at: Number(at) * 1000 } : null;
+    } catch {
+      const oldest = (
+        git(root, 'reflog', 'show', '--date=unix', '--format=%H %gd', `refs/heads/${branch}`) ?? ''
+      )
+        .split('\n')
+        .filter(Boolean)
+        .at(-1)
+        ?.match(/^([0-9a-f]+) .*@\{(\d+)\}$/);
+      return oldest ? { sha: oldest[1], at: Number(oldest[2]) * 1000 } : null;
+    }
+  };
+}
+
 /** The ref of a branch, local first, then on origin; null when neither exists. */
 function branchRef(refs, branch) {
   return [`refs/heads/${branch}`, `refs/remotes/origin/${branch}`].find((r) => refs[r]) ?? null;
@@ -201,16 +234,44 @@ function worktrees(root) {
 /**
  * Where each story is. The plan's `done` stands (the lead marks it after merging, and merged
  * branches are often deleted or squashed). Otherwise git decides: a branch with commits not in
- * `base` is in review; one level with it is in progress, or done once the plan had it in review.
- * A branch still at the commit a review sent back is `sent back`, waiting for its lane's fix.
- * Without a branch, the plan's status stands. A story is `blocked` while a story it depends on
- * isn't done, whatever its branch holds; a todo story whose dependencies are done is `ready`. A story
- * with an open question for the person that holds it (`code-kit ask --blocks`) is `waiting on you`.
+ * `base` is in review. A branch still at the commit a review sent back is `sent back`, waiting for
+ * its lane's fix. Without a branch, the plan's status stands. A story is `blocked` while a story it
+ * depends on isn't done, whatever its branch holds; a todo story whose dependencies are done is `ready`.
+ * A story with an open question for the person that holds it (`code-kit ask --blocks`) is `waiting on
+ * you`.
+ *
+ * A branch level with the base is in progress while something builds it: a live claim of its lane (an
+ * agent at work on it, SCHED-1), or the branch checked out where a person works (the main checkout, or a
+ * worktree of theirs). With nothing on it, it's done when its commits merged (the plan had it in review,
+ * the branch moved since it was made, or with no reflog, the base names the story or merged the branch),
+ * whatever the plan says yet. A lane's branch that never moved is `stopped`: its agent stopped before its
+ * first commit, and the story is ready again (or blocked) for a fresh agent, so its lane isn't held by
+ * nothing. A branch only on origin may be a teammate's, and stays in progress unless the base holds it.
  */
 export function storyStates(root, stories, base) {
   const trees = worktrees(root);
   const backs = sentBack(root);
   const refs = branchRefs(root, base);
+  const live = new Set(
+    laneClaims(root)
+      .filter((c) => !c.stale)
+      .map((c) => `${c.lane}|${c.story ?? ''}`),
+  );
+  // What the base already holds: the stories its commits name, and the story branches merged into it.
+  const onBase = { stories: new Set(), branches: new Set() };
+  for (const m of (git(root, 'log', base, '--format=%B%x1e') ?? '').matchAll(
+    /(?:^|[^A-Za-z0-9-])(ST-\d+)(?!\d)|([A-Za-z0-9_.-]+\/st-\d+)(?![\w-])/gim,
+  ))
+    if (m[1]) onBase.stories.add(m[1]);
+    else onBase.branches.add(m[2].toLowerCase());
+  const making = branchMaking(root);
+  const merged = (story, branch) =>
+    onBase.stories.has(story.id) || onBase.branches.has(branch.toLowerCase());
+  const agentTree = (path) => path?.split('\\').join('/').includes(`/${WORKTREES_DIR}/`);
+  const builtBy = (story, branch) =>
+    live.has(`${story.lane}|${story.id}`) ||
+    live.has(`${story.lane}|`) ||
+    (trees[branch] !== undefined && !agentTree(trees[branch]));
   const states = stories.map((story) => {
     const branch = storyBranch(story);
     const ref = story.lane ? branchRef(refs, branch) : null;
@@ -218,11 +279,24 @@ export function storyStates(root, stories, base) {
       ? 0
       : (refs[ref].ahead ?? Number(git(root, 'rev-list', '--count', `${base}..${ref}`) ?? 0));
     let state = story.status;
+    let stopped = false;
     if (ref && story.status !== 'done') {
       const head = backs[branch] ? refs[ref].sha : null;
       if (head && head === backs[branch].sha) state = 'sent back';
       else if (ahead > 0) state = 'review';
-      else state = story.status === 'review' ? 'done' : 'in progress';
+      else if (story.status === 'review') state = 'done';
+      else if (builtBy(story, branch)) state = 'in progress';
+      else {
+        // Level with the base, and nothing on it: its commits merged (the plan may not say so yet), or
+        // none was made. A local branch's reflog says which: it moved from the commit it was made at only
+        // by being committed to. Without one, the base's own log says whether it holds the story's work.
+        const made = ref.startsWith('refs/heads/') ? making(branch) : null;
+        if (made ? made.sha !== refs[ref].sha : merged(story, branch)) state = 'done';
+        else if (made && ![LEAD, DESIGN].includes(story.lane)) {
+          state = 'todo';
+          stopped = true;
+        } else state = 'in progress';
+      }
     }
     return {
       ...story,
@@ -232,6 +306,7 @@ export function storyStates(root, stories, base) {
       ahead,
       worktree: trees[branch] ?? null,
       state,
+      stopped,
       waitingOn: [],
     };
   });

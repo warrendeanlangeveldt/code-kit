@@ -1,76 +1,24 @@
-// The lane agents' characters, redrawn (docs/specs/27-the-mod-redesigned.md, UI-11): 12 by 12
+// The lane agents' characters, redrawn (docs/specs/27-the-mod-redesigned.md, UI-11): 8 by 8
 // pixels, each lane its own shape as well as its tint so lanes read apart without colour, the lead's
 // crowned. A pose is the agent's state or the kind of work it's doing; a move is a one-off at an
 // event. Every frame is composed from layers (a head by shape, a face, a body, a prop), so each
 // shape gets every pose. Pure: the mod draws the grids as half-block cells or SVG.
 
-const SIZE = 12;
+/** Pixels a side: four terminal rows of half-blocks, eight columns. */
+export const SIZE = 8;
 
-/** Each head, rows 0 to 6: H the tint, D its shade, K gold, P grey metal. */
+/**
+ * Each head, rows 0 to 3, the face in columns 1 to 5 (row 0 what's on top of it): H the tint, D its
+ * shade, K gold.
+ */
 const HEADS = {
-  crown: [
-    '...K.KK.K...',
-    '...KKKKKK...',
-    '....HHHH....',
-    '...HHHHHH...',
-    '...HHHHHH...',
-    '...HHHHHH...',
-    '....HHHH....',
-  ],
-  antenna: [
-    '......K.....',
-    '......D.....',
-    '...HHHHHH...',
-    '...HHHHHH...',
-    '...HHHHHH...',
-    '...HHHHHH...',
-    '...HHHHHH...',
-  ],
-  cat: [
-    '............',
-    '...D....D...',
-    '...HD..DH...',
-    '...HHHHHH...',
-    '...HHHHHH...',
-    '...HHHHHH...',
-    '....HHHH....',
-  ],
-  cap: [
-    '............',
-    '...DDDDDD...',
-    '...DDDDDDDD.',
-    '...HHHHHH...',
-    '...HHHHHH...',
-    '...HHHHHH...',
-    '....HHHH....',
-  ],
-  bunny: [
-    '....D..D....',
-    '....D..D....',
-    '....HHHH....',
-    '...HHHHHH...',
-    '...HHHHHH...',
-    '...HHHHHH...',
-    '....HHHH....',
-  ],
-  bolts: [
-    '............',
-    '............',
-    '...HHHHHH...',
-    '..DHHHHHHD..',
-    '..DHHHHHHD..',
-    '...HHHHHH...',
-    '...DDDDDD...',
-  ],
-  wizard: [
-    '.....DD.....',
-    '....DDDD....',
-    '..DDDDDDDD..',
-    '...HHHHHH...',
-    '...HHHHHH...',
-    '...HHHHHH...',
-    '....HHHH....',
-  ],
+  crown: ['.K.K.K..', '.KKKKK..', '.HHHHH..', '.HHHHH..'],
+  antenna: ['...K....', '.HHHHH..', '.HHHHH..', '.HHHHH..'],
+  cat: ['.D...D..', '.DHHHD..', '.HHHHH..', '.HHHHH..'],
+  cap: ['.DDDD...', '.DDDDDD.', '.HHHHH..', '.HHHHH..'],
+  bunny: ['..D.D...', '..D.D...', '.HHHHH..', '.HHHHH..'],
+  bolts: ['........', '.HHHHH..', 'DHHHHHD.', '.DDDDD..'],
+  wizard: ['...D....', 'DDDDDDD.', '.HHHHH..', '.HHHHH..'],
 };
 /** The lanes' shapes, tints and marks: six shapes first, then a mark on each, so lanes differ without colour. */
 const SHAPES = ['antenna', 'cat', 'cap', 'bunny', 'bolts', 'wizard'];
@@ -129,8 +77,9 @@ export function characterOf(lane, lanes) {
   return charactersOf(lanes.includes(lane) ? lanes : [...lanes, lane])[lane];
 }
 
-/** The body, rows 7 to 11, arms in columns 3 and 8. */
-const BODY = ['....DDDD....', '...HHHHHH...', '...HHHHHH...', '....H..H....', '...HH..HH...'];
+/** The body, rows 4 to 7: a neck, arms out in columns 1 and 5, legs. */
+const BODY = ['..DDD...', '.HHHHH..', '..HHH...', '..H.H...'];
+const BODY_TOP = 4;
 
 /** Each pose and move: its frames, how long each shows, and whether it loops. */
 export const POSES = {
@@ -174,118 +123,95 @@ const put = (grid, points, ch) => {
 };
 const clear = (grid, points) => put(grid, points, '.');
 
-/** The eyes and mouth: where the eyes look, and the face's mood. */
+/** The eyes and mouth: where the eyes look, and the face's mood. Eyes sit in columns 2 and 4. */
 function face(grid, kind, dx = 0, dy = 0) {
   const at = (points) => points.map(([y, x]) => [y + dy, x + dx]);
   const eyes = {
     open: [
-      [4, 4],
-      [4, 7],
+      [2, 2],
+      [2, 4],
     ],
     down: [
-      [5, 4],
-      [5, 7],
+      [3, 2],
+      [3, 4],
     ],
     up: [
-      [3, 4],
-      [3, 7],
+      [2, 1],
+      [2, 3],
     ],
     scan: [
-      [5, 5],
-      [5, 8],
+      [3, 3],
+      [3, 5],
     ],
   };
-  if (kind === 'closed') return put(grid, at(eyes.open), 'L');
+  if (kind === 'closed') return put(grid, at(eyes.down), 'L');
   if (kind === 'crossed') return put(grid, at(eyes.open), 'X');
   put(grid, at(eyes[kind] ?? eyes.open), 'E');
-  if (kind === 'happy')
-    put(
-      grid,
-      at([
-        [5, 5],
-        [5, 6],
-      ]),
-      'E',
-    );
+  if (kind === 'happy') put(grid, at([[3, 3]]), 'E');
   if (kind === 'oops') {
-    put(grid, at([[5, 6]]), 'E');
-    put(grid, at([[3, 9]]), 'B');
+    put(grid, at([[3, 3]]), 'E');
+    put(grid, at([[1, 6]]), 'B');
   }
 }
 
 /** A lane's mark, worn in every pose: glasses round the eyes, a scarf at the neck, a belt. */
 function wear(grid, mark, mood, dx = 0, dy = 0) {
   const at = (points) => points.map(([y, x]) => [y + dy, x + dx]);
-  const eyes = mood === 'down' || mood === 'scan' ? 5 : mood === 'up' ? 3 : 4;
-  if (mark === 'glasses')
-    put(
-      grid,
-      at([
-        [eyes, 3],
-        [eyes, 5],
-        [eyes, 6],
-        [eyes, 8],
-      ]),
-      'P',
-    );
-  if (mark === 'scarf') put(grid, at([3, 4, 5, 6, 7, 8].map((x) => [7, x])), 'S');
-  if (mark === 'belt') put(grid, at([4, 5, 6, 7].map((x) => [9, x])), 'P');
+  const eyes = mood === 'down' || mood === 'scan' || mood === 'closed' ? 3 : 2;
+  if (mark === 'glasses') put(grid, at([1, 3, 5].map((x) => [eyes, x])), 'P');
+  if (mark === 'scarf') put(grid, at([1, 2, 3, 4, 5].map((x) => [4, x])), 'S');
+  if (mark === 'belt') put(grid, at([2, 3, 4].map((x) => [6, x])), 'P');
 }
 
-/** A frame as a grid of letters, before colour. */
+/** A frame as a grid of letters, before colour. Props sit in columns 6 and 7. */
 function compose({ shape, mark = null }, pose, frame) {
   const g = blank();
   const head = HEADS[shape] ?? HEADS.antenna;
   const whole = (dx, dy, mood, body = BODY) => {
     paint(g, head, { dx, dy });
-    paint(g, body, { top: 7, dx, dy });
+    paint(g, body, { top: BODY_TOP, dx, dy });
     face(g, mood, dx, dy);
     wear(g, mark, mood, dx, dy);
   };
   const f = frame % (POSES[pose]?.frames ?? 1);
   switch (pose) {
     case 'writing': {
-      // At a sheet of paper on the right, the pencil moving and the lines filling.
+      // At a sheet of paper on the right, the pencil moving and a line filling.
       whole(0, 0, 'down');
-      put(g, [[8, 9]], 'H');
-      paint(g, ['WWW', 'WWW'], { top: 10, dx: 9 });
-      const tip = [9, 10, 11, 10][f];
-      put(g, [[9, tip]], 'K');
-      put(g, [[8, Math.min(11, tip + 1)]], 'P');
+      paint(g, ['WW', 'WW'], { top: 6, dx: 6 });
+      put(g, [[5, [6, 7, 7, 6][f]]], 'K');
       put(
         g,
         [
-          [10, 9],
-          [10, 10],
-          [10, 11],
-        ].slice(0, f),
+          [6, 6],
+          [6, 7],
+        ].slice(0, [0, 0, 1, 2][f]),
         'E',
       );
       break;
     }
     case 'running': {
-      // Turning a crank on the left, its bar spinning a quarter a frame, bobbing as it works.
-      const bob = f % 2;
-      whole(0, bob, 'open');
+      // Turning a crank on the right, its bar spinning a quarter a frame, bobbing as it works.
+      whole(0, f % 2, 'open');
       const spin = [
         ['.P.', '.K.', '.P.'],
         ['..P', '.K.', 'P..'],
         ['...', 'PKP', '...'],
         ['P..', '.K.', '..P'],
       ];
-      paint(g, spin[f], { top: 7 });
+      paint(g, spin[f], { top: 4, dx: 5 });
       break;
     }
     case 'reading': {
       // A book held open, eyes down, a page turning.
       whole(0, 0, f === 1 ? 'scan' : 'down');
-      paint(g, ['WWWDDWWW', 'WWWDDWWW'], { top: 8, dx: 2 });
+      paint(g, ['WWDWW', 'WWDWW'], { top: 5, dx: 1 });
       if (f === 2)
         put(
           g,
           [
-            [7, 7],
-            [7, 8],
+            [4, 4],
+            [4, 5],
           ],
           'W',
         );
@@ -293,8 +219,8 @@ function compose({ shape, mark = null }, pose, frame) {
         put(
           g,
           [
-            [7, 3],
-            [7, 4],
+            [4, 1],
+            [4, 2],
           ],
           'W',
         );
@@ -303,47 +229,39 @@ function compose({ shape, mark = null }, pose, frame) {
     case 'thinking': {
       // A hand to the chin, eyes up, a thought rising.
       whole(0, 0, 'up');
-      clear(g, [[9, 8]]);
-      put(
-        g,
-        [
-          [8, 9],
-          [7, 9],
-          [6, 8],
-        ],
-        'H',
-      );
-      if (f >= 1) put(g, [[5, 10]], 'S');
-      if (f >= 2) put(g, [[3, 11]], 'S');
-      if (f >= 3) paint(g, ['SSS', 'SSS'], { top: 0, dx: 9 });
+      put(g, [[4, 5]], 'H');
+      if (f >= 1) put(g, [[2, 6]], 'S');
+      if (f >= 2) put(g, [[1, 7]], 'S');
+      if (f >= 3)
+        put(
+          g,
+          [
+            [0, 6],
+            [0, 7],
+          ],
+          'S',
+        );
       break;
     }
     case 'waiting': {
-      // A raised hand.
+      // A hand raised.
       whole(0, 0, 'open');
-      clear(g, [[9, 8]]);
+      clear(g, [[5, 5]]);
       put(
         g,
-        [
-          [8, 9],
-          [7, 9],
-          [6, 9],
-          [5, 9],
-          [4, 9],
-        ],
+        [1, 2, 3, 4].map((y) => [y, 6]),
         'H',
       );
       break;
     }
     case 'quiet': {
-      // Still, looking on, a trailing ellipsis.
+      // Still, looking on, a trailing pair of dots.
       whole(0, 0, 'open');
       put(
         g,
         [
-          [1, 9],
-          [1, 10],
-          [1, 11],
+          [1, 6],
+          [1, 7],
         ],
         'S',
       );
@@ -351,27 +269,34 @@ function compose({ shape, mark = null }, pose, frame) {
     }
     case 'stalled': {
       // Slumped: the head dropped and tilted, eyes crossed.
-      paint(g, BODY, { top: 7 });
+      paint(g, BODY, { top: BODY_TOP });
       paint(g, head, { dx: 1, dy: 1 });
       face(g, 'crossed', 1, 1);
       wear(g, mark, 'open', 1, 1);
       break;
     }
     case 'resting': {
-      // Eyes closed, a Z.
+      // Asleep: eyes shut, and a z rising.
       whole(0, 0, 'closed');
-      paint(g, ['SSS', '.S.', 'SSS'], { top: 0, dx: 9 });
+      put(
+        g,
+        [
+          [2, 6],
+          [0, 7],
+        ],
+        'S',
+      );
       break;
     }
     case 'arriving': {
       // Dropping into the lane.
-      whole(0, [-8, -4, -1, 0][f], 'open');
+      whole(0, [-6, -3, -1, 0][f], 'open');
       if (f < 2)
         put(
           g,
           [
-            [0, 2],
-            [0, 9],
+            [0, 0],
+            [0, 6],
           ],
           'S',
         );
@@ -382,17 +307,16 @@ function compose({ shape, mark = null }, pose, frame) {
       whole(0, 0, f === 3 ? 'happy' : 'open');
       const paper = [
         [
-          [8, 9],
-          [8, 10],
+          [5, 6],
+          [5, 7],
         ],
         [
-          [6, 10],
-          [6, 11],
+          [3, 6],
+          [3, 7],
         ],
-        [[4, 11]],
+        [[1, 7]],
         [],
       ][f];
-      if (f < 2) put(g, [[8, 9]], 'H');
       put(g, paper, 'W');
       break;
     }
@@ -403,18 +327,16 @@ function compose({ shape, mark = null }, pose, frame) {
     }
     case 'merged': {
       // A cheer: arms up, a jump, sparkles.
-      const up = [0, -2, -1, 0][f];
-      const body = BODY.map((r, i) => (i === 1 || i === 2 ? '....HHHH....' : r));
+      const up = [0, -1, -1, 0][f];
+      const body = BODY.map((r, i) => (i === 1 ? '..HHH...' : r));
       whole(0, up, 'happy', body);
       put(
         g,
         [
-          [7 + up, 2],
-          [6 + up, 2],
-          [5 + up, 2],
-          [7 + up, 9],
-          [6 + up, 9],
-          [5 + up, 9],
+          [4 + up, 0],
+          [3 + up, 0],
+          [4 + up, 6],
+          [3 + up, 6],
         ],
         'H',
       );
@@ -422,12 +344,12 @@ function compose({ shape, mark = null }, pose, frame) {
         g,
         f % 2
           ? [
-              [0, 1],
-              [2, 11],
+              [0, 0],
+              [1, 7],
             ]
           : [
               [1, 0],
-              [0, 10],
+              [0, 7],
             ],
         'K',
       );
@@ -445,7 +367,7 @@ const shade = (rgb, by) =>
   Math.round((rgb & 0xff) * by);
 
 /**
- * A pose's frame as a grid of colours (null for none), 12 by 12. Resting is drawn dimmed. With
+ * A pose's frame as a grid of colours (null for none), SIZE by SIZE. Resting is drawn dimmed. With
  * motion off, a loop shows its first frame and a move its last.
  */
 export function characterFrame(pose, frame, character, { motion = 'while-active' } = {}) {

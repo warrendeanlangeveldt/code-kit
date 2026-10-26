@@ -3905,8 +3905,11 @@ test('UI-1 and UI-8 one pane of panels with no tabs; j and k move through the la
   expect((await ui.find({ key: 'card-web' }))?.props.borderColor).toBe('cyan');
   // UI-8: the last line lists the keys that work for what's selected.
   expect((await ui.find({ key: 'keys' }))?.text).toMatch(
-    /j\/k move · ⏎ open · t trail · c map · w Watch · n Nudge · x Stop/,
+    /down·up·⏎: open·t: trail·c: map·w: Watch·n: Nudge·x: Stop/,
   );
+  // Each key the pane answers is one Button, drawn as "j: down": never its letter twice.
+  expect((await ui.find({ key: 'move-next' }))?.props.label).toBe('down');
+  expect((await ui.find({ key: 'move-prev' }))?.props).toMatchObject({ hotkey: 'k', label: 'up' });
   // WATCH-1: w puts the lane agent's transcript in the main view.
   expect((await ui.find({ key: 'act-watch' }))?.props.hotkey).toBe('w');
   await press($, 'act-watch', PANE);
