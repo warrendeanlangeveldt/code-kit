@@ -66,11 +66,16 @@ function directChanges(root, from) {
   return new Set(out.split('\n').filter(Boolean));
 }
 
-/** Files changed on this branch since it left `base`. */
+/**
+ * Files changed on this branch since it left `base`, and still different from `base` as it is now. A
+ * branch with two merge bases (it merged the base, and something it holds later reached the base too)
+ * can show a file from an older one as changed; one it holds exactly as the base does isn't its change.
+ */
 export function branchChanges(root, base) {
-  return git(root, 'diff', '--name-only', '--no-renames', `${base}...HEAD`)
-    .split('\n')
-    .filter(Boolean);
+  const names = (range) =>
+    git(root, 'diff', '--name-only', '--no-renames', range).split('\n').filter(Boolean);
+  const differs = new Set(names(`${base}..HEAD`));
+  return names(`${base}...HEAD`).filter((f) => differs.has(f));
 }
 
 /**

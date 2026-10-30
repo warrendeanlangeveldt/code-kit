@@ -7608,6 +7608,42 @@ else process.exit(1);
     );
   }
 
+  // --- verify: a file the branch holds exactly as the base now does isn't the branch's change -----
+  {
+    const t = newRepo();
+    cleanups.push(t.dir);
+    const tPut = (rel, body) => {
+      mkdirSync(dirname(join(t.dir, rel)), { recursive: true });
+      writeFileSync(join(t.dir, rel), body);
+    };
+    tPut('packages/schemas/order.ts', 'export type Order = { id: string };\n');
+    t.git('add', '-A');
+    t.git('commit', '-q', '-m', 'schema');
+    t.git('checkout', '-q', '-b', 'web/st-9');
+    // The lead's contract change reached the branch first, then the base on its own.
+    tPut('packages/schemas/order.ts', 'export type Order = { id: string; total: number };\n');
+    t.git('add', '-A');
+    t.git('commit', '-q', '-m', 'the contract, as the lead wrote it');
+    tPut('apps/office/lib/order.ts', 'export const total = 1;\n');
+    t.git('add', '-A');
+    t.git('commit', '-q', '-m', 'ST-9');
+    t.git('checkout', '-q', 'main');
+    tPut('packages/schemas/order.ts', 'export type Order = { id: string; total: number };\n');
+    t.git('add', '-A');
+    t.git('commit', '-q', '-m', 'the contract');
+    t.git('checkout', '-q', 'web/st-9');
+    const res = spawnSync('node', [kitCli, 'verify', '--base', 'main', '--no-checks'], {
+      cwd: t.dir,
+      encoding: 'utf8',
+    });
+    expect(
+      "verify doesn't hold a lane to a file it holds exactly as the base does",
+      truth(res.status === 0 && !res.stdout.includes('order.ts: the web lane'), res.stdout),
+      0,
+    );
+    t.git('checkout', '-q', 'main');
+  }
+
   // --- TEAM-1: claims left behind by earlier merges end at the next one ---------------------------
   {
     const t = newRepo();
