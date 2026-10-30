@@ -2,6 +2,7 @@
 // The hooks end to end, run against throwaway git repositories in the OS temp folder with
 // test/fixture.json as their config. Exit 0 = allowed, 2 = blocked.
 import { spawn, spawnSync, execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import {
   appendFileSync,
   chmodSync,
@@ -154,6 +155,39 @@ function newRepo(withConfig = true) {
   }
   git('commit', '-q', '--allow-empty', '-m', 'init');
   return { dir, git };
+}
+
+/**
+ * HAND-2: a register entry for `file` whose design is handed over: each state's image and code written
+ * under `dir`, with their hashes, as /code-kit:design records an approved screen.
+ */
+function approvedDesign(dir, file, screen = 'Home', states = ['default']) {
+  const area = screen.toLowerCase().replace(/\W+/g, '-');
+  const hash = (rel) =>
+    createHash('sha256')
+      .update(readFileSync(join(dir, rel)))
+      .digest('hex');
+  return {
+    file,
+    screen,
+    story: 'ST-1',
+    approved: '2026-10-11',
+    source: { tool: 'html', ref: `design/${area}` },
+    states: states.map((name) => {
+      const image = `design/${area}/${name}.png`;
+      const code = `design/${area}/${name}.html`;
+      mkdirSync(join(dir, 'design', area), { recursive: true });
+      writeFileSync(join(dir, image), `image of ${screen}, ${name}`);
+      writeFileSync(join(dir, code), `<main>${screen}, ${name}</main>\n`);
+      return {
+        name,
+        image,
+        code,
+        viewport: '390x844',
+        sha256: { image: hash(image), code: hash(code) },
+      };
+    }),
+  };
 }
 
 let failed = 0;
@@ -1738,7 +1772,10 @@ try {
       1,
       'not among the delegated approvals',
     );
-    put('design/approved-screens.json', JSON.stringify({ screens: [{ file: screen }] }, null, 3));
+    put(
+      'design/approved-screens.json',
+      JSON.stringify({ screens: [approvedDesign(repo, screen)] }, null, 3),
+    );
     expect(
       'a lane commits under the delegated approval',
       bash('git add design/approved-screens.json && git commit -m d', 'web-engineer'),
@@ -1871,7 +1908,10 @@ try {
       bHook('lane-audit.mjs', 'git merge --no-commit main', 'web-engineer'),
       0,
     );
-    bPut('design/approved-screens.json', JSON.stringify({ screens: ['mine'] }));
+    bPut(
+      'design/approved-screens.json',
+      JSON.stringify({ screens: [approvedDesign(b.dir, 'apps/office/app/mine/page.tsx', 'Mine')] }),
+    );
     b.git('add', 'design/approved-screens.json');
     expect(
       "but its own change to a protected file mid-merge still needs a person's approval",
@@ -4310,6 +4350,108 @@ else process.exit(2);
     );
   }
 
+  // --- spec 24: approved designs are files a lane builds from, as approved -----------------------
+  {
+    const d = newRepo();
+    cleanups.push(d.dir);
+    const dKit = (...args) =>
+      spawnSync('node', [kitCli, ...args], { cwd: d.dir, encoding: 'utf8' });
+    const dCommit = (command) =>
+      spawnSync('node', [join(hooks, 'guard-bash.mjs')], {
+        input: JSON.stringify({ cwd: d.dir, tool_input: { command } }),
+        env: { ...process.env, CLAUDE_PROJECT_DIR: d.dir },
+        encoding: 'utf8',
+      });
+    mkdirSync(join(d.dir, 'docs/spec'), { recursive: true });
+    writeFileSync(
+      join(d.dir, 'docs/spec/01-bookings.md'),
+      '# 01. Bookings\n\n### BOOK-1 List bookings\n\nx\n\n## Screens\n\n### Bookings list\n\nEach booking, newest first.\n**States:** default, empty, error\n',
+    );
+    writeFileSync(
+      join(d.dir, 'docs/spec/plan.md'),
+      '# Plan\n\n## M1\n\n### ST-1 Design: bookings\n\n**Lane:** design\n**Requirements:** BOOK-1\n**Status:** done\n\n### ST-2 Bookings list\n\n**Lane:** web\n**Requirements:** BOOK-1\n**Depends on:** ST-1\n**Status:** todo\n',
+    );
+    mkdirSync(join(d.dir, 'design'), { recursive: true });
+    writeFileSync(join(d.dir, 'design/approved-screens.json'), '{"screens":[]}\n');
+    d.git('add', '-A');
+    d.git('commit', '-q', '-m', 'specs');
+    d.git('checkout', '-q', '-b', 'lead/st-1');
+    const list = approvedDesign(d.dir, 'apps/office/app/bookings/page.tsx', 'Bookings list', [
+      'default',
+      'empty',
+      'error',
+    ]);
+    const register = (entries) =>
+      writeFileSync(
+        join(d.dir, 'design/approved-screens.json'),
+        `${JSON.stringify({ screens: entries }, null, 2)}\n`,
+      );
+    rmSync(join(d.dir, 'design/bookings-list/empty.png'));
+    register([list]);
+    expect(
+      'HAND-2 a register entry naming a state file that is not there is refused, naming the state and the file',
+      dCommit('git add -A && git commit -m designs'),
+      2,
+      "Bookings list's empty state: design/bookings-list/empty.png isn't there",
+    );
+    writeFileSync(join(d.dir, 'design/bookings-list/empty.png'), 'image of Bookings list, empty');
+    register([{ ...list, states: list.states.filter((st) => st.name !== 'empty') }]);
+    expect(
+      'HAND-2 a state the spec lists with no design is refused',
+      dCommit('git add -A && git commit -m designs'),
+      2,
+      "Bookings list's empty state, which the spec lists, has no approved design",
+    );
+    register([list]);
+    expect(
+      'HAND-2 every state, as approved, is committed',
+      dCommit('git add -A && git commit -m designs'),
+      0,
+    );
+    d.git('add', '-A');
+    d.git('commit', '-q', '-m', 'ST-1 designs');
+    const forStory = JSON.parse(dKit('designs', 'ST-2', '--json').stdout);
+    expect(
+      "HAND-3 designs gives a screen story its design story's files, every state",
+      truth(
+        forStory.length === 1 &&
+          forStory[0].states.map((st) => st.name).join() === 'default,empty,error' &&
+          forStory[0].states.every((st) => st.image && st.code && st.viewport),
+        JSON.stringify(forStory),
+      ),
+      0,
+    );
+    writeFileSync(join(d.dir, 'design/bookings-list/default.html'), '<main>changed</main>\n');
+    d.git('commit', '-q', '-am', 'tweak the design');
+    const changedDesign = spawnSync('node', [kitCli, 'verify', '--base', 'main', '--no-checks'], {
+      cwd: d.dir,
+      encoding: 'utf8',
+    });
+    expect(
+      'HAND-2 verify reports a design file edited after its approval',
+      truth(
+        changedDesign.status === 1 && changedDesign.stdout.includes("isn't the approved design"),
+        changedDesign.stdout,
+      ),
+      0,
+    );
+    d.git('checkout', '-q', 'main');
+    writeFileSync(
+      join(d.dir, 'design/approved-screens.json'),
+      `${JSON.stringify({ screens: [{ file: 'apps/office/app/bookings/page.tsx', design: 'paper:abc — Bookings list', story: 'ST-1' }] })}\n`,
+    );
+    d.git('commit', '-q', '-am', 'an older entry, only in the design tool');
+    const older = JSON.parse(dKit('next', '--json').stdout);
+    expect(
+      'HAND-5 next names approved screens only in a design tool, to hand over',
+      truth(
+        older.attention.some((a) => a.includes('1 approved screen is only in paper')),
+        JSON.stringify(older.attention),
+      ),
+      0,
+    );
+  }
+
   // --- MQ-7: branches that only land together merge as a group ----------------------------------
   {
     const z = newRepo(false);
@@ -4744,7 +4886,7 @@ else process.exit(2);
   );
   writeFileSync(
     join(laneTree, 'design/approved-screens.json'),
-    JSON.stringify({ screens: [{ file: screen }] }, null, 2),
+    JSON.stringify({ screens: [approvedDesign(laneTree, screen)] }, null, 2),
   );
   const commitRegister = 'git add design/approved-screens.json && git commit -m d';
   expect('a protected commit in the worktree needs approval', inLaneTree(commitRegister), 2);
@@ -5681,7 +5823,7 @@ else process.exit(2);
   v.git('checkout', '-q', '-b', 'lead/contracts');
   vPut(
     'design/approved-screens.json',
-    JSON.stringify({ screens: [{ file: 'apps/office/app/home/page.tsx' }] }),
+    JSON.stringify({ screens: [approvedDesign(v.dir, 'apps/office/app/home/page.tsx')] }),
   );
   vCommit('registered by hand');
   expect(
@@ -5692,7 +5834,7 @@ else process.exit(2);
   v.git('reset', '-q', '--hard', 'main');
   vPut(
     'design/approved-screens.json',
-    JSON.stringify({ screens: [{ file: 'apps/office/app/home/page.tsx' }] }),
+    JSON.stringify({ screens: [approvedDesign(v.dir, 'apps/office/app/home/page.tsx')] }),
   );
   const viaHook = spawnSync('node', [join(hooks, 'guard-bash.mjs')], {
     input: JSON.stringify({
@@ -7880,7 +8022,10 @@ else process.exit(1);
     t.git('commit', '-q', '-m', 'delegate merges');
     const leadCommit = (approval) => {
       t.git('checkout', '-q', '-B', 'lead/st-1', 'main');
-      writeFileSync(join(t.dir, 'design/approved-screens.json'), '{"screens":["a"]}\n');
+      writeFileSync(
+        join(t.dir, 'design/approved-screens.json'),
+        `${JSON.stringify({ screens: [approvedDesign(t.dir, 'apps/office/app/a/page.tsx', 'A')] })}\n`,
+      );
       writeFileSync(
         join(t.dir, '.claude/approval-log.jsonl'),
         `${JSON.stringify({ at: new Date().toISOString(), approval, reason: 'r', grantedAt: null, file: 'design/approved-screens.json', branch: 'lead/st-1', actor: 'lead' })}\n`,

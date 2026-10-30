@@ -9,6 +9,7 @@ import { buildStatus, readStories, DESIGN, LEAD } from './plan.mjs';
 import { pendingSetup } from './adapters/index.mjs';
 import { CONFIG_FILE, SETUP_VERSION } from './config.mjs';
 import { mergingNow, nextToMerge, readQueue, waiting } from './queue.mjs';
+import { handedOver, readRegister, toolOf } from './designs.mjs';
 import { decidedBy, laneOf, openRequests } from './rules.mjs';
 import { instructionsState } from './instructions.mjs';
 import { SECURITY_AGENT_FILE } from './security.mjs';
@@ -413,6 +414,12 @@ export function nextStep(root, base) {
   if (sched.waiting.length)
     attention.push(
       `${sched.waiting.join(', ')} ${sched.waiting.length === 1 ? 'waits' : 'wait'} for ${sched.waiting.length === 1 ? 'its lane' : 'their lanes'}: a lane runs one story at a time.`,
+    );
+  // HAND-5: approved designs still only in a design tool, which no lane can read, are handed over once.
+  const toolOnly = readRegister(root, config).entries.filter((e) => !handedOver(e));
+  if (toolOnly.length)
+    attention.push(
+      `${toolOnly.length} approved screen${toolOnly.length === 1 ? ' is' : 's are'} only in ${[...new Set(toolOnly.map(toolOf))].join(', ')}, not as files a lane can build from: hand ${toolOnly.length === 1 ? 'it' : 'them'} over with /code-kit:design --hand-over.`,
     );
   const then = [];
   // A sent-back story goes back to its lane with the review's findings, before new work starts.

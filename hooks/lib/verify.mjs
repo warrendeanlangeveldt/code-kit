@@ -8,6 +8,7 @@ import { BASELINE_FILE, loadBaseline, newProblems } from './baseline.mjs';
 import { runChecks } from './checks.mjs';
 import { CONFIG_FILE } from './config.mjs';
 import { isDependencyFile } from './dependencies.mjs';
+import { entryProblems, readRegister } from './designs.mjs';
 import { matchesAny } from './glob.mjs';
 import { layerProblems } from './layers.mjs';
 import { STANDARDS_APPROVAL, standardsFile, standardsWeakenings } from './standards.mjs';
@@ -290,6 +291,20 @@ export function verifyBranch({
     );
     const screen = screenProblem(f, root, config);
     if (screen) found.design.push(screen.split('\n')[0]);
+  }
+
+  // HAND-2: each register entry the branch adds or changes, and each approved design whose files it
+  // changed, names the approved files with their hashes, every state the spec lists.
+  const register = config.designGate?.register;
+  if (register) {
+    const old = readRegister(root, config, showAt(root, from, register) ?? '{}').entries;
+    const touched = new Set(changed);
+    for (const e of readRegister(root, config).entries) {
+      const fresh = !old.some((o) => JSON.stringify(o) === JSON.stringify(e));
+      const files = (e.states ?? []).flatMap((st) => [st?.image, st?.code]).filter(Boolean);
+      if (fresh || files.some((f) => touched.has(f)))
+        found.design.push(...entryProblems(root, e, config.docs?.specs));
+    }
   }
 
   // The baseline only shrinks once the kit is adopted (the adopting change may record it).

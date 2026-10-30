@@ -14,6 +14,8 @@
 //                         each story and requirement in the plan: built, in review, ready, blocked, tested
 //   adapters              other tools detected in the project, what each adds to the rules, and its setup
 //   trace <path> [--json] what a file is for: the requirements it delivers, its lane, its layer rules
+//   designs [<story>] [--json]  the approved designs from the register: a story's screens' design files,
+//                         every state, for the lane's brief; or every entry and what's wrong with it
 //   next [--base ref] [--json]
 //                         the step to take now (spec-design, init, dispatch, review…), from the project's state
 //   approve <name>... --reason "…" [--lane name]
@@ -100,6 +102,13 @@ import {
 } from '../hooks/lib/questions.mjs';
 import { traceFile } from '../hooks/lib/trace.mjs';
 import { buildStatus, readStories, specCheckRows } from '../hooks/lib/plan.mjs';
+import {
+  designsFor,
+  entryProblems,
+  handedOver,
+  readRegister,
+  toolOf,
+} from '../hooks/lib/designs.mjs';
 import { recordSentBack } from '../hooks/lib/reviews.mjs';
 import {
   SECURITY_AGENT,
@@ -2853,8 +2862,47 @@ function standardsCommand() {
   process.exit(1);
 }
 
+/**
+ * HAND-3, HAND-5: the approved designs, from the design register. `designs <story>` gives the designs a
+ * story's screens are built from (its own entries and its design stories'), each state's files and
+ * viewport, for the lane's brief; `designs` lists every entry and what's wrong with it.
+ */
+function designsCommand() {
+  const { config } = load();
+  const root = resolve('.');
+  if (!config.designGate) die('The project has no design gate (designGate in the config).');
+  const { entries, error } = readRegister(root, config);
+  if (error) die(error);
+  const story = rest[0];
+  const stories = config.docs?.plan ? readStories(root, config.docs.plan) : [];
+  const shown = (story ? designsFor(entries, story, stories) : entries).map((e) => ({
+    ...e,
+    handedOver: handedOver(e),
+    problems: entryProblems(root, e, config.docs?.specs),
+  }));
+  if (flag('--json')) return out(JSON.stringify(shown, null, 2));
+  if (!shown.length)
+    return out(
+      story ? `No approved design is for ${story}'s screens.` : 'No approved designs yet.',
+    );
+  for (const e of shown) {
+    out(
+      `${e.file}: ${e.screen ?? '(no screen name)'}, approved ${e.approved ?? '?'} in ${e.story}`,
+    );
+    if (!e.handedOver)
+      out(`  only in ${toolOf(e)}: hand it over with /code-kit:design --hand-over`);
+    for (const st of e.states ?? [])
+      out(
+        `  ${st.name} (${st.viewport ?? 'no viewport'}): ${[st.image, st.code].filter(Boolean).join(', ')}${st.why ? ` (no code: ${st.why})` : ''}`,
+      );
+    if (e.tokens) out(`  tokens: ${e.tokens}`);
+    for (const p of e.handedOver ? e.problems : []) out(`  ✗ ${p}`);
+  }
+}
+
 const commands = {
   check,
+  designs: designsCommand,
   standards: standardsCommand,
   worktrees: worktreesCommand,
   instructions: instructionsCommand,
@@ -2904,7 +2952,7 @@ function usage() {
       '              | security [--base ref] [--branch name] [--json]\n' +
       '              | next [--base ref] [--json] | adapters | trace <path>... [--json]\n' +
       '              | instructions [--write] [--json] | instructions show lead|lane [<lane>]\n' +
-      '              | standards [--json] [--for <path>...]\n' +
+      '              | standards [--json] [--for <path>...] | designs [<story>] [--json]\n' +
       '              | worktrees [--json] | worktrees release|discard <branch> | worktrees prune [--quiet]\n' +
       '              | approve <name>... --reason "…" [--lane name]   [--config file]\n' +
       '              | merge <branch> --delegated|--person [--into branch] | publish --delegated|--person\n' +

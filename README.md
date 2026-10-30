@@ -463,6 +463,7 @@ code-kit worktrees discard <branch>  # the person's, from the band: remove a mer
 code-kit instructions [--write] [--json] | instructions show lead|lane [<lane>]  # code-kit's part of CLAUDE.md and the lane agents: where each stands, brought up to date, or printed
 code-kit standards [--json] [--for <path>...]  # the project's standards with any its organisation's provider supplies, and what's wrong with them; --for keeps the ones for those files' layers
 code-kit trace <path>... [--json]      # what a file is for: requirements, lane, layer rules
+code-kit designs [<story>] [--json]    # the approved designs: a story's screens' files, every state, or each entry and what's wrong with it
 code-kit merge <branch> --delegated|--person [--into branch]  # merge a branch that passes verify: the lead where approvals.delegate.merge is on, or the person
 code-kit publish --delegated|--person                         # put what's merged into the base onto the remote's, as branches.publish says
 code-kit replay <story> [--json|--brief]                     # a story's state rebuilt from its event log: its phase, last commit, tests, what's left open

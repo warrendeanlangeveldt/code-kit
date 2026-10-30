@@ -18,6 +18,7 @@ import { CODE_KIT, GIT, codeOf, commandsOf, runs } from './lib/shell.mjs';
 import { block, start } from './lib/hook.mjs';
 import { CONFIG_FILE, committedConfig } from './lib/config.mjs';
 import { laneOfBranch, storyOfBranch, teamOf, teamProvider, whoami } from './lib/team.mjs';
+import { entryProblems, readRegister } from './lib/designs.mjs';
 import { globToRegExp, matchesAny } from './lib/glob.mjs';
 import { noteBefore } from './lane-audit.mjs';
 import { storyMerges } from './lib/queue.mjs';
@@ -730,6 +731,20 @@ if (commits) {
     block(
       `Blocked: this commit runs after \`${writer.text.slice(0, 80)}\` in the same command, which may write files code-kit can't see before the commit, so they would go in without their checks or their entry in the approval log. Run that first, on its own; then commit in a command of its own (\`git add … && git commit …\` is fine).\nCommand: ${cmd}`,
     );
+  // HAND-2: a register entry this commit adds or changes names the approved design's files, as approved.
+  const register = config.designGate?.register;
+  if (register && committedFiles().files.includes(register)) {
+    const before = spawnSync('git', ['-C', root, 'show', `HEAD:${register}`], { encoding: 'utf8' });
+    const old = before.status === 0 ? readRegister(root, config, before.stdout).entries : [];
+    const same = (e) => old.some((o) => JSON.stringify(o) === JSON.stringify(e));
+    const problems = readRegister(root, config)
+      .entries.filter((e) => !same(e))
+      .flatMap((e) => entryProblems(root, e, config.docs?.specs));
+    if (problems.length)
+      block(
+        `Blocked: ${register} names approved designs a lane can't build from as approved:\n  ${problems.join('\n  ')}\nEach screen's design is files in the repository, every state, with its hash (docs/specs/24-designs-handed-over.md).\nCommand: ${cmd}`,
+      );
+  }
   // Every refusal comes before approvals are spent and logged, so a refused commit spends none.
   const scan = spawnSync('gitleaks', ['protect', '--staged', '--redact', '--no-banner'], {
     cwd: root,

@@ -1,6 +1,6 @@
 # 24. Designs handed over
 
-**Status:** draft
+**Status:** built
 **Outcome:** A lane builds every screen from the approved design itself, every state of it, from files in the repository, whatever tool the design was made in, and the review checks the build against that design, so nobody has to audit the screens against the designs afterwards.
 **Actors:** the person (approves each design); the lead (designs with the person, exports what's approved, reviews against it); lane agents (build from the exported files); the hooks (refuse a register entry with no files)
 **Depends on:** 07-reviewer, 17-onboarding (the design gate and design stories), 20-lean-lead (dispatch and reports)
@@ -50,7 +50,7 @@ The design tool's connection is the lead's, in the lead's session, so the approv
 | State          | sha256   | object | yes      | `{ code, image }`: the hash of each file as approved                                               |
 | State          | why      | text   | no       | Why there's no code, when there isn't                                                              |
 
-Files live at `design/<area>/<screen>/<state>.<ext>`, such as `design/bookings/list/empty.png` and `design/bookings/list/empty.jsx`. One design can serve several code files, such as the web and the mobile screen: each code file has its own entry, naming the same states.
+A spec lists each screen under `## Screens` as a `### <Screen name>` heading with a `**States:**` line; a screen with no such line is held to the default state and whichever of empty, loading and error its text mentions. Files live at `design/<area>/<screen>/<state>.<ext>`, such as `design/bookings/list/empty.png` and `design/bookings/list/empty.jsx`. One design can serve several code files, such as the web and the mobile screen: each code file has its own entry, naming the same states.
 
 ## Requirements
 
@@ -83,7 +83,7 @@ A register entry names the exported files (Data, above). Writing the register is
 
 ### HAND-3 The lane is given the design
 
-Dispatching a story that builds a screen gives its lane the screen's register entries: each state's code and image path, the tokens file, and the viewport. The brief says to read every state's image and code before writing the screen, to match the layout, copy, spacing and states exactly, and to build it from the project's design system and components rather than pasting the export. The lane's report lists each state with what it built for it.
+Dispatching a story that builds a screen gives its lane the screen's register entries (`code-kit designs <story>` lists them: the entries its design stories recorded): each state's code and image path, the tokens file, and the viewport. The brief says to read every state's image and code before writing the screen, to match the layout, copy, spacing and states exactly, and to build it from the project's design system and components rather than pasting the export. The lane's report lists each state with what it built for it.
 
 **Acceptance**
 
