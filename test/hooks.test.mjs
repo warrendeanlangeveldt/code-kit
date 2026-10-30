@@ -7023,6 +7023,21 @@ else process.exit(1);
   vCommit('ST-2');
   v.git('checkout', '-q', 'main');
   nextIs('finished stories go to review', v.dir, 'review', 'ST-2');
+  // A lane agent dispatched on it again and not handed back since: its branch is work in progress.
+  claimLane(v.dir, { lane: 'web', story: 'ST-2', session: 's-redo' });
+  expect(
+    'a story its lane is building again is not offered for review',
+    truth(nextIn(v.dir).step !== 'review', JSON.stringify(nextIn(v.dir))),
+    0,
+  );
+  mkdirSync(join(v.dir, '.claude/state/events'), { recursive: true });
+  writeFileSync(
+    join(v.dir, '.claude/state/events/ST-2.jsonl'),
+    `${JSON.stringify({ at: new Date(Date.now() + 1000).toISOString(), story: 'ST-2', actor: 'web', agent: 'a1', kind: 'handback', phase: 'note' })}\n`,
+  );
+  nextIs('once its agent hands back, it goes to review', v.dir, 'review', 'ST-2');
+  releaseLane(v.dir, 'web');
+  rmSync(join(v.dir, '.claude/state/events/ST-2.jsonl'));
   // A review that sends the branch back: the same commits aren't finished work to review again.
   const sent = vCli('sent-back', 'web/st-2', '--reason', 'cancel needs its test');
   expect(

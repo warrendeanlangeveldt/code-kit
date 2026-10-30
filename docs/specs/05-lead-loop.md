@@ -119,7 +119,7 @@ The lead is prompted with one step at most three times in a row (spec 23, WHO-4)
 
 ### LOOP-9 Never a story already in flight
 
-`code-kit next` reads only the branches, so it can't tell a branch its lane agent is still building, or one a reviewer is already reviewing, from one that waits; nor a story dispatched a moment ago, before its first commit. Before prompting, the loop leaves out every story an agent at work names in its task (a lane agent is dispatched as "ST-12 booking form", a reviewer as "Review web/st-12"). A step left with no stories gives way to the next one `next` listed; with none left, the loop waits ("waiting: ST-10 is still with its agent"), and goes on when an agent finishes.
+`code-kit next` reads only the branches, so it can't tell a branch its lane agent is still building, or one a reviewer is already reviewing, from one that waits; nor a story dispatched a moment ago, before its first commit. Before prompting, the loop leaves out every story an agent at work names in its task (a lane agent is dispatched as "ST-12 booking form", a reviewer as "Review web/st-12"). A step left with no stories gives way to the next one `next` listed; with none left, the loop waits ("waiting: ST-10 is still with its agent"), and goes on when an agent finishes. `next` itself reads a story whose lane holds it for an agent that hasn't handed back since it was dispatched as in progress, not finished, however its branch moved (a re-dispatched story's agent taking in the base first).
 
 **Acceptance**
 

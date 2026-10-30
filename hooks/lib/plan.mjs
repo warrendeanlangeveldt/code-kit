@@ -7,6 +7,7 @@
 import { execFileSync } from 'node:child_process';
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
+import { readEvents } from './events.mjs';
 import { laneClaims } from './laneclaims.mjs';
 import { waitingStories } from './questions.mjs';
 import { sentBack } from './reviews.mjs';
@@ -254,11 +255,18 @@ export function storyStates(root, stories, base) {
   const trees = worktrees(root);
   const backs = sentBack(root);
   const refs = branchRefs(root, base);
-  const live = new Set(
-    laneClaims(root)
-      .filter((c) => !c.stale)
-      .map((c) => `${c.lane}|${c.story ?? ''}`),
-  );
+  const claims = laneClaims(root).filter((c) => !c.stale);
+  const live = new Set(claims.map((c) => `${c.lane}|${c.story ?? ''}`));
+  // A lane agent dispatched on the story and not handed back since: its commits are work in progress,
+  // even where the branch moved only by taking in the base (a re-dispatch after a send-back).
+  const building = (story) => {
+    const claim = claims.find((c) => c.lane === story.lane && c.story === story.id);
+    if (!claim) return false;
+    const since = Date.parse(claim.since);
+    return !readEvents(root, story.id).some(
+      (e) => e.kind === 'handback' && Date.parse(e.at) >= since,
+    );
+  };
   // What the base already holds: the stories its commits name, and the story branches merged into it.
   const onBase = { stories: new Set(), branches: new Set() };
   for (const m of (git(root, 'log', base, '--format=%B%x1e') ?? '').matchAll(
@@ -285,7 +293,7 @@ export function storyStates(root, stories, base) {
     if (ref && !['done', DROPPED].includes(story.status)) {
       const head = backs[branch] ? refs[ref].sha : null;
       if (head && head === backs[branch].sha) state = 'sent back';
-      else if (ahead > 0) state = 'review';
+      else if (ahead > 0) state = building(story) ? 'in progress' : 'review';
       else if (story.status === 'review') state = 'done';
       else if (builtBy(story, branch)) state = 'in progress';
       else {
