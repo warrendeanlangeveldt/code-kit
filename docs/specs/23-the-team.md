@@ -70,7 +70,11 @@ With no `approvals.delegate` in the config, the lead decides:
 
 The person decides product questions the spec doesn't answer, the specs, the screens' visual design, CI and the pipelines, the kit itself, weakening the standards, and anything with production, cost or strategy implications. A dependency that fails the registry rules (a licence outside the list, install scripts) or is a paid service's SDK goes to the person as a question with the lead's recommendation, not as an approval. A config that sets `approvals.delegate` keeps exactly what it says.
 
+What the person decides holds for the lead's own changes too. Where the person merges, they review the lead's change to a protected file in the pull request, and the commit is logged as the lead's. Where merges are delegated to the lead, nobody else reviews it, so the lead's write and commit of a file protected by an approval the person keeps wait for their approval in force, as a lane's would, and `verify` refuses a change the log records as only the lead's. The kit stays the lead's to change: the person approved the setup, and code-kit writes most of it.
+
 **Acceptance**
+
+- Given merges delegated and `design` not, when the lead writes or commits `design/register.json`, then it's refused as the person's decision; with their `design` approval in force it's committed and logged as `design`; and verify refuses a branch whose log records the change as the lead's.
 
 - Given a config with no `approvals.delegate` and the web lane running `npm install dayjs`, then the refusal tells the lane to ask the lead, the call isn't held, and the person's band doesn't change.
 - Given the same config and a reviewed branch at the head of the merge queue under `autonomous`, then the loop asks the lead to merge it, and the band has no Merge for the person.

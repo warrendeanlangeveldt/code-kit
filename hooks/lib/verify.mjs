@@ -19,6 +19,7 @@ import {
   ownerOf,
   owns,
   protectedEntry,
+  leadNeedsApproval,
   screenProblem,
 } from './rules.mjs';
 
@@ -231,6 +232,18 @@ export function verifyBranch({
     if (guarded && !logged.has(f) && !signed)
       found.protected.push(
         `${f} is ${guarded.why}, but no approval-log entry records this change. Protected files are committed through Claude Code with code-kit, which logs them.`,
+      );
+    // WHO-1: where the lead merges, its own change to what the person keeps needs the person's approval,
+    // unless the base already holds it as the branch does (the setup's rules, put onto the base first).
+    else if (
+      guarded &&
+      logged.get(f)?.approval === 'lead' &&
+      !signed &&
+      leadNeedsApproval(guarded.approval, config) &&
+      showAt(root, base, f) !== showAt(root, 'HEAD', f)
+    )
+      found.protected.push(
+        `${f} is ${guarded.why}, and the lead changed it without the person's ${guarded.approval} approval. The lead merges here, so nobody else reviews it: ask the person, and commit it again once their approval is in force.`,
       );
     if (matchesAny(f, config.anyActor)) continue;
     if (lane === 'lead') {

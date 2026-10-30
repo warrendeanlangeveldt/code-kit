@@ -178,10 +178,12 @@ export function branchWeakenings(root, from, config) {
 
 /**
  * REG-2 for a commit about to be made: `files` as the commit hook lists them, HEAD against the
- * working tree.
+ * working tree. `gone`: files the commit's own command takes away first (`git rm`, `git mv`), which
+ * are still on disk as the hook runs.
  */
-export function commitWeakenings(root, files, config) {
+export function commitWeakenings(root, files, config, gone = new Set()) {
   const read = (rel) => {
+    if (gone.has(rel)) return null;
     try {
       return readFileSync(join(root, rel), 'utf8');
     } catch {
@@ -190,7 +192,7 @@ export function commitWeakenings(root, files, config) {
   };
   const changes = files.map((file) => {
     const was = showAt(root, 'HEAD', file) !== null;
-    const is = existsSync(join(root, file));
+    const is = !gone.has(file) && existsSync(join(root, file));
     return { status: !was ? 'A' : is ? 'M' : 'D', file };
   });
   return weakenedTests(changes, (rel) => showAt(root, 'HEAD', rel), read, config);

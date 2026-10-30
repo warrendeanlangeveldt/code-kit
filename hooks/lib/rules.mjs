@@ -93,6 +93,18 @@ export function leadDecides(name, config, actor) {
   return (rules.protected ?? []).includes(name);
 }
 
+/**
+ * WHO-1: whether the lead needs an approval in force to change a file protected by `name` itself. Where
+ * the person merges, they review the lead's change in the pull request, so it needs none. Where merges
+ * are delegated to the lead nobody else sees it, so what the person keeps (not delegated to the lead)
+ * needs the person's approval, as it would from a lane. The kit is the lead's to change either way: the
+ * person approved the setup, and code-kit writes most of it.
+ */
+export const leadNeedsApproval = (name, config) =>
+  name !== 'kit' &&
+  Boolean(config?.approvals?.delegate?.merge) &&
+  !leadDecides(name, config, { kind: 'lead' });
+
 /** HELM-2: whose decision approvals `names` are: the lead's when it may grant every one, else the person's. */
 export const decidedBy = (names, config, actor) =>
   [names].flat().every((n) => leadDecides(n, config, actor)) ? 'lead' : 'person';
@@ -766,9 +778,11 @@ export function writeProblem(actor, rel, root, config) {
   const guarded = protectedEntry(rel, config);
   if (actor.kind === 'readonly' && (guarded || !matchesAny(rel, config.anyActor)))
     return readonlyProblem(actor, rel);
-  // The lead writes protected files without an approval: the person reviews them in the pull request,
-  // and every committed change is in the audit log. Anyone else needs a person's approval as well.
-  if (guarded && actor.kind !== 'lead' && !approval(root, guarded.approval, actor)) {
+  // The lead writes protected files without an approval where the person merges: they review them in
+  // the pull request, and every committed change is in the audit log. Where the lead merges, what the
+  // person keeps needs their approval (WHO-1). Anyone else needs an approval as well.
+  const leadFree = actor.kind === 'lead' && !leadNeedsApproval(guarded?.approval, config);
+  if (guarded && !leadFree && !approval(root, guarded.approval, actor)) {
     recordRequest(root, actor, guarded.approval, rel, guarded.why);
     const who =
       decidedBy(guarded.approval, config, actor) === 'lead'

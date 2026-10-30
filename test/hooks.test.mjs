@@ -573,17 +573,27 @@ try {
   expect('or updating its ref', bash('git update-ref refs/heads/main HEAD'), 2);
   expect(
     'restoring a file from main is not switching to it',
+    bash('git checkout main -- docs/x.md'),
+    0,
+  );
+  expect('a branch named after main is not main', bash('git switch main-fixes'), 0);
+  expect('creating a branch from main is fine', bash('git checkout -b next main'), 0);
+  // truemark R-7: the commit hook can't see files a command before the commit writes.
+  expect(
+    'a commit chained after a command that may write files is refused',
+    bash(`python3 -c "open('x','w')" && git add -A && git commit -m x`),
+    2,
+    'commit in a command of its own',
+  );
+  expect(
+    'and after restoring a file in the same command',
     bash('git checkout main -- docs/x.md && git commit -m x'),
-    0,
+    2,
+    'commit in a command of its own',
   );
   expect(
-    'a branch named after main is not main',
-    bash('git switch main-fixes && git commit -m x'),
-    0,
-  );
-  expect(
-    'creating a branch from main is fine',
-    bash('git checkout -b next main && git commit -m x'),
+    'staging and committing in one command is fine',
+    bash('cd . && git add notes.txt && git -C . commit -m x'),
     0,
   );
   git('checkout', '-q', 'main');
@@ -648,6 +658,57 @@ try {
     0,
   );
   rmSync(logFile);
+  // WHO-1 (my-aila R-10, truemark R-7): where the lead merges, nobody reviews its change in a pull
+  // request, so what the person keeps needs their approval from the lead too.
+  {
+    const cfgFile = join(repo, '.claude/code-kit.json');
+    const cfg = readFileSync(cfgFile, 'utf8');
+    writeFileSync(
+      cfgFile,
+      JSON.stringify({ ...JSON.parse(cfg), approvals: { delegate: { merge: true } } }),
+    );
+    expect(
+      'where the lead merges, it may not write what the person keeps without their approval',
+      write('design/approved-screens.json'),
+      2,
+      "person's approval",
+    );
+    expect(
+      'nor commit it',
+      bash('git add design/approved-screens.json && git commit -m d'),
+      2,
+      "This is the person's decision",
+    );
+    approve('design', 0, 'Approve the sign-in screens');
+    expect(
+      'with their approval it may',
+      bash('git add design/approved-screens.json && git commit -m d'),
+      0,
+    );
+    expect(
+      "and the log records the person's approval, not the lead's",
+      truth(logLines()[0]?.approval === 'design', JSON.stringify(logLines())),
+      0,
+    );
+    rmSync(join(repo, '.claude/approvals/design'));
+    rmSync(logFile);
+    git('reset', '-q');
+    writeFileSync(
+      cfgFile,
+      JSON.stringify({
+        ...JSON.parse(cfg),
+        approvals: { delegate: { merge: true, protected: ['design'] } },
+      }),
+    );
+    expect(
+      'what is delegated to the lead stays its own call',
+      bash('git add design/approved-screens.json && git commit -m d'),
+      0,
+    );
+    rmSync(logFile);
+    git('reset', '-q');
+    writeFileSync(cfgFile, cfg);
+  }
   expect(
     'a lane may not commit it without approval',
     bash('git add design/approved-screens.json && git commit -m d', 'web-engineer'),
@@ -7183,6 +7244,27 @@ else process.exit(1);
       2,
       'is a weakened test',
     );
+    // truemark R-11: staging through `git -C`, or deleting with `git rm`, is still seen.
+    g.git('checkout', '-q', '--', '.');
+    expect(
+      'REG-2 a test file deleted by git -C … rm is refused as a weakened test',
+      gBash(
+        `git -C "${g.dir}" rm -q apps/office/old.test.mjs && git -C "${g.dir}" commit -m drop`,
+        'web-engineer',
+      ),
+      2,
+      'deletes the test file',
+    );
+    gPut(
+      'apps/office/old.test.mjs',
+      twoCases.replace("test('keeps order'", "test.skip('keeps order'"),
+    );
+    expect(
+      'REG-2 and so is one staged by git -C … add -A',
+      gBash(`git -C "${g.dir}" add -A && git -C "${g.dir}" commit -m skip`, 'web-engineer'),
+      2,
+      'is a weakened test',
+    );
     gConfig({ approvals: { delegate: { protected: ['design'] } } });
     expect(
       "REG-2 the lead may not approve it where weakened tests aren't delegated",
@@ -7345,6 +7427,50 @@ else process.exit(1);
     expect(
       'REG-2 nor does verify flag the move',
       truth(!said(gVerify()).includes('Weakened tests')),
+      0,
+    );
+  }
+
+  // --- WHO-1: where the lead merges, verify holds its own change to what the person keeps --------
+  {
+    const t = newRepo();
+    cleanups.push(t.dir);
+    const tCli = (...args) =>
+      spawnSync('node', [kitCli, ...args], { cwd: t.dir, encoding: 'utf8' });
+    writeFileSync(
+      join(t.dir, '.claude/code-kit.json'),
+      JSON.stringify({ ...JSON.parse(fixture), approvals: { delegate: { merge: true } } }),
+    );
+    mkdirSync(join(t.dir, 'design'), { recursive: true });
+    writeFileSync(join(t.dir, 'design/approved-screens.json'), '{"screens":[]}\n');
+    t.git('add', '-A');
+    t.git('commit', '-q', '-m', 'delegate merges');
+    const leadCommit = (approval) => {
+      t.git('checkout', '-q', '-B', 'lead/st-1', 'main');
+      writeFileSync(join(t.dir, 'design/approved-screens.json'), '{"screens":["a"]}\n');
+      writeFileSync(
+        join(t.dir, '.claude/approval-log.jsonl'),
+        `${JSON.stringify({ at: new Date().toISOString(), approval, reason: 'r', grantedAt: null, file: 'design/approved-screens.json', branch: 'lead/st-1', actor: 'lead' })}\n`,
+      );
+      t.git('add', '-A');
+      t.git('commit', '-q', '-m', 'ST-1 designs');
+      const res = tCli('verify', '--base', 'main', '--no-checks');
+      t.git('checkout', '-q', 'main');
+      return res;
+    };
+    const byLead = leadCommit('lead');
+    expect(
+      "WHO-1 where the lead merges, verify refuses its change to the designs without the person's approval",
+      truth(
+        byLead.status === 1 && byLead.stdout.includes("without the person's design approval"),
+        byLead.stdout + byLead.stderr,
+      ),
+      0,
+    );
+    const byPerson = leadCommit('design');
+    expect(
+      "and passes it with the person's approval logged",
+      truth(byPerson.status === 0, byPerson.stdout + byPerson.stderr),
       0,
     );
   }
