@@ -74,6 +74,15 @@ The base's rules say how a merge reaches the remote's base (`branches.publish`, 
 - Given pushing isn't delegated, then the lead opens the pull request and leaves it for the person.
 - Given `branches.publish` `push` and pushing delegated, then the merge pushes main.
 
+### MQ-7 Branches that only land together
+
+Some reviewed branches break the base merged alone: a new API and the follow-up that updates its callers. The lead queues such a branch with the partners it lands with: `code-kit queue add <branch> --with <branch>[,<branch>]`. It waits in the queue, neither merged nor sent back, and `next` says what it waits for, until each partner is reviewed and queued too; meanwhile the queue merges the branches after it. Once the whole group is queued, it's verified as one tree (each branch merged onto the base as it is then, the checks run on the result), each branch is still held to its own lane's paths, and the branches merge one after another. A group that conflicts or fails verify goes back to its lanes together; a member that moved after its review leaves the queue to be reviewed again, and the group waits for it.
+
+**Acceptance**
+
+- Given `web/st-20`, a new API, queued with `--with web/st-21`, the follow-up that updates its callers, then `queue merge` merges nothing and says it waits for `web/st-21` to be queued, and `next` asks for no merge of it and no review of it.
+- Given `web/st-21` then queued, then `queue merge` verifies both merged onto main and merges both.
+
 ## Open questions
 
 | Question | Owner | Blocks |

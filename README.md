@@ -489,6 +489,7 @@ code-kit settings [--json]                                   # the harness setti
 code-kit settings set <key> <value> --reason "…"               # change one, as the person (approvals.<name> lead|person among them): written to the config and logged as a kit approval
 code-kit queue [--json]                                      # the merge queue: branches whose review passed, in order
 code-kit queue add|drop <branch>                              # the lead queues a branch at the commit its review passed, or takes it out
+code-kit queue add <branch> --with <branch>[,<branch>]       # a branch that only lands together with others: merged as a group once all are queued
 code-kit queue rules                                          # the lead puts the approved rules onto a base that has none yet (a project set up before 0.8.0)
 code-kit queue merge --delegated|--person                     # merge the head at the commit its review passed, verified against the base as it is now; a conflict or failed verify sends it back to its lane, and a branch that moved since its review leaves the queue to be reviewed again
 code-kit loop [--json]                                        # whether the person paused the lead loop; other tools' background work pauses with it

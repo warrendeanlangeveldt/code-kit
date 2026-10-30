@@ -4310,6 +4310,77 @@ else process.exit(2);
     );
   }
 
+  // --- MQ-7: branches that only land together merge as a group ----------------------------------
+  {
+    const z = newRepo(false);
+    cleanups.push(z.dir);
+    mkdirSync(join(z.dir, '.claude'), { recursive: true });
+    writeFileSync(
+      join(z.dir, '.claude/code-kit.json'),
+      JSON.stringify({
+        ...JSON.parse(fixture),
+        approvals: { delegate: { merge: true } },
+        checks: [
+          {
+            name: 'office',
+            files: ['apps/office/**'],
+            // The new API breaks its callers until the follow-up updates them.
+            run: ['test ! -f apps/office/new-api || test -f apps/office/callers-updated'],
+          },
+        ],
+      }),
+    );
+    writeFileSync(join(z.dir, '.gitignore'), '.claude/approvals/\n.claude/state/\n');
+    mkdirSync(join(z.dir, 'apps/office'), { recursive: true });
+    writeFileSync(join(z.dir, 'apps/office/a.ts'), 'export const a = 1;\n');
+    z.git('add', '-A');
+    z.git('commit', '-q', '-m', 'kit');
+    z.git('checkout', '-q', '-b', 'web/st-20');
+    writeFileSync(join(z.dir, 'apps/office/new-api'), 'v2\n');
+    z.git('add', '-A');
+    z.git('commit', '-q', '-m', 'ST-20 the new API');
+    z.git('checkout', '-q', '-b', 'web/st-21');
+    writeFileSync(join(z.dir, 'apps/office/callers-updated'), 'yes\n');
+    z.git('add', '-A');
+    z.git('commit', '-q', '-m', 'ST-21 its callers');
+    z.git('checkout', '-q', 'main');
+    const zKit = (...args) =>
+      spawnSync('node', [kitCli, ...args], { cwd: z.dir, encoding: 'utf8' });
+    const queued = zKit('queue', 'add', 'web/st-20', '--with', 'web/st-21');
+    expect(
+      'MQ-7 a branch queued with a partner says it merges together with it',
+      truth(queued.stdout.includes('merges together with web/st-21'), queued.stdout),
+      0,
+    );
+    const early = zKit('queue', 'merge', '--delegated');
+    expect(
+      'MQ-7 it waits, unmerged and not sent back, until its partner is queued',
+      truth(
+        early.status === 0 &&
+          early.stdout.includes(
+            "web/st-20 merges together with web/st-21, which isn't queued yet",
+          ) &&
+          JSON.parse(zKit('queue', '--json').stdout)[0]?.state === 'waiting',
+        early.stdout + early.stderr,
+      ),
+      0,
+    );
+    zKit('queue', 'add', 'web/st-21');
+    const together = zKit('queue', 'merge', '--delegated');
+    expect(
+      'MQ-7 once both are queued, they are verified as one tree and both merge',
+      truth(
+        together.status === 0 &&
+          together.stdout.includes('together with web/st-21') &&
+          existsSync(join(z.dir, 'apps/office/new-api')) &&
+          existsSync(join(z.dir, 'apps/office/callers-updated')) &&
+          JSON.parse(zKit('queue', '--json').stdout).every((e) => e.state === 'merged'),
+        together.stdout + together.stderr,
+      ),
+      0,
+    );
+  }
+
   // --- the merge queue: in the order reviews passed, each verified against the base as it is then ---
   {
     const q = newRepo(false);
