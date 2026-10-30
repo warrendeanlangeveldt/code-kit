@@ -44,7 +44,7 @@ A lane agent, as the loop sees it: `working` → `quiet` (no tool call for 5 min
 
 ### LOOP-1 Prompts the lead when it's idle
 
-When no turn is running and the prompt holds no draft, the loop asks `next` what to do and, if it's a step the lead takes (`dispatch`, `lead`, `review`), submits that step to the lead as a prompt naming the skill and its argument, for example "Dispatch ST-7, ST-9: run /code-kit:dispatch ST-7 ST-9." (Claude Code refuses a mod's prompt that begins with `/`). It never submits while a turn runs or while the person is typing, and submits at most one prompt per idle period.
+When no turn is running and the prompt holds no draft, the loop asks `next` what to do and, if it's a step the lead takes (`dispatch`, `lead`, `review`), submits that step to the lead as a prompt naming the skill and its argument, for example "Dispatch ST-7, ST-9: run /code-kit:dispatch ST-7 ST-9." (Claude Code refuses a mod's prompt that begins with `/`). It never submits while a turn runs or while the person is typing, and submits at most one prompt per idle period. A step read while a turn began (the person prompting the lead as `next` ran) isn't submitted: that turn may change what's next, as dropping the branch the step would merge does, so the step is read again when it ends.
 
 - **Who:** the mod; only in a project with `.claude/code-kit.json`.
 - **Errors:** if `next` fails, the band shows its error and the loop waits for the next change.
@@ -55,6 +55,7 @@ When no turn is running and the prompt holds no draft, the loop asks `next` what
 - Given two ready stories and an idle lead, when the loop ticks, then the lead receives one prompt dispatching both, and the pane records the step.
 - Given a turn in progress, when a lane finishes, then nothing is submitted until the turn completes.
 - Given the person typing in the prompt, when the lead is idle, then nothing is submitted until the draft is sent or cleared.
+- Given the loop reading `next` as the person prompts the lead to drop the branch it would merge, when that turn ends, then the merge isn't prompted.
 
 ### LOOP-2 The lead decides concurrency
 
@@ -119,7 +120,7 @@ The lead is prompted with one step at most three times in a row (spec 23, WHO-4)
 
 ### LOOP-9 Never a story already in flight
 
-`code-kit next` reads only the branches, so it can't tell a branch its lane agent is still building, or one a reviewer is already reviewing, from one that waits; nor a story dispatched a moment ago, before its first commit. Before prompting, the loop leaves out every story an agent at work names in its task (a lane agent is dispatched as "ST-12 booking form", a reviewer as "Review web/st-12"). A step left with no stories gives way to the next one `next` listed; with none left, the loop waits ("waiting: ST-10 is still with its agent"), and goes on when an agent finishes.
+`code-kit next` reads only the branches, so it can't tell a branch its lane agent is still building, or one a reviewer is already reviewing, from one that waits; nor a story dispatched a moment ago, before its first commit. Before prompting, the loop leaves out every story an agent at work names in its task (a lane agent is dispatched as "ST-12 booking form", a reviewer as "Review web/st-12"). A step left with no stories gives way to the next one `next` listed; with none left, the loop waits ("waiting: ST-10 is still with its agent"), and goes on when an agent finishes. `next` itself reads a story whose lane holds it for an agent that hasn't handed back since it was dispatched as in progress, not finished, however its branch moved (a re-dispatched story's agent taking in the base first).
 
 **Acceptance**
 
@@ -172,6 +173,19 @@ When the lead's reply says a step's stories aren't due yet because they wait on 
 - Given the loop prompted "Review ST-158, ST-172" and the lead replied that ST-158 merges with ST-164, still being built, and ST-172's checks are re-running, when `next` then names ST-158, ST-172 and ST-173, then the lead is prompted to review ST-173 alone.
 - Given both still parked and another lane committing, then nothing is prompted; ST-164 committing doesn't wake ST-158; when ST-164 is in review, then the lead is prompted to review ST-158, and ST-172 stays parked.
 - Given "Review ST-160" prompted and the lead's reply read as done while ST-160 stands still and other lanes commit, then it isn't prompted again until its own branch moves.
+
+### LOOP-14 The loop waits out Claude's usage limit
+
+A lead turn that ends on an API error (the account's usage limit, a rate limit, an overloaded or failing API) did nothing, and another prompt would fail the same way. The loop holds: it prompts nothing, and restarts no quiet lane agent, until the limit resets. The reset is the latest `resetsAt` of the rate-limit windows Claude Code reports as used up; with none used up (an overloaded API, a server error), the loop tries again after 5 minutes, then 10, 20 and at most 60 while turns keep failing. The band says so ("Claude's usage limit is reached: the loop waits until …") with **Try now**. The person speaking to the lead, Try now, or a lead turn that answers ends the hold. A lane agent whose turn ended on an API error stopped short: it isn't read as handing back at its context limit. Nor is it read as handing back at all: its finish isn't checked (a refusal would only prompt it into the same error), it keeps its lane, its story stays in progress rather than waiting for review, and its event log says it stopped.
+
+Across steps, the loop never prompts a step a second time while the project stands still, so steps taken in turn can't come round again either.
+
+**Acceptance**
+
+- Given the weekly limit reached, resetting in three hours, when the lead's turn ends on the error, then nothing is prompted, no lane agent is nudged or restarted, and the band says the loop waits until then; once it resets, the loop takes its next step.
+- Given an overloaded API, then the loop tries again after 5 minutes, then 10.
+- Given the hold, when the person types to the lead, then the hold ends and the loop goes on after that turn.
+- Given "Review ST-4" and "Review ST-9" next in turn, and the project standing still, then each is prompted once.
 
 ## Quality targets
 

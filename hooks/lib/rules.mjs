@@ -93,6 +93,18 @@ export function leadDecides(name, config, actor) {
   return (rules.protected ?? []).includes(name);
 }
 
+/**
+ * WHO-1: whether the lead needs an approval in force to change a file protected by `name` itself. Where
+ * the person merges, they review the lead's change in the pull request, so it needs none. Where merges
+ * are delegated to the lead nobody else sees it, so what the person keeps (not delegated to the lead)
+ * needs the person's approval, as it would from a lane. The kit is the lead's to change either way: the
+ * person approved the setup, and code-kit writes most of it.
+ */
+export const leadNeedsApproval = (name, config) =>
+  name !== 'kit' &&
+  Boolean(config?.approvals?.delegate?.merge) &&
+  !leadDecides(name, config, { kind: 'lead' });
+
 /** HELM-2: whose decision approvals `names` are: the lead's when it may grant every one, else the person's. */
 export const decidedBy = (names, config, actor) =>
   [names].flat().every((n) => leadDecides(n, config, actor)) ? 'lead' : 'person';
@@ -184,6 +196,25 @@ function noteGiven(root, entries) {
   } catch {
     // the approval stands; only its history misses it
   }
+}
+
+/**
+ * Why an approval for `name` given to `actor` lately isn't in force any more: used up by an earlier
+ * commit, or out of time. A sentence for a refusal, or '' when none was given lately.
+ */
+export function approvalEnded(root, name, actor, now = Date.now()) {
+  const lane = actor?.kind === 'lane' ? actor.lane : null;
+  const last = approvalsGiven(root)
+    .filter((e) => e.name === name && (!e.lane || e.lane === lane))
+    .at(-1);
+  if (!last?.at) return '';
+  const at = (t) => new Date(t).toTimeString().slice(0, 5);
+  const given = Date.parse(last.at);
+  if (now - given > 24 * 3600_000) return '';
+  if (last.usedAt)
+    return ` The ${name} approval given at ${at(given)} was used up at ${at(last.usedAt)} by an earlier commit${last.usedBy ? ` (${last.usedBy})` : ''}, so another is needed.`;
+  const ends = given + approvalMinutes(name) * 60_000;
+  return now >= ends ? ` The ${name} approval given at ${at(given)} ran out at ${at(ends)}.` : '';
 }
 
 /** The approvals given through code-kit (and those used up), oldest first. */
@@ -353,6 +384,7 @@ export function useApproval(root, name, actor) {
         ...(file !== join(dir, name) ? { lane: actor.lane } : {}),
         reason: a.reason,
         usedAt: new Date().toISOString(),
+        ...(actor?.label ? { usedBy: actor.label } : {}),
       },
     ]);
     return rmSync(file, { force: true });
@@ -438,6 +470,9 @@ export function recordRequest(root, actor, names, what, why, now = Date.now(), e
       why: String(why).slice(0, 300),
       ...extra,
     };
+    // The file's commits already made in the second it's asked, which don't answer it.
+    const before = commitsFrom(root, request.what, request.at);
+    if (before?.length) request.before = before;
     if (openRequests(root, now).some((r) => sameRequest(r, request))) return;
     const file = requestsFile(root);
     mkdirSync(dirname(file), { recursive: true });
@@ -528,30 +563,36 @@ function installedSince(root, r) {
   });
 }
 
-/** Whether the file a request named has been committed, on any branch, since it was asked. */
-function committedSince(root, r) {
-  const path = String(r.what);
-  if (/\s/.test(path) || (!path.includes('/') && !path.includes('.'))) return false;
+/** The commits of `path`, on any branch, in or after the second `at` falls in; null when it isn't a path. */
+function commitsFrom(root, path, at) {
+  if (/\s/.test(path) || (!path.includes('/') && !path.includes('.'))) return null;
   try {
-    const out = execFileSync(
+    return execFileSync(
       'git',
       [
-        '-C',
-        root,
-        'log',
-        '--all',
-        '-1',
-        '--format=%ct',
-        `--since=@${Math.floor(Date.parse(r.at) / 1000)}`,
-        '--',
-        path,
+        ...['-C', root, 'log', '--all', '--format=%H'],
+        `--since=@${Math.floor(Date.parse(at) / 1000)}`,
+        ...['--', path],
       ],
       { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] },
-    );
-    return Boolean(out.trim());
+    )
+      .split('\n')
+      .filter(Boolean);
   } catch {
-    return false;
+    return [];
   }
+}
+
+/**
+ * Whether the file a request named has been committed, on any branch, since it was asked. Git dates are
+ * whole seconds, so the commits already there in the second it was asked (the one before the refused
+ * commit) are the request's `before`, and don't answer it.
+ */
+function committedSince(root, r) {
+  const commits = commitsFrom(root, String(r.what), r.at);
+  if (!commits) return false;
+  const before = new Set(r.before ?? []);
+  return commits.some((c) => !before.has(c));
 }
 
 /**
@@ -766,9 +807,11 @@ export function writeProblem(actor, rel, root, config) {
   const guarded = protectedEntry(rel, config);
   if (actor.kind === 'readonly' && (guarded || !matchesAny(rel, config.anyActor)))
     return readonlyProblem(actor, rel);
-  // The lead writes protected files without an approval: the person reviews them in the pull request,
-  // and every committed change is in the audit log. Anyone else needs a person's approval as well.
-  if (guarded && actor.kind !== 'lead' && !approval(root, guarded.approval, actor)) {
+  // The lead writes protected files without an approval where the person merges: they review them in
+  // the pull request, and every committed change is in the audit log. Where the lead merges, what the
+  // person keeps needs their approval (WHO-1). Anyone else needs an approval as well.
+  const leadFree = actor.kind === 'lead' && !leadNeedsApproval(guarded?.approval, config);
+  if (guarded && !leadFree && !approval(root, guarded.approval, actor)) {
     recordRequest(root, actor, guarded.approval, rel, guarded.why);
     const who =
       decidedBy(guarded.approval, config, actor) === 'lead'

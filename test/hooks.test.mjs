@@ -2,6 +2,7 @@
 // The hooks end to end, run against throwaway git repositories in the OS temp folder with
 // test/fixture.json as their config. Exit 0 = allowed, 2 = blocked.
 import { spawn, spawnSync, execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import {
   appendFileSync,
   chmodSync,
@@ -19,6 +20,8 @@ import { fileURLToPath } from 'node:url';
 import { refusalCard } from '../hooks/mod/view.mjs';
 import { holdable } from '../hooks/mod/hold.mjs';
 import { claimLane, releaseLane } from '../hooks/lib/laneclaims.mjs';
+import { markMerging } from '../hooks/lib/queue.mjs';
+import { openRequests, recordRequest } from '../hooks/lib/rules.mjs';
 
 // SESS-1: the CLI reads the calling session from Claude Code's environment; these tests say it themselves.
 delete process.env.CLAUDE_CODE_SESSION_ID;
@@ -155,6 +158,39 @@ function newRepo(withConfig = true) {
   return { dir, git };
 }
 
+/**
+ * HAND-2: a register entry for `file` whose design is handed over: each state's image and code written
+ * under `dir`, with their hashes, as /code-kit:design records an approved screen.
+ */
+function approvedDesign(dir, file, screen = 'Home', states = ['default']) {
+  const area = screen.toLowerCase().replace(/\W+/g, '-');
+  const hash = (rel) =>
+    createHash('sha256')
+      .update(readFileSync(join(dir, rel)))
+      .digest('hex');
+  return {
+    file,
+    screen,
+    story: 'ST-1',
+    approved: '2026-10-11',
+    source: { tool: 'html', ref: `design/${area}` },
+    states: states.map((name) => {
+      const image = `design/${area}/${name}.png`;
+      const code = `design/${area}/${name}.html`;
+      mkdirSync(join(dir, 'design', area), { recursive: true });
+      writeFileSync(join(dir, image), `image of ${screen}, ${name}`);
+      writeFileSync(join(dir, code), `<main>${screen}, ${name}</main>\n`);
+      return {
+        name,
+        image,
+        code,
+        viewport: '390x844',
+        sha256: { image: hash(image), code: hash(code) },
+      };
+    }),
+  };
+}
+
 let failed = 0;
 const expect = (label, res, want, stderrHas) => {
   const ok = res.status === want && (!stderrHas || res.stderr.includes(stderrHas));
@@ -246,6 +282,12 @@ try {
   expect('lead writes the specs', write('docs/spec/02-api.md'), 0);
   expect('lead writes the contracts', write('packages/schemas/src/x.ts'), 0);
   expect('lead writes the kit', write('.claude/agents/x.md'), 0);
+  expect(
+    "and the project's MCP servers, which a team provider's connect writes",
+    write('.mcp.json'),
+    0,
+  );
+  expect('a lane may not', write('.mcp.json', 'db-engineer'), 2);
   expect(
     'lead may not write a lane path',
     write('supabase/migrations/1_x.sql'),
@@ -573,17 +615,27 @@ try {
   expect('or updating its ref', bash('git update-ref refs/heads/main HEAD'), 2);
   expect(
     'restoring a file from main is not switching to it',
+    bash('git checkout main -- docs/x.md'),
+    0,
+  );
+  expect('a branch named after main is not main', bash('git switch main-fixes'), 0);
+  expect('creating a branch from main is fine', bash('git checkout -b next main'), 0);
+  // The commit hook can't see files a command before the commit writes.
+  expect(
+    'a commit chained after a command that may write files is refused',
+    bash(`python3 -c "open('x','w')" && git add -A && git commit -m x`),
+    2,
+    'commit in a command of its own',
+  );
+  expect(
+    'and after restoring a file in the same command',
     bash('git checkout main -- docs/x.md && git commit -m x'),
-    0,
+    2,
+    'commit in a command of its own',
   );
   expect(
-    'a branch named after main is not main',
-    bash('git switch main-fixes && git commit -m x'),
-    0,
-  );
-  expect(
-    'creating a branch from main is fine',
-    bash('git checkout -b next main && git commit -m x'),
+    'staging and committing in one command is fine',
+    bash('cd . && git add notes.txt && git -C . commit -m x'),
     0,
   );
   git('checkout', '-q', 'main');
@@ -648,6 +700,57 @@ try {
     0,
   );
   rmSync(logFile);
+  // WHO-1: where the lead merges, nobody reviews its change in a pull
+  // request, so what the person keeps needs their approval from the lead too.
+  {
+    const cfgFile = join(repo, '.claude/code-kit.json');
+    const cfg = readFileSync(cfgFile, 'utf8');
+    writeFileSync(
+      cfgFile,
+      JSON.stringify({ ...JSON.parse(cfg), approvals: { delegate: { merge: true } } }),
+    );
+    expect(
+      'where the lead merges, it may not write what the person keeps without their approval',
+      write('design/approved-screens.json'),
+      2,
+      "person's approval",
+    );
+    expect(
+      'nor commit it',
+      bash('git add design/approved-screens.json && git commit -m d'),
+      2,
+      "This is the person's decision",
+    );
+    approve('design', 0, 'Approve the sign-in screens');
+    expect(
+      'with their approval it may',
+      bash('git add design/approved-screens.json && git commit -m d'),
+      0,
+    );
+    expect(
+      "and the log records the person's approval, not the lead's",
+      truth(logLines()[0]?.approval === 'design', JSON.stringify(logLines())),
+      0,
+    );
+    rmSync(join(repo, '.claude/approvals/design'));
+    rmSync(logFile);
+    git('reset', '-q');
+    writeFileSync(
+      cfgFile,
+      JSON.stringify({
+        ...JSON.parse(cfg),
+        approvals: { delegate: { merge: true, protected: ['design'] } },
+      }),
+    );
+    expect(
+      'what is delegated to the lead stays its own call',
+      bash('git add design/approved-screens.json && git commit -m d'),
+      0,
+    );
+    rmSync(logFile);
+    git('reset', '-q');
+    writeFileSync(cfgFile, cfg);
+  }
   expect(
     'a lane may not commit it without approval',
     bash('git add design/approved-screens.json && git commit -m d', 'web-engineer'),
@@ -1150,6 +1253,24 @@ try {
       ),
       0,
     );
+    // --help, list and stray words ask nothing.
+    const before = JSON.parse(qKit('ask', '--json').stdout).length;
+    const help = qKit('ask', '--help');
+    const listing = qKit('ask', 'list');
+    expect(
+      'ask --help prints its usage and ask list lists; neither asks anything',
+      truth(
+        help.status === 0 &&
+          help.stdout.includes('code-kit ask "<question>"') &&
+          listing.status === 0 &&
+          listing.stdout.includes('wait for the person') &&
+          JSON.parse(qKit('ask', '--json').stdout).length === before,
+        help.stdout + listing.stdout,
+      ),
+      0,
+    );
+    expect('an unknown flag is refused, not asked', qKit('ask', '--bogus'), 1, 'nothing was asked');
+    expect('so is a stray word', qKit('ask', 'show'), 1, "isn't a question for the person");
     const listed = JSON.parse(qKit('ask', '--json').stdout);
     expect(
       'with what each option does',
@@ -1652,7 +1773,10 @@ try {
       1,
       'not among the delegated approvals',
     );
-    put('design/approved-screens.json', JSON.stringify({ screens: [{ file: screen }] }, null, 3));
+    put(
+      'design/approved-screens.json',
+      JSON.stringify({ screens: [approvedDesign(repo, screen)] }, null, 3),
+    );
     expect(
       'a lane commits under the delegated approval',
       bash('git add design/approved-screens.json && git commit -m d', 'web-engineer'),
@@ -1785,7 +1909,10 @@ try {
       bHook('lane-audit.mjs', 'git merge --no-commit main', 'web-engineer'),
       0,
     );
-    bPut('design/approved-screens.json', JSON.stringify({ screens: ['mine'] }));
+    bPut(
+      'design/approved-screens.json',
+      JSON.stringify({ screens: [approvedDesign(b.dir, 'apps/office/app/mine/page.tsx', 'Mine')] }),
+    );
     b.git('add', 'design/approved-screens.json');
     expect(
       "but its own change to a protected file mid-merge still needs a person's approval",
@@ -1826,6 +1953,20 @@ try {
       'Merged into lead/next',
     );
     expect('it may merge the base into that branch', mHook('git merge main'), 0);
+    expect(
+      'git merge-base and git merge-tree only read history: they are not merges',
+      truth(
+        [
+          'git merge-base --all main web/st-1',
+          'git -C . merge-base --is-ancestor web/st-1 main',
+          'git merge-tree --write-tree main web/st-1',
+        ].every((c) => mHook(c).status === 0),
+      ),
+      0,
+    );
+    m.git('checkout', '-q', 'main');
+    expect('nor is reading them on the protected branch', mHook('git merge-base main web/st-1'), 0);
+    m.git('checkout', '-q', 'lead/next');
     expect(
       'and a commit message that mentions a merge is only text',
       mHook('git commit --allow-empty -m "git merge web/st-1"'),
@@ -3449,6 +3590,47 @@ else process.exit(2);
       ),
       0,
     );
+    // The hub's claim leak: the provider is back, doesn't know ST-40 (it was made through GitHub while it
+    // was down), and answers that it isn't claimed. The GitHub copy is released all the same.
+    writeFileSync(
+      join(root, 'unaware.mjs'),
+      `const op = process.argv[2]; let input = ''; process.stdin.on('data', (d) => (input += d)).on('end', () => {
+  if (op === 'release') console.log(JSON.stringify({ ok: true, released: false }));
+  else process.exit(7);
+});`,
+    );
+    writeFileSync(
+      join(a, '.claude/code-kit.json'),
+      JSON.stringify({
+        ...JSON.parse(fixture),
+        team: {
+          techLead: 'alex',
+          provider: { command: `node "${join(root, 'unaware.mjs')}"`, fallback: 'github' },
+        },
+      }),
+    );
+    const leaked = sam('team', 'release', 'ST-40');
+    const afterLeak = JSON.parse(sam('team', '--json', '--fresh').stdout || '{}');
+    expect(
+      "TEAM-8 a claim the provider doesn't know is released on GitHub, where it was made",
+      truth(
+        leaked.status === 0 &&
+          leaked.stdout.includes('Released ST-40') &&
+          !afterLeak.claims?.some((c) => c.story === 'ST-40'),
+        leaked.stdout + leaked.stderr + JSON.stringify(afterLeak),
+      ),
+      0,
+    );
+    writeFileSync(
+      join(a, '.claude/code-kit.json'),
+      JSON.stringify({
+        ...JSON.parse(fixture),
+        team: {
+          techLead: 'alex',
+          provider: { command: `node "${join(root, 'down.mjs')}"`, fallback: 'github' },
+        },
+      }),
+    );
     expect('a provider with GitHub as its fallback is a valid config', sam('check'), 0);
     writeFileSync(
       join(a, '.claude/code-kit.json'),
@@ -4033,9 +4215,19 @@ else process.exit(2);
     // The lane agent's worktree, where its branch is checked out.
     const laneTree = join(m.dir, '.claude/worktrees/agent-web');
     m.git('worktree', 'add', '-q', laneTree, 'web/st-1');
+    mKit('queue', 'add', 'web/st-1');
     expect(
       'AUT-5 a branch that passes verify is merged',
       mKit('merge', 'web/st-1', '--delegated'),
+      0,
+    );
+    expect(
+      'and its queue entry, merged outside the queue, is settled as merged',
+      truth(
+        JSON.parse(mKit('queue', '--json').stdout).find((e) => e.branch === 'web/st-1')?.state ===
+          'merged',
+        mKit('queue', '--json').stdout,
+      ),
       0,
     );
     expect(
@@ -4098,6 +4290,238 @@ else process.exit(2);
       "main doesn't delegate merges",
     );
     m.git('checkout', '-q', 'main');
+  }
+
+  // --- MQ-1: the queue verifies a branch as it will land: merged with the base, with installs -----
+  {
+    const z = newRepo(false);
+    cleanups.push(z.dir);
+    mkdirSync(join(z.dir, '.claude'), { recursive: true });
+    writeFileSync(
+      join(z.dir, '.claude/code-kit.json'),
+      JSON.stringify({
+        ...JSON.parse(fixture),
+        approvals: { delegate: { merge: true } },
+        checks: [
+          {
+            name: 'office',
+            files: ['apps/office/**'],
+            // Needs the fix main has since gained, and an install of its own, not a link to another's.
+            run: [
+              'test -f apps/office/main-fix && test -f node_modules/dep/index.js && test ! -L node_modules',
+            ],
+          },
+        ],
+      }),
+    );
+    writeFileSync(join(z.dir, '.gitignore'), '.claude/approvals/\n.claude/state/\nnode_modules/\n');
+    mkdirSync(join(z.dir, 'node_modules/dep'), { recursive: true });
+    writeFileSync(join(z.dir, 'node_modules/dep/index.js'), 'module.exports = 1;\n');
+    mkdirSync(join(z.dir, 'apps/office'), { recursive: true });
+    writeFileSync(join(z.dir, 'apps/office/a.ts'), 'export const a = 1;\n');
+    z.git('add', '-A');
+    z.git('commit', '-q', '-m', 'kit');
+    z.git('checkout', '-q', '-b', 'web/st-e');
+    writeFileSync(join(z.dir, 'apps/office/e.ts'), 'export const e = 1;\n');
+    z.git('add', '-A');
+    z.git('commit', '-q', '-m', 'ST-e');
+    z.git('checkout', '-q', 'main');
+    writeFileSync(join(z.dir, 'apps/office/main-fix'), 'fixed\n');
+    z.git('add', '-A');
+    z.git('commit', '-q', '-m', 'the fix main gained');
+    const zKit = (...args) =>
+      spawnSync('node', [kitCli, ...args], { cwd: z.dir, encoding: 'utf8' });
+    zKit('queue', 'add', 'web/st-e');
+    const landed = zKit('queue', 'merge', '--delegated');
+    expect(
+      "MQ-1 a branch behind the base, with no worktree, is verified merged with the base and with the checkout's installs",
+      truth(
+        landed.status === 0 && landed.stdout.includes('Merged web/st-e into main'),
+        landed.stdout + landed.stderr,
+      ),
+      0,
+    );
+    expect(
+      "and the checkout's own installs are untouched",
+      truth(
+        existsSync(join(z.dir, 'node_modules/dep/index.js')) &&
+          !z.git('worktree', 'list').includes('code-kit-merge-'),
+      ),
+      0,
+    );
+  }
+
+  // --- spec 24: approved designs are files a lane builds from, as approved -----------------------
+  {
+    const d = newRepo();
+    cleanups.push(d.dir);
+    const dKit = (...args) =>
+      spawnSync('node', [kitCli, ...args], { cwd: d.dir, encoding: 'utf8' });
+    const dCommit = (command) =>
+      spawnSync('node', [join(hooks, 'guard-bash.mjs')], {
+        input: JSON.stringify({ cwd: d.dir, tool_input: { command } }),
+        env: { ...process.env, CLAUDE_PROJECT_DIR: d.dir },
+        encoding: 'utf8',
+      });
+    mkdirSync(join(d.dir, 'docs/spec'), { recursive: true });
+    writeFileSync(
+      join(d.dir, 'docs/spec/01-bookings.md'),
+      '# 01. Bookings\n\n### BOOK-1 List bookings\n\nx\n\n## Screens\n\n### Bookings list\n\nEach booking, newest first.\n**States:** default, empty, error\n',
+    );
+    writeFileSync(
+      join(d.dir, 'docs/spec/plan.md'),
+      '# Plan\n\n## M1\n\n### ST-1 Design: bookings\n\n**Lane:** design\n**Requirements:** BOOK-1\n**Status:** done\n\n### ST-2 Bookings list\n\n**Lane:** web\n**Requirements:** BOOK-1\n**Depends on:** ST-1\n**Status:** todo\n',
+    );
+    mkdirSync(join(d.dir, 'design'), { recursive: true });
+    writeFileSync(join(d.dir, 'design/approved-screens.json'), '{"screens":[]}\n');
+    d.git('add', '-A');
+    d.git('commit', '-q', '-m', 'specs');
+    d.git('checkout', '-q', '-b', 'lead/st-1');
+    const list = approvedDesign(d.dir, 'apps/office/app/bookings/page.tsx', 'Bookings list', [
+      'default',
+      'empty',
+      'error',
+    ]);
+    const register = (entries) =>
+      writeFileSync(
+        join(d.dir, 'design/approved-screens.json'),
+        `${JSON.stringify({ screens: entries }, null, 2)}\n`,
+      );
+    rmSync(join(d.dir, 'design/bookings-list/empty.png'));
+    register([list]);
+    expect(
+      'HAND-2 a register entry naming a state file that is not there is refused, naming the state and the file',
+      dCommit('git add -A && git commit -m designs'),
+      2,
+      "Bookings list's empty state: design/bookings-list/empty.png isn't there",
+    );
+    writeFileSync(join(d.dir, 'design/bookings-list/empty.png'), 'image of Bookings list, empty');
+    register([{ ...list, states: list.states.filter((st) => st.name !== 'empty') }]);
+    expect(
+      'HAND-2 a state the spec lists with no design is refused',
+      dCommit('git add -A && git commit -m designs'),
+      2,
+      "Bookings list's empty state, which the spec lists, has no approved design",
+    );
+    register([list]);
+    expect(
+      'HAND-2 every state, as approved, is committed',
+      dCommit('git add -A && git commit -m designs'),
+      0,
+    );
+    d.git('add', '-A');
+    d.git('commit', '-q', '-m', 'ST-1 designs');
+    const forStory = JSON.parse(dKit('designs', 'ST-2', '--json').stdout);
+    expect(
+      "HAND-3 designs gives a screen story its design story's files, every state",
+      truth(
+        forStory.length === 1 &&
+          forStory[0].states.map((st) => st.name).join() === 'default,empty,error' &&
+          forStory[0].states.every((st) => st.image && st.code && st.viewport),
+        JSON.stringify(forStory),
+      ),
+      0,
+    );
+    writeFileSync(join(d.dir, 'design/bookings-list/default.html'), '<main>changed</main>\n');
+    d.git('commit', '-q', '-am', 'tweak the design');
+    const changedDesign = spawnSync('node', [kitCli, 'verify', '--base', 'main', '--no-checks'], {
+      cwd: d.dir,
+      encoding: 'utf8',
+    });
+    expect(
+      'HAND-2 verify reports a design file edited after its approval',
+      truth(
+        changedDesign.status === 1 && changedDesign.stdout.includes("isn't the approved design"),
+        changedDesign.stdout,
+      ),
+      0,
+    );
+    d.git('checkout', '-q', 'main');
+    writeFileSync(
+      join(d.dir, 'design/approved-screens.json'),
+      `${JSON.stringify({ screens: [{ file: 'apps/office/app/bookings/page.tsx', design: 'paper:abc — Bookings list', story: 'ST-1' }] })}\n`,
+    );
+    d.git('commit', '-q', '-am', 'an older entry, only in the design tool');
+    const older = JSON.parse(dKit('next', '--json').stdout);
+    expect(
+      'HAND-5 next names approved screens only in a design tool, to hand over',
+      truth(
+        older.attention.some((a) => a.includes('1 approved screen is only in paper')),
+        JSON.stringify(older.attention),
+      ),
+      0,
+    );
+  }
+
+  // --- MQ-7: branches that only land together merge as a group ----------------------------------
+  {
+    const z = newRepo(false);
+    cleanups.push(z.dir);
+    mkdirSync(join(z.dir, '.claude'), { recursive: true });
+    writeFileSync(
+      join(z.dir, '.claude/code-kit.json'),
+      JSON.stringify({
+        ...JSON.parse(fixture),
+        approvals: { delegate: { merge: true } },
+        checks: [
+          {
+            name: 'office',
+            files: ['apps/office/**'],
+            // The new API breaks its callers until the follow-up updates them.
+            run: ['test ! -f apps/office/new-api || test -f apps/office/callers-updated'],
+          },
+        ],
+      }),
+    );
+    writeFileSync(join(z.dir, '.gitignore'), '.claude/approvals/\n.claude/state/\n');
+    mkdirSync(join(z.dir, 'apps/office'), { recursive: true });
+    writeFileSync(join(z.dir, 'apps/office/a.ts'), 'export const a = 1;\n');
+    z.git('add', '-A');
+    z.git('commit', '-q', '-m', 'kit');
+    z.git('checkout', '-q', '-b', 'web/st-20');
+    writeFileSync(join(z.dir, 'apps/office/new-api'), 'v2\n');
+    z.git('add', '-A');
+    z.git('commit', '-q', '-m', 'ST-20 the new API');
+    z.git('checkout', '-q', '-b', 'web/st-21');
+    writeFileSync(join(z.dir, 'apps/office/callers-updated'), 'yes\n');
+    z.git('add', '-A');
+    z.git('commit', '-q', '-m', 'ST-21 its callers');
+    z.git('checkout', '-q', 'main');
+    const zKit = (...args) =>
+      spawnSync('node', [kitCli, ...args], { cwd: z.dir, encoding: 'utf8' });
+    const queued = zKit('queue', 'add', 'web/st-20', '--with', 'web/st-21');
+    expect(
+      'MQ-7 a branch queued with a partner says it merges together with it',
+      truth(queued.stdout.includes('merges together with web/st-21'), queued.stdout),
+      0,
+    );
+    const early = zKit('queue', 'merge', '--delegated');
+    expect(
+      'MQ-7 it waits, unmerged and not sent back, until its partner is queued',
+      truth(
+        early.status === 0 &&
+          early.stdout.includes(
+            "web/st-20 merges together with web/st-21, which isn't queued yet",
+          ) &&
+          JSON.parse(zKit('queue', '--json').stdout)[0]?.state === 'waiting',
+        early.stdout + early.stderr,
+      ),
+      0,
+    );
+    zKit('queue', 'add', 'web/st-21');
+    const together = zKit('queue', 'merge', '--delegated');
+    expect(
+      'MQ-7 once both are queued, they are verified as one tree and both merge',
+      truth(
+        together.status === 0 &&
+          together.stdout.includes('together with web/st-21') &&
+          existsSync(join(z.dir, 'apps/office/new-api')) &&
+          existsSync(join(z.dir, 'apps/office/callers-updated')) &&
+          JSON.parse(zKit('queue', '--json').stdout).every((e) => e.state === 'merged'),
+        together.stdout + together.stderr,
+      ),
+      0,
+    );
   }
 
   // --- the merge queue: in the order reviews passed, each verified against the base as it is then ---
@@ -4180,6 +4604,21 @@ else process.exit(2);
       qKit('queue', 'add', 'web/st-z'),
       1,
       'There is no branch',
+    );
+    // A queue merge already running (here, this test's own process) isn't started again or asked for.
+    markMerging(q.dir, 'web/st-a', process.pid);
+    expect(
+      'MQ-1 a second queue merge while one runs starts nothing',
+      qKit('queue', 'merge', '--delegated'),
+      1,
+      'is being merged now',
+    );
+    // A run that died leaves its mark behind: a process no longer running doesn't hold the head.
+    markMerging(q.dir, 'web/st-a', 2 ** 22 + 12345);
+    expect(
+      'MQ-4 the head keeps its place while marked',
+      truth(JSON.parse(qKit('queue', '--json').stdout)[0]?.branch === 'web/st-a'),
+      0,
     );
     expect(
       'MQ-1 the head merges first, verified',
@@ -4448,7 +4887,7 @@ else process.exit(2);
   );
   writeFileSync(
     join(laneTree, 'design/approved-screens.json'),
-    JSON.stringify({ screens: [{ file: screen }] }, null, 2),
+    JSON.stringify({ screens: [approvedDesign(laneTree, screen)] }, null, 2),
   );
   const commitRegister = 'git add design/approved-screens.json && git commit -m d';
   expect('a protected commit in the worktree needs approval', inLaneTree(commitRegister), 2);
@@ -5385,7 +5824,7 @@ else process.exit(2);
   v.git('checkout', '-q', '-b', 'lead/contracts');
   vPut(
     'design/approved-screens.json',
-    JSON.stringify({ screens: [{ file: 'apps/office/app/home/page.tsx' }] }),
+    JSON.stringify({ screens: [approvedDesign(v.dir, 'apps/office/app/home/page.tsx')] }),
   );
   vCommit('registered by hand');
   expect(
@@ -5396,7 +5835,7 @@ else process.exit(2);
   v.git('reset', '-q', '--hard', 'main');
   vPut(
     'design/approved-screens.json',
-    JSON.stringify({ screens: [{ file: 'apps/office/app/home/page.tsx' }] }),
+    JSON.stringify({ screens: [approvedDesign(v.dir, 'apps/office/app/home/page.tsx')] }),
   );
   const viaHook = spawnSync('node', [join(hooks, 'guard-bash.mjs')], {
     input: JSON.stringify({
@@ -6093,6 +6532,49 @@ else process.exit(1);
       ),
       0,
     );
+    // Claude's usage limit stops the agent mid-story: its transcript ends on the API's error.
+    const transcript = join(q.dir, '.claude/state/agent-3.jsonl');
+    writeFileSync(
+      transcript,
+      [
+        { type: 'assistant', message: { content: [{ type: 'text', text: 'Booking next.' }] } },
+        {
+          type: 'assistant',
+          isApiErrorMessage: true,
+          error: 'rate_limit',
+          message: { content: [{ type: 'text', text: "You've hit your session limit" }] },
+        },
+      ]
+        .map((e) => JSON.stringify(e))
+        .join('\n') + '\n',
+    );
+    const limited = {
+      session_id: 'aaaa1111-s',
+      agent_id: 'agent-3',
+      agent_type: 'web-engineer',
+      hook_event_name: 'SubagentStop',
+      agent_transcript_path: transcript,
+    };
+    const stoppedFinish = qHook('stop-check.mjs', limited);
+    qHook('act.mjs', limited, ['handback']);
+    const st3 = readFileSync(join(q.dir, '.claude/state/events/ST-3.jsonl'), 'utf8')
+      .trim()
+      .split('\n')
+      .map(JSON.parse);
+    expect(
+      "LOOP-14 an agent stopped by Claude's usage limit isn't checked or handed back: it keeps its lane, and its story isn't for review",
+      truth(
+        stoppedFinish.status === 0 &&
+          JSON.parse(qCli('lanes', '--json').stdout).some((c) => c.lane === 'web') &&
+          st3.at(-1).kind === 'stopped' &&
+          st3.at(-1).result?.error === 'rate_limit' &&
+          !st3.some((e) => e.kind === 'handback') &&
+          nextIn(q.dir).step !== 'review',
+        `${stoppedFinish.stderr} ${JSON.stringify(st3.at(-1))} ${JSON.stringify(nextIn(q.dir))}`,
+      ),
+      0,
+    );
+    rmSync(transcript);
     qPut('.claude/state/reports/web_st-3.md', '# ST-3\n\nDone: booking, CLS-1.\n');
     const finished = finish();
     q.git('checkout', '-q', 'main');
@@ -6768,6 +7250,41 @@ else process.exit(1);
   legacyRepo.git('add', '-A');
   nextIs('existing code without code-kit goes to init', legacyRepo.dir, 'init');
 
+  // A dropped story (folded into another, or no longer wanted) is never dispatched or waited on.
+  {
+    const d = newRepo();
+    cleanups.push(d.dir);
+    mkdirSync(join(d.dir, 'docs/spec'), { recursive: true });
+    writeFileSync(
+      join(d.dir, 'docs/spec/01-weather.md'),
+      '# 01. Weather\n\n### WX-1 Forecast\n\nx\n',
+    );
+    writeFileSync(
+      join(d.dir, 'docs/spec/plan.md'),
+      '# Plan\n\n## M1\n\n### ST-1 Old forecast\n\n**Lane:** web\n**Requirements:** WX-1\n**Status:** dropped\n\n### ST-2 Forecast\n\n**Lane:** web\n**Requirements:** WX-1\n**Depends on:** ST-1\n**Status:** todo\n',
+    );
+    d.git('add', '-A');
+    d.git('commit', '-q', '-m', 'plan');
+    nextIs(
+      'a dropped story is never offered for dispatch, and a story depending on it is ready',
+      d.dir,
+      'dispatch',
+      'ST-2',
+    );
+    const st = JSON.parse(
+      spawnSync('node', [kitCli, 'status', '--json'], { cwd: d.dir, encoding: 'utf8' }).stdout,
+    );
+    expect(
+      'status reads it as dropped, covering no requirement',
+      truth(
+        st.stories.find((x) => x.id === 'ST-1')?.state === 'dropped' &&
+          st.requirements.find((r) => r.id === 'WX-1')?.stories.join() === 'ST-2',
+        JSON.stringify(st.stories),
+      ),
+      0,
+    );
+  }
+
   const ready = nextIs('with the kit on: ready stories go to dispatch', v.dir, 'dispatch', 'ST-2');
   expect(
     'a ready story with a gap in the plan is held back',
@@ -6779,6 +7296,21 @@ else process.exit(1);
   vCommit('ST-2');
   v.git('checkout', '-q', 'main');
   nextIs('finished stories go to review', v.dir, 'review', 'ST-2');
+  // A lane agent dispatched on it again and not handed back since: its branch is work in progress.
+  claimLane(v.dir, { lane: 'web', story: 'ST-2', session: 's-redo' });
+  expect(
+    'a story its lane is building again is not offered for review',
+    truth(nextIn(v.dir).step !== 'review', JSON.stringify(nextIn(v.dir))),
+    0,
+  );
+  mkdirSync(join(v.dir, '.claude/state/events'), { recursive: true });
+  writeFileSync(
+    join(v.dir, '.claude/state/events/ST-2.jsonl'),
+    `${JSON.stringify({ at: new Date(Date.now() + 1000).toISOString(), story: 'ST-2', actor: 'web', agent: 'a1', kind: 'handback', phase: 'note' })}\n`,
+  );
+  nextIs('once its agent hands back, it goes to review', v.dir, 'review', 'ST-2');
+  releaseLane(v.dir, 'web');
+  rmSync(join(v.dir, '.claude/state/events/ST-2.jsonl'));
   // A review that sends the branch back: the same commits aren't finished work to review again.
   const sent = vCli('sent-back', 'web/st-2', '--reason', 'cancel needs its test');
   expect(
@@ -6832,6 +7364,18 @@ else process.exit(1);
     'merge',
     'web/st-2',
   );
+  markMerging(v.dir, 'web/st-2', process.pid);
+  const whileMerging = nextIn(v.dir);
+  expect(
+    'MQ-1 while a queue merge runs, next asks for no merge, and says why',
+    truth(
+      whileMerging.step !== 'merge' &&
+        whileMerging.attention.some((a) => a.includes('web/st-2 is being merged now')),
+      JSON.stringify(whileMerging),
+    ),
+    0,
+  );
+  markMerging(v.dir, 'web/st-2', null);
   writeFileSync(
     join(v.dir, '.claude/code-kit.json'),
     JSON.stringify({
@@ -7113,6 +7657,56 @@ else process.exit(1);
       0,
     );
 
+    // REG-1: a test that calls what the fix adds stops a run that halts at its first failure; set
+    // aside, a test through the existing code shows the bug.
+    g.git('checkout', '-q', 'main');
+    g.git('checkout', '-q', '-b', 'web/fix-taken');
+    gConfig({
+      checks: [
+        {
+          name: 'office tests, stopping at the first failure',
+          files: ['apps/office/**'],
+          run: ['for f in apps/office/*.test.mjs; do node --test "$f" || exit 1; done'],
+        },
+      ],
+    });
+    gPut(
+      'apps/office/booking.mjs',
+      'export const free = (slots) => slots.filter((s) => !s.taken);\nexport const hold = (slot) => ({ ...slot, held: true });\n',
+    );
+    gPut(
+      'apps/office/a-hold.test.mjs',
+      `import { test } from 'node:test';\nimport assert from 'node:assert';\nimport { hold } from './booking.mjs';\ntest('a held slot is held', () => { assert.equal(hold({}).held, true); });\n`,
+    );
+    gPut(
+      'apps/office/b-free.test.mjs',
+      `import { test } from 'node:test';\nimport assert from 'node:assert';\nimport { free } from './booking.mjs';\ntest('a taken slot is not free', () => { assert.equal(free([{ taken: true }]).length, 0); });\n`,
+    );
+    gCommit('fix taken slots');
+    res = gVerify();
+    expect(
+      'REG-1 a test failing on an assertion proves the fix, once tests calling what it adds are set aside',
+      truth(!said(res).includes('only because they call what the fix adds'), said(res)),
+      0,
+    );
+    gConfig();
+    g.git('checkout', '-q', '--', '.');
+
+    // REG-1: a fix made wholly in the tests (a flaky one) has no code to take back.
+    g.git('checkout', '-q', 'main');
+    g.git('checkout', '-q', '-b', 'web/fix-flaky');
+    gPut(
+      'apps/office/old.test.mjs',
+      `${twoCases}\n// seeded, so it no longer depends on the clock\n`,
+    );
+    gCommit('fix the flaky test');
+    res = gVerify();
+    expect(
+      'REG-1 a fix wholly in the tests passes the fix check',
+      truth(!said(res).includes('This branch fixes'), said(res)),
+      0,
+    );
+
     // REG-1: a fix with no test.
     g.git('checkout', '-q', 'main');
     g.git('checkout', '-q', '-b', 'web/fix-typo');
@@ -7168,6 +7762,44 @@ else process.exit(1);
       truth(held?.kind === 'approval' && held.names.join() === 'tests', JSON.stringify(held)),
       0,
     );
+    // CARD-7: a commit of the file in the same second, made before the request, doesn't answer it.
+    {
+      const r = newRepo();
+      const second = Math.floor(Date.now() / 1000);
+      writeFileSync(join(r.dir, 'same.test.mjs'), 'test\n');
+      r.git('add', 'same.test.mjs');
+      execFileSync(
+        'git',
+        ['-C', r.dir, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '-m', 'x'],
+        { env: { ...process.env, GIT_COMMITTER_DATE: `@${second} +0000` } },
+      );
+      const at = second * 1000 + 500;
+      recordRequest(
+        r.dir,
+        { kind: 'lane', lane: 'web', label: 'web' },
+        'tests',
+        'same.test.mjs',
+        'A weakened test.',
+        at,
+      );
+      expect(
+        "CARD-7 a request isn't answered by a commit made before it in the same second",
+        truth(openRequests(r.dir, at + 100).some((q) => q.what === 'same.test.mjs')),
+        0,
+      );
+      writeFileSync(join(r.dir, 'same.test.mjs'), 'test, approved\n');
+      r.git('add', 'same.test.mjs');
+      execFileSync(
+        'git',
+        ['-C', r.dir, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '-m', 'y'],
+        { env: { ...process.env, GIT_COMMITTER_DATE: `@${second} +0000` } },
+      );
+      expect(
+        'CARD-7 one made after it in the same second does',
+        truth(!openRequests(r.dir, at + 200).some((q) => q.what === 'same.test.mjs')),
+        0,
+      );
+    }
     const asked = JSON.parse(gCli('requests', '--json').stdout).open;
     expect(
       'REG-2 and it waits in the Decisions tab as a request',
@@ -7183,6 +7815,43 @@ else process.exit(1);
       2,
       'is a weakened test',
     );
+    // Staging through `git -C`, or deleting with `git rm`, is still seen.
+    g.git('checkout', '-q', '--', '.');
+    expect(
+      'REG-2 a test file deleted by git -C … rm is refused as a weakened test',
+      gBash(
+        `git -C "${g.dir}" rm -q apps/office/old.test.mjs && git -C "${g.dir}" commit -m drop`,
+        'web-engineer',
+      ),
+      2,
+      'deletes the test file',
+    );
+    gPut(
+      'apps/office/old.test.mjs',
+      twoCases.replace("test('keeps order'", "test.skip('keeps order'"),
+    );
+    expect(
+      'REG-2 and so is one staged by git -C … add -A',
+      gBash(`git -C "${g.dir}" add -A && git -C "${g.dir}" commit -m skip`, 'web-engineer'),
+      2,
+      'is a weakened test',
+    );
+    // A test the branch added itself isn't the base's to lose: moving its cases on weakens nothing.
+    const skipped = readFileSync(join(g.dir, 'apps/office/old.test.mjs'), 'utf8');
+    g.git('checkout', '-q', '--', '.');
+    gPut('apps/office/held.test.mjs', twoCases);
+    gCommit('ST-4 held tests');
+    expect(
+      'REG-2 deleting a test file the branch itself added is not a weakened test',
+      gBash(
+        'git rm -q apps/office/held.test.mjs && git commit -m "moved to the endpoint tests"',
+        'web-engineer',
+      ),
+      0,
+    );
+    g.git('reset', '-q', '--hard', 'HEAD~1');
+    rmSync(join(g.dir, '.claude/approval-log.jsonl'), { force: true });
+    gPut('apps/office/old.test.mjs', skipped);
     gConfig({ approvals: { delegate: { protected: ['design'] } } });
     expect(
       "REG-2 the lead may not approve it where weakened tests aren't delegated",
@@ -7212,6 +7881,14 @@ else process.exit(1);
         res.stderr + JSON.stringify(logged),
       ),
       0,
+    );
+    // The commit didn't land (here, the hook ran and the command never did): the next attempt is
+    // told where its approval went.
+    expect(
+      'REG-2 a refusal says the approval was used up by an earlier commit, and when',
+      gBash('git add -A && git commit -m skip', 'web-engineer'),
+      2,
+      'The tests approval given at',
     );
     g.git('commit', '-q', '-m', 'ST-4 skip with approval');
     res = gVerify();
@@ -7349,6 +8026,115 @@ else process.exit(1);
     );
   }
 
+  // --- verify: a file the branch holds exactly as the base now does isn't the branch's change -----
+  {
+    const t = newRepo();
+    cleanups.push(t.dir);
+    const tPut = (rel, body) => {
+      mkdirSync(dirname(join(t.dir, rel)), { recursive: true });
+      writeFileSync(join(t.dir, rel), body);
+    };
+    tPut('packages/schemas/order.ts', 'export type Order = { id: string };\n');
+    t.git('add', '-A');
+    t.git('commit', '-q', '-m', 'schema');
+    t.git('checkout', '-q', '-b', 'web/st-9');
+    // The lead's contract change reached the branch first, then the base on its own.
+    tPut('packages/schemas/order.ts', 'export type Order = { id: string; total: number };\n');
+    t.git('add', '-A');
+    t.git('commit', '-q', '-m', 'the contract, as the lead wrote it');
+    tPut('apps/office/lib/order.ts', 'export const total = 1;\n');
+    t.git('add', '-A');
+    t.git('commit', '-q', '-m', 'ST-9');
+    t.git('checkout', '-q', 'main');
+    tPut('packages/schemas/order.ts', 'export type Order = { id: string; total: number };\n');
+    t.git('add', '-A');
+    t.git('commit', '-q', '-m', 'the contract');
+    t.git('checkout', '-q', 'web/st-9');
+    const res = spawnSync('node', [kitCli, 'verify', '--base', 'main', '--no-checks'], {
+      cwd: t.dir,
+      encoding: 'utf8',
+    });
+    expect(
+      "verify doesn't hold a lane to a file it holds exactly as the base does",
+      truth(res.status === 0 && !res.stdout.includes('order.ts: the web lane'), res.stdout),
+      0,
+    );
+    t.git('checkout', '-q', 'main');
+  }
+
+  // --- TEAM-1: claims left behind by earlier merges end at the next one ---------------------------
+  {
+    const t = newRepo();
+    cleanups.push(t.dir);
+    t.git('checkout', '-q', '-b', 'web/st-5');
+    t.git('commit', '-q', '--allow-empty', '-m', 'ST-5 work');
+    t.git('checkout', '-q', 'main');
+    t.git('merge', '-q', '--no-ff', '-m', 'Merge web/st-5 into main', 'web/st-5');
+    t.git('commit', '-q', '--allow-empty', '-m', 'ST-6 is next; prepares web/st-6');
+    const swept = spawnSync(
+      'node',
+      [
+        '--input-type=module',
+        '-e',
+        `import { mergedClaims } from ${JSON.stringify(join(hooks, 'lib/team.mjs'))};
+         console.log(JSON.stringify(mergedClaims(process.cwd(), [{ story: 'ST-5' }, { story: 'ST-6' }], 'main')));`,
+      ],
+      { cwd: t.dir, encoding: 'utf8' },
+    );
+    expect(
+      "TEAM-1 a merged story's claim is found to end; one a commit only mentions is not",
+      truth(swept.stdout.trim() === '["ST-5"]', swept.stdout + swept.stderr),
+      0,
+    );
+  }
+
+  // --- WHO-1: where the lead merges, verify holds its own change to what the person keeps --------
+  {
+    const t = newRepo();
+    cleanups.push(t.dir);
+    const tCli = (...args) =>
+      spawnSync('node', [kitCli, ...args], { cwd: t.dir, encoding: 'utf8' });
+    writeFileSync(
+      join(t.dir, '.claude/code-kit.json'),
+      JSON.stringify({ ...JSON.parse(fixture), approvals: { delegate: { merge: true } } }),
+    );
+    mkdirSync(join(t.dir, 'design'), { recursive: true });
+    writeFileSync(join(t.dir, 'design/approved-screens.json'), '{"screens":[]}\n');
+    t.git('add', '-A');
+    t.git('commit', '-q', '-m', 'delegate merges');
+    const leadCommit = (approval) => {
+      t.git('checkout', '-q', '-B', 'lead/st-1', 'main');
+      writeFileSync(
+        join(t.dir, 'design/approved-screens.json'),
+        `${JSON.stringify({ screens: [approvedDesign(t.dir, 'apps/office/app/a/page.tsx', 'A')] })}\n`,
+      );
+      writeFileSync(
+        join(t.dir, '.claude/approval-log.jsonl'),
+        `${JSON.stringify({ at: new Date().toISOString(), approval, reason: 'r', grantedAt: null, file: 'design/approved-screens.json', branch: 'lead/st-1', actor: 'lead' })}\n`,
+      );
+      t.git('add', '-A');
+      t.git('commit', '-q', '-m', 'ST-1 designs');
+      const res = tCli('verify', '--base', 'main', '--no-checks');
+      t.git('checkout', '-q', 'main');
+      return res;
+    };
+    const byLead = leadCommit('lead');
+    expect(
+      "WHO-1 where the lead merges, verify refuses its change to the designs without the person's approval",
+      truth(
+        byLead.status === 1 && byLead.stdout.includes("without the person's design approval"),
+        byLead.stdout + byLead.stderr,
+      ),
+      0,
+    );
+    const byPerson = leadCommit('design');
+    expect(
+      "and passes it with the person's approval logged",
+      truth(byPerson.status === 0, byPerson.stdout + byPerson.stderr),
+      0,
+    );
+  }
+
   // --- LEAN-6: worktrees released for a fresh agent, and pruned once merged ------------------------
   {
     const t = newRepo();
@@ -7407,6 +8193,31 @@ else process.exit(1);
       'uncommitted changes',
     );
     execFileSync('git', ['-C', tree('web/st-2'), 'checkout', '-q', '--', '.']);
+    // Its agent edited a minute ago and hasn't handed back, so it's still at work.
+    const events = join(t.dir, '.claude/state/events');
+    mkdirSync(events, { recursive: true });
+    const act = (kind, phase, ago) =>
+      JSON.stringify({
+        at: new Date(Date.now() - ago).toISOString(),
+        story: 'ST-2',
+        actor: 'web',
+        agent: 'a1',
+        session: 's1',
+        kind,
+        phase,
+        branch: 'web/st-2',
+      });
+    writeFileSync(join(events, 'ST-2.jsonl'), `${act('edit', 'end', 60_000)}\n`);
+    expect(
+      'a worktree whose lane agent acted in the last minutes, with no hand-back, is never released',
+      tCli('worktrees', 'release', 'web/st-2'),
+      1,
+      'still at work on web/st-2',
+    );
+    writeFileSync(
+      join(events, 'ST-2.jsonl'),
+      `${act('edit', 'end', 60_000)}\n${act('handback', 'note', 30_000)}\n`,
+    );
     expect(
       'released for a fresh agent: the worktree goes, the branch and its report stay',
       truth(
@@ -7509,7 +8320,7 @@ else process.exit(1);
           !existsSync(join(t.dir, '.claude/worktrees/lead-st66')) &&
           !t.git('worktree', 'list').includes('st-7') &&
           t.git('branch', '--list', 'api/st-6').includes('api/st-6'),
-        pruned.stdout + pruned.stderr,
+        `${pruned.stdout}${pruned.stderr} locked:${existsSync(locked)} stray:${existsSync(join(t.dir, '.claude/worktrees/lead-st66'))} list:${t.git('worktree', 'list')} branch:${t.git('branch', '--list', 'api/st-6')}`,
       ),
       0,
     );

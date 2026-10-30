@@ -48,6 +48,7 @@ export const STATE = {
   quiet: { word: 'quiet', color: 'yellow', glyph: '…' },
   ready: { word: 'ready', color: 'green', glyph: '○' },
   todo: { word: 'to do', color: undefined, glyph: '○' },
+  dropped: { word: 'dropped', color: undefined, glyph: '·' },
   idle: { word: 'resting', color: undefined, glyph: '·' },
   dispatched: { word: 'started', color: 'blue', glyph: '→' },
 };
@@ -195,6 +196,8 @@ export function buildWords(progress) {
 /** The Build panel's state in a word or two, from the loop and whether anything is at work. */
 export function buildState(loop, { atWork = 0, leadBusy = false } = {}) {
   if (loop?.state === 'paused') return 'paused';
+  // LOOP-14: nothing moves until Claude's usage limit resets.
+  if (loop?.limited) return 'usage limit';
   if (loop?.state === 'done' || loop?.state === 'stopped') return 'milestone done';
   if (loop?.state === 'elsewhere') return 'led elsewhere';
   if (loop?.state === 'unled') return 'no lead';
@@ -208,6 +211,7 @@ export function buildState(loop, { atWork = 0, leadBusy = false } = {}) {
 /** How urgent each kind of line is (UI-3): a held call first, notes last. */
 const URGENCY = [
   'notice',
+  'limited',
   'held',
   'question',
   'waiting',
@@ -227,6 +231,7 @@ const NOTES = new Set(['usage', 'paused', 'finish', 'done', 'teamDown', 'elsewhe
 /** What a line is, in a word or two, for the Needs you panel. */
 const NEED_WORD = {
   notice: 'failed',
+  limited: 'usage limit',
   held: 'held call',
   question: 'question',
   waiting: 'the lead waits',
@@ -647,7 +652,11 @@ export function board(view, els, on) {
         'Build',
         loopWord,
         progress ? `${progress.tested}/${progress.total}` : null,
-        loopWord === 'moving' ? 'green' : loopWord === 'paused' ? 'yellow' : undefined,
+        loopWord === 'moving'
+          ? 'green'
+          : ['paused', 'usage limit'].includes(loopWord)
+            ? 'yellow'
+            : undefined,
       ),
       ...(progress
         ? [

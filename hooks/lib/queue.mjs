@@ -90,6 +90,91 @@ export function settle(root, branch, state, reason = null, now = Date.now()) {
   writeQueue(root, [...entries.filter((e) => !settled.includes(e)), ...settled]);
 }
 
+/**
+ * MQ-1: the head being merged by a running `queue merge` (process `pid`), in its place; `null` puts it
+ * back to waiting, in its place too.
+ */
+export function markMerging(root, branch, pid, now = Date.now()) {
+  writeQueue(
+    root,
+    readQueue(root).map((e) => {
+      if (e.branch !== branch || !['waiting', 'merging'].includes(e.state)) return e;
+      const { pid: _pid, ...rest } = e;
+      return pid
+        ? { ...rest, state: 'merging', pid, at: new Date(now).toISOString() }
+        : { ...rest, state: 'waiting' };
+    }),
+  );
+}
+
+/** Whether `entry` is being merged now: marked merging by a process still running. */
+export function mergingNow(entry) {
+  if (entry?.state !== 'merging' || !entry.pid) return false;
+  try {
+    process.kill(entry.pid, 0);
+    return true;
+  } catch (e) {
+    return e.code === 'EPERM';
+  }
+}
+
+/**
+ * MQ-7: what the queue merges next. A branch queued `with` others merges only together with them, once
+ * each is queued too: verified as one tree, merged one after another. Until then it waits, and the
+ * queue goes on with the next. `{ head, partners, held }`: `head` null when nothing can merge yet;
+ * `held` lists each waiting branch with the partners it still needs queued.
+ */
+export function nextToMerge(entries) {
+  const queue = waiting(entries);
+  const queued = new Set(queue.map((e) => e.branch));
+  // A partner already merged on its own is no longer waited for.
+  const merged = new Set(entries.filter((e) => e.state === 'merged').map((e) => e.branch));
+  const groupOf = (e) => {
+    const group = new Set([e.branch]);
+    for (let grew = true; grew;) {
+      grew = false;
+      for (const x of queue)
+        if (
+          !group.has(x.branch) &&
+          ((x.with ?? []).some((b) => group.has(b)) ||
+            [...group].some((b) =>
+              (queue.find((y) => y.branch === b)?.with ?? []).includes(x.branch),
+            ))
+        ) {
+          group.add(x.branch);
+          grew = true;
+        }
+    }
+    return group;
+  };
+  const held = [];
+  for (const e of queue) {
+    const group = groupOf(e);
+    const missing = [...group]
+      .flatMap((b) => queue.find((y) => y.branch === b)?.with ?? [])
+      .filter((b) => !queued.has(b) && !merged.has(b));
+    if (missing.length) {
+      held.push({ branch: e.branch, missing: [...new Set(missing)] });
+      continue;
+    }
+    const partners = queue.filter((x) => x.branch !== e.branch && group.has(x.branch));
+    return { head: e, partners, held };
+  }
+  return { head: null, partners: [], held };
+}
+
+/** MQ-7: a queued branch's partners, which it merges together with. */
+export function setPartners(root, branch, partners) {
+  writeQueue(
+    root,
+    readQueue(root).map((e) =>
+      e.branch === branch && ['waiting', 'merging'].includes(e.state)
+        ? { ...e, with: [...new Set([...(e.with ?? []), ...partners])] }
+        : e,
+    ),
+  );
+}
+
 /** The branch merged last, for a send-back's reason ("conflicts with main after web/st-4"). */
 export function lastMerged(entries) {
   return [...entries].reverse().find((e) => e.state === 'merged')?.branch ?? null;
@@ -109,7 +194,7 @@ export function storyMerges(cmd, branch) {
   const switches = new RegExp(
     String.raw`^${GIT}(?:switch|checkout)\s+((?:-\S+\s+)*)([^\s-]\S*)\s*$`,
   );
-  const merges = new RegExp(String.raw`^${GIT}merge\b(.*)$`);
+  const merges = new RegExp(String.raw`^${GIT}merge(?![\w-])(.*)$`);
   for (const { text, code } of commandsOf(cmd)) {
     const moved = code.match(switches);
     if (moved) {

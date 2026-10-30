@@ -18,6 +18,7 @@ import { CODE_KIT, GIT, codeOf, commandsOf, runs } from './lib/shell.mjs';
 import { block, start } from './lib/hook.mjs';
 import { CONFIG_FILE, committedConfig } from './lib/config.mjs';
 import { laneOfBranch, storyOfBranch, teamOf, teamProvider, whoami } from './lib/team.mjs';
+import { entryProblems, readRegister } from './lib/designs.mjs';
 import { globToRegExp, matchesAny } from './lib/glob.mjs';
 import { noteBefore } from './lane-audit.mjs';
 import { storyMerges } from './lib/queue.mjs';
@@ -44,6 +45,8 @@ import {
   useApproval,
   owns,
   protectedEntry,
+  leadNeedsApproval,
+  approvalEnded,
   recordRequest,
   sessionRoot,
 } from './lib/rules.mjs';
@@ -115,7 +118,7 @@ const queues = runs(cmd, new RegExp(String.raw`^${CODE_KIT}\s+queue\s+(?:add|dro
 const rulesOntoBase = runs(cmd, new RegExp(String.raw`^${CODE_KIT}\s+queue\s+rules\b`));
 const asks = runs(cmd, new RegExp(String.raw`^${CODE_KIT}\s+ask\b\s+(?!--json\b)\S`));
 const dropsRequests = runs(cmd, new RegExp(String.raw`^${CODE_KIT}\s+requests\s+drop\b`));
-const commits = runs(cmd, new RegExp(String.raw`^${GIT}commit\b`));
+const commits = runs(cmd, new RegExp(String.raw`^${GIT}commit(?![\w-])`));
 if (error) {
   if (commits) block(`Blocked: ${error}\nFix the config before committing.`);
   if (approves) block(`Blocked: ${error}\nApprovals wait until the config is valid.`);
@@ -141,7 +144,7 @@ function committedOnHead(root, file) {
 
 const writesHistory = runs(
   cmd,
-  new RegExp(String.raw`^${GIT}(commit|merge|cherry-pick|rebase|revert|am)\b`),
+  new RegExp(String.raw`^${GIT}(commit|merge|cherry-pick|rebase|revert|am)(?![\w-])`),
 );
 const switchesToProtected = runs(
   cmd,
@@ -393,8 +396,8 @@ try {
 // that commit on, the branch is protected by the rules it now holds.
 const settingUp =
   actor.kind === 'lead' &&
-  runs(cmd, new RegExp(String.raw`^${GIT}commit\b`)) &&
-  !runs(cmd, new RegExp(String.raw`^${GIT}(merge|cherry-pick|rebase|revert|am)\b`)) &&
+  runs(cmd, new RegExp(String.raw`^${GIT}commit(?![\w-])`)) &&
+  !runs(cmd, new RegExp(String.raw`^${GIT}(merge|cherry-pick|rebase|revert|am)(?![\w-])`)) &&
   !committedOnHead(root, CONFIG_FILE);
 if (writesHistory && config.branches.protected.includes(branch) && !settingUp) {
   block(
@@ -513,12 +516,27 @@ function committedFiles() {
   const changed = names(git('status', '--porcelain', '-uall', '--no-renames')).map((l) =>
     l.slice(3),
   );
-  const commitAll = /\bgit\s+commit\b[^;&|]*\s(-a|--all|-[b-zB-Z]*a[a-zA-Z]*)(\s|$)/.test(cmd);
-  const addAll = /\bgit\s+add\b[^;&|]*\s(-A|--all|\.)(\s|$)/.test(cmd);
-  const addArgs = [...cmd.matchAll(/\bgit\s+add\s+([^;&|]+)/g)]
-    .flatMap((m) => m[1].trim().split(/\s+/))
-    .filter((a) => a && !a.startsWith('-'))
-    .map((a) => a.replace(/^(['"])(.*)\1$/, '$2'));
+  // Each git command of the chain, however it's run (`git -C <worktree> add`).
+  const pieces = commandsOf(cmd).map((c) => c.text);
+  const gitRun = (sub) =>
+    pieces.map((p) => p.match(new RegExp(String.raw`^${GIT}${sub}`))).filter(Boolean);
+  const commitAll = gitRun(String.raw`commit(?![\w-])(.*)`).some((m) =>
+    /\s(-a|--all|-[b-zB-Z]*a[a-zA-Z]*)(\s|$)/.test(` ${m[1]}`),
+  );
+  const argsOf = (m) =>
+    m[1]
+      .trim()
+      .split(/\s+/)
+      .filter((a) => a && !a.startsWith('-'))
+      .map((a) => a.replace(/^(['"])(.*)\1$/, '$2'));
+  const addRuns = gitRun(String.raw`add\b(.*)`);
+  const addAll = addRuns.some((m) => /\s(-A|--all|\.)(\s|$)/.test(` ${m[1]}`));
+  // `git rm` and `git mv` stage as they run: their files count though nothing has changed them yet, and
+  // what they take away is gone from the commit though it's still on disk now.
+  const rmArgs = gitRun(String.raw`rm\b(.*)`).flatMap(argsOf);
+  const mvArgs = gitRun(String.raw`mv\b(.*)`).map(argsOf);
+  const moved = [...rmArgs, ...mvArgs.flat()];
+  const addArgs = [...addRuns.flatMap(argsOf), ...moved];
   // What the shell expands before git sees it (#76): an argument it can't be read from, such as a
   // variable or a command's output, could be any file, so every changed file counts.
   const unknowable = addArgs.some((a) => /[$`]/.test(a));
@@ -532,12 +550,16 @@ function committedFiles() {
   const added = changed.filter(
     (f) => commitAll || addAll || unknowable || addArgs.some((a) => matches(f, a)),
   );
+  const tracked = moved.length ? names(git('ls-files')) : [];
+  const removed = tracked.filter((f) => moved.some((a) => matches(f, a)));
+  const takenAway = [...rmArgs, ...mvArgs.flatMap((args) => args.slice(0, -1))];
+  const gone = new Set(tracked.filter((f) => takenAway.some((a) => matches(f, a))));
   // `git reset --soft <ref> && git commit` commits everything since <ref>, staged by the reset (#76).
-  const resetTo = [...cmd.matchAll(/\bgit\s+reset\s+--soft\s+([^\s;&|]+)/g)].map((m) => m[1]);
+  const resetTo = gitRun(String.raw`reset\s+--soft\s+(\S+)`).map((m) => m[1]);
   const reset = resetTo.flatMap((ref) =>
     names(git('diff', '--name-only', '--no-renames', ref, 'HEAD')),
   );
-  return { files: [...new Set([...staged, ...added, ...reset])], git };
+  return { files: [...new Set([...staged, ...added, ...removed, ...reset])], gone, git };
 }
 
 // Every committed protected file is recorded in the audit log, with the person's reason when an
@@ -545,7 +567,7 @@ function committedFiles() {
 // dependency approval: that entry is how `code-kit verify` accepts it. The log is staged into the same
 // commit, so record and change land together.
 function recordApprovals() {
-  const { files, git } = committedFiles();
+  const { files, gone, git } = committedFiles();
   const lines = [];
   const record = (file, fields) =>
     lines.push(
@@ -595,10 +617,11 @@ function recordApprovals() {
         : null);
     const granted = entry && approval(root, entry.approval, actor);
     const byDependency = actor.kind === 'lane' && dependencyChange(actor, file, root, config);
-    if (entry && !granted && actor.kind !== 'lead' && !byDependency) {
+    const leadFree = actor.kind === 'lead' && !leadNeedsApproval(entry?.approval, config);
+    if (entry && !granted && !leadFree && !byDependency) {
       recordRequest(root, actor, entry.approval, file, entry.why);
       block(
-        `Blocked: ${file} is ${entry.why}; committing it needs ${decidedBy(entry.approval, config, actor) === 'lead' ? "the lead's" : "a person's"} approval in force.${noteFor(root, config, { kind: 'protected', name: entry.approval, glob: entry.glob })} ${askHowTo(entry.approval, actor, root, config)}`,
+        `Blocked: ${file} is ${entry.why}; committing it needs ${decidedBy(entry.approval, config, actor) === 'lead' ? "the lead's" : "a person's"} approval in force.${approvalEnded(root, entry.approval, actor)}${noteFor(root, config, { kind: 'protected', name: entry.approval, glob: entry.glob })} ${askHowTo(entry.approval, actor, root, config)}`,
       );
     }
     if (granted)
@@ -630,6 +653,8 @@ function recordApprovals() {
     root,
     files.filter((f) => !arrivesWithMerge(root, f, { staged: true })),
     config,
+    gone,
+    config.branches.protected[0],
   );
   if (weakened.length) {
     const granted = approval(root, TESTS_APPROVAL, actor);
@@ -646,7 +671,7 @@ function recordApprovals() {
             ? `Also weakened: ${more.map((x) => `${x.file} (${said(x)})`).join('; ')}.
 `
             : '') +
-          `A weakened test can hide a regression. Fix the code so the test passes as it was. ` +
+          `A weakened test can hide a regression.${approvalEnded(root, TESTS_APPROVAL, actor)} Fix the code so the test passes as it was. ` +
           (leads
             ? `If the test itself is wrong, the lead decides after reviewing it: ${askHowTo(TESTS_APPROVAL, actor, root, config, { allows: 'weakening tests in one commit', need: 'the test, what you weakened and why the test was wrong, and the story' })}`
             : `If the test itself is wrong, ask the person: ${actor.kind === 'lead' ? "on your own branch nobody else reviews it, so you can't approve it." : "the lead can't approve it here."} They run
@@ -686,8 +711,41 @@ ${approvalHowTo(TESTS_APPROVAL, actor, root, 'weakening tests in one commit', pe
   git('add', APPROVAL_LOG);
 }
 
+// The commit hook judges what the commit holds before the command runs, so a file a command earlier in
+// the chain writes (a formatter, a script, a heredoc) can't be seen, and would go in unjudged and
+// unlogged. Before the commit, a chain may only move into the checkout and stage.
+const BEFORE_COMMIT = new RegExp(
+  String.raw`^(?:cd\s|${GIT}(?:add|rm|mv|status|diff|log|show|restore\s+--staged|reset\s+--soft)(?![\w-]))`,
+);
+function writesBeforeCommit() {
+  const pieces = commandsOf(cmd);
+  const at = pieces.findIndex((c) => new RegExp(String.raw`^${GIT}commit(?![\w-])`).test(c.text));
+  return pieces
+    .slice(0, Math.max(at, 0))
+    .find((c) => !BEFORE_COMMIT.test(c.text) || /[<>]/.test(c.code));
+}
+
 if (commits) {
-  recordApprovals();
+  const writer = writesBeforeCommit();
+  if (writer)
+    block(
+      `Blocked: this commit runs after \`${writer.text.slice(0, 80)}\` in the same command, which may write files code-kit can't see before the commit, so they would go in without their checks or their entry in the approval log. Run that first, on its own; then commit in a command of its own (\`git add … && git commit …\` is fine).\nCommand: ${cmd}`,
+    );
+  // HAND-2: a register entry this commit adds or changes names the approved design's files, as approved.
+  const register = config.designGate?.register;
+  if (register && committedFiles().files.includes(register)) {
+    const before = spawnSync('git', ['-C', root, 'show', `HEAD:${register}`], { encoding: 'utf8' });
+    const old = before.status === 0 ? readRegister(root, config, before.stdout).entries : [];
+    const same = (e) => old.some((o) => JSON.stringify(o) === JSON.stringify(e));
+    const problems = readRegister(root, config)
+      .entries.filter((e) => !same(e))
+      .flatMap((e) => entryProblems(root, e, config.docs?.specs));
+    if (problems.length)
+      block(
+        `Blocked: ${register} names approved designs a lane can't build from as approved:\n  ${problems.join('\n  ')}\nEach screen's design is files in the repository, every state, with its hash (docs/specs/24-designs-handed-over.md).\nCommand: ${cmd}`,
+      );
+  }
+  // Every refusal comes before approvals are spent and logged, so a refused commit spends none.
   const scan = spawnSync('gitleaks', ['protect', '--staged', '--redact', '--no-banner'], {
     cwd: root,
     encoding: 'utf8',
@@ -697,5 +755,6 @@ if (commits) {
       `Blocked: gitleaks found possible secrets in staged changes.\n${scan.stdout}${scan.stderr}`,
     );
   }
+  recordApprovals();
 }
 process.exit(0);

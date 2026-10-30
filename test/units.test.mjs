@@ -52,6 +52,8 @@ import {
   storiesInFlight,
   storiesSignature,
   withoutInFlight,
+  limitHold,
+  unfinished,
 } from '../hooks/mod/loop.mjs';
 
 const fixture = JSON.parse(
@@ -269,6 +271,10 @@ test('the packages a command adds', () => {
     ['echo "write package.json before npm install; then commit" >> notes.md', []],
     ["git commit -m 'Run npm install lodash first'", []],
     ["cat > NOTES.md <<'EOF'\nnpm install lodash\nEOF", []],
+    // What a throwaway container installs is the container's.
+    ["docker run --rm python:3.12-slim bash -c 'pip install -q uv; uv sync --frozen'", []],
+    ['podman run --rm node:22 npm install zod', []],
+    ['docker run --rm node:22 true && npm install zod', ['zod']],
   ];
   for (const [cmd, want] of cases) assert.deepEqual(addedPackages(cmd), want, cmd);
 });
@@ -573,6 +579,31 @@ test("LOOP-11 the loop reads the lead's reply: what it left the build at, its qu
   );
 });
 
+test('LOOP-14 the hold after a failed turn: the used-up windows reset, or 5 minutes doubling to an hour', () => {
+  const now = Date.parse('2026-10-21T05:13:00Z');
+  const limits = [
+    { kind: 'five_hour', percentUsed: 100, resetsAt: '2026-10-21T08:00:00Z' },
+    { kind: 'seven_day', percentUsed: 100, resetsAt: '2026-10-26T04:00:00Z' },
+    { kind: 'spend_limit', percentUsed: 30, resetsAt: '2026-11-01T00:00:00Z' },
+  ];
+  assert.deepEqual(limitHold({ rateLimits: limits, now }), {
+    until: Date.parse('2026-10-26T04:00:00Z'),
+    why: 'limit',
+  });
+  // A reset already past, or a window not used up, doesn't hold it.
+  const minute = 60 * 1000;
+  assert.deepEqual(
+    limitHold({ rateLimits: [{ ...limits[0], resetsAt: '2026-10-21T05:00:00Z' }], now }),
+    {
+      until: now + 5 * minute,
+      why: 'error',
+    },
+  );
+  assert.equal(limitHold({ rateLimits: [], now, failures: 2 }).until, now + 10 * minute);
+  assert.equal(limitHold({ rateLimits: [], now, failures: 3 }).until, now + 20 * minute);
+  assert.equal(limitHold({ rateLimits: [], now, failures: 9 }).until, now + 60 * minute);
+});
+
 test('LOOP-13 stories waiting on other work: read from the reply, watched, and left out of the step', () => {
   assert.match(outcomePrompt({ answer: 'x' }), /- waiting: the step isn't due yet/);
   assert.deepEqual(
@@ -663,6 +694,12 @@ test('LEAN-4 to LEAN-5 the context a request carried, the wrap-up, and carrying 
   );
   assert.equal(requestContext(null), 0);
   assert.match(wrapUpText(250000), /^Your context is past 250k tokens/);
+  assert.match(wrapUpText(250000), /start your hand-back with "Not finished:"/);
+  // Only a hand-back that says so is carried on; a finished one goes to review.
+  assert.equal(unfinished('Not finished: the email is left.'), true);
+  assert.equal(unfinished('  **Not finished:** the email is left.'), true);
+  assert.equal(unfinished('ST-4 done: committed, checks and verify pass.'), false);
+  assert.equal(unfinished('Done. Nothing is not finished.'), false);
   assert.match(compactInstructions(), /^The lead's context is compacted between turns/);
   assert.equal(
     continuePrompt({ type: 'api-engineer', story: 'ST-9', branch: 'api/st-9', cli: '/k.mjs' }),
@@ -2264,6 +2301,14 @@ test('REG-2 what weakens a test: a skip or focus marker, fewer cases, fewer asse
   assert.deepEqual(weakenings(base, base.replace(' expect(2).toBe(2);', '')), [
     'has 1 fewer assertion (2 → 1)',
   ]);
+  // Making an assertion retry, or soft, keeps it an assertion.
+  assert.deepEqual(
+    weakenings(
+      base,
+      base.replace('expect(2).toBe(2);', 'await expect.poll(() => 2).toBe(2); expect.soft(3);'),
+    ),
+    [],
+  );
   // A renamed case isn't fewer, and Python, Go and pytest markers count too.
   assert.deepEqual(weakenings(base, base.replace("'b'", "'b, renamed'")), []);
   assert.equal(testShape('def test_x():\n    assert 1\n').cases[0], 'test_x');
@@ -3465,4 +3510,27 @@ test('UI-11 the character as half-blocks in a surface module: two pixels a cell,
       [' ', null, null],
     ],
   );
+});
+
+test("a check's long output never stops it: its exit code decides, and its end is kept", async () => {
+  const { runChecks } = await import('../hooks/lib/checks.mjs');
+  const dir = mkdtempSync(join(tmpdir(), 'code-kit-checks-'));
+  try {
+    // About 3 MB of output, past what a buffered run held.
+    const loud = `node -e "for (let i = 0; i < 60000; i++) console.log('ok ' + i + ' ' + 'x'.repeat(40))"`;
+    const check = (name, run) => ({ name, files: ['**'], run: [run] });
+    const actor = { kind: 'lead', label: 'lead' };
+    assert.equal(runChecks({ checks: [check('loud', loud)] }, ['a.ts'], dir, actor).failure, null);
+    const { failure } = runChecks(
+      { checks: [check('loud and failing', `${loud} && echo 'not ok: the last test' && exit 1`)] },
+      ['a.ts'],
+      dir,
+      actor,
+    );
+    assert.match(failure.title, /fails\. Fix it:$/);
+    assert.match(failure.output, /not ok: the last test\s*$/);
+    assert.ok(failure.output.length <= 256 * 1024 + 2);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

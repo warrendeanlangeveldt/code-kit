@@ -81,6 +81,9 @@ import {
   PARK_MS,
   compactInstructions,
   continuePrompt,
+  unfinished,
+  limitHold,
+  limitText,
   requestContext,
   wrapUpText,
   milestonesDone,
@@ -145,6 +148,10 @@ const loop = {
   steps: [], // { at, kind, target, prompt? }, kept for the session
   lastKey: null, // the last step submitted or proposed, and the project as it stood then
   lastPrint: null,
+  // LOOP-14: the steps prompted while the project stood as `print`, so steps taken in turn don't come round.
+  askedAt: { print: null, keys: new Set() },
+  // LOOP-14: a lead turn ended on an API error: { until, why, failures }, until the limit resets.
+  limited: null,
   asked: { key: null, times: 0 }, // the step the lead was last prompted with, and how often in a row
   proposal: null, // under autonomy propose, or a step asked too often: { prompt, label, kind, target }
   pending: [], // restarts waiting for the lead to be idle: { story, prompt }
@@ -188,6 +195,7 @@ const DENIED_KEPT = 20;
 const LANES_FREE_MS = 60000;
 let lanesFreed = -Infinity;
 let leadTurn = null; // the lead's running turn, if any
+let leadTurns = 0; // the lead's turns started, so a step read before one began is known to be stale
 const activity = new Map(); // agent id → { at, inFlight, nudged, stopped, lane, story }
 const restarts = new Map(); // story → times the loop restarted it
 const flagged = new Map(); // story → { lane, story, count }: stalled past its restarts
@@ -204,6 +212,16 @@ const finishedWork = (a) => {
     (q) => q.branch === story.branch && ['waiting', 'merging'].includes(q.state),
   );
 };
+/**
+ * LEAN-5: a story a fresh agent mustn't carry on: merged, sent back (its send-back goes to a fresh agent
+ * already), or waiting in the merge queue.
+ */
+const carriedOnAlready = (story) =>
+  !story ||
+  ['done', 'sent back'].includes(story.state) ||
+  (model.queue ?? []).some(
+    (q) => q.branch === story.branch && ['waiting', 'merging', 'merged'].includes(q.state),
+  );
 /** An agent's activity record, made on first sight. */
 const activityOf = (agentId, now) => {
   let a = activity.get(agentId);
@@ -1334,6 +1352,7 @@ export function register(on) {
           return;
         }
         loop.lastKey = null;
+        loop.askedAt = { print: null, keys: new Set() };
         await act.record('lead', 'this session');
         $.ui.invalidate('ui.render');
         await act.step('resume');
@@ -1572,6 +1591,7 @@ export function register(on) {
         for (const id of loop.waiting?.stories ?? []) loop.parked.delete(id);
         loop.waiting = null;
         loop.lastKey = null;
+        loop.askedAt = { print: null, keys: new Set() };
         $.ui.invalidate('ui.render');
         await act.step('resume');
       },
@@ -1633,6 +1653,12 @@ export function register(on) {
         const h = harness();
         if (loop.paused || h.autonomy === 'off' || model.state?.kind !== 'ok' || loop.done) return;
         if (leadTurn) return;
+        // A turn that starts while the step reads the project (the person prompting the lead) may change
+        // what's next, as dropping the branch it would merge does: the step is read again once it ends.
+        const turns = leadTurns;
+        const stale = () => leadTurn || leadTurns !== turns;
+        // LOOP-14: a prompt now would fail as the last turn did.
+        if (loop.limited && (await $.clock.now()) < loop.limited.until) return;
         if (trigger === 'tick' && !loop.started && !loop.pending.length) return;
         const box = await $.prompt.read().catch(() => null);
         if (box?.text?.trim()) return;
@@ -1641,11 +1667,14 @@ export function register(on) {
         // LOOP-11: the lead's last reply first: one that waits on the person holds every step.
         await act.hear();
         if (loop.waiting && ['person', 'stopped'].includes(loop.waiting.kind)) return;
-        // #59: a restart or hand-back for a story that has since merged is stale, and goes unasked.
-        const finished = new Set(
-          (model.state?.stories ?? []).filter((s) => s.state === 'done').map((s) => s.id),
-        );
-        loop.pending = loop.pending.filter((p) => !finished.has(p.story));
+        // #59: a restart or hand-back for a story that has since merged is stale, and goes unasked; LEAN-5:
+        // so is carrying on a story that has since been sent back or queued to merge.
+        const stories = model.state?.stories ?? [];
+        loop.pending = loop.pending.filter((p) => {
+          const story = stories.find((s) => s.id === p.story);
+          return p.kind === 'continue' ? !carriedOnAlready(story) : story?.state !== 'done';
+        });
+        if (stale()) return;
         if (loop.pending.length) {
           const { story, prompt } = loop.pending.shift();
           // Until the person has chosen how hands-off the loop is, or under propose, a restart is offered
@@ -1677,6 +1706,7 @@ export function register(on) {
                 loop.parked,
               )
             : null;
+        if (stale()) return;
         // MISSION-1: the band shows what the loop takes next.
         loop.nextStep = step;
         if (!step) {
@@ -1730,7 +1760,12 @@ export function register(on) {
         }
         // Never the same step twice while the project stands still.
         const print = await act.fingerprint();
+        if (stale()) return;
         if (key === loop.lastKey && print === loop.lastPrint) return;
+        // LOOP-14: nor any step already prompted while it stood so, as steps taken in turn would be.
+        if (loop.askedAt.print !== print) loop.askedAt = { print, keys: new Set() };
+        if (loop.askedAt.keys.has(key)) return;
+        loop.askedAt.keys.add(key);
         loop.lastKey = key;
         loop.lastPrint = print;
         // LOOP-8, WHO-4: a step the lead was asked for three times and that is still next didn't take:
@@ -1812,7 +1847,15 @@ export function register(on) {
         loop.paused = false;
         await $.process.run(['node', cli, 'loop', 'resume'], { cwd }).catch(() => {});
         loop.lastKey = null;
+        loop.askedAt = { print: null, keys: new Set() };
         await act.record('resume', 'the loop');
+        $.ui.invalidate('ui.render');
+        await act.step('resume');
+      },
+      // LOOP-14: the person asks the loop not to wait out the limit; a turn that fails again holds it again.
+      tryNow: async () => {
+        loop.limited = null;
+        loop.askedAt = { print: null, keys: new Set() };
         $.ui.invalidate('ui.render');
         await act.step('resume');
       },
@@ -1861,6 +1904,11 @@ export function register(on) {
         const h = harness();
         if (loop.paused || h.autonomy === 'off' || model.state?.kind !== 'ok') return;
         const now = await $.clock.now();
+        // LOOP-14: lane agents quiet on the same limit aren't stalled, and a restart would fail too.
+        if (loop.limited && now < loop.limited.until) {
+          for (const a of activity.values()) a.at = now;
+          return;
+        }
         const lanes = Object.entries(model.check?.lanes ?? {});
         const waitingOnPerson = new Set([...held.values()].map((c) => c.agentId));
         for (const agent of (await $.agent.list().catch(() => [])) ?? []) {
@@ -2093,6 +2141,12 @@ export function register(on) {
       try {
         // LOOP-10: the lead session renews its lease; DECIDE-4: with the lead idle, a decision waiting.
         if (lease.mine) await act.lead();
+        // LOOP-14: the limit has reset; the loop takes its step at once.
+        if (loop.limited && !loop.limited.over && (await $.clock.now()) >= loop.limited.until) {
+          loop.limited.over = true;
+          $.ui.invalidate('ui.render');
+          await act.step('resume');
+        }
         if (!leadTurn) act.offer().catch(() => {});
         await act.notifyNew().catch(() => {});
         await act.beat().catch(() => {});
@@ -2402,6 +2456,7 @@ export function register(on) {
 
   on('turn.start', async ($, e, next) => {
     leadTurn = e.turnId;
+    leadTurns += 1;
     // LOOP-11: the questions already open, so the loop knows which the lead asked in this turn.
     turnQuestions = (model.questions ?? []).map((q) => q.id);
     $.ui.invalidate('ui.render'); // the lead's lane reads working while its turn runs
@@ -2421,12 +2476,23 @@ export function register(on) {
     if (e.agentId) {
       const a = activityOf(e.agentId, await $.clock.now());
       a.handedBack = true;
-      // LEAN-5: an agent that handed back at its limit: the lead carries its story on with a fresh one.
+      // LOOP-14: a turn that died on an API error stopped short; it didn't hand back at its limit.
+      if (e.reason === 'error') a.failed = true;
+      // LEAN-5: an agent that handed back at its limit saying its story isn't done: the lead carries it
+      // on with a fresh one. A hand-back that doesn't say so finished the story, which goes to review.
       const story = (model.state?.stories ?? []).find((s) => s.id === a.story);
-      if (a.overflow && !a.continued && act && story?.state !== 'done') {
+      if (
+        a.overflow &&
+        !a.failed &&
+        !a.continued &&
+        act &&
+        unfinished(e.answer) &&
+        !carriedOnAlready(story)
+      ) {
         a.continued = true;
         const agent = agentsSeen.get(e.agentId);
         loop.pending.push({
+          kind: 'continue',
           story: a.story,
           prompt: continuePrompt({
             type: agent?.type ?? 'The lane agent',
@@ -2454,6 +2520,23 @@ export function register(on) {
       };
       loop.sent = null;
       $.ui.invalidate('ui.render');
+      // LOOP-14: a turn the API failed did nothing; the loop holds until the limit resets.
+      if (e.reason === 'error') {
+        rateLimits = (await $.session.usage().catch(() => null))?.rateLimits ?? rateLimits;
+        const failures = (loop.limited?.failures ?? 0) + 1;
+        loop.limited = {
+          ...limitHold({ rateLimits, now: await $.clock.now(), failures }),
+          failures,
+        };
+        // Nothing to read of a reply that never came, and the step it was prompted with is asked again
+        // once the hold ends.
+        if (lastReply.sent) loop.askedAt.keys.delete(lastReply.sent.key);
+        lastReply = null;
+        loop.lastKey = null;
+        await act?.record('limited', limitText(loop.limited)).catch(() => {});
+        return res;
+      }
+      if (loop.limited) loop.limited = null;
       // What the person asked for goes first, whatever the loop's state.
       if (personAsks.length) {
         const text = personAsks.shift();
@@ -2473,9 +2556,12 @@ export function register(on) {
   // loop reads the lead's reply to them before it prompts again. Designs stay theirs (LOOP-12).
   on('prompt.submit', async ($, e, next) => {
     if (['composer', 'bridge'].includes(e.origin?.kind) && loop.waiting?.kind !== 'design') {
-      if (loop.waiting) $.ui.invalidate('ui.render');
+      if (loop.waiting || loop.limited) $.ui.invalidate('ui.render');
       loop.waiting = null;
       loop.asked = { key: null, times: 0 };
+      // LOOP-14: the person tries again themselves; the turn's end says whether the limit still holds.
+      loop.limited = null;
+      loop.askedAt = { print: null, keys: new Set() };
     }
     return next(e);
   });
@@ -2536,6 +2622,8 @@ export function register(on) {
       current: leadTurn && loop.started ? (loop.steps.at(-1) ?? null) : null,
       nextText: nextText(loop.nextStep),
       laneNotes,
+      // LOOP-14: the hold on Claude's usage limit, while it lasts.
+      limited: loop.limited && now < loop.limited.until ? loop.limited : null,
       now,
       reviews: [...reviews.values()].map((r) => ({
         ...r,

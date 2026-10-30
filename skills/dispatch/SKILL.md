@@ -65,6 +65,7 @@ Requirements (read each one in full, with its acceptance criteria):
 What to build: <the story's description, and anything the lead decided that the spec doesn't say>
 Fixes: <for a fix story, what was broken and where it was seen; write the test that fails because of it first>
 Contracts to use: <paths of the schemas, events or tables this story relies on>
+Designs: <for a story that builds screens, what `code-kit designs ST-<n>` lists: each screen file, and for every state its image, its code and its viewport, and the tokens file. Read every state's image and code before writing the screen; match its layout, copy, spacing and states exactly; build it from the design system's components rather than pasting the export; and account for every state in your report>
 Out of scope: <what neighbouring stories or other lanes will do>
 
 Steps:

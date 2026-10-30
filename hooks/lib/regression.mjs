@@ -4,9 +4,9 @@
 // WHO-2), the person's otherwise and always on the lead's own. The commit hook
 // refuses a weakening commit; verify finds what a branch weakened, from git.
 import { execFileSync, spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { basename, dirname, join } from 'node:path';
+import { existsSync, readFileSync, rmSync } from 'node:fs';
+import { join } from 'node:path';
+import { freshCheckout } from './checkout.mjs';
 import { runChecks } from './checks.mjs';
 import { matchesAny } from './glob.mjs';
 import { readStories } from './plan.mjs';
@@ -39,8 +39,9 @@ const SKIPS = [
   /\bt\.Skip(?:f|Now)?\s*\(/,
   /@(?:Disabled|Ignore)\b/,
 ];
+// `expect(` and its retrying and soft forms (`expect.poll(`, `expect.soft(`), each one assertion.
 const ASSERTION =
-  /\bexpect\s*\(|\bassert\w*\s*[.(]|\bt\.(?:Error|Errorf|Fatal|Fatalf|Fail)\b|\bshould\.\w/g;
+  /\bexpect(?:\.(?:poll|soft))?\s*\(|\bassert\w*\s*[.(]|\bt\.(?:Error|Errorf|Fatal|Fatalf|Fail)\b|\bshould\.\w/g;
 
 const skipLines = (text) =>
   String(text ?? '')
@@ -178,10 +179,22 @@ export function branchWeakenings(root, from, config) {
 
 /**
  * REG-2 for a commit about to be made: `files` as the commit hook lists them, HEAD against the
- * working tree.
+ * working tree. `gone`: files the commit's own command takes away first (`git rm`, `git mv`), which
+ * are still on disk as the hook runs. `base`: the branch the work merges into; a test the branch
+ * added itself since it left it isn't the base's to lose, so moving or deleting it weakens nothing.
  */
-export function commitWeakenings(root, files, config) {
+export function commitWeakenings(root, files, config, gone = new Set(), base = null) {
+  let from = null;
+  try {
+    from = base ? git(root, 'merge-base', base, 'HEAD').trim() : null;
+  } catch {
+    // no common history with the base: every test counts
+  }
+  // What this commit adds stays, to pair a moved test with where it went.
+  if (from)
+    files = files.filter((f) => showAt(root, 'HEAD', f) === null || showAt(root, from, f) !== null);
   const read = (rel) => {
+    if (gone.has(rel)) return null;
     try {
       return readFileSync(join(root, rel), 'utf8');
     } catch {
@@ -190,7 +203,7 @@ export function commitWeakenings(root, files, config) {
   };
   const changes = files.map((file) => {
     const was = showAt(root, 'HEAD', file) !== null;
-    const is = existsSync(join(root, file));
+    const is = !gone.has(file) && existsSync(join(root, file));
     return { status: !was ? 'A' : is ? 'M' : 'D', file };
   });
   return weakenedTests(changes, (rel) => showAt(root, 'HEAD', rel), read, config);
@@ -219,38 +232,24 @@ const UNREACHABLE =
 const ASSERTED =
   /AssertionError|AssertionFailedError|Expected:|Received:|expected .+ to |toBe|toEqual|assert\w* failed|^\s*--- FAIL|Error: expect\(/m;
 
+/** The names a failure says can't be reached: quoted ones on its unreachable lines. */
+function missingNames(output) {
+  const names = new Set();
+  for (const line of output.split('\n').filter((l) => UNREACHABLE.test(l)))
+    for (const m of line.matchAll(
+      /['"`‘’]([A-Za-z_$][\w$]*)['"`‘’]|ReferenceError: ([A-Za-z_$][\w$]*)|undefined: (\w+)|import name '?(\w+)/g,
+    ))
+      names.add(m[1] ?? m[2] ?? m[3] ?? m[4]);
+  return names;
+}
+
 /** Whether a failure's output only shows the tests couldn't reach what the fix adds. */
 export const onlyUnreachable = (output) =>
   UNREACHABLE.test(output) && !ASSERTED.test(output.replace(UNREACHABLE, ''));
 
-// The folders an install puts beside the code, which a fresh checkout lacks.
-const INSTALLS = new Set(['node_modules', '.venv', 'venv']);
-
-/** Links the checkout's installs (node_modules and the like, wherever git ignores them) into `dir`. */
-function linkInstalls(root, dir) {
-  let ignored = [];
-  try {
-    ignored = git(root, 'ls-files', '--others', '--ignored', '--exclude-standard', '--directory')
-      .split('\n')
-      .map((l) => l.replace(/\/$/, ''))
-      .filter((l) => l && INSTALLS.has(basename(l)));
-  } catch {
-    return;
-  }
-  for (const rel of ignored) {
-    const to = join(dir, rel);
-    if (!existsSync(dirname(to)) || existsSync(to)) continue;
-    try {
-      symlinkSync(join(root, rel), to, 'dir');
-    } catch {
-      // the check then says what it couldn't run
-    }
-  }
-}
-
 /**
- * REG-1: whether a fix's tests prove its bug. In a temporary worktree of the branch (with the
- * checkout's installs linked in, after `regression.prepare`), the checks covering the tests it added
+ * REG-1: whether a fix's tests prove its bug. In a fresh checkout of the branch (with its own copy of
+ * the checkout's installs, after `regression.prepare`), the checks covering the tests it added
  * or changed must pass, and fail, as the bug, once every change outside the tests goes back to `from`.
  * Problems in words; empty when the tests prove it.
  */
@@ -263,6 +262,9 @@ export function proveFix({ root, from, base, changed, config, fix }) {
     return [
       `${what}, but it adds or changes no test. Add a test that fails without the fix: it's what stops the bug coming back.`,
     ];
+  // A fix made wholly in the tests (a flaky test, a broken helper) has no code to take back: its tests
+  // are the fix. REG-2 still holds them, so it can't be made by weakening one.
+  if (changed.every((f) => isTestFile(f, config) || SNAPSHOT.test(f))) return [];
   const covering = config.checks.filter((c) =>
     tests.some((f) => matchesAny(f, c.files) && !matchesAny(f, c.exclude)),
   );
@@ -272,11 +274,8 @@ export function proveFix({ root, from, base, changed, config, fix }) {
     ];
   const strict = { ...config, checks: covering.map((c) => ({ ...c, ifMissing: 'fail' })) };
   const actor = { kind: 'lead', label: 'lead' };
-  const dir = mkdtempSync(join(tmpdir(), 'code-kit-fix-'));
-  rmSync(dir, { recursive: true });
+  const { dir, remove } = freshCheckout(root, 'HEAD', { prefix: 'code-kit-fix-' });
   try {
-    git(root, 'worktree', 'add', '--quiet', '--detach', dir, 'HEAD');
-    linkInstalls(root, dir);
     const prepare = config.regression?.prepare;
     if (prepare) {
       const res = spawnSync(prepare, { cwd: dir, shell: true, encoding: 'utf8', timeout: 900000 });
@@ -300,7 +299,22 @@ export function proveFix({ root, from, base, changed, config, fix }) {
       return [
         `${what}, but its tests (${tests.join(', ')}) also pass without the fix, so they don't prove the bug and it can come back. Write a test that fails on ${base} and passes here.`,
       ];
-    const output = `${without.title}\n${without.output ?? ''}`;
+    let output = `${without.title}\n${without.output ?? ''}`;
+    // Tests that call what the fix adds can stop a whole run (a typecheck) before a test through the
+    // existing code fails on its assertion: set them aside, and run the rest without the fix.
+    if (onlyUnreachable(output)) {
+      const missing = missingNames(output);
+      const aside = tests.filter((f) => {
+        const text = showAt(root, 'HEAD', f) ?? '';
+        return [...missing].some((n) => new RegExp(String.raw`\b${n}\b`).test(text));
+      });
+      const rest = tests.filter((f) => !aside.includes(f));
+      if (aside.length && rest.length) {
+        for (const f of aside) rmSync(join(dir, f), { force: true });
+        const { failure: again } = runChecks(strict, rest, dir, actor);
+        if (again) output = `${again.title}\n${again.output ?? ''}`;
+      }
+    }
     if (onlyUnreachable(output)) {
       const line =
         output
@@ -313,10 +327,6 @@ export function proveFix({ root, from, base, changed, config, fix }) {
     }
     return [];
   } finally {
-    try {
-      git(root, 'worktree', 'remove', '--force', dir);
-    } catch {
-      rmSync(dir, { recursive: true, force: true });
-    }
+    remove();
   }
 }

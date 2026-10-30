@@ -73,7 +73,7 @@ function project() {
     stops: [] as any[],
     refs: ' aaa refs/heads/main\n bbb refs/heads/web/st-4\n',
     agents: [] as { type: string; status: string; id?: string; description?: string }[],
-    limits: [] as { kind: string; percentUsed: number }[],
+    limits: [] as { kind: string; percentUsed: number; resetsAt?: string }[],
     contextPercent: 0, // LEAN-3: how full the lead's context is
     notified: [] as { text: string; title?: string }[], // NOTIFY-1
     viewed: [] as (string | null)[], // WATCH-1
@@ -180,6 +180,7 @@ function project() {
     waiting: new Map<string, (answer: string) => void>(),
     // The CLI commands that never answer: their run rejects, as one past its time does.
     timesOut: new Set<string>(),
+    duringNext: null as null | (() => unknown), // run while `code-kit next` runs, after it read
   };
 }
 type World = ReturnType<typeof project>;
@@ -207,7 +208,13 @@ function stub(on: any, w: World) {
           drift: [],
         }),
       );
-    if (sub === 'next') return ran(0, JSON.stringify(w.next));
+    if (sub === 'next') {
+      const shown = JSON.stringify(w.next);
+      // What happens while `next` runs, after it read the project.
+      const during = w.duringNext;
+      w.duringNext = null;
+      return Promise.resolve(during?.()).then(() => ran(0, shown));
+    }
     if (sub === 'requests' && argv[3] === 'drop') {
       w.acts.push([...argv.slice(2)]);
       const drop = new Set(argv[4].split(',').map(Number));
@@ -2567,7 +2574,7 @@ test('LEAN-5 a lane agent past its context limit is told to wrap up, and its sto
   await $.turn.complete({
     turnId: 't-a1',
     agentId: 'a1',
-    answer: 'ST-4: committed, report written.',
+    answer: 'Not finished: the confirmation email is left. ST-4 committed, report written.',
     durationMs: 1,
     isAborted: false,
   } as any);
@@ -2580,6 +2587,81 @@ test('LEAN-5 a lane agent past its context limit is told to wrap up, and its sto
     /Read your earlier report first: \.claude\/state\/reports\/web_st-4\.md/,
   );
 });
+
+/** LEAN-5: the web lane's agent on ST-4 past its context limit, handing back with `answer`. */
+async function pastLimitHandsBack($: any, on: any, w: any, answer: string) {
+  w.next = { step: 'wait', args: '', then: [] };
+  w.agents = [
+    { id: 'a1', type: 'web-engineer', description: 'ST-4 booking form', status: 'running' },
+  ];
+  const clock = await start($, on, w);
+  await clock.advance(2000);
+  await request($, 'a1', 300);
+  await $.turn.complete({
+    turnId: 't-a1',
+    agentId: 'a1',
+    answer,
+    durationMs: 1,
+    isAborted: false,
+  } as any);
+  return clock;
+}
+
+test('LEAN-5 an agent past its limit that hands back its story done is not carried on: the story goes to review', async ($, on) => {
+  const w = project();
+  const clock = await pastLimitHandsBack(
+    $,
+    on,
+    w,
+    'ST-4 done: every item fixed, committed, checks and verify pass. Report: .claude/state/reports/web_st-4.md',
+  );
+  await leadTurn($, 't-2');
+  await settle(clock);
+  expect(w.prompts.some((p: string) => /context limit/.test(p))).toBe(false);
+});
+
+/** LEAN-5: ST-4's agent hands back Not finished while the lead is mid-turn; `change` happens before it's idle. */
+async function carriedOnAfter($: any, on: any, change: (w: any) => void) {
+  const w = project();
+  // The lead is mid-turn as the agent hands back, so the carry-on waits for it to be idle.
+  w.next = { step: 'wait', args: '', then: [] };
+  w.agents = [
+    { id: 'a1', type: 'web-engineer', description: 'ST-4 booking form', status: 'running' },
+  ];
+  const clock = await start($, on, w);
+  await clock.advance(2000);
+  await request($, 'a1', 300);
+  await $.turn.start({ turnId: 't-2', text: '' } as any);
+  await $.turn.complete({
+    turnId: 't-a1',
+    agentId: 'a1',
+    answer: 'Not finished: the email is left.',
+    durationMs: 1,
+    isAborted: false,
+  } as any);
+  change(w);
+  w.refs += ' moved refs/heads/web/st-4\n';
+  await clock.advance(2000);
+  await settle(clock);
+  await $.turn.complete({
+    turnId: 't-2',
+    answer: 'Done.',
+    durationMs: 1,
+    isAborted: false,
+  } as any);
+  await settle(clock);
+  expect(w.prompts.some((p: string) => /context limit/.test(p))).toBe(false);
+}
+
+test('LEAN-5 a story sent back after its Not finished hand-back is not carried on', async ($, on) =>
+  carriedOnAfter($, on, (w) => {
+    w.stories = w.stories.map((s: any) => (s.id === 'ST-4' ? { ...s, state: 'sent back' } : s));
+  }));
+
+test('LEAN-5 a story queued to merge after its Not finished hand-back is not carried on', async ($, on) =>
+  carriedOnAfter($, on, (w) => {
+    w.queue = [{ branch: 'web/st-4', state: 'waiting', story: 'ST-4' }];
+  }));
 
 test('#59 an agent that hands back at its limit a story already merged and done is not carried on', async ($, on) => {
   const w = project();
@@ -2594,7 +2676,7 @@ test('#59 an agent that hands back at its limit a story already merged and done 
   await $.turn.complete({
     turnId: 't-a1',
     agentId: 'a1',
-    answer: 'ST-4: committed, report written.',
+    answer: 'Not finished: ST-4 committed, report written.',
     durationMs: 1,
     isAborted: false,
   } as any);
@@ -2985,6 +3067,144 @@ test("LOOP-13 a review the lead's turn didn't move isn't prompted again while ot
   await leadTurn($, 't-6');
   await settle(clock);
   expect(w.prompts).toHaveLength(2);
+});
+
+/** LOOP-14: a lead turn the API failed, as Claude Code ends it. */
+async function failedTurn($: any, id: string, answer = "You've hit your weekly limit") {
+  await $.turn.start({ turnId: id, text: '' } as any);
+  await $.turn.complete({
+    turnId: id,
+    answer,
+    durationMs: 1,
+    isAborted: false,
+    reason: 'error',
+  } as any);
+}
+
+test("LOOP-14 a lead turn that ends on Claude's usage limit holds the loop until the limit resets", async ($, on) => {
+  const w = project();
+  w.next = { step: 'merge', args: 'lead/st-1', then: [] };
+  const clock = await start($, on, w);
+  await leadTurn($);
+  await settle(clock);
+  expect(w.prompts).toEqual([expect.stringMatching(/^Merge lead\/st-1/)]);
+  // The weekly window is used up, resetting in half an hour, and the next turn fails on it.
+  const resets = clock.now() + 30 * 60 * 1000;
+  w.limits = [
+    { kind: 'five_hour', percentUsed: 40 },
+    { kind: 'seven_day', percentUsed: 100, resetsAt: new Date(resets).toISOString() },
+  ];
+  w.next = { step: 'decide', args: '1', then: [] };
+  await failedTurn($, 't-2');
+  await settle(clock);
+  // Steps change and the project moves, and still nothing is prompted, past the 5 minutes an error waits.
+  for (let i = 0; i < 4; i++) {
+    w.refs += ` h${i} refs/heads/core/st-${i}\n`;
+    w.next =
+      i % 2
+        ? { step: 'decide', args: '1', then: [] }
+        : { step: 'merge', args: 'lead/st-1', then: [] };
+    await clock.advance(6 * 60 * 1000);
+    await settle(clock);
+  }
+  expect(w.prompts).toHaveLength(1);
+  const ui = await bandUi($);
+  expect(
+    await ui.find({ type: 'Text', text: /Claude's usage limit is reached: the loop waits until/ }),
+  ).toBeDefined();
+  await ui.unmount();
+  // Past the reset, the loop takes its next step.
+  await clock.advance(7 * 60 * 1000);
+  await settle(clock);
+  expect(w.prompts).toHaveLength(2);
+});
+
+test('LOOP-14 with no window used up, the loop tries again after 5 minutes, then 10; the person speaking ends the hold', async ($, on) => {
+  const w = project();
+  w.next = { step: 'merge', args: 'lead/st-1', then: [] };
+  const clock = await start($, on, w);
+  await failedTurn($, 't-1', 'API Error: 529 overloaded');
+  await settle(clock);
+  await clock.advance(4 * 60 * 1000);
+  await settle(clock);
+  expect(w.prompts).toEqual([]);
+  await clock.advance(2 * 60 * 1000);
+  await settle(clock);
+  expect(w.prompts).toHaveLength(1);
+  // It fails again: ten minutes this time.
+  await failedTurn($, 't-2', 'API Error: 529 overloaded');
+  await settle(clock);
+  await clock.advance(6 * 60 * 1000);
+  await settle(clock);
+  expect(w.prompts).toHaveLength(1);
+  // The person types to the lead, and that turn answers: the loop goes on after it.
+  await $.prompt.submit({ text: 'carry on', origin: { kind: 'composer' } } as any);
+  await leadTurn($, 't-3');
+  await settle(clock);
+  expect(w.prompts.filter((p: string) => p.startsWith('Merge lead/st-1'))).toHaveLength(2);
+});
+
+test('LOOP-14 steps taken in turn are each prompted once while the project stands still', async ($, on) => {
+  const w = project();
+  w.next = { step: 'merge', args: 'lead/st-1', then: [] };
+  const clock = await start($, on, w);
+  for (const [i, turn] of ['t-1', 't-2', 't-3', 't-4', 't-5', 't-6'].entries()) {
+    w.next =
+      i % 2
+        ? { step: 'decide', args: '1', then: [] }
+        : { step: 'merge', args: 'lead/st-1', then: [] };
+    await leadTurn($, turn);
+    await settle(clock);
+  }
+  expect(w.prompts).toEqual([
+    expect.stringMatching(/^Merge lead\/st-1/),
+    expect.stringMatching(/Run \/code-kit:decide 1\.$/),
+  ]);
+});
+
+test("LOOP-1 a step read before the lead's turn started isn't prompted: the turn may have changed it", async ($, on) => {
+  const w = project();
+  w.next = { step: 'merge', args: 'platform/st-1', then: [] };
+  const clock = await start($, on, w);
+  // While the step reads `next`, the person prompts the lead, which drops the branch from the queue.
+  w.duringNext = async () => {
+    await $.turn.start({ turnId: 't-2', text: 'drop platform/st-1 from the queue' } as any);
+    w.next = { step: 'wait', args: '', then: [] };
+  };
+  await $.turn.start({ turnId: 't-1', text: '' } as any);
+  await $.turn.complete({ turnId: 't-1', answer: 'Done.', durationMs: 1, isAborted: false } as any);
+  await settle(clock);
+  expect(w.prompts).toEqual([]);
+  await $.turn.complete({
+    turnId: 't-2',
+    answer: 'Dropped.',
+    durationMs: 1,
+    isAborted: false,
+  } as any);
+  await settle(clock);
+  expect(w.prompts.filter((p: string) => /^Merge/.test(p))).toEqual([]);
+});
+
+test('LOOP-14 a lane agent whose turn ends on an API error is not carried on as handed back at its limit', async ($, on) => {
+  const w = project();
+  w.next = { step: 'wait', args: '', then: [] };
+  w.agents = [
+    { id: 'a1', type: 'web-engineer', description: 'ST-4 booking form', status: 'running' },
+  ];
+  const clock = await start($, on, w);
+  await clock.advance(2000);
+  await request($, 'a1', 300);
+  await $.turn.complete({
+    turnId: 't-a1',
+    agentId: 'a1',
+    answer: "You've hit your weekly limit",
+    durationMs: 1,
+    isAborted: false,
+    reason: 'error',
+  } as any);
+  await leadTurn($, 't-2');
+  await settle(clock);
+  expect(w.prompts.filter((p: string) => /context limit/.test(p))).toEqual([]);
 });
 
 test('LOOP-13 stories the lead says wait on other work are parked, each until what it waits on moves', async ($, on) => {

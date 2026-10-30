@@ -114,9 +114,9 @@ export function classify(tool, input, config) {
   if (any(kit(String.raw`approve\b`))) return { kind: 'approve', target };
   if (any(kit(String.raw`publish\b`))) return { kind: 'push', target };
   if (any(kit(String.raw`(?:verify|security)\b.*\s--branch\b`))) return { kind: 'review', target };
-  if (any(new RegExp(String.raw`^${GIT}commit\b`))) return { kind: 'commit', target };
+  if (any(new RegExp(String.raw`^${GIT}commit(?![\w-])`))) return { kind: 'commit', target };
   if (any(new RegExp(String.raw`^${GIT}push\b`))) return { kind: 'push', target };
-  if (any(new RegExp(String.raw`^${GIT}merge\b`))) return { kind: 'merge', target };
+  if (any(new RegExp(String.raw`^${GIT}merge(?![\w-])`))) return { kind: 'merge', target };
   if (addedPackages(command).length) return { kind: 'install', target };
   if (unrepeatable(command, config)) return { kind: 'unrepeatable', target };
   const checks = (config.checks ?? []).flatMap((c) => c.run ?? []);
@@ -329,6 +329,11 @@ export function replay(events) {
       state.phase = 'handed back';
       continue;
     }
+    // Its agent was stopped by Claude's API (its usage limit) mid-story: restarted, it carries on.
+    if (e.kind === 'stopped') {
+      state.phase = 'stopped';
+      continue;
+    }
     if (!e.act) continue;
     const act = acts.get(e.act) ?? { start: null, end: null, reconciled: null };
     acts.set(e.act, act);
@@ -392,14 +397,14 @@ const REPEATABLE = new Set(['edit', 'read', 'run', 'test', 'install', 'dispatch'
 
 /**
  * Whether an open act's agent has stopped: its session isn't live, a later event from the same agent
- * says it handed back or went on, or it's older than the stall restart (LOOP-3).
+ * says it handed back or was stopped by an API error, or it's older than the stall restart (LOOP-3).
  */
 export function stopped(act, events, { liveSessions, restartMs, now }) {
   if (act.session && !liveSessions.has(act.session)) return true;
   if (now - Date.parse(act.at) >= restartMs) return true;
   return events.some(
     (e) =>
-      e.kind === 'handback' &&
+      ['handback', 'stopped'].includes(e.kind) &&
       e.session === act.session &&
       (e.agent ?? null) === (act.agent ?? null) &&
       Date.parse(e.at) >= Date.parse(act.at),

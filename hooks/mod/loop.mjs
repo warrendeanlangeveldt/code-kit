@@ -382,9 +382,52 @@ export const requestContext = (usage) =>
   (usage?.cache_read_input_tokens ?? 0) +
   (usage?.cache_creation_input_tokens ?? 0);
 
+/** LOOP-14: the first wait after a failed turn with no used-up window, and the longest. */
+export const RETRY_MS = 5 * 60 * 1000;
+export const RETRY_MAX_MS = 60 * 60 * 1000;
+
+/**
+ * LOOP-14: how long the loop holds after a lead turn ended on an API error: until the latest reset of
+ * the rate-limit windows that are used up, or, with none (an overloaded or failing API), 5 minutes
+ * doubling with each failure in a row (`failures`, from 1), at most an hour.
+ * { until, why: 'limit' | 'error' }.
+ */
+export function limitHold({ rateLimits = [], now, failures = 1 }) {
+  const resets = rateLimits
+    .filter((w) => w.percentUsed >= 100 && w.resetsAt)
+    .map((w) => Date.parse(w.resetsAt))
+    .filter((at) => Number.isFinite(at) && at > now);
+  if (resets.length) return { until: Math.max(...resets), why: 'limit' };
+  const wait = Math.min(RETRY_MS * 2 ** Math.max(0, failures - 1), RETRY_MAX_MS);
+  return { until: now + wait, why: 'error' };
+}
+
+/** LOOP-14: the band's words for the hold: "Claude's usage limit is reached: the loop waits until …". */
+export function limitText(hold) {
+  const when = new Date(hold.until).toLocaleString(undefined, {
+    weekday: 'short',
+    hour: 'numeric',
+    minute: '2-digit',
+  });
+  return hold.why === 'limit'
+    ? `Claude's usage limit is reached: the loop waits until ${when}`
+    : `Claude's API failed the lead's turn: the loop tries again at ${when}`;
+}
+
 /** LEAN-5: what a lane agent past its context limit is told. */
 export const wrapUpText = (limit) =>
-  `Your context is past ${Math.round(limit / 1000)}k tokens, and every step from here rereads all of it. Finish the step you're on, commit your work, write your report, and hand back now. The lead carries the story on with a fresh agent that reads your report.`;
+  `Your context is past ${Math.round(limit / 1000)}k tokens, and every step from here rereads all of it. Finish the step you're on, commit your work, write your report, and hand back now. If the story isn't done, start your hand-back with "${UNFINISHED}" and what's left: the lead carries it on with a fresh agent that reads your report. If it is done, hand back as usual.`;
+
+/** LEAN-5: how a lane agent past its limit says its story isn't done. */
+export const UNFINISHED = 'Not finished:';
+
+/** LEAN-5: whether a hand-back says the story isn't done, so a fresh agent carries it on. */
+export const unfinished = (answer) =>
+  String(answer ?? '')
+    .trimStart()
+    .replace(/^[*_#>\s]+/, '')
+    .toLowerCase()
+    .startsWith(UNFINISHED.toLowerCase());
 
 /** LEAN-5, LEAN-6: the lead's prompt to carry a story on with a fresh agent once its agent handed back at the limit. */
 export function continuePrompt({ type, story, branch, cli = 'code-kit' }) {

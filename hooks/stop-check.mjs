@@ -6,7 +6,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node
 import { join } from 'node:path';
 import { loadBaseline, newProblems } from './lib/baseline.mjs';
 import { runChecks } from './lib/checks.mjs';
-import { block, start } from './lib/hook.mjs';
+import { apiStopOf, block, start } from './lib/hook.mjs';
 import { brokenLayerRule, layerProblems } from './lib/layers.mjs';
 import { noteFor } from './lib/standards.mjs';
 import { actorFor, actorRoot, currentBranch, reportPath } from './lib/rules.mjs';
@@ -15,6 +15,11 @@ import { releaseLane } from './lib/laneclaims.mjs';
 import { auditProblems, changedFiles } from './lane-audit.mjs';
 
 const { input, project, config, error } = start();
+
+// A turn Claude's API ended (its usage limit, an overload) didn't finish its work: there's nothing to
+// check, a refusal would only prompt it into the same error, and a lane agent keeps its lane for the
+// restart.
+if (apiStopOf(input)) process.exit(0);
 
 // SCHED-1: a lane agent whose finish goes through frees its lane for the next story. A refused finish
 // (exit 2) keeps it: the agent carries on.

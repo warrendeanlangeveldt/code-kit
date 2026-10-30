@@ -8,6 +8,7 @@ import { BASELINE_FILE, loadBaseline, newProblems } from './baseline.mjs';
 import { runChecks } from './checks.mjs';
 import { CONFIG_FILE } from './config.mjs';
 import { isDependencyFile } from './dependencies.mjs';
+import { entryProblems, readRegister } from './designs.mjs';
 import { matchesAny } from './glob.mjs';
 import { layerProblems } from './layers.mjs';
 import { STANDARDS_APPROVAL, standardsFile, standardsWeakenings } from './standards.mjs';
@@ -19,6 +20,7 @@ import {
   ownerOf,
   owns,
   protectedEntry,
+  leadNeedsApproval,
   screenProblem,
 } from './rules.mjs';
 
@@ -65,11 +67,16 @@ function directChanges(root, from) {
   return new Set(out.split('\n').filter(Boolean));
 }
 
-/** Files changed on this branch since it left `base`. */
+/**
+ * Files changed on this branch since it left `base`, and still different from `base` as it is now. A
+ * branch with two merge bases (it merged the base, and something it holds later reached the base too)
+ * can show a file from an older one as changed; one it holds exactly as the base does isn't its change.
+ */
 export function branchChanges(root, base) {
-  return git(root, 'diff', '--name-only', '--no-renames', `${base}...HEAD`)
-    .split('\n')
-    .filter(Boolean);
+  const names = (range) =>
+    git(root, 'diff', '--name-only', '--no-renames', range).split('\n').filter(Boolean);
+  const differs = new Set(names(`${base}..HEAD`));
+  return names(`${base}...HEAD`).filter((f) => differs.has(f));
 }
 
 /**
@@ -232,6 +239,18 @@ export function verifyBranch({
       found.protected.push(
         `${f} is ${guarded.why}, but no approval-log entry records this change. Protected files are committed through Claude Code with code-kit, which logs them.`,
       );
+    // WHO-1: where the lead merges, its own change to what the person keeps needs the person's approval,
+    // unless the base already holds it as the branch does (the setup's rules, put onto the base first).
+    else if (
+      guarded &&
+      logged.get(f)?.approval === 'lead' &&
+      !signed &&
+      leadNeedsApproval(guarded.approval, config) &&
+      showAt(root, base, f) !== showAt(root, 'HEAD', f)
+    )
+      found.protected.push(
+        `${f} is ${guarded.why}, and the lead changed it without the person's ${guarded.approval} approval. The lead merges here, so nobody else reviews it: ask the person, and commit it again once their approval is in force.`,
+      );
     if (matchesAny(f, config.anyActor)) continue;
     if (lane === 'lead') {
       // The lead's branch is held to the lead's paths for what it changes itself; lane work reaches it
@@ -272,6 +291,20 @@ export function verifyBranch({
     );
     const screen = screenProblem(f, root, config);
     if (screen) found.design.push(screen.split('\n')[0]);
+  }
+
+  // HAND-2: each register entry the branch adds or changes, and each approved design whose files it
+  // changed, names the approved files with their hashes, every state the spec lists.
+  const register = config.designGate?.register;
+  if (register) {
+    const old = readRegister(root, config, showAt(root, from, register) ?? '{}').entries;
+    const touched = new Set(changed);
+    for (const e of readRegister(root, config).entries) {
+      const fresh = !old.some((o) => JSON.stringify(o) === JSON.stringify(e));
+      const files = (e.states ?? []).flatMap((st) => [st?.image, st?.code]).filter(Boolean);
+      if (fresh || files.some((f) => touched.has(f)))
+        found.design.push(...entryProblems(root, e, config.docs?.specs));
+    }
   }
 
   // The baseline only shrinks once the kit is adopted (the adopting change may record it).

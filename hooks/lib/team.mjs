@@ -202,12 +202,19 @@ export function teamProvider(root, team) {
         ? { ...g, fallback: r?.why ?? "The team provider can't be reached." }
         : g;
     };
+  // A claim taken while the provider was down lives only on GitHub; one the provider doesn't know is
+  // released there too, so it can't outlive its story (a merged story's claim, stuck and going stale).
+  const eitherRelease = (story, opts) => {
+    const r = either('release')(story, opts);
+    if (!r?.ok || r.released) return r;
+    const g = github.release(story, opts);
+    return g?.ok && g.released ? g : r;
+  };
   return {
     ...Object.fromEntries(
       [
         'whoami',
         'claim',
-        'release',
         'state',
         'intend',
         'settle',
@@ -218,6 +225,7 @@ export function teamProvider(root, team) {
         'standards',
       ].map((op) => [op, either(op)]),
     ),
+    release: eitherRelease,
     forget: () => (command.forget(), github.forget()),
   };
 }
@@ -790,6 +798,24 @@ function commandProvider(root, team, command) {
 }
 
 /** The team's state as last read, for the hooks and the mod between polls. */
+/**
+ * TEAM-1: the claimed stories whose branch has merged into `base`, by the merge commits' subjects
+ * ("Merge web/st-12 into main", "Merge pull request #4 from owner/web/st-12"): their claims outlived their merge and end now. A commit that only
+ * mentions a story doesn't end its claim.
+ */
+export function mergedClaims(root, claims, base) {
+  if (!claims?.length) return [];
+  const log = spawnSync('git', ['-C', root, 'log', base, '--merges', '--format=%s'], {
+    encoding: 'utf8',
+    maxBuffer: 64 * 1024 * 1024,
+  });
+  if (log.status !== 0) return [];
+  const merged = new Set(
+    [...log.stdout.matchAll(/[\w.-]+\/(st-\d+)(?![\w-])/gi)].map((m) => m[1].toUpperCase()),
+  );
+  return claims.map((c) => c.story).filter((story) => merged.has(String(story).toUpperCase()));
+}
+
 export function readCache(root) {
   try {
     const s = JSON.parse(readFileSync(join(root, TEAM_STATE), 'utf8'));

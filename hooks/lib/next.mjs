@@ -8,7 +8,8 @@ import { loadConfig, mergeDelegation } from './config.mjs';
 import { buildStatus, readStories, DESIGN, LEAD } from './plan.mjs';
 import { pendingSetup } from './adapters/index.mjs';
 import { CONFIG_FILE, SETUP_VERSION } from './config.mjs';
-import { readQueue, waiting } from './queue.mjs';
+import { mergingNow, nextToMerge, readQueue, waiting } from './queue.mjs';
+import { handedOver, readRegister, toolOf } from './designs.mjs';
 import { decidedBy, laneOf, openRequests } from './rules.mjs';
 import { instructionsState } from './instructions.mjs';
 import { SECURITY_AGENT_FILE } from './security.mjs';
@@ -273,7 +274,13 @@ export function nextStep(root, base) {
     );
 
   // A branch already in the merge queue has passed its review: it isn't reviewed again.
-  const queued = waiting(readQueue(root)).map((e) => e.branch);
+  const entries = readQueue(root);
+  const inQueue = waiting(entries);
+  // MQ-7: what can merge next; a branch queued with partners waits until they're queued too.
+  const { head: mergeHead, held: heldGroups } = nextToMerge(entries);
+  const queued = inQueue.map((e) => e.branch);
+  // MQ-1: a queue merge running now (its verify takes minutes) isn't asked for again.
+  const merging = mergingNow(inQueue[0]) ? inQueue[0].branch : null;
   const ids = (state) =>
     status.stories
       .filter((s) => s.state === state && !(state === 'review' && queued.includes(s.branch)))
@@ -371,11 +378,19 @@ export function nextStep(root, base) {
     attention.push(
       `${queued.join(', ')} passed review and ${queued.length === 1 ? 'waits' : 'wait'} for the person to merge (code-kit queue merge --person, or Merge in the code-kit band).`,
     );
-  if (queued.length && leadMerges)
+  if (merging)
+    attention.push(
+      `${merging} is being merged now (queue merge is running); it says when it's done.`,
+    );
+  for (const h of heldGroups)
+    attention.push(
+      `${h.branch} passed review and merges together with ${h.missing.join(', ')}: it waits until ${h.missing.length === 1 ? 'that is' : 'they are'} reviewed and queued.`,
+    );
+  if (mergeHead && leadMerges && !merging)
     return result(
       'merge',
-      `${queued[0]} passed review and is next in the merge queue${queued.length > 1 ? ` (then ${queued.slice(1).join(', ')})` : ''}.`,
-      { args: queued[0] },
+      `${mergeHead.branch} passed review and is next in the merge queue${queued.length > 1 ? ` (then ${queued.filter((b) => b !== mergeHead.branch).join(', ')})` : ''}.`,
+      { args: mergeHead.branch },
     );
   // SCHED-1, SCHED-2: one story for each free lane, across every session; the open slice's first.
   const busy = new Set([
@@ -399,6 +414,12 @@ export function nextStep(root, base) {
   if (sched.waiting.length)
     attention.push(
       `${sched.waiting.join(', ')} ${sched.waiting.length === 1 ? 'waits' : 'wait'} for ${sched.waiting.length === 1 ? 'its lane' : 'their lanes'}: a lane runs one story at a time.`,
+    );
+  // HAND-5: approved designs still only in a design tool, which no lane can read, are handed over once.
+  const toolOnly = readRegister(root, config).entries.filter((e) => !handedOver(e));
+  if (toolOnly.length)
+    attention.push(
+      `${toolOnly.length} approved screen${toolOnly.length === 1 ? ' is' : 's are'} only in ${[...new Set(toolOnly.map(toolOf))].join(', ')}, not as files a lane can build from: hand ${toolOnly.length === 1 ? 'it' : 'them'} over with /code-kit:design --hand-over.`,
     );
   const then = [];
   // A sent-back story goes back to its lane with the review's findings, before new work starts.
