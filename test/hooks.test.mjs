@@ -7787,6 +7787,18 @@ else process.exit(1);
         truth(openRequests(r.dir, at + 100).some((q) => q.what === 'same.test.mjs')),
         0,
       );
+      writeFileSync(join(r.dir, 'same.test.mjs'), 'test, approved\n');
+      r.git('add', 'same.test.mjs');
+      execFileSync(
+        'git',
+        ['-C', r.dir, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '-m', 'y'],
+        { env: { ...process.env, GIT_COMMITTER_DATE: `@${second} +0000` } },
+      );
+      expect(
+        'CARD-7 one made after it in the same second does',
+        truth(!openRequests(r.dir, at + 200).some((q) => q.what === 'same.test.mjs')),
+        0,
+      );
     }
     const asked = JSON.parse(gCli('requests', '--json').stdout).open;
     expect(

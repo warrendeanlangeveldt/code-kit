@@ -470,6 +470,9 @@ export function recordRequest(root, actor, names, what, why, now = Date.now(), e
       why: String(why).slice(0, 300),
       ...extra,
     };
+    // The file's commits already made in the second it's asked, which don't answer it.
+    const before = commitsFrom(root, request.what, request.at);
+    if (before?.length) request.before = before;
     if (openRequests(root, now).some((r) => sameRequest(r, request))) return;
     const file = requestsFile(root);
     mkdirSync(dirname(file), { recursive: true });
@@ -560,32 +563,36 @@ function installedSince(root, r) {
   });
 }
 
-/** Whether the file a request named has been committed, on any branch, since it was asked. */
-function committedSince(root, r) {
-  const path = String(r.what);
-  if (/\s/.test(path) || (!path.includes('/') && !path.includes('.'))) return false;
+/** The commits of `path`, on any branch, in or after the second `at` falls in; null when it isn't a path. */
+function commitsFrom(root, path, at) {
+  if (/\s/.test(path) || (!path.includes('/') && !path.includes('.'))) return null;
   try {
-    const out = execFileSync(
+    return execFileSync(
       'git',
       [
-        '-C',
-        root,
-        'log',
-        '--all',
-        '-1',
-        '--format=%ct',
-        // Git dates are whole seconds: a commit in the second the request was made may have come before
-        // it (the commit before the refused one), so only a later second counts.
-        `--since=@${Math.floor(Date.parse(r.at) / 1000) + 1}`,
-        '--',
-        path,
+        ...['-C', root, 'log', '--all', '--format=%H'],
+        `--since=@${Math.floor(Date.parse(at) / 1000)}`,
+        ...['--', path],
       ],
       { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] },
-    );
-    return Boolean(out.trim());
+    )
+      .split('\n')
+      .filter(Boolean);
   } catch {
-    return false;
+    return [];
   }
+}
+
+/**
+ * Whether the file a request named has been committed, on any branch, since it was asked. Git dates are
+ * whole seconds, so the commits already there in the second it was asked (the one before the refused
+ * commit) are the request's `before`, and don't answer it.
+ */
+function committedSince(root, r) {
+  const commits = commitsFrom(root, String(r.what), r.at);
+  if (!commits) return false;
+  const before = new Set(r.before ?? []);
+  return commits.some((c) => !before.has(c));
 }
 
 /**
