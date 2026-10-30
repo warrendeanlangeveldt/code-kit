@@ -3510,6 +3510,47 @@ else process.exit(2);
       ),
       0,
     );
+    // The hub's claim leak: the provider is back, doesn't know ST-40 (it was made through GitHub while it
+    // was down), and answers that it isn't claimed. The GitHub copy is released all the same.
+    writeFileSync(
+      join(root, 'unaware.mjs'),
+      `const op = process.argv[2]; let input = ''; process.stdin.on('data', (d) => (input += d)).on('end', () => {
+  if (op === 'release') console.log(JSON.stringify({ ok: true, released: false }));
+  else process.exit(7);
+});`,
+    );
+    writeFileSync(
+      join(a, '.claude/code-kit.json'),
+      JSON.stringify({
+        ...JSON.parse(fixture),
+        team: {
+          techLead: 'alex',
+          provider: { command: `node "${join(root, 'unaware.mjs')}"`, fallback: 'github' },
+        },
+      }),
+    );
+    const leaked = sam('team', 'release', 'ST-40');
+    const afterLeak = JSON.parse(sam('team', '--json', '--fresh').stdout || '{}');
+    expect(
+      "TEAM-8 a claim the provider doesn't know is released on GitHub, where it was made",
+      truth(
+        leaked.status === 0 &&
+          leaked.stdout.includes('Released ST-40') &&
+          !afterLeak.claims?.some((c) => c.story === 'ST-40'),
+        leaked.stdout + leaked.stderr + JSON.stringify(afterLeak),
+      ),
+      0,
+    );
+    writeFileSync(
+      join(a, '.claude/code-kit.json'),
+      JSON.stringify({
+        ...JSON.parse(fixture),
+        team: {
+          techLead: 'alex',
+          provider: { command: `node "${join(root, 'down.mjs')}"`, fallback: 'github' },
+        },
+      }),
+    );
     expect('a provider with GitHub as its fallback is a valid config', sam('check'), 0);
     writeFileSync(
       join(a, '.claude/code-kit.json'),
@@ -7427,6 +7468,32 @@ else process.exit(1);
     expect(
       'REG-2 nor does verify flag the move',
       truth(!said(gVerify()).includes('Weakened tests')),
+      0,
+    );
+  }
+
+  // --- TEAM-1: claims left behind by earlier merges end at the next one ---------------------------
+  {
+    const t = newRepo();
+    cleanups.push(t.dir);
+    t.git('checkout', '-q', '-b', 'web/st-5');
+    t.git('commit', '-q', '--allow-empty', '-m', 'ST-5 work');
+    t.git('checkout', '-q', 'main');
+    t.git('merge', '-q', '--no-ff', '-m', 'Merge web/st-5 into main', 'web/st-5');
+    t.git('commit', '-q', '--allow-empty', '-m', 'ST-6 is next; prepares web/st-6');
+    const swept = spawnSync(
+      'node',
+      [
+        '--input-type=module',
+        '-e',
+        `import { mergedClaims } from ${JSON.stringify(join(hooks, 'lib/team.mjs'))};
+         console.log(JSON.stringify(mergedClaims(process.cwd(), [{ story: 'ST-5' }, { story: 'ST-6' }], 'main')));`,
+      ],
+      { cwd: t.dir, encoding: 'utf8' },
+    );
+    expect(
+      "TEAM-1 a merged story's claim is found to end; one a commit only mentions is not",
+      truth(swept.stdout.trim() === '["ST-5"]', swept.stdout + swept.stderr),
       0,
     );
   }

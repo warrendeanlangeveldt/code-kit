@@ -133,6 +133,7 @@ import {
   storyOfBranch,
   syncBoard,
   readCache,
+  mergedClaims,
   teamOf,
   teamProvider,
   whoami,
@@ -805,10 +806,18 @@ function mergeOne(branch, config, byPerson, commit = null) {
         'conflict',
       );
     }
-    // TEAM-1: a merged story's claim ends, whoever merged it.
+    // TEAM-1: a merged story's claim ends, whoever merged it, and so does any an earlier merge left.
     const team = teamOf(config);
     const story = storyOfBranch(branch);
-    if (team && story) teamProvider(resolve('.'), team).release(story, { merged: true });
+    let unreleased = '';
+    if (team) {
+      const provider = teamProvider(resolve('.'), team);
+      const left = story ? provider.release(story, { merged: true }) : { ok: true };
+      if (!left?.ok)
+        unreleased = ` Its claim on ${story} wasn't released (${left?.why ?? "the team provider didn't answer"}): run code-kit team release ${story}.`;
+      for (const s of mergedClaims(root, provider.state()?.claims ?? [], into))
+        if (s !== story) provider.release(s, { merged: true });
+    }
     // LEAN-8: the merged branch's worktree, and any other that's done with, go now.
     const pruned = pruneWorktrees(root, config).removed;
     const removed = pruned.length
@@ -816,7 +825,7 @@ function mergeOne(branch, config, byPerson, commit = null) {
       : '';
     return {
       into,
-      message: `Merged ${branch} into ${into}: verify passed on ${changed.length} file(s)${lane ? `, held to ${heldTo(lane)}` : ''}, at ${tip.slice(0, 7)}.${skipped.length ? ` ${notRun(skipped)}` : ''}${removed}`,
+      message: `Merged ${branch} into ${into}: verify passed on ${changed.length} file(s)${lane ? `, held to ${heldTo(lane)}` : ''}, at ${tip.slice(0, 7)}.${skipped.length ? ` ${notRun(skipped)}` : ''}${removed}${unreleased}`,
     };
   } finally {
     cleanup();
