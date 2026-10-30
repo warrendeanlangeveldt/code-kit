@@ -6929,6 +6929,41 @@ else process.exit(1);
   legacyRepo.git('add', '-A');
   nextIs('existing code without code-kit goes to init', legacyRepo.dir, 'init');
 
+  // A dropped story (folded into another, or no longer wanted) is never dispatched or waited on.
+  {
+    const d = newRepo();
+    cleanups.push(d.dir);
+    mkdirSync(join(d.dir, 'docs/spec'), { recursive: true });
+    writeFileSync(
+      join(d.dir, 'docs/spec/01-weather.md'),
+      '# 01. Weather\n\n### WX-1 Forecast\n\nx\n',
+    );
+    writeFileSync(
+      join(d.dir, 'docs/spec/plan.md'),
+      '# Plan\n\n## M1\n\n### ST-1 Old forecast\n\n**Lane:** web\n**Requirements:** WX-1\n**Status:** dropped\n\n### ST-2 Forecast\n\n**Lane:** web\n**Requirements:** WX-1\n**Depends on:** ST-1\n**Status:** todo\n',
+    );
+    d.git('add', '-A');
+    d.git('commit', '-q', '-m', 'plan');
+    nextIs(
+      'a dropped story is never offered for dispatch, and a story depending on it is ready',
+      d.dir,
+      'dispatch',
+      'ST-2',
+    );
+    const st = JSON.parse(
+      spawnSync('node', [kitCli, 'status', '--json'], { cwd: d.dir, encoding: 'utf8' }).stdout,
+    );
+    expect(
+      'status reads it as dropped, covering no requirement',
+      truth(
+        st.stories.find((x) => x.id === 'ST-1')?.state === 'dropped' &&
+          st.requirements.find((r) => r.id === 'WX-1')?.stories.join() === 'ST-2',
+        JSON.stringify(st.stories),
+      ),
+      0,
+    );
+  }
+
   const ready = nextIs('with the kit on: ready stories go to dispatch', v.dir, 'dispatch', 'ST-2');
   expect(
     'a ready story with a gap in the plan is held back',

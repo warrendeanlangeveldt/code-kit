@@ -48,6 +48,7 @@ export const STATE = {
   quiet: { word: 'quiet', color: 'yellow', glyph: '…' },
   ready: { word: 'ready', color: 'green', glyph: '○' },
   todo: { word: 'to do', color: undefined, glyph: '○' },
+  dropped: { word: 'dropped', color: undefined, glyph: '·' },
   idle: { word: 'resting', color: undefined, glyph: '·' },
   dispatched: { word: 'started', color: 'blue', glyph: '→' },
 };

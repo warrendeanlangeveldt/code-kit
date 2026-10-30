@@ -37,6 +37,6 @@ Then the detail only if the person asks: the story table and the requirement tab
 
 ## Keep the plan current
 
-`status` shows where the plan's `**Status:**` lines disagree with git ("the plan is out of date"). Offer to fix them. The lead edits the plan, updates the lines, and commits on the lead's branch. Git is right about branches; the plan is right about `done` for stories whose branch was merged and deleted.
+`status` shows where the plan's `**Status:**` lines disagree with git ("the plan is out of date"). Offer to fix them. The lead edits the plan, updates the lines, and commits on the lead's branch. Git is right about branches; the plan is right about `done` for stories whose branch was merged and deleted. A story taken out of the plan (folded into another, or no longer wanted) gets `**Status:** dropped` rather than being deleted: code-kit never dispatches it or waits on it.
 
 Gaps between the specs and the plan (a requirement in no story, an unknown lane, a duplicate ID) are the lead's to fix in the plan or the spec. If fixing one needs a product decision, ask the person rather than guessing.

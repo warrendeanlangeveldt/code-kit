@@ -16,6 +16,8 @@ export const REQUIREMENT = /\b(?!ST-)([A-Z][A-Z0-9]*-\d+)\b/g;
 const STORY_HEADING = /^###\s+(ST-\d+)\b\s*(.*)$/;
 const REQUIREMENT_HEADING = /^###\s+((?!ST-)[A-Z][A-Z0-9]*-\d+)\b\s*(.*)$/;
 export const STATES = ['todo', 'in progress', 'review', 'done'];
+/** A story taken out of the plan (folded into another, or no longer wanted): never built, never waited on. */
+export const DROPPED = 'dropped';
 export const LEAD = 'lead';
 /** ONB-2: the pseudo-lane for design stories, which the lead designs with the person before any screen is built. */
 export const DESIGN = 'design';
@@ -94,7 +96,7 @@ export function readStories(root, planPath) {
         // REG-1: what a fix story fixes, or null.
         fixes: field(body, 'Fixes') || null,
         dependsOn: [...field(body, 'Depends on').matchAll(/\bST-\d+\b/g)].map((r) => r[0]),
-        status: STATES.includes(status) ? status : 'todo',
+        status: STATES.includes(status) || status === DROPPED ? status : 'todo',
         milestone,
         // SCHED-2: the slice it belongs to, a feature built across lanes, or null.
         slice: field(body, 'Slice') || null,
@@ -280,7 +282,7 @@ export function storyStates(root, stories, base) {
       : (refs[ref].ahead ?? Number(git(root, 'rev-list', '--count', `${base}..${ref}`) ?? 0));
     let state = story.status;
     let stopped = false;
-    if (ref && story.status !== 'done') {
+    if (ref && !['done', DROPPED].includes(story.status)) {
       const head = backs[branch] ? refs[ref].sha : null;
       if (head && head === backs[branch].sha) state = 'sent back';
       else if (ahead > 0) state = 'review';
@@ -310,11 +312,12 @@ export function storyStates(root, stories, base) {
       waitingOn: [],
     };
   });
-  const done = new Set(states.filter((s) => s.state === 'done').map((s) => s.id));
+  // A dropped story is as good as done for the stories that depend on it: it won't be built.
+  const done = new Set(states.filter((s) => ['done', DROPPED].includes(s.state)).map((s) => s.id));
   // ASK-3: a story whose question for the person is open waits on them, whatever its branch holds.
   const asked = waitingStories(root);
   for (const s of states) {
-    if (s.state === 'done') continue;
+    if (['done', DROPPED].includes(s.state)) continue;
     s.waitingOn = s.dependsOn.filter((d) => !done.has(d));
     s.waitingFor = asked.has(s.id)
       ? { id: asked.get(s.id).id, question: asked.get(s.id).question }
@@ -342,7 +345,7 @@ export function traceProblems(requirements, stories, lanes) {
     if (!s.lane) problems.push(`${s.id} has no **Lane:**`);
     else if (s.lane !== LEAD && s.lane !== DESIGN && !lanes.includes(s.lane))
       problems.push(`${s.id} names an unknown lane "${s.lane}"`);
-    if (!s.requirements.length && !s.noRequirements)
+    if (!s.requirements.length && !s.noRequirements && s.status !== DROPPED)
       problems.push(`${s.id} cites no requirements (write "none" if it delivers none)`);
     for (const r of s.requirements)
       if (!ids.has(r)) problems.push(`${s.id} cites ${r}, which no spec defines`);
@@ -350,7 +353,9 @@ export function traceProblems(requirements, stories, lanes) {
       if (!stories.some((o) => o.id === d))
         problems.push(`${s.id} depends on ${d}, which isn't in the plan`);
   }
-  const covered = new Set(stories.flatMap((s) => s.requirements));
+  const covered = new Set(
+    stories.filter((s) => s.status !== DROPPED).flatMap((s) => s.requirements),
+  );
   for (const r of requirements)
     if (!r.removed && !covered.has(r.id)) problems.push(`${r.id} is in no story (${r.file})`);
   return problems;
@@ -364,7 +369,7 @@ export function buildStatus(root, config, base, files) {
   const tested = testedRequirements(root, files, specs);
   const problems = traceProblems(requirements, stories, Object.keys(config.lanes));
   const byRequirement = requirements.map((r) => {
-    const covering = stories.filter((s) => s.requirements.includes(r.id));
+    const covering = stories.filter((s) => s.state !== DROPPED && s.requirements.includes(r.id));
     let state = 'no story';
     if (r.removed) state = 'removed';
     else if (covering.length && covering.every((s) => s.state === 'done')) state = 'done';
