@@ -4153,9 +4153,19 @@ else process.exit(2);
     // The lane agent's worktree, where its branch is checked out.
     const laneTree = join(m.dir, '.claude/worktrees/agent-web');
     m.git('worktree', 'add', '-q', laneTree, 'web/st-1');
+    mKit('queue', 'add', 'web/st-1');
     expect(
       'AUT-5 a branch that passes verify is merged',
       mKit('merge', 'web/st-1', '--delegated'),
+      0,
+    );
+    expect(
+      'and its queue entry, merged outside the queue, is settled as merged',
+      truth(
+        JSON.parse(mKit('queue', '--json').stdout).find((e) => e.branch === 'web/st-1')?.state ===
+          'merged',
+        mKit('queue', '--json').stdout,
+      ),
       0,
     );
     expect(

@@ -681,7 +681,10 @@ function merge(branch) {
   const { config } = load();
   const byPerson = mergeMode();
   try {
-    out(`${mergeOne(branch, config, byPerson).message}${publishAfter(config, byPerson)}`);
+    const { message } = mergeOne(branch, config, byPerson);
+    // A branch merged outside the queue leaves it too, as one the queue merged would.
+    settle(resolve('.'), branch, 'merged');
+    out(`${message}${publishAfter(config, byPerson)}`);
   } catch (e) {
     if (e instanceof MergeStop) die(e.message);
     throw e;
