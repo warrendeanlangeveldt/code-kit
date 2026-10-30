@@ -149,7 +149,7 @@ export const BUSY_MS = 3 * 60_000;
 
 /**
  * LEAN-6: whether a lane agent is still at work on a worktree's story, by the story's event log (spec
- * 26): its lane's last act is still open, or came within BUSY_MS, with no hand-back after it. Releasing
+ * 26): its lane's last act is still open, or came within BUSY_MS, with no hand-back or stop after it. Releasing
  * a worktree under a running agent takes its git away mid-step.
  */
 export function agentBusy(root, w, now = Date.now()) {
@@ -157,7 +157,7 @@ export function agentBusy(root, w, now = Date.now()) {
   const last = readEvents(root, w.story)
     .filter((e) => e.actor && e.actor !== 'lead' && e.agent)
     .at(-1);
-  if (!last || last.kind === 'handback') return false;
+  if (!last || ['handback', 'stopped'].includes(last.kind)) return false;
   return last.phase === 'start' || now - Date.parse(last.at) < BUSY_MS;
 }
 

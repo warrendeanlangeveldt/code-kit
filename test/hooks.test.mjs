@@ -6531,6 +6531,49 @@ else process.exit(1);
       ),
       0,
     );
+    // Claude's usage limit stops the agent mid-story: its transcript ends on the API's error.
+    const transcript = join(q.dir, '.claude/state/agent-3.jsonl');
+    writeFileSync(
+      transcript,
+      [
+        { type: 'assistant', message: { content: [{ type: 'text', text: 'Booking next.' }] } },
+        {
+          type: 'assistant',
+          isApiErrorMessage: true,
+          error: 'rate_limit',
+          message: { content: [{ type: 'text', text: "You've hit your session limit" }] },
+        },
+      ]
+        .map((e) => JSON.stringify(e))
+        .join('\n') + '\n',
+    );
+    const limited = {
+      session_id: 'aaaa1111-s',
+      agent_id: 'agent-3',
+      agent_type: 'web-engineer',
+      hook_event_name: 'SubagentStop',
+      agent_transcript_path: transcript,
+    };
+    const stoppedFinish = qHook('stop-check.mjs', limited);
+    qHook('act.mjs', limited, ['handback']);
+    const st3 = readFileSync(join(q.dir, '.claude/state/events/ST-3.jsonl'), 'utf8')
+      .trim()
+      .split('\n')
+      .map(JSON.parse);
+    expect(
+      "LOOP-14 an agent stopped by Claude's usage limit isn't checked or handed back: it keeps its lane, and its story isn't for review",
+      truth(
+        stoppedFinish.status === 0 &&
+          JSON.parse(qCli('lanes', '--json').stdout).some((c) => c.lane === 'web') &&
+          st3.at(-1).kind === 'stopped' &&
+          st3.at(-1).result?.error === 'rate_limit' &&
+          !st3.some((e) => e.kind === 'handback') &&
+          nextIn(q.dir).step !== 'review',
+        `${stoppedFinish.stderr} ${JSON.stringify(st3.at(-1))} ${JSON.stringify(nextIn(q.dir))}`,
+      ),
+      0,
+    );
+    rmSync(transcript);
     qPut('.claude/state/reports/web_st-3.md', '# ST-3\n\nDone: booking, CLS-1.\n');
     const finished = finish();
     q.git('checkout', '-q', 'main');
@@ -8238,7 +8281,7 @@ else process.exit(1);
           !existsSync(join(t.dir, '.claude/worktrees/lead-st66')) &&
           !t.git('worktree', 'list').includes('st-7') &&
           t.git('branch', '--list', 'api/st-6').includes('api/st-6'),
-        pruned.stdout + pruned.stderr,
+        `${pruned.stdout}${pruned.stderr} locked:${existsSync(locked)} stray:${existsSync(join(t.dir, '.claude/worktrees/lead-st66'))} list:${t.git('worktree', 'list')} branch:${t.git('branch', '--list', 'api/st-6')}`,
       ),
       0,
     );
