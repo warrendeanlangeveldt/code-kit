@@ -7,6 +7,7 @@ export const NOT_CODE_KIT = "This project doesn't use code-kit.";
 const LEAD = 'lead';
 
 /** A CLI run's stdout as JSON, or null when it printed none. */
+import { limitText } from './loop.mjs';
 import { teamLines } from './teamview.mjs';
 
 export function parseJson(stdout) {
@@ -488,6 +489,13 @@ export function bandLines({
       worktree: worktrees[0],
       worktrees,
       actions: [{ id: 'openDecision', label: 'Look…' }],
+    });
+  // LOOP-14: the loop waits out Claude's usage limit.
+  if (loop?.limited)
+    lines.push({
+      kind: 'limited',
+      text: limitText(loop.limited),
+      actions: [{ id: 'tryNow', label: 'Try now' }],
     });
   // LOOP-7: the milestone is done; SESS-2: where the loop is led from, when it isn't this session.
   if (loop?.state === 'done')

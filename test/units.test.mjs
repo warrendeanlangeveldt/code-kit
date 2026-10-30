@@ -52,6 +52,7 @@ import {
   storiesInFlight,
   storiesSignature,
   withoutInFlight,
+  limitHold,
 } from '../hooks/mod/loop.mjs';
 
 const fixture = JSON.parse(
@@ -571,6 +572,31 @@ test("LOOP-11 the loop reads the lead's reply: what it left the build at, its qu
     answeredPrompt('Include GST?', 'Yes'),
     'The person answered what you asked ("Include GST?"): Yes. Carry on with it.',
   );
+});
+
+test('LOOP-14 the hold after a failed turn: the used-up windows reset, or 5 minutes doubling to an hour', () => {
+  const now = Date.parse('2026-10-21T05:13:00Z');
+  const limits = [
+    { kind: 'five_hour', percentUsed: 100, resetsAt: '2026-10-21T08:00:00Z' },
+    { kind: 'seven_day', percentUsed: 100, resetsAt: '2026-10-26T04:00:00Z' },
+    { kind: 'spend_limit', percentUsed: 30, resetsAt: '2026-11-01T00:00:00Z' },
+  ];
+  assert.deepEqual(limitHold({ rateLimits: limits, now }), {
+    until: Date.parse('2026-10-26T04:00:00Z'),
+    why: 'limit',
+  });
+  // A reset already past, or a window not used up, doesn't hold it.
+  const minute = 60 * 1000;
+  assert.deepEqual(
+    limitHold({ rateLimits: [{ ...limits[0], resetsAt: '2026-10-21T05:00:00Z' }], now }),
+    {
+      until: now + 5 * minute,
+      why: 'error',
+    },
+  );
+  assert.equal(limitHold({ rateLimits: [], now, failures: 2 }).until, now + 10 * minute);
+  assert.equal(limitHold({ rateLimits: [], now, failures: 3 }).until, now + 20 * minute);
+  assert.equal(limitHold({ rateLimits: [], now, failures: 9 }).until, now + 60 * minute);
 });
 
 test('LOOP-13 stories waiting on other work: read from the reply, watched, and left out of the step', () => {

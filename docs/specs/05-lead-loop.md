@@ -173,6 +173,19 @@ When the lead's reply says a step's stories aren't due yet because they wait on 
 - Given both still parked and another lane committing, then nothing is prompted; ST-164 committing doesn't wake ST-158; when ST-164 is in review, then the lead is prompted to review ST-158, and ST-172 stays parked.
 - Given "Review ST-160" prompted and the lead's reply read as done while ST-160 stands still and other lanes commit, then it isn't prompted again until its own branch moves.
 
+### LOOP-14 The loop waits out Claude's usage limit
+
+A lead turn that ends on an API error (the account's usage limit, a rate limit, an overloaded or failing API) did nothing, and another prompt would fail the same way. The loop holds: it prompts nothing, and restarts no quiet lane agent, until the limit resets. The reset is the latest `resetsAt` of the rate-limit windows Claude Code reports as used up; with none used up (an overloaded API, a server error), the loop tries again after 5 minutes, then 10, 20 and at most 60 while turns keep failing. The band says so ("Claude's usage limit is reached: the loop waits until …") with **Try now**. The person speaking to the lead, Try now, or a lead turn that answers ends the hold. A lane agent whose turn ended on an API error stopped short: it isn't read as handing back at its context limit.
+
+Across steps, the loop never prompts a step a second time while the project stands still, so steps taken in turn can't come round again either.
+
+**Acceptance**
+
+- Given the weekly limit reached, resetting Oct 26 at 2pm, when the lead's turn ends on the error, then nothing is prompted, no lane agent is nudged or restarted, and the band says the loop waits until then; at 2pm the loop takes its next step.
+- Given an overloaded API, then the loop tries again after 5 minutes, then 10.
+- Given the hold, when the person types to the lead, then the hold ends and the loop goes on after that turn.
+- Given "Review ST-35" and "Review ST-37" next in turn, and the project standing still, then each is prompted once.
+
 ## Quality targets
 
 - A step is submitted within 5 seconds of the lead going idle with work to do.

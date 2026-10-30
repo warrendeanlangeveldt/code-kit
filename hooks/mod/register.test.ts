@@ -73,7 +73,7 @@ function project() {
     stops: [] as any[],
     refs: ' aaa refs/heads/main\n bbb refs/heads/web/st-4\n',
     agents: [] as { type: string; status: string; id?: string; description?: string }[],
-    limits: [] as { kind: string; percentUsed: number }[],
+    limits: [] as { kind: string; percentUsed: number; resetsAt?: string }[],
     contextPercent: 0, // LEAN-3: how full the lead's context is
     notified: [] as { text: string; title?: string }[], // NOTIFY-1
     viewed: [] as (string | null)[], // WATCH-1
@@ -2985,6 +2985,121 @@ test("LOOP-13 a review the lead's turn didn't move isn't prompted again while ot
   await leadTurn($, 't-6');
   await settle(clock);
   expect(w.prompts).toHaveLength(2);
+});
+
+/** LOOP-14: a lead turn the API failed, as Claude Code ends it. */
+async function failedTurn($: any, id: string, answer = "You've hit your weekly limit") {
+  await $.turn.start({ turnId: id, text: '' } as any);
+  await $.turn.complete({
+    turnId: id,
+    answer,
+    durationMs: 1,
+    isAborted: false,
+    reason: 'error',
+  } as any);
+}
+
+test("LOOP-14 a lead turn that ends on Claude's usage limit holds the loop until the limit resets", async ($, on) => {
+  const w = project();
+  w.next = { step: 'merge', args: 'lead/st-1', then: [] };
+  const clock = await start($, on, w);
+  await leadTurn($);
+  await settle(clock);
+  expect(w.prompts).toEqual([expect.stringMatching(/^Merge lead\/st-1/)]);
+  // The weekly window is used up, resetting in half an hour, and the next turn fails on it.
+  const resets = clock.now() + 30 * 60 * 1000;
+  w.limits = [
+    { kind: 'five_hour', percentUsed: 40 },
+    { kind: 'seven_day', percentUsed: 100, resetsAt: new Date(resets).toISOString() },
+  ];
+  w.next = { step: 'decide', args: '1', then: [] };
+  await failedTurn($, 't-2');
+  await settle(clock);
+  // Steps change and the project moves, and still nothing is prompted, past the 5 minutes an error waits.
+  for (let i = 0; i < 4; i++) {
+    w.refs += ` h${i} refs/heads/core/st-${i}\n`;
+    w.next =
+      i % 2
+        ? { step: 'decide', args: '1', then: [] }
+        : { step: 'merge', args: 'lead/st-1', then: [] };
+    await clock.advance(6 * 60 * 1000);
+    await settle(clock);
+  }
+  expect(w.prompts).toHaveLength(1);
+  const ui = await bandUi($);
+  expect(
+    await ui.find({ type: 'Text', text: /Claude's usage limit is reached: the loop waits until/ }),
+  ).toBeDefined();
+  await ui.unmount();
+  // Past the reset, the loop takes its next step.
+  await clock.advance(7 * 60 * 1000);
+  await settle(clock);
+  expect(w.prompts).toHaveLength(2);
+});
+
+test('LOOP-14 with no window used up, the loop tries again after 5 minutes, then 10; the person speaking ends the hold', async ($, on) => {
+  const w = project();
+  w.next = { step: 'merge', args: 'lead/st-1', then: [] };
+  const clock = await start($, on, w);
+  await failedTurn($, 't-1', 'API Error: 529 overloaded');
+  await settle(clock);
+  await clock.advance(4 * 60 * 1000);
+  await settle(clock);
+  expect(w.prompts).toEqual([]);
+  await clock.advance(2 * 60 * 1000);
+  await settle(clock);
+  expect(w.prompts).toHaveLength(1);
+  // It fails again: ten minutes this time.
+  await failedTurn($, 't-2', 'API Error: 529 overloaded');
+  await settle(clock);
+  await clock.advance(6 * 60 * 1000);
+  await settle(clock);
+  expect(w.prompts).toHaveLength(1);
+  // The person types to the lead, and that turn answers: the loop goes on after it.
+  await $.prompt.submit({ text: 'carry on', origin: { kind: 'composer' } } as any);
+  await leadTurn($, 't-3');
+  await settle(clock);
+  expect(w.prompts.filter((p: string) => p.startsWith('Merge lead/st-1'))).toHaveLength(2);
+});
+
+test('LOOP-14 steps taken in turn are each prompted once while the project stands still', async ($, on) => {
+  const w = project();
+  w.next = { step: 'merge', args: 'lead/st-1', then: [] };
+  const clock = await start($, on, w);
+  for (const [i, turn] of ['t-1', 't-2', 't-3', 't-4', 't-5', 't-6'].entries()) {
+    w.next =
+      i % 2
+        ? { step: 'decide', args: '1', then: [] }
+        : { step: 'merge', args: 'lead/st-1', then: [] };
+    await leadTurn($, turn);
+    await settle(clock);
+  }
+  expect(w.prompts).toEqual([
+    expect.stringMatching(/^Merge lead\/st-1/),
+    expect.stringMatching(/Run \/code-kit:decide 1\.$/),
+  ]);
+});
+
+test('LOOP-14 a lane agent whose turn ends on an API error is not carried on as handed back at its limit', async ($, on) => {
+  const w = project();
+  w.next = { step: 'wait', args: '', then: [] };
+  w.agents = [
+    { id: 'a1', type: 'web-engineer', description: 'ST-4 booking form', status: 'running' },
+  ];
+  const clock = await start($, on, w);
+  await clock.advance(2000);
+  await request($, 'a1', 300);
+  await $.turn.complete({
+    turnId: 't-a1',
+    agentId: 'a1',
+    answer: "You've hit your weekly limit",
+    durationMs: 1,
+    isAborted: false,
+    reason: 'error',
+  } as any);
+  await leadTurn($, 't-2');
+  await settle(clock);
+  expect(w.prompts.filter((p: string) => /context limit/.test(p))).toEqual([]);
 });
 
 test('LOOP-13 stories the lead says wait on other work are parked, each until what it waits on moves', async ($, on) => {
