@@ -1,9 +1,40 @@
 // The project's checks (config.checks): each runs when files matching it changed. Shared by the stop
 // hook (before an agent finishes) and `code-kit verify` (in CI, for a branch's changes).
 import { spawnSync } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { closeSync, existsSync, fstatSync, mkdtempSync, openSync, readSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { globToRegExp, matchesAny } from './glob.mjs';
+
+/** How much of a check's output is kept to show: its end, where test runners put the failures. */
+const OUTPUT_KEPT = 256 * 1024;
+
+/**
+ * Runs a check's command with its output going to a file rather than a buffer, so a long run's output
+ * (a thousand tests' worth) never stops it: the exit code decides. `{ status, signal, error, output }`,
+ * the output's last OUTPUT_KEPT bytes.
+ */
+function runCommand(command, cwd, timeout) {
+  const dir = mkdtempSync(join(tmpdir(), 'code-kit-check-'));
+  const file = join(dir, 'output');
+  const fd = openSync(file, 'w+');
+  try {
+    const res = spawnSync(command, { cwd, shell: true, timeout, stdio: ['ignore', fd, fd] });
+    const size = fstatSync(fd).size;
+    const length = Math.min(size, OUTPUT_KEPT);
+    const tail = Buffer.alloc(length);
+    readSync(fd, tail, 0, length, size - length);
+    return {
+      status: res.status,
+      signal: res.signal,
+      error: res.error,
+      output: `${size > length ? '…\n' : ''}${tail.toString('utf8')}`,
+    };
+  } finally {
+    closeSync(fd);
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
 
 /** The directories a check runs in: each changed one matching `each` that still exists, or the worktree. */
 function directories(check, files, root) {
@@ -30,12 +61,7 @@ function runCheck(check, files, root, actor, skipped) {
   }
   for (const cwd of directories(check, files, root)) {
     for (const command of check.run) {
-      const res = spawnSync(command, {
-        cwd,
-        shell: true,
-        encoding: 'utf8',
-        timeout: (check.timeoutSeconds ?? 240) * 1000,
-      });
+      const res = runCommand(command, cwd, (check.timeoutSeconds ?? 240) * 1000);
       const where = cwd === root ? '' : ` in ${cwd.slice(root.length + 1)}`;
       if (res.status === 127) {
         if (check.ifMissing === 'fail')
@@ -57,7 +83,7 @@ function runCheck(check, files, root, actor, skipped) {
         return {
           check: check.name,
           title: `${check.name}: \`${command}\` fails${where}. Fix it:`,
-          output: res.stdout + res.stderr,
+          output: res.output,
         };
     }
   }

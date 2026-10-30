@@ -3511,3 +3511,26 @@ test('UI-11 the character as half-blocks in a surface module: two pixels a cell,
     ],
   );
 });
+
+test("a check's long output never stops it: its exit code decides, and its end is kept", async () => {
+  const { runChecks } = await import('../hooks/lib/checks.mjs');
+  const dir = mkdtempSync(join(tmpdir(), 'code-kit-checks-'));
+  try {
+    // About 3 MB of output, past what a buffered run held.
+    const loud = `node -e "for (let i = 0; i < 60000; i++) console.log('ok ' + i + ' ' + 'x'.repeat(40))"`;
+    const check = (name, run) => ({ name, files: ['**'], run: [run] });
+    const actor = { kind: 'lead', label: 'lead' };
+    assert.equal(runChecks({ checks: [check('loud', loud)] }, ['a.ts'], dir, actor).failure, null);
+    const { failure } = runChecks(
+      { checks: [check('loud and failing', `${loud} && echo 'not ok: the last test' && exit 1`)] },
+      ['a.ts'],
+      dir,
+      actor,
+    );
+    assert.match(failure.title, /fails\. Fix it:$/);
+    assert.match(failure.output, /not ok: the last test\s*$/);
+    assert.ok(failure.output.length <= 256 * 1024 + 2);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
