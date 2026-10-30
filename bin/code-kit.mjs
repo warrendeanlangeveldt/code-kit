@@ -165,6 +165,7 @@ import {
 import { heldTo, laneOfBranch, verifyBranch } from '../hooks/lib/verify.mjs';
 import { skippedLine } from '../hooks/lib/checks.mjs';
 import { TESTS_APPROVAL } from '../hooks/lib/regression.mjs';
+import { freshCheckout } from '../hooks/lib/checkout.mjs';
 import { laneClaim, laneClaims, releaseLane, shortSession } from '../hooks/lib/laneclaims.mjs';
 import { slicesOf } from '../hooks/lib/schedule.mjs';
 import {
@@ -728,9 +729,13 @@ function mergeOne(branch, config, byPerson, commit = null) {
   const temporary = [];
   // A stop is thrown at once, so every way out of here removes the temporary worktrees first.
   const cleanup = () => {
-    for (const dir of temporary.splice(0)) {
+    for (const t of temporary.splice(0)) {
+      if (t.remove) {
+        t.remove();
+        continue;
+      }
       try {
-        g(root, 'worktree', 'remove', '--force', dir);
+        g(root, 'worktree', 'remove', '--force', t);
       } catch {
         // already gone
       }
@@ -748,16 +753,31 @@ function mergeOne(branch, config, byPerson, commit = null) {
     return dir;
   };
   try {
-    // Verify where the branch is checked out (its dependencies are installed there), else in a
-    // temporary worktree, where checks that need an install fail rather than being skipped.
-    const verifyIn = checkedOut(branch) ?? worktree(branch, true);
-    clean(verifyIn, branch);
-    const tip = g(verifyIn, 'rev-parse', 'HEAD').trim();
+    const tip = g(root, 'rev-parse', `refs/heads/${branch}`).trim();
     if (commit && tip !== commit)
       fail(
         `Nothing was merged: ${branch} has moved on since its review passed (${commit.slice(0, 7)} → ${tip.slice(0, 7)}). Review it again, then queue it.`,
         'moved',
       );
+    // MQ-1: verified as it will land: the branch merged with the base as it is now, in a fresh checkout
+    // with its own copy of the installs (the branch's worktree's, else the main checkout's), so neither
+    // a stale branch head nor a checkout without dependencies decides it.
+    let fresh;
+    try {
+      fresh = freshCheckout(root, into, {
+        merge: tip,
+        installsFrom: checkedOut(branch) ?? root,
+        prefix: 'code-kit-merge-',
+      });
+    } catch (e) {
+      if (!e.conflict) throw e;
+      fail(
+        `Nothing was merged: ${branch} doesn't merge cleanly into ${into}. Merge ${into} into ${branch} and resolve it there, then merge again.\n${e.message}`,
+        'conflict',
+      );
+    }
+    temporary.push(fresh);
+    const verifyIn = fresh.dir;
     const lane = laneOfBranch(branch, config);
     const { changed, found, skipped, unfinished } = verifyBranch({
       root: verifyIn,

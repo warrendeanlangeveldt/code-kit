@@ -4,9 +4,9 @@
 // WHO-2), the person's otherwise and always on the lead's own. The commit hook
 // refuses a weakening commit; verify finds what a branch weakened, from git.
 import { execFileSync, spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { basename, dirname, join } from 'node:path';
+import { existsSync, readFileSync, rmSync } from 'node:fs';
+import { join } from 'node:path';
+import { freshCheckout } from './checkout.mjs';
 import { runChecks } from './checks.mjs';
 import { matchesAny } from './glob.mjs';
 import { readStories } from './plan.mjs';
@@ -225,34 +225,9 @@ const ASSERTED =
 export const onlyUnreachable = (output) =>
   UNREACHABLE.test(output) && !ASSERTED.test(output.replace(UNREACHABLE, ''));
 
-// The folders an install puts beside the code, which a fresh checkout lacks.
-const INSTALLS = new Set(['node_modules', '.venv', 'venv']);
-
-/** Links the checkout's installs (node_modules and the like, wherever git ignores them) into `dir`. */
-function linkInstalls(root, dir) {
-  let ignored = [];
-  try {
-    ignored = git(root, 'ls-files', '--others', '--ignored', '--exclude-standard', '--directory')
-      .split('\n')
-      .map((l) => l.replace(/\/$/, ''))
-      .filter((l) => l && INSTALLS.has(basename(l)));
-  } catch {
-    return;
-  }
-  for (const rel of ignored) {
-    const to = join(dir, rel);
-    if (!existsSync(dirname(to)) || existsSync(to)) continue;
-    try {
-      symlinkSync(join(root, rel), to, 'dir');
-    } catch {
-      // the check then says what it couldn't run
-    }
-  }
-}
-
 /**
- * REG-1: whether a fix's tests prove its bug. In a temporary worktree of the branch (with the
- * checkout's installs linked in, after `regression.prepare`), the checks covering the tests it added
+ * REG-1: whether a fix's tests prove its bug. In a fresh checkout of the branch (with its own copy of
+ * the checkout's installs, after `regression.prepare`), the checks covering the tests it added
  * or changed must pass, and fail, as the bug, once every change outside the tests goes back to `from`.
  * Problems in words; empty when the tests prove it.
  */
@@ -274,11 +249,8 @@ export function proveFix({ root, from, base, changed, config, fix }) {
     ];
   const strict = { ...config, checks: covering.map((c) => ({ ...c, ifMissing: 'fail' })) };
   const actor = { kind: 'lead', label: 'lead' };
-  const dir = mkdtempSync(join(tmpdir(), 'code-kit-fix-'));
-  rmSync(dir, { recursive: true });
+  const { dir, remove } = freshCheckout(root, 'HEAD', { prefix: 'code-kit-fix-' });
   try {
-    git(root, 'worktree', 'add', '--quiet', '--detach', dir, 'HEAD');
-    linkInstalls(root, dir);
     const prepare = config.regression?.prepare;
     if (prepare) {
       const res = spawnSync(prepare, { cwd: dir, shell: true, encoding: 'utf8', timeout: 900000 });
@@ -315,10 +287,6 @@ export function proveFix({ root, from, base, changed, config, fix }) {
     }
     return [];
   } finally {
-    try {
-      git(root, 'worktree', 'remove', '--force', dir);
-    } catch {
-      rmSync(dir, { recursive: true, force: true });
-    }
+    remove();
   }
 }

@@ -29,11 +29,12 @@ The queue is kept in `.claude/state/merge-queue.json` in the main checkout, so a
 
 ### MQ-1 Order
 
-Branches merge in the order their reviews passed; one at a time.
+Branches merge in the order their reviews passed; one at a time. Each is verified as it will land: the branch merged with the base as it is then, in a fresh checkout with its own copy of the installs (the branch's worktree's, else the main checkout's), never at the branch's own head and never without its dependencies.
 
 **Acceptance**
 
 - Given web/st-4 passed before api/st-5, then web/st-4 merges first and api/st-5 is verified against the base that includes it.
+- Given web/st-481 27 commits behind main, which has since gained a fix its check needs, and no worktree of its own, then its checks run on it merged with main, with the installs of the main checkout copied in, and it merges.
 
 ### MQ-2 Who merges
 

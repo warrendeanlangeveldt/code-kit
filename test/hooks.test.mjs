@@ -4202,6 +4202,65 @@ else process.exit(2);
     m.git('checkout', '-q', 'main');
   }
 
+  // --- MQ-1: the queue verifies a branch as it will land: merged with the base, with installs -----
+  {
+    const z = newRepo(false);
+    cleanups.push(z.dir);
+    mkdirSync(join(z.dir, '.claude'), { recursive: true });
+    writeFileSync(
+      join(z.dir, '.claude/code-kit.json'),
+      JSON.stringify({
+        ...JSON.parse(fixture),
+        approvals: { delegate: { merge: true } },
+        checks: [
+          {
+            name: 'office',
+            files: ['apps/office/**'],
+            // Needs the fix main has since gained, and an install of its own, not a link to another's.
+            run: [
+              'test -f apps/office/main-fix && test -f node_modules/dep/index.js && test ! -L node_modules',
+            ],
+          },
+        ],
+      }),
+    );
+    writeFileSync(join(z.dir, '.gitignore'), '.claude/approvals/\n.claude/state/\nnode_modules/\n');
+    mkdirSync(join(z.dir, 'node_modules/dep'), { recursive: true });
+    writeFileSync(join(z.dir, 'node_modules/dep/index.js'), 'module.exports = 1;\n');
+    mkdirSync(join(z.dir, 'apps/office'), { recursive: true });
+    writeFileSync(join(z.dir, 'apps/office/a.ts'), 'export const a = 1;\n');
+    z.git('add', '-A');
+    z.git('commit', '-q', '-m', 'kit');
+    z.git('checkout', '-q', '-b', 'web/st-e');
+    writeFileSync(join(z.dir, 'apps/office/e.ts'), 'export const e = 1;\n');
+    z.git('add', '-A');
+    z.git('commit', '-q', '-m', 'ST-e');
+    z.git('checkout', '-q', 'main');
+    writeFileSync(join(z.dir, 'apps/office/main-fix'), 'fixed\n');
+    z.git('add', '-A');
+    z.git('commit', '-q', '-m', 'the fix main gained');
+    const zKit = (...args) =>
+      spawnSync('node', [kitCli, ...args], { cwd: z.dir, encoding: 'utf8' });
+    zKit('queue', 'add', 'web/st-e');
+    const landed = zKit('queue', 'merge', '--delegated');
+    expect(
+      "MQ-1 a branch behind the base, with no worktree, is verified merged with the base and with the checkout's installs",
+      truth(
+        landed.status === 0 && landed.stdout.includes('Merged web/st-e into main'),
+        landed.stdout + landed.stderr,
+      ),
+      0,
+    );
+    expect(
+      "and the checkout's own installs are untouched",
+      truth(
+        existsSync(join(z.dir, 'node_modules/dep/index.js')) &&
+          !z.git('worktree', 'list').includes('code-kit-merge-'),
+      ),
+      0,
+    );
+  }
+
   // --- the merge queue: in the order reviews passed, each verified against the base as it is then ---
   {
     const q = newRepo(false);
