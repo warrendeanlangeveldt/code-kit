@@ -1906,6 +1906,20 @@ try {
     );
     expect('it may merge the base into that branch', mHook('git merge main'), 0);
     expect(
+      'git merge-base and git merge-tree only read history: they are not merges',
+      truth(
+        [
+          'git merge-base --all main web/st-1',
+          'git -C . merge-base --is-ancestor web/st-1 main',
+          'git merge-tree --write-tree main web/st-1',
+        ].every((c) => mHook(c).status === 0),
+      ),
+      0,
+    );
+    m.git('checkout', '-q', 'main');
+    expect('nor is reading them on the protected branch', mHook('git merge-base main web/st-1'), 0);
+    m.git('checkout', '-q', 'lead/next');
+    expect(
       'and a commit message that mentions a merge is only text',
       mHook('git commit --allow-empty -m "git merge web/st-1"'),
       0,

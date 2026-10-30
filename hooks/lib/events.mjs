@@ -114,9 +114,9 @@ export function classify(tool, input, config) {
   if (any(kit(String.raw`approve\b`))) return { kind: 'approve', target };
   if (any(kit(String.raw`publish\b`))) return { kind: 'push', target };
   if (any(kit(String.raw`(?:verify|security)\b.*\s--branch\b`))) return { kind: 'review', target };
-  if (any(new RegExp(String.raw`^${GIT}commit\b`))) return { kind: 'commit', target };
+  if (any(new RegExp(String.raw`^${GIT}commit(?![\w-])`))) return { kind: 'commit', target };
   if (any(new RegExp(String.raw`^${GIT}push\b`))) return { kind: 'push', target };
-  if (any(new RegExp(String.raw`^${GIT}merge\b`))) return { kind: 'merge', target };
+  if (any(new RegExp(String.raw`^${GIT}merge(?![\w-])`))) return { kind: 'merge', target };
   if (addedPackages(command).length) return { kind: 'install', target };
   if (unrepeatable(command, config)) return { kind: 'unrepeatable', target };
   const checks = (config.checks ?? []).flatMap((c) => c.run ?? []);

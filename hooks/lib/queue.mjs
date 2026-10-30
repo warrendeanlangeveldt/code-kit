@@ -109,7 +109,7 @@ export function storyMerges(cmd, branch) {
   const switches = new RegExp(
     String.raw`^${GIT}(?:switch|checkout)\s+((?:-\S+\s+)*)([^\s-]\S*)\s*$`,
   );
-  const merges = new RegExp(String.raw`^${GIT}merge\b(.*)$`);
+  const merges = new RegExp(String.raw`^${GIT}merge(?![\w-])(.*)$`);
   for (const { text, code } of commandsOf(cmd)) {
     const moved = code.match(switches);
     if (moved) {

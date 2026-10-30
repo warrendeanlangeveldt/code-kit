@@ -116,7 +116,7 @@ const queues = runs(cmd, new RegExp(String.raw`^${CODE_KIT}\s+queue\s+(?:add|dro
 const rulesOntoBase = runs(cmd, new RegExp(String.raw`^${CODE_KIT}\s+queue\s+rules\b`));
 const asks = runs(cmd, new RegExp(String.raw`^${CODE_KIT}\s+ask\b\s+(?!--json\b)\S`));
 const dropsRequests = runs(cmd, new RegExp(String.raw`^${CODE_KIT}\s+requests\s+drop\b`));
-const commits = runs(cmd, new RegExp(String.raw`^${GIT}commit\b`));
+const commits = runs(cmd, new RegExp(String.raw`^${GIT}commit(?![\w-])`));
 if (error) {
   if (commits) block(`Blocked: ${error}\nFix the config before committing.`);
   if (approves) block(`Blocked: ${error}\nApprovals wait until the config is valid.`);
@@ -142,7 +142,7 @@ function committedOnHead(root, file) {
 
 const writesHistory = runs(
   cmd,
-  new RegExp(String.raw`^${GIT}(commit|merge|cherry-pick|rebase|revert|am)\b`),
+  new RegExp(String.raw`^${GIT}(commit|merge|cherry-pick|rebase|revert|am)(?![\w-])`),
 );
 const switchesToProtected = runs(
   cmd,
@@ -394,8 +394,8 @@ try {
 // that commit on, the branch is protected by the rules it now holds.
 const settingUp =
   actor.kind === 'lead' &&
-  runs(cmd, new RegExp(String.raw`^${GIT}commit\b`)) &&
-  !runs(cmd, new RegExp(String.raw`^${GIT}(merge|cherry-pick|rebase|revert|am)\b`)) &&
+  runs(cmd, new RegExp(String.raw`^${GIT}commit(?![\w-])`)) &&
+  !runs(cmd, new RegExp(String.raw`^${GIT}(merge|cherry-pick|rebase|revert|am)(?![\w-])`)) &&
   !committedOnHead(root, CONFIG_FILE);
 if (writesHistory && config.branches.protected.includes(branch) && !settingUp) {
   block(
@@ -518,7 +518,7 @@ function committedFiles() {
   const pieces = commandsOf(cmd).map((c) => c.text);
   const gitRun = (sub) =>
     pieces.map((p) => p.match(new RegExp(String.raw`^${GIT}${sub}`))).filter(Boolean);
-  const commitAll = gitRun(String.raw`commit\b(.*)`).some((m) =>
+  const commitAll = gitRun(String.raw`commit(?![\w-])(.*)`).some((m) =>
     /\s(-a|--all|-[b-zB-Z]*a[a-zA-Z]*)(\s|$)/.test(` ${m[1]}`),
   );
   const argsOf = (m) =>
@@ -712,11 +712,11 @@ ${approvalHowTo(TESTS_APPROVAL, actor, root, 'weakening tests in one commit', pe
 // the chain writes (a formatter, a script, a heredoc) can't be seen, and would go in unjudged and
 // unlogged. Before the commit, a chain may only move into the checkout and stage.
 const BEFORE_COMMIT = new RegExp(
-  String.raw`^(?:cd\s|${GIT}(?:add|rm|mv|status|diff|log|show|restore\s+--staged|reset\s+--soft)\b)`,
+  String.raw`^(?:cd\s|${GIT}(?:add|rm|mv|status|diff|log|show|restore\s+--staged|reset\s+--soft)(?![\w-]))`,
 );
 function writesBeforeCommit() {
   const pieces = commandsOf(cmd);
-  const at = pieces.findIndex((c) => new RegExp(String.raw`^${GIT}commit\b`).test(c.text));
+  const at = pieces.findIndex((c) => new RegExp(String.raw`^${GIT}commit(?![\w-])`).test(c.text));
   return pieces
     .slice(0, Math.max(at, 0))
     .find((c) => !BEFORE_COMMIT.test(c.text) || /[<>]/.test(c.code));
