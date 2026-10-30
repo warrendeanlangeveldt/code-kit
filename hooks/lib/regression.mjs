@@ -232,6 +232,17 @@ const UNREACHABLE =
 const ASSERTED =
   /AssertionError|AssertionFailedError|Expected:|Received:|expected .+ to |toBe|toEqual|assert\w* failed|^\s*--- FAIL|Error: expect\(/m;
 
+/** The names a failure says can't be reached: quoted ones on its unreachable lines. */
+function missingNames(output) {
+  const names = new Set();
+  for (const line of output.split('\n').filter((l) => UNREACHABLE.test(l)))
+    for (const m of line.matchAll(
+      /['"`‘’]([A-Za-z_$][\w$]*)['"`‘’]|ReferenceError: ([A-Za-z_$][\w$]*)|undefined: (\w+)|import name '?(\w+)/g,
+    ))
+      names.add(m[1] ?? m[2] ?? m[3] ?? m[4]);
+  return names;
+}
+
 /** Whether a failure's output only shows the tests couldn't reach what the fix adds. */
 export const onlyUnreachable = (output) =>
   UNREACHABLE.test(output) && !ASSERTED.test(output.replace(UNREACHABLE, ''));
@@ -251,6 +262,9 @@ export function proveFix({ root, from, base, changed, config, fix }) {
     return [
       `${what}, but it adds or changes no test. Add a test that fails without the fix: it's what stops the bug coming back.`,
     ];
+  // A fix made wholly in the tests (a flaky test, a broken helper) has no code to take back: its tests
+  // are the fix. REG-2 still holds them, so it can't be made by weakening one.
+  if (changed.every((f) => isTestFile(f, config) || SNAPSHOT.test(f))) return [];
   const covering = config.checks.filter((c) =>
     tests.some((f) => matchesAny(f, c.files) && !matchesAny(f, c.exclude)),
   );
@@ -285,7 +299,22 @@ export function proveFix({ root, from, base, changed, config, fix }) {
       return [
         `${what}, but its tests (${tests.join(', ')}) also pass without the fix, so they don't prove the bug and it can come back. Write a test that fails on ${base} and passes here.`,
       ];
-    const output = `${without.title}\n${without.output ?? ''}`;
+    let output = `${without.title}\n${without.output ?? ''}`;
+    // Tests that call what the fix adds can stop a whole run (a typecheck) before a test through the
+    // existing code fails on its assertion: set them aside, and run the rest without the fix.
+    if (onlyUnreachable(output)) {
+      const missing = missingNames(output);
+      const aside = tests.filter((f) => {
+        const text = showAt(root, 'HEAD', f) ?? '';
+        return [...missing].some((n) => new RegExp(String.raw`\b${n}\b`).test(text));
+      });
+      const rest = tests.filter((f) => !aside.includes(f));
+      if (aside.length && rest.length) {
+        for (const f of aside) rmSync(join(dir, f), { force: true });
+        const { failure: again } = runChecks(strict, rest, dir, actor);
+        if (again) output = `${again.title}\n${again.output ?? ''}`;
+      }
+    }
     if (onlyUnreachable(output)) {
       const line =
         output

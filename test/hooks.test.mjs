@@ -7400,6 +7400,56 @@ else process.exit(1);
       0,
     );
 
+    // REG-1: a test that calls what the fix adds stops a run that halts at its first failure; set
+    // aside, a test through the existing code shows the bug.
+    g.git('checkout', '-q', 'main');
+    g.git('checkout', '-q', '-b', 'web/fix-taken');
+    gConfig({
+      checks: [
+        {
+          name: 'office tests, stopping at the first failure',
+          files: ['apps/office/**'],
+          run: ['for f in apps/office/*.test.mjs; do node --test "$f" || exit 1; done'],
+        },
+      ],
+    });
+    gPut(
+      'apps/office/booking.mjs',
+      'export const free = (slots) => slots.filter((s) => !s.taken);\nexport const hold = (slot) => ({ ...slot, held: true });\n',
+    );
+    gPut(
+      'apps/office/a-hold.test.mjs',
+      `import { test } from 'node:test';\nimport assert from 'node:assert';\nimport { hold } from './booking.mjs';\ntest('a held slot is held', () => { assert.equal(hold({}).held, true); });\n`,
+    );
+    gPut(
+      'apps/office/b-free.test.mjs',
+      `import { test } from 'node:test';\nimport assert from 'node:assert';\nimport { free } from './booking.mjs';\ntest('a taken slot is not free', () => { assert.equal(free([{ taken: true }]).length, 0); });\n`,
+    );
+    gCommit('fix taken slots');
+    res = gVerify();
+    expect(
+      'REG-1 a test failing on an assertion proves the fix, once tests calling what it adds are set aside',
+      truth(!said(res).includes('only because they call what the fix adds'), said(res)),
+      0,
+    );
+    gConfig();
+    g.git('checkout', '-q', '--', '.');
+
+    // REG-1: a fix made wholly in the tests (a flaky one) has no code to take back.
+    g.git('checkout', '-q', 'main');
+    g.git('checkout', '-q', '-b', 'web/fix-flaky');
+    gPut(
+      'apps/office/old.test.mjs',
+      `${twoCases}\n// seeded, so it no longer depends on the clock\n`,
+    );
+    gCommit('fix the flaky test');
+    res = gVerify();
+    expect(
+      'REG-1 a fix wholly in the tests passes the fix check',
+      truth(!said(res).includes('This branch fixes'), said(res)),
+      0,
+    );
+
     // REG-1: a fix with no test.
     g.git('checkout', '-q', 'main');
     g.git('checkout', '-q', '-b', 'web/fix-typo');
