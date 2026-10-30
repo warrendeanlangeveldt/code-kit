@@ -118,6 +118,9 @@ function packagesWithManagers(cmd) {
       quoted: /^["']/.test(m[0]),
       word: text.slice(m.index, m.index + m[0].length).replace(/^["']|["']$/g, ''),
     }));
+    // What a container installs is the container's: the project's manifests don't change, and a
+    // mounted project whose manifests do is still held to its dependency approvals when committed.
+    if (CONTAINERS.has(basename(words[0]?.word ?? ''))) continue;
     words.forEach(({ word, quoted }, i) => {
       if (quoted) return;
       if (SHELLS.has(basename(word)) && words[i + 1]?.word === '-c' && words[i + 2])
@@ -136,6 +139,7 @@ function packagesWithManagers(cmd) {
 }
 
 const SHELLS = new Set(['sh', 'bash', 'zsh']);
+const CONTAINERS = new Set(['docker', 'podman', 'nerdctl']);
 
 // The words after a package manager's name: its subcommand must be one that adds packages, and the
 // words after that, other than flags and their values, are the packages.

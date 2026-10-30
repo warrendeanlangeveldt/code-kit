@@ -271,6 +271,10 @@ test('the packages a command adds', () => {
     ['echo "write package.json before npm install; then commit" >> notes.md', []],
     ["git commit -m 'Run npm install lodash first'", []],
     ["cat > NOTES.md <<'EOF'\nnpm install lodash\nEOF", []],
+    // What a throwaway container installs is the container's.
+    ["docker run --rm python:3.12-slim bash -c 'pip install -q uv; uv sync --frozen'", []],
+    ['podman run --rm node:22 npm install zod', []],
+    ['docker run --rm node:22 true && npm install zod', ['zod']],
   ];
   for (const [cmd, want] of cases) assert.deepEqual(addedPackages(cmd), want, cmd);
 });
