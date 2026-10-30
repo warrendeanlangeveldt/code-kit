@@ -2567,7 +2567,7 @@ test('LEAN-5 a lane agent past its context limit is told to wrap up, and its sto
   await $.turn.complete({
     turnId: 't-a1',
     agentId: 'a1',
-    answer: 'ST-4: committed, report written.',
+    answer: 'Not finished: the confirmation email is left. ST-4 committed, report written.',
     durationMs: 1,
     isAborted: false,
   } as any);
@@ -2580,6 +2580,81 @@ test('LEAN-5 a lane agent past its context limit is told to wrap up, and its sto
     /Read your earlier report first: \.claude\/state\/reports\/web_st-4\.md/,
   );
 });
+
+/** LEAN-5: the web lane's agent on ST-4 past its context limit, handing back with `answer`. */
+async function pastLimitHandsBack($: any, on: any, w: any, answer: string) {
+  w.next = { step: 'wait', args: '', then: [] };
+  w.agents = [
+    { id: 'a1', type: 'web-engineer', description: 'ST-4 booking form', status: 'running' },
+  ];
+  const clock = await start($, on, w);
+  await clock.advance(2000);
+  await request($, 'a1', 300);
+  await $.turn.complete({
+    turnId: 't-a1',
+    agentId: 'a1',
+    answer,
+    durationMs: 1,
+    isAborted: false,
+  } as any);
+  return clock;
+}
+
+test('LEAN-5 an agent past its limit that hands back its story done is not carried on: the story goes to review', async ($, on) => {
+  const w = project();
+  const clock = await pastLimitHandsBack(
+    $,
+    on,
+    w,
+    'ST-4 done: every item fixed, committed, checks and verify pass. Report: .claude/state/reports/web_st-4.md',
+  );
+  await leadTurn($, 't-2');
+  await settle(clock);
+  expect(w.prompts.some((p: string) => /context limit/.test(p))).toBe(false);
+});
+
+/** LEAN-5: ST-4's agent hands back Not finished while the lead is mid-turn; `change` happens before it's idle. */
+async function carriedOnAfter($: any, on: any, change: (w: any) => void) {
+  const w = project();
+  // The lead is mid-turn as the agent hands back, so the carry-on waits for it to be idle.
+  w.next = { step: 'wait', args: '', then: [] };
+  w.agents = [
+    { id: 'a1', type: 'web-engineer', description: 'ST-4 booking form', status: 'running' },
+  ];
+  const clock = await start($, on, w);
+  await clock.advance(2000);
+  await request($, 'a1', 300);
+  await $.turn.start({ turnId: 't-2', text: '' } as any);
+  await $.turn.complete({
+    turnId: 't-a1',
+    agentId: 'a1',
+    answer: 'Not finished: the email is left.',
+    durationMs: 1,
+    isAborted: false,
+  } as any);
+  change(w);
+  w.refs += ' moved refs/heads/web/st-4\n';
+  await clock.advance(2000);
+  await settle(clock);
+  await $.turn.complete({
+    turnId: 't-2',
+    answer: 'Done.',
+    durationMs: 1,
+    isAborted: false,
+  } as any);
+  await settle(clock);
+  expect(w.prompts.some((p: string) => /context limit/.test(p))).toBe(false);
+}
+
+test('LEAN-5 a story sent back after its Not finished hand-back is not carried on', async ($, on) =>
+  carriedOnAfter($, on, (w) => {
+    w.stories = w.stories.map((s: any) => (s.id === 'ST-4' ? { ...s, state: 'sent back' } : s));
+  }));
+
+test('LEAN-5 a story queued to merge after its Not finished hand-back is not carried on', async ($, on) =>
+  carriedOnAfter($, on, (w) => {
+    w.queue = [{ branch: 'web/st-4', state: 'waiting', story: 'ST-4' }];
+  }));
 
 test('#59 an agent that hands back at its limit a story already merged and done is not carried on', async ($, on) => {
   const w = project();
@@ -2594,7 +2669,7 @@ test('#59 an agent that hands back at its limit a story already merged and done 
   await $.turn.complete({
     turnId: 't-a1',
     agentId: 'a1',
-    answer: 'ST-4: committed, report written.',
+    answer: 'Not finished: ST-4 committed, report written.',
     durationMs: 1,
     isAborted: false,
   } as any);

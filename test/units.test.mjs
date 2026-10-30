@@ -53,6 +53,7 @@ import {
   storiesSignature,
   withoutInFlight,
   limitHold,
+  unfinished,
 } from '../hooks/mod/loop.mjs';
 
 const fixture = JSON.parse(
@@ -689,6 +690,12 @@ test('LEAN-4 to LEAN-5 the context a request carried, the wrap-up, and carrying 
   );
   assert.equal(requestContext(null), 0);
   assert.match(wrapUpText(250000), /^Your context is past 250k tokens/);
+  assert.match(wrapUpText(250000), /start your hand-back with "Not finished:"/);
+  // Only a hand-back that says so is carried on; a finished one goes to review.
+  assert.equal(unfinished('Not finished: the email is left.'), true);
+  assert.equal(unfinished('  **Not finished:** the email is left.'), true);
+  assert.equal(unfinished('ST-4 done: committed, checks and verify pass.'), false);
+  assert.equal(unfinished('Done. Nothing is not finished.'), false);
   assert.match(compactInstructions(), /^The lead's context is compacted between turns/);
   assert.equal(
     continuePrompt({ type: 'api-engineer', story: 'ST-9', branch: 'api/st-9', cli: '/k.mjs' }),

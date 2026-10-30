@@ -178,6 +178,8 @@ import {
 } from '../hooks/lib/sessions.mjs';
 import { globsOverlap } from '../hooks/lib/teamfacts.mjs';
 import {
+  BUSY_MS,
+  agentBusy,
   cleanOf,
   discardWorktree,
   keptBecause,
@@ -2571,6 +2573,10 @@ function worktreesCommand() {
   if (rest[0] === 'release') {
     const w = list.find((x) => x.branch === rest[1] || x.path === rest[1]);
     if (!w) die(`No worktree has ${rest[1] ?? '<branch>'} checked out.`);
+    if (agentBusy(root, w))
+      die(
+        `The ${w.branch.split('/')[0]} lane's agent is still at work on ${w.branch} (its last act was under ${BUSY_MS / 60_000} minutes ago, with no hand-back); nothing was removed. Wait for it to hand back, or stop it with TaskStop, then release it.`,
+      );
     return out(`Released ${releaseWorktree(w)}. The branch and its commits stay.`);
   }
   if (rest[0] === 'discard') {

@@ -416,7 +416,18 @@ export function limitText(hold) {
 
 /** LEAN-5: what a lane agent past its context limit is told. */
 export const wrapUpText = (limit) =>
-  `Your context is past ${Math.round(limit / 1000)}k tokens, and every step from here rereads all of it. Finish the step you're on, commit your work, write your report, and hand back now. The lead carries the story on with a fresh agent that reads your report.`;
+  `Your context is past ${Math.round(limit / 1000)}k tokens, and every step from here rereads all of it. Finish the step you're on, commit your work, write your report, and hand back now. If the story isn't done, start your hand-back with "${UNFINISHED}" and what's left: the lead carries it on with a fresh agent that reads your report. If it is done, hand back as usual.`;
+
+/** LEAN-5: how a lane agent past its limit says its story isn't done. */
+export const UNFINISHED = 'Not finished:';
+
+/** LEAN-5: whether a hand-back says the story isn't done, so a fresh agent carries it on. */
+export const unfinished = (answer) =>
+  String(answer ?? '')
+    .trimStart()
+    .replace(/^[*_#>\s]+/, '')
+    .toLowerCase()
+    .startsWith(UNFINISHED.toLowerCase());
 
 /** LEAN-5, LEAN-6: the lead's prompt to carry a story on with a fresh agent once its agent handed back at the limit. */
 export function continuePrompt({ type, story, branch, cli = 'code-kit' }) {

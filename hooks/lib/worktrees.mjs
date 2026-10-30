@@ -19,7 +19,7 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
-import { pruneLogs } from './events.mjs';
+import { pruneLogs, readEvents } from './events.mjs';
 import { laneClaims } from './laneclaims.mjs';
 import { storyOfBranch } from './teamfacts.mjs';
 
@@ -142,6 +142,23 @@ export function worktrees(root, config, now = Date.now()) {
         age: missing ? null : now - statSync(path).mtimeMs,
       };
     });
+}
+
+/** LEAN-6: how recently a lane agent's act counts as it still being at work on a story. */
+export const BUSY_MS = 3 * 60_000;
+
+/**
+ * LEAN-6: whether a lane agent is still at work on a worktree's story, by the story's event log (spec
+ * 26): its lane's last act is still open, or came within BUSY_MS, with no hand-back after it. Releasing
+ * a worktree under a running agent takes its git away mid-step.
+ */
+export function agentBusy(root, w, now = Date.now()) {
+  if (!w.story) return false;
+  const last = readEvents(root, w.story)
+    .filter((e) => e.actor && e.actor !== 'lead' && e.agent)
+    .at(-1);
+  if (!last || last.kind === 'handback') return false;
+  return last.phase === 'start' || now - Date.parse(last.at) < BUSY_MS;
 }
 
 /** Whether a worktree holds nothing uncommitted, read now where worktrees() didn't. */

@@ -81,6 +81,7 @@ import {
   PARK_MS,
   compactInstructions,
   continuePrompt,
+  unfinished,
   limitHold,
   limitText,
   requestContext,
@@ -210,6 +211,16 @@ const finishedWork = (a) => {
     (q) => q.branch === story.branch && ['waiting', 'merging'].includes(q.state),
   );
 };
+/**
+ * LEAN-5: a story a fresh agent mustn't carry on: merged, sent back (its send-back goes to a fresh agent
+ * already), or waiting in the merge queue.
+ */
+const carriedOnAlready = (story) =>
+  !story ||
+  ['done', 'sent back'].includes(story.state) ||
+  (model.queue ?? []).some(
+    (q) => q.branch === story.branch && ['waiting', 'merging', 'merged'].includes(q.state),
+  );
 /** An agent's activity record, made on first sight. */
 const activityOf = (agentId, now) => {
   let a = activity.get(agentId);
@@ -1651,11 +1662,13 @@ export function register(on) {
         // LOOP-11: the lead's last reply first: one that waits on the person holds every step.
         await act.hear();
         if (loop.waiting && ['person', 'stopped'].includes(loop.waiting.kind)) return;
-        // #59: a restart or hand-back for a story that has since merged is stale, and goes unasked.
-        const finished = new Set(
-          (model.state?.stories ?? []).filter((s) => s.state === 'done').map((s) => s.id),
-        );
-        loop.pending = loop.pending.filter((p) => !finished.has(p.story));
+        // #59: a restart or hand-back for a story that has since merged is stale, and goes unasked; LEAN-5:
+        // so is carrying on a story that has since been sent back or queued to merge.
+        const stories = model.state?.stories ?? [];
+        loop.pending = loop.pending.filter((p) => {
+          const story = stories.find((s) => s.id === p.story);
+          return p.kind === 'continue' ? !carriedOnAlready(story) : story?.state !== 'done';
+        });
         if (loop.pending.length) {
           const { story, prompt } = loop.pending.shift();
           // Until the person has chosen how hands-off the loop is, or under propose, a restart is offered
@@ -2456,12 +2469,21 @@ export function register(on) {
       a.handedBack = true;
       // LOOP-14: a turn that died on an API error stopped short; it didn't hand back at its limit.
       if (e.reason === 'error') a.failed = true;
-      // LEAN-5: an agent that handed back at its limit: the lead carries its story on with a fresh one.
+      // LEAN-5: an agent that handed back at its limit saying its story isn't done: the lead carries it
+      // on with a fresh one. A hand-back that doesn't say so finished the story, which goes to review.
       const story = (model.state?.stories ?? []).find((s) => s.id === a.story);
-      if (a.overflow && !a.failed && !a.continued && act && story?.state !== 'done') {
+      if (
+        a.overflow &&
+        !a.failed &&
+        !a.continued &&
+        act &&
+        unfinished(e.answer) &&
+        !carriedOnAlready(story)
+      ) {
         a.continued = true;
         const agent = agentsSeen.get(e.agentId);
         loop.pending.push({
+          kind: 'continue',
           story: a.story,
           prompt: continuePrompt({
             type: agent?.type ?? 'The lane agent',

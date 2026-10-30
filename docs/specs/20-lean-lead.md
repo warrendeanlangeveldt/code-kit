@@ -59,11 +59,13 @@ Milestones take days, and a lead's context reached 968k tokens before Claude Cod
 
 ### LEAN-5 A lane agent's context limit
 
-When a lane agent's request carries more than `harness.agents.lanes.contextLimit` tokens of context (250,000 by default; 0 for no limit), it's told once to finish the step it's on, commit, write its report and hand back. Once it hands back, the loop prompts the lead to release its worktree and dispatch the story again to a fresh agent, which reads the report first. A long-lived agent rereads its whole context on every request, which is most of what a build costs.
+When a lane agent's request carries more than `harness.agents.lanes.contextLimit` tokens of context (250,000 by default; 0 for no limit), it's told once to finish the step it's on, commit, write its report and hand back, starting the hand-back with `Not finished:` if the story isn't done. A hand-back that starts so is carried on: the loop prompts the lead to release its worktree and dispatch the story again to a fresh agent, which reads the report first. Any other hand-back finished the story, which goes to review like any other; review sends back what's missing. Nor is a story carried on that has since merged, waits in the merge queue or was sent back, nor one whose agent's turn ended on an API error (LOOP-14). A long-lived agent rereads its whole context on every request, which is most of what a build costs.
 
 **Acceptance**
 
-- Given the web lane's agent at 270k tokens, then it's told to wrap up, once; when it hands back, the lead is prompted to release `web/st-4` and dispatch ST-4 again, reading `.claude/state/reports/web_st-4.md` first.
+- Given the web lane's agent at 270k tokens, then it's told to wrap up, once; when it hands back with "Not finished: the confirmation email is left", the lead is prompted to release `web/st-4` and dispatch ST-4 again, reading `.claude/state/reports/web_st-4.md` first.
+- Given the agent past its limit hands back "ST-4 done: committed, checks and verify pass", then nothing is carried on and ST-4 goes to review.
+- Given a `Not finished:` hand-back for ST-4, when ST-4 is sent back, merged or waiting in the merge queue before the lead is next idle, then it isn't carried on.
 
 ### LEAN-6 One agent per story, and worktrees released
 

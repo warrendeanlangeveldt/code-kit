@@ -7407,6 +7407,31 @@ else process.exit(1);
       'uncommitted changes',
     );
     execFileSync('git', ['-C', tree('web/st-2'), 'checkout', '-q', '--', '.']);
+    // truemark R-8: its agent edited a minute ago and hasn't handed back, so it's still at work.
+    const events = join(t.dir, '.claude/state/events');
+    mkdirSync(events, { recursive: true });
+    const act = (kind, phase, ago) =>
+      JSON.stringify({
+        at: new Date(Date.now() - ago).toISOString(),
+        story: 'ST-2',
+        actor: 'web',
+        agent: 'a1',
+        session: 's1',
+        kind,
+        phase,
+        branch: 'web/st-2',
+      });
+    writeFileSync(join(events, 'ST-2.jsonl'), `${act('edit', 'end', 60_000)}\n`);
+    expect(
+      'a worktree whose lane agent acted in the last minutes, with no hand-back, is never released',
+      tCli('worktrees', 'release', 'web/st-2'),
+      1,
+      'still at work on web/st-2',
+    );
+    writeFileSync(
+      join(events, 'ST-2.jsonl'),
+      `${act('edit', 'end', 60_000)}\n${act('handback', 'note', 30_000)}\n`,
+    );
     expect(
       'released for a fresh agent: the worktree goes, the branch and its report stay',
       truth(
