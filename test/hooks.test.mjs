@@ -7587,6 +7587,14 @@ else process.exit(1);
       ),
       0,
     );
+    // The commit didn't land (here, the hook ran and the command never did): the next attempt is
+    // told where its approval went.
+    expect(
+      'REG-2 a refusal says the approval was used up by an earlier commit, and when',
+      gBash('git add -A && git commit -m skip', 'web-engineer'),
+      2,
+      'The tests approval given at',
+    );
     g.git('commit', '-q', '-m', 'ST-4 skip with approval');
     res = gVerify();
     expect(

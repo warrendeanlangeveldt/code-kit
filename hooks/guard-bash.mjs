@@ -45,6 +45,7 @@ import {
   owns,
   protectedEntry,
   leadNeedsApproval,
+  approvalEnded,
   recordRequest,
   sessionRoot,
 } from './lib/rules.mjs';
@@ -619,7 +620,7 @@ function recordApprovals() {
     if (entry && !granted && !leadFree && !byDependency) {
       recordRequest(root, actor, entry.approval, file, entry.why);
       block(
-        `Blocked: ${file} is ${entry.why}; committing it needs ${decidedBy(entry.approval, config, actor) === 'lead' ? "the lead's" : "a person's"} approval in force.${noteFor(root, config, { kind: 'protected', name: entry.approval, glob: entry.glob })} ${askHowTo(entry.approval, actor, root, config)}`,
+        `Blocked: ${file} is ${entry.why}; committing it needs ${decidedBy(entry.approval, config, actor) === 'lead' ? "the lead's" : "a person's"} approval in force.${approvalEnded(root, entry.approval, actor)}${noteFor(root, config, { kind: 'protected', name: entry.approval, glob: entry.glob })} ${askHowTo(entry.approval, actor, root, config)}`,
       );
     }
     if (granted)
@@ -669,7 +670,7 @@ function recordApprovals() {
             ? `Also weakened: ${more.map((x) => `${x.file} (${said(x)})`).join('; ')}.
 `
             : '') +
-          `A weakened test can hide a regression. Fix the code so the test passes as it was. ` +
+          `A weakened test can hide a regression.${approvalEnded(root, TESTS_APPROVAL, actor)} Fix the code so the test passes as it was. ` +
           (leads
             ? `If the test itself is wrong, the lead decides after reviewing it: ${askHowTo(TESTS_APPROVAL, actor, root, config, { allows: 'weakening tests in one commit', need: 'the test, what you weakened and why the test was wrong, and the story' })}`
             : `If the test itself is wrong, ask the person: ${actor.kind === 'lead' ? "on your own branch nobody else reviews it, so you can't approve it." : "the lead can't approve it here."} They run
@@ -729,7 +730,7 @@ if (commits) {
     block(
       `Blocked: this commit runs after \`${writer.text.slice(0, 80)}\` in the same command, which may write files code-kit can't see before the commit, so they would go in without their checks or their entry in the approval log. Run that first, on its own; then commit in a command of its own (\`git add … && git commit …\` is fine).\nCommand: ${cmd}`,
     );
-  recordApprovals();
+  // Every refusal comes before approvals are spent and logged, so a refused commit spends none.
   const scan = spawnSync('gitleaks', ['protect', '--staged', '--redact', '--no-banner'], {
     cwd: root,
     encoding: 'utf8',
@@ -739,5 +740,6 @@ if (commits) {
       `Blocked: gitleaks found possible secrets in staged changes.\n${scan.stdout}${scan.stderr}`,
     );
   }
+  recordApprovals();
 }
 process.exit(0);

@@ -198,6 +198,25 @@ function noteGiven(root, entries) {
   }
 }
 
+/**
+ * Why an approval for `name` given to `actor` lately isn't in force any more: used up by an earlier
+ * commit, or out of time. A sentence for a refusal, or '' when none was given lately.
+ */
+export function approvalEnded(root, name, actor, now = Date.now()) {
+  const lane = actor?.kind === 'lane' ? actor.lane : null;
+  const last = approvalsGiven(root)
+    .filter((e) => e.name === name && (!e.lane || e.lane === lane))
+    .at(-1);
+  if (!last?.at) return '';
+  const at = (t) => new Date(t).toTimeString().slice(0, 5);
+  const given = Date.parse(last.at);
+  if (now - given > 24 * 3600_000) return '';
+  if (last.usedAt)
+    return ` The ${name} approval given at ${at(given)} was used up at ${at(last.usedAt)} by an earlier commit${last.usedBy ? ` (${last.usedBy})` : ''}, so another is needed.`;
+  const ends = given + approvalMinutes(name) * 60_000;
+  return now >= ends ? ` The ${name} approval given at ${at(given)} ran out at ${at(ends)}.` : '';
+}
+
 /** The approvals given through code-kit (and those used up), oldest first. */
 export function approvalsGiven(root) {
   try {
@@ -365,6 +384,7 @@ export function useApproval(root, name, actor) {
         ...(file !== join(dir, name) ? { lane: actor.lane } : {}),
         reason: a.reason,
         usedAt: new Date().toISOString(),
+        ...(actor?.label ? { usedBy: actor.label } : {}),
       },
     ]);
     return rmSync(file, { force: true });
