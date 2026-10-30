@@ -2,6 +2,21 @@
 
 What changed in each release of code-kit, newest first. Versions follow the plugin manifest and the npm package `@warren-dean/code-kit`. Each release is also on [GitHub Releases](https://github.com/warrendeanlangeveldt/code-kit/releases).
 
+## 0.27.0 (2026-10-30)
+
+Fixes for what projects reported: the loop respects Claude's usage limit, merges land as they were verified, claims end with their stories, and approved designs reach lanes as files.
+
+- **Usage limits.** When Claude's usage limit stops the lead, the loop now waits until the limit resets instead of prompting into it, and the band says so, with **Try now**. With no reset time, it retries after 5 minutes, doubling up to an hour. A lane agent stopped by the limit isn't taken as finished: it keeps its lane, its story stays in progress, and its finish isn't checked.
+- **The loop** no longer repeats steps it has already asked while nothing in the project has changed. It doesn't send a step it worked out while the lead's turn began, so a branch you just dropped from the queue isn't put up to merge. It carries on a lane agent at its context limit only when the agent says it isn't finished.
+- **The merge queue** verifies each branch as it will land, merged with the base in a fresh checkout that has its own installs. A merge already running isn't started again or asked for. `queue add <branch> --with <other>` makes branches that only work together wait for each other and merge as one. `merge <branch>` marks its queue entry as merged.
+- **Claims.** When a story merges, its claim is released on GitHub as well as on the hub, and claims stuck on merged stories are cleared.
+- **Approvals.** When merges are delegated, the lead still needs your approval to change what's yours. Every commit is judged, including `git -C`, and a commit chained after a command that writes files is refused. A refusal says when the approval ran out or which commit used it up. A commit stopped by the secrets scan doesn't use one up, and a request is no longer closed by a commit made just before it.
+- **Test checks.** `expect.poll` and `expect.soft` count as assertions. A branch deleting or reworking tests it added itself isn't weakening tests. A fix made entirely in tests (a flaky test, a broken helper) passes the fix check. A fix's proof that a typecheck failure hid is found.
+- **verify** no longer counts files the branch holds exactly as the base does. A check's long output doesn't fail it, because its exit code decides. Installs inside a container (`docker run`, podman) aren't the project's dependencies. `.mcp.json` belongs to the lead.
+- **Plans and commands.** A story marked `**Status:** dropped` is never dispatched or waited on. A story whose lane is building it again isn't offered for review. `ask --help` and `ask list` behave as commands. `git merge-base`, `merge-tree` and `commit-tree` aren't read as merges or commits.
+- **Designs handed over (spec 24).** An approved design is now files in `design/` (each state's code and a PNG, with their hashes), so a lane builds from exactly what you approved. Committing the register is refused while a file is missing or changed, or a state the spec lists has no design. `code-kit designs <story>` lists a story's designs, and review compares each built screen with its design. `next` asks once to export designs that are still only in a design tool (`/code-kit:design --hand-over`).
+- After updating, `next` asks to refresh each project's lane-agent instructions.
+
 ## 0.26.2 (2026-10-26)
 
 The lanes pane tells the truth about what's being built, and is easier to read.
