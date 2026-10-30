@@ -21,6 +21,7 @@ import { refusalCard } from '../hooks/mod/view.mjs';
 import { holdable } from '../hooks/mod/hold.mjs';
 import { claimLane, releaseLane } from '../hooks/lib/laneclaims.mjs';
 import { markMerging } from '../hooks/lib/queue.mjs';
+import { openRequests, recordRequest } from '../hooks/lib/rules.mjs';
 
 // SESS-1: the CLI reads the calling session from Claude Code's environment; these tests say it themselves.
 delete process.env.CLAUDE_CODE_SESSION_ID;
@@ -7761,6 +7762,32 @@ else process.exit(1);
       truth(held?.kind === 'approval' && held.names.join() === 'tests', JSON.stringify(held)),
       0,
     );
+    // CARD-7: a commit of the file in the same second, made before the request, doesn't answer it.
+    {
+      const r = newRepo();
+      const second = Math.floor(Date.now() / 1000);
+      writeFileSync(join(r.dir, 'same.test.mjs'), 'test\n');
+      r.git('add', 'same.test.mjs');
+      execFileSync(
+        'git',
+        ['-C', r.dir, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '-m', 'x'],
+        { env: { ...process.env, GIT_COMMITTER_DATE: `@${second} +0000` } },
+      );
+      const at = second * 1000 + 500;
+      recordRequest(
+        r.dir,
+        { kind: 'lane', lane: 'web', label: 'web' },
+        'tests',
+        'same.test.mjs',
+        'A weakened test.',
+        at,
+      );
+      expect(
+        "CARD-7 a request isn't answered by a commit made before it in the same second",
+        truth(openRequests(r.dir, at + 100).some((q) => q.what === 'same.test.mjs')),
+        0,
+      );
+    }
     const asked = JSON.parse(gCli('requests', '--json').stdout).open;
     expect(
       'REG-2 and it waits in the Decisions tab as a request',

@@ -574,7 +574,9 @@ function committedSince(root, r) {
         '--all',
         '-1',
         '--format=%ct',
-        `--since=@${Math.floor(Date.parse(r.at) / 1000)}`,
+        // Git dates are whole seconds: a commit in the second the request was made may have come before
+        // it (the commit before the refused one), so only a later second counts.
+        `--since=@${Math.floor(Date.parse(r.at) / 1000) + 1}`,
         '--',
         path,
       ],
