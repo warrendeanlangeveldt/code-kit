@@ -117,7 +117,16 @@ import {
   leadSection,
   writeInstructions,
 } from '../hooks/lib/instructions.mjs';
-import { dequeue, enqueue, lastMerged, readQueue, settle, waiting } from '../hooks/lib/queue.mjs';
+import {
+  dequeue,
+  enqueue,
+  lastMerged,
+  markMerging,
+  mergingNow,
+  readQueue,
+  settle,
+  waiting,
+} from '../hooks/lib/queue.mjs';
 import { publishBase } from '../hooks/lib/publish.mjs';
 import {
   briefOf,
@@ -898,6 +907,17 @@ function queue() {
     const entries = readQueue(root);
     const head = waiting(entries)[0];
     if (!head) return out('The merge queue is empty.');
+    // One merge at a time: a second run while the first verifies would merge the same head twice.
+    if (mergingNow(head))
+      die(
+        `${head.branch} is being merged now (queue merge, process ${head.pid}); nothing more was started. It says when it's done.`,
+      );
+    markMerging(root, head.branch, process.pid);
+    // However this run ends without settling the head, it goes back to waiting in its place.
+    process.on('exit', () => {
+      if (readQueue(root).some((e) => e.branch === head.branch && e.state === 'merging'))
+        markMerging(root, head.branch, null);
+    });
     try {
       const { message } = mergeOne(head.branch, config, byPerson, head.commit ?? null);
       settle(root, head.branch, 'merged');

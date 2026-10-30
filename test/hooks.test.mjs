@@ -19,6 +19,7 @@ import { fileURLToPath } from 'node:url';
 import { refusalCard } from '../hooks/mod/view.mjs';
 import { holdable } from '../hooks/mod/hold.mjs';
 import { claimLane, releaseLane } from '../hooks/lib/laneclaims.mjs';
+import { markMerging } from '../hooks/lib/queue.mjs';
 
 // SESS-1: the CLI reads the calling session from Claude Code's environment; these tests say it themselves.
 delete process.env.CLAUDE_CODE_SESSION_ID;
@@ -4390,6 +4391,21 @@ else process.exit(2);
       1,
       'There is no branch',
     );
+    // A queue merge already running (here, this test's own process) isn't started again or asked for.
+    markMerging(q.dir, 'web/st-a', process.pid);
+    expect(
+      'MQ-1 a second queue merge while one runs starts nothing',
+      qKit('queue', 'merge', '--delegated'),
+      1,
+      'is being merged now',
+    );
+    // A run that died leaves its mark behind: a process no longer running doesn't hold the head.
+    markMerging(q.dir, 'web/st-a', 2 ** 22 + 12345);
+    expect(
+      'MQ-4 the head keeps its place while marked',
+      truth(JSON.parse(qKit('queue', '--json').stdout)[0]?.branch === 'web/st-a'),
+      0,
+    );
     expect(
       'MQ-1 the head merges first, verified',
       says(qKit('queue', 'merge', '--delegated'), 'Next in the queue: web/st-b'),
@@ -7091,6 +7107,18 @@ else process.exit(1);
     'merge',
     'web/st-2',
   );
+  markMerging(v.dir, 'web/st-2', process.pid);
+  const whileMerging = nextIn(v.dir);
+  expect(
+    'MQ-1 while a queue merge runs, next asks for no merge, and says why',
+    truth(
+      whileMerging.step !== 'merge' &&
+        whileMerging.attention.some((a) => a.includes('web/st-2 is being merged now')),
+      JSON.stringify(whileMerging),
+    ),
+    0,
+  );
+  markMerging(v.dir, 'web/st-2', null);
   writeFileSync(
     join(v.dir, '.claude/code-kit.json'),
     JSON.stringify({

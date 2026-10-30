@@ -29,7 +29,7 @@ The queue is kept in `.claude/state/merge-queue.json` in the main checkout, so a
 
 ### MQ-1 Order
 
-Branches merge in the order their reviews passed; one at a time. Each is verified as it will land: the branch merged with the base as it is then, in a fresh checkout with its own copy of the installs (the branch's worktree's, else the main checkout's), never at the branch's own head and never without its dependencies.
+Branches merge in the order their reviews passed; one at a time. Each is verified as it will land: the branch merged with the base as it is then, in a fresh checkout with its own copy of the installs (the branch's worktree's, else the main checkout's), never at the branch's own head and never without its dependencies. While a `queue merge` runs, its head is marked as merging: a second run starts nothing, and `next` asks for no merge until it's done; a run that died leaves the head waiting in its place.
 
 **Acceptance**
 

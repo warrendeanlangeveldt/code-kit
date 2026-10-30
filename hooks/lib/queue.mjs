@@ -90,6 +90,34 @@ export function settle(root, branch, state, reason = null, now = Date.now()) {
   writeQueue(root, [...entries.filter((e) => !settled.includes(e)), ...settled]);
 }
 
+/**
+ * MQ-1: the head being merged by a running `queue merge` (process `pid`), in its place; `null` puts it
+ * back to waiting, in its place too.
+ */
+export function markMerging(root, branch, pid, now = Date.now()) {
+  writeQueue(
+    root,
+    readQueue(root).map((e) => {
+      if (e.branch !== branch || !['waiting', 'merging'].includes(e.state)) return e;
+      const { pid: _pid, ...rest } = e;
+      return pid
+        ? { ...rest, state: 'merging', pid, at: new Date(now).toISOString() }
+        : { ...rest, state: 'waiting' };
+    }),
+  );
+}
+
+/** Whether `entry` is being merged now: marked merging by a process still running. */
+export function mergingNow(entry) {
+  if (entry?.state !== 'merging' || !entry.pid) return false;
+  try {
+    process.kill(entry.pid, 0);
+    return true;
+  } catch (e) {
+    return e.code === 'EPERM';
+  }
+}
+
 /** The branch merged last, for a send-back's reason ("conflicts with main after web/st-4"). */
 export function lastMerged(entries) {
   return [...entries].reverse().find((e) => e.state === 'merged')?.branch ?? null;
