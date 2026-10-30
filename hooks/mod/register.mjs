@@ -195,6 +195,7 @@ const DENIED_KEPT = 20;
 const LANES_FREE_MS = 60000;
 let lanesFreed = -Infinity;
 let leadTurn = null; // the lead's running turn, if any
+let leadTurns = 0; // the lead's turns started, so a step read before one began is known to be stale
 const activity = new Map(); // agent id → { at, inFlight, nudged, stopped, lane, story }
 const restarts = new Map(); // story → times the loop restarted it
 const flagged = new Map(); // story → { lane, story, count }: stalled past its restarts
@@ -1652,6 +1653,10 @@ export function register(on) {
         const h = harness();
         if (loop.paused || h.autonomy === 'off' || model.state?.kind !== 'ok' || loop.done) return;
         if (leadTurn) return;
+        // A turn that starts while the step reads the project (the person prompting the lead) may change
+        // what's next, as dropping the branch it would merge does: the step is read again once it ends.
+        const turns = leadTurns;
+        const stale = () => leadTurn || leadTurns !== turns;
         // LOOP-14: a prompt now would fail as the last turn did.
         if (loop.limited && (await $.clock.now()) < loop.limited.until) return;
         if (trigger === 'tick' && !loop.started && !loop.pending.length) return;
@@ -1669,6 +1674,7 @@ export function register(on) {
           const story = stories.find((s) => s.id === p.story);
           return p.kind === 'continue' ? !carriedOnAlready(story) : story?.state !== 'done';
         });
+        if (stale()) return;
         if (loop.pending.length) {
           const { story, prompt } = loop.pending.shift();
           // Until the person has chosen how hands-off the loop is, or under propose, a restart is offered
@@ -1700,6 +1706,7 @@ export function register(on) {
                 loop.parked,
               )
             : null;
+        if (stale()) return;
         // MISSION-1: the band shows what the loop takes next.
         loop.nextStep = step;
         if (!step) {
@@ -1753,6 +1760,7 @@ export function register(on) {
         }
         // Never the same step twice while the project stands still.
         const print = await act.fingerprint();
+        if (stale()) return;
         if (key === loop.lastKey && print === loop.lastPrint) return;
         // LOOP-14: nor any step already prompted while it stood so, as steps taken in turn would be.
         if (loop.askedAt.print !== print) loop.askedAt = { print, keys: new Set() };
@@ -2448,6 +2456,7 @@ export function register(on) {
 
   on('turn.start', async ($, e, next) => {
     leadTurn = e.turnId;
+    leadTurns += 1;
     // LOOP-11: the questions already open, so the loop knows which the lead asked in this turn.
     turnQuestions = (model.questions ?? []).map((q) => q.id);
     $.ui.invalidate('ui.render'); // the lead's lane reads working while its turn runs

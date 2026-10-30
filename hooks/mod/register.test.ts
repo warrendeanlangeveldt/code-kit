@@ -180,6 +180,7 @@ function project() {
     waiting: new Map<string, (answer: string) => void>(),
     // The CLI commands that never answer: their run rejects, as one past its time does.
     timesOut: new Set<string>(),
+    duringNext: null as null | (() => unknown), // run while `code-kit next` runs, after it read
   };
 }
 type World = ReturnType<typeof project>;
@@ -207,7 +208,13 @@ function stub(on: any, w: World) {
           drift: [],
         }),
       );
-    if (sub === 'next') return ran(0, JSON.stringify(w.next));
+    if (sub === 'next') {
+      const shown = JSON.stringify(w.next);
+      // What happens while `next` runs, after it read the project.
+      const during = w.duringNext;
+      w.duringNext = null;
+      return Promise.resolve(during?.()).then(() => ran(0, shown));
+    }
     if (sub === 'requests' && argv[3] === 'drop') {
       w.acts.push([...argv.slice(2)]);
       const drop = new Set(argv[4].split(',').map(Number));
@@ -3153,6 +3160,29 @@ test('LOOP-14 steps taken in turn are each prompted once while the project stand
     expect.stringMatching(/^Merge lead\/st-1/),
     expect.stringMatching(/Run \/code-kit:decide 1\.$/),
   ]);
+});
+
+test("LOOP-1 a step read before the lead's turn started isn't prompted: the turn may have changed it", async ($, on) => {
+  const w = project();
+  w.next = { step: 'merge', args: 'platform/st-1', then: [] };
+  const clock = await start($, on, w);
+  // While the step reads `next`, the person prompts the lead, which drops the branch from the queue.
+  w.duringNext = async () => {
+    await $.turn.start({ turnId: 't-2', text: 'drop platform/st-1 from the queue' } as any);
+    w.next = { step: 'wait', args: '', then: [] };
+  };
+  await $.turn.start({ turnId: 't-1', text: '' } as any);
+  await $.turn.complete({ turnId: 't-1', answer: 'Done.', durationMs: 1, isAborted: false } as any);
+  await settle(clock);
+  expect(w.prompts).toEqual([]);
+  await $.turn.complete({
+    turnId: 't-2',
+    answer: 'Dropped.',
+    durationMs: 1,
+    isAborted: false,
+  } as any);
+  await settle(clock);
+  expect(w.prompts.filter((p: string) => /^Merge/.test(p))).toEqual([]);
 });
 
 test('LOOP-14 a lane agent whose turn ends on an API error is not carried on as handed back at its limit', async ($, on) => {

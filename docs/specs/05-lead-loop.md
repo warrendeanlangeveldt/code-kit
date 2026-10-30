@@ -44,7 +44,7 @@ A lane agent, as the loop sees it: `working` → `quiet` (no tool call for 5 min
 
 ### LOOP-1 Prompts the lead when it's idle
 
-When no turn is running and the prompt holds no draft, the loop asks `next` what to do and, if it's a step the lead takes (`dispatch`, `lead`, `review`), submits that step to the lead as a prompt naming the skill and its argument, for example "Dispatch ST-7, ST-9: run /code-kit:dispatch ST-7 ST-9." (Claude Code refuses a mod's prompt that begins with `/`). It never submits while a turn runs or while the person is typing, and submits at most one prompt per idle period.
+When no turn is running and the prompt holds no draft, the loop asks `next` what to do and, if it's a step the lead takes (`dispatch`, `lead`, `review`), submits that step to the lead as a prompt naming the skill and its argument, for example "Dispatch ST-7, ST-9: run /code-kit:dispatch ST-7 ST-9." (Claude Code refuses a mod's prompt that begins with `/`). It never submits while a turn runs or while the person is typing, and submits at most one prompt per idle period. A step read while a turn began (the person prompting the lead as `next` ran) isn't submitted: that turn may change what's next, as dropping the branch the step would merge does, so the step is read again when it ends.
 
 - **Who:** the mod; only in a project with `.claude/code-kit.json`.
 - **Errors:** if `next` fails, the band shows its error and the loop waits for the next change.
@@ -55,6 +55,7 @@ When no turn is running and the prompt holds no draft, the loop asks `next` what
 - Given two ready stories and an idle lead, when the loop ticks, then the lead receives one prompt dispatching both, and the pane records the step.
 - Given a turn in progress, when a lane finishes, then nothing is submitted until the turn completes.
 - Given the person typing in the prompt, when the lead is idle, then nothing is submitted until the draft is sent or cleared.
+- Given the loop reading `next` as the person prompts the lead to drop the branch it would merge, when that turn ends, then the merge isn't prompted.
 
 ### LOOP-2 The lead decides concurrency
 
@@ -175,7 +176,7 @@ When the lead's reply says a step's stories aren't due yet because they wait on 
 
 ### LOOP-14 The loop waits out Claude's usage limit
 
-A lead turn that ends on an API error (the account's usage limit, a rate limit, an overloaded or failing API) did nothing, and another prompt would fail the same way. The loop holds: it prompts nothing, and restarts no quiet lane agent, until the limit resets. The reset is the latest `resetsAt` of the rate-limit windows Claude Code reports as used up; with none used up (an overloaded API, a server error), the loop tries again after 5 minutes, then 10, 20 and at most 60 while turns keep failing. The band says so ("Claude's usage limit is reached: the loop waits until …") with **Try now**. The person speaking to the lead, Try now, or a lead turn that answers ends the hold. A lane agent whose turn ended on an API error stopped short: it isn't read as handing back at its context limit.
+A lead turn that ends on an API error (the account's usage limit, a rate limit, an overloaded or failing API) did nothing, and another prompt would fail the same way. The loop holds: it prompts nothing, and restarts no quiet lane agent, until the limit resets. The reset is the latest `resetsAt` of the rate-limit windows Claude Code reports as used up; with none used up (an overloaded API, a server error), the loop tries again after 5 minutes, then 10, 20 and at most 60 while turns keep failing. The band says so ("Claude's usage limit is reached: the loop waits until …") with **Try now**. The person speaking to the lead, Try now, or a lead turn that answers ends the hold. A lane agent whose turn ended on an API error stopped short: it isn't read as handing back at its context limit. Nor is it read as handing back at all: its finish isn't checked (a refusal would only prompt it into the same error), it keeps its lane, its story stays in progress rather than waiting for review, and its event log says it stopped.
 
 Across steps, the loop never prompts a step a second time while the project stands still, so steps taken in turn can't come round again either.
 
