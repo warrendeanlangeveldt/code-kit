@@ -181,10 +181,10 @@ Across steps, the loop never prompts a step a second time while the project stan
 
 **Acceptance**
 
-- Given the weekly limit reached, resetting Oct 26 at 2pm, when the lead's turn ends on the error, then nothing is prompted, no lane agent is nudged or restarted, and the band says the loop waits until then; at 2pm the loop takes its next step.
+- Given the weekly limit reached, resetting in three hours, when the lead's turn ends on the error, then nothing is prompted, no lane agent is nudged or restarted, and the band says the loop waits until then; once it resets, the loop takes its next step.
 - Given an overloaded API, then the loop tries again after 5 minutes, then 10.
 - Given the hold, when the person types to the lead, then the hold ends and the loop goes on after that turn.
-- Given "Review ST-35" and "Review ST-37" next in turn, and the project standing still, then each is prompted once.
+- Given "Review ST-4" and "Review ST-9" next in turn, and the project standing still, then each is prompted once.
 
 ## Quality targets
 

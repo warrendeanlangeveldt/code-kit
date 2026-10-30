@@ -578,7 +578,7 @@ try {
   );
   expect('a branch named after main is not main', bash('git switch main-fixes'), 0);
   expect('creating a branch from main is fine', bash('git checkout -b next main'), 0);
-  // truemark R-7: the commit hook can't see files a command before the commit writes.
+  // The commit hook can't see files a command before the commit writes.
   expect(
     'a commit chained after a command that may write files is refused',
     bash(`python3 -c "open('x','w')" && git add -A && git commit -m x`),
@@ -658,7 +658,7 @@ try {
     0,
   );
   rmSync(logFile);
-  // WHO-1 (my-aila R-10, truemark R-7): where the lead merges, nobody reviews its change in a pull
+  // WHO-1: where the lead merges, nobody reviews its change in a pull
   // request, so what the person keeps needs their approval from the lead too.
   {
     const cfgFile = join(repo, '.claude/code-kit.json');
@@ -7344,7 +7344,7 @@ else process.exit(1);
       2,
       'is a weakened test',
     );
-    // truemark R-11: staging through `git -C`, or deleting with `git rm`, is still seen.
+    // Staging through `git -C`, or deleting with `git rm`, is still seen.
     g.git('checkout', '-q', '--', '.');
     expect(
       'REG-2 a test file deleted by git -C … rm is refused as a weakened test',
@@ -7659,7 +7659,7 @@ else process.exit(1);
       'uncommitted changes',
     );
     execFileSync('git', ['-C', tree('web/st-2'), 'checkout', '-q', '--', '.']);
-    // truemark R-8: its agent edited a minute ago and hasn't handed back, so it's still at work.
+    // Its agent edited a minute ago and hasn't handed back, so it's still at work.
     const events = join(t.dir, '.claude/state/events');
     mkdirSync(events, { recursive: true });
     const act = (kind, phase, ago) =>

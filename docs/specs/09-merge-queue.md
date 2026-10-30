@@ -34,7 +34,7 @@ Branches merge in the order their reviews passed; one at a time. Each is verifie
 **Acceptance**
 
 - Given web/st-4 passed before api/st-5, then web/st-4 merges first and api/st-5 is verified against the base that includes it.
-- Given web/st-481 27 commits behind main, which has since gained a fix its check needs, and no worktree of its own, then its checks run on it merged with main, with the installs of the main checkout copied in, and it merges.
+- Given web/st-6 behind main, which has since gained a fix its check needs, and no worktree of its own, then its checks run on it merged with main, with the installs of the main checkout copied in, and it merges.
 
 ### MQ-2 Who merges
 

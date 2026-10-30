@@ -514,7 +514,7 @@ function committedFiles() {
   const changed = names(git('status', '--porcelain', '-uall', '--no-renames')).map((l) =>
     l.slice(3),
   );
-  // Each git command of the chain, however it's run (`git -C <worktree> add`, truemark R-11).
+  // Each git command of the chain, however it's run (`git -C <worktree> add`).
   const pieces = commandsOf(cmd).map((c) => c.text);
   const gitRun = (sub) =>
     pieces.map((p) => p.match(new RegExp(String.raw`^${GIT}${sub}`))).filter(Boolean);
@@ -710,7 +710,7 @@ ${approvalHowTo(TESTS_APPROVAL, actor, root, 'weakening tests in one commit', pe
 
 // The commit hook judges what the commit holds before the command runs, so a file a command earlier in
 // the chain writes (a formatter, a script, a heredoc) can't be seen, and would go in unjudged and
-// unlogged (truemark R-7). Before the commit, a chain may only move into the checkout and stage.
+// unlogged. Before the commit, a chain may only move into the checkout and stage.
 const BEFORE_COMMIT = new RegExp(
   String.raw`^(?:cd\s|${GIT}(?:add|rm|mv|status|diff|log|show|restore\s+--staged|reset\s+--soft)\b)`,
 );
