@@ -7442,6 +7442,22 @@ else process.exit(1);
       2,
       'is a weakened test',
     );
+    // A test the branch added itself isn't the base's to lose: moving its cases on weakens nothing.
+    const skipped = readFileSync(join(g.dir, 'apps/office/old.test.mjs'), 'utf8');
+    g.git('checkout', '-q', '--', '.');
+    gPut('apps/office/held.test.mjs', twoCases);
+    gCommit('ST-4 held tests');
+    expect(
+      'REG-2 deleting a test file the branch itself added is not a weakened test',
+      gBash(
+        'git rm -q apps/office/held.test.mjs && git commit -m "moved to the endpoint tests"',
+        'web-engineer',
+      ),
+      0,
+    );
+    g.git('reset', '-q', '--hard', 'HEAD~1');
+    rmSync(join(g.dir, '.claude/approval-log.jsonl'), { force: true });
+    gPut('apps/office/old.test.mjs', skipped);
     gConfig({ approvals: { delegate: { protected: ['design'] } } });
     expect(
       "REG-2 the lead may not approve it where weakened tests aren't delegated",

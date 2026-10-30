@@ -179,9 +179,19 @@ export function branchWeakenings(root, from, config) {
 /**
  * REG-2 for a commit about to be made: `files` as the commit hook lists them, HEAD against the
  * working tree. `gone`: files the commit's own command takes away first (`git rm`, `git mv`), which
- * are still on disk as the hook runs.
+ * are still on disk as the hook runs. `base`: the branch the work merges into; a test the branch
+ * added itself since it left it isn't the base's to lose, so moving or deleting it weakens nothing.
  */
-export function commitWeakenings(root, files, config, gone = new Set()) {
+export function commitWeakenings(root, files, config, gone = new Set(), base = null) {
+  let from = null;
+  try {
+    from = base ? git(root, 'merge-base', base, 'HEAD').trim() : null;
+  } catch {
+    // no common history with the base: every test counts
+  }
+  // What this commit adds stays, to pair a moved test with where it went.
+  if (from)
+    files = files.filter((f) => showAt(root, 'HEAD', f) === null || showAt(root, from, f) !== null);
   const read = (rel) => {
     if (gone.has(rel)) return null;
     try {

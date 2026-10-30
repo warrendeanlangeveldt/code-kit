@@ -130,7 +130,7 @@ A fix that adds or changes no test, or whose tests also pass without the fix, ha
 
 The commit hook refuses a commit that weakens a test, by a lane or the lead, unless the person's `tests` approval is in force: "<file> is a weakened test (it adds a skip or focus marker (…)); committing it needs a person's approval in force". The refusal is recorded as a request and held in the band like any other approval a person can give, so it waits in the Decisions tab as "Approve a weakened test", with what was weakened. **Approve** writes the approval and the held commit runs. The commit logs each weakened file in the approval log, with the reason and what was weakened, and uses the approval up. Spec 23 (WHO-2) replaces the last part: on a lane's branch, where tests are delegated (the default), the lead approves it after its review with `code-kit approve tests --lane <lane> --delegated --story ST-n`, and the refusal says so; on the lead's own branches it's still the person's.
 
-`verify` then judges the branch as a whole, including commits made outside Claude Code: each weakening is a problem under `tests` unless the branch's approval log records the person's `tests` approval for that file. A test moved or renamed with the same cases isn't flagged, and neither is a case renamed in place.
+`verify` then judges the branch as a whole, including commits made outside Claude Code: each weakening is a problem under `tests` unless the branch's approval log records the person's `tests` approval for that file. A test moved or renamed with the same cases isn't flagged, and neither is a case renamed in place. Both judge against the base: a test the branch added itself since it left the base isn't the base's to lose, so the commit hook doesn't refuse moving its cases on or deleting it.
 
 **Acceptance**
 
@@ -140,6 +140,7 @@ The commit hook refuses a commit that weakens a test, by a lane or the lead, unl
 - Given a branch that rewrites `__snapshots__/a.snap`, then `verify` says it rewrites a snapshot.
 - Given the same, with the person's `tests` approval logged for that file, then `verify` passes it.
 - Given a branch that moves `src/a.test.ts` to `src/a/a.test.ts` with the same cases, then nothing is flagged.
+- Given a branch that added `src/held.test.ts` in an earlier commit, when a commit deletes it, then the commit isn't refused.
 - Given `code-kit approve tests --delegated`, then it's refused: weakening a test is the person's to allow.
 
 ### REG-3 Checks reach the code that depends on a change

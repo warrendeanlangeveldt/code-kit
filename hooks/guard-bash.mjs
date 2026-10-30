@@ -652,6 +652,7 @@ function recordApprovals() {
     files.filter((f) => !arrivesWithMerge(root, f, { staged: true })),
     config,
     gone,
+    config.branches.protected[0],
   );
   if (weakened.length) {
     const granted = approval(root, TESTS_APPROVAL, actor);
