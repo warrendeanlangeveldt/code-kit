@@ -74,12 +74,15 @@ export const effectiveConfig = (raw, root) => applyAdapters(withDefaults(raw), r
 /** An anyActor entry's glob: entries are globs, or { glob, reviewer } naming who reviews changes to it. */
 export const anyActorGlob = (e) => (typeof e === 'string' ? e : e?.glob);
 
-/** The engine's fixed rules, merged into the project's: the kit and Claude's own files belong to the lead. */
+/**
+ * The engine's fixed rules, merged into the project's: the kit and Claude's own files belong to the
+ * lead, the project's MCP servers (`.mcp.json`, which a team provider's connect writes) among them.
+ */
 export function withDefaults(c) {
   return {
     ...c,
     lead: {
-      paths: [...c.lead.paths, '.claude/**'],
+      paths: [...c.lead.paths, '.claude/**', '.mcp.json'],
       outside: [...(c.lead.outside ?? []), ...CLAUDE_OWN],
     },
     anyActor: [...(c.anyActor ?? []).map(anyActorGlob), '.claude/state/**'],

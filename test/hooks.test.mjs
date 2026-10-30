@@ -247,6 +247,12 @@ try {
   expect('lead writes the contracts', write('packages/schemas/src/x.ts'), 0);
   expect('lead writes the kit', write('.claude/agents/x.md'), 0);
   expect(
+    "and the project's MCP servers, which a team provider's connect writes",
+    write('.mcp.json'),
+    0,
+  );
+  expect('a lane may not', write('.mcp.json', 'db-engineer'), 2);
+  expect(
     'lead may not write a lane path',
     write('supabase/migrations/1_x.sql'),
     2,
