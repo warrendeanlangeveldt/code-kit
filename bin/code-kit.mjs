@@ -2382,8 +2382,17 @@ function intendCommand() {
  * hooks refuse from agents; otherwise the lead recording what the person said in chat); `ask withdraw`
  * takes one back once it no longer needs the person.
  */
+const ASK_USAGE = `code-kit ask "<question>" [--story ST-n] [--blocks] [--why …] [--option "Label: what it does"]...
+  asks the person what the lead can't settle; it waits in their Decisions tab
+code-kit ask [list] [--json]          the questions waiting, and those answered lately
+code-kit ask answer <id> "<answer>"
+code-kit ask withdraw <id> --reason "…"`;
+
 function askCommand() {
   const root = resolve('.');
+  if (['--help', '-h', 'help'].includes(rest[0])) return out(ASK_USAGE);
+  // `ask list` lists, as `ask` does.
+  if (rest[0] === 'list' && rest.length === 1) rest.length = 0;
   const [sub, id, ...words] = rest;
   if (sub === 'answer') {
     const r = answerQuestion(root, id, {
@@ -2421,6 +2430,13 @@ function askCommand() {
     return;
   }
   const question = rest.join(' ').trim();
+  // A question reaches the person, so a flag or a stray word never becomes one.
+  if (rest[0].startsWith('-'))
+    die(`${rest[0]} isn't an option of ask; nothing was asked.\n${ASK_USAGE}`);
+  if (!/\s/.test(question) && !question.endsWith('?'))
+    die(
+      `"${question}" isn't a question for the person; nothing was asked. Ask it as a sentence they can answer.\n${ASK_USAGE}`,
+    );
   if (flag('--blocks') && !storyGiven) die('--blocks holds a story: name it with --story ST-n.');
   const r = askQuestion(root, {
     by: 'lead',

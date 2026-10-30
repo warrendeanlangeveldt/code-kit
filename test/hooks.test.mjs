@@ -1211,6 +1211,24 @@ try {
       ),
       0,
     );
+    // --help, list and stray words ask nothing.
+    const before = JSON.parse(qKit('ask', '--json').stdout).length;
+    const help = qKit('ask', '--help');
+    const listing = qKit('ask', 'list');
+    expect(
+      'ask --help prints its usage and ask list lists; neither asks anything',
+      truth(
+        help.status === 0 &&
+          help.stdout.includes('code-kit ask "<question>"') &&
+          listing.status === 0 &&
+          listing.stdout.includes('wait for the person') &&
+          JSON.parse(qKit('ask', '--json').stdout).length === before,
+        help.stdout + listing.stdout,
+      ),
+      0,
+    );
+    expect('an unknown flag is refused, not asked', qKit('ask', '--bogus'), 1, 'nothing was asked');
+    expect('so is a stray word', qKit('ask', 'show'), 1, "isn't a question for the person");
     const listed = JSON.parse(qKit('ask', '--json').stdout);
     expect(
       'with what each option does',
