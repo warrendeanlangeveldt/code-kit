@@ -39,8 +39,9 @@ const SKIPS = [
   /\bt\.Skip(?:f|Now)?\s*\(/,
   /@(?:Disabled|Ignore)\b/,
 ];
+// `expect(` and its retrying and soft forms (`expect.poll(`, `expect.soft(`), each one assertion.
 const ASSERTION =
-  /\bexpect\s*\(|\bassert\w*\s*[.(]|\bt\.(?:Error|Errorf|Fatal|Fatalf|Fail)\b|\bshould\.\w/g;
+  /\bexpect(?:\.(?:poll|soft))?\s*\(|\bassert\w*\s*[.(]|\bt\.(?:Error|Errorf|Fatal|Fatalf|Fail)\b|\bshould\.\w/g;
 
 const skipLines = (text) =>
   String(text ?? '')

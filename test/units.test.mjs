@@ -2297,6 +2297,14 @@ test('REG-2 what weakens a test: a skip or focus marker, fewer cases, fewer asse
   assert.deepEqual(weakenings(base, base.replace(' expect(2).toBe(2);', '')), [
     'has 1 fewer assertion (2 → 1)',
   ]);
+  // Making an assertion retry, or soft, keeps it an assertion.
+  assert.deepEqual(
+    weakenings(
+      base,
+      base.replace('expect(2).toBe(2);', 'await expect.poll(() => 2).toBe(2); expect.soft(3);'),
+    ),
+    [],
+  );
   // A renamed case isn't fewer, and Python, Go and pytest markers count too.
   assert.deepEqual(weakenings(base, base.replace("'b'", "'b, renamed'")), []);
   assert.equal(testShape('def test_x():\n    assert 1\n').cases[0], 'test_x');
