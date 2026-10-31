@@ -2,7 +2,9 @@
 
 What changed in each release of code-kit, newest first. Versions follow the plugin manifest and the npm package `@warren-dean/code-kit`. Each release is also on [GitHub Releases](https://github.com/warrendeanlangeveldt/code-kit/releases).
 
-## Unreleased
+## 0.28.0 (2026-10-31)
+
+What a project reports to a team provider now covers its outcomes, who approved what, its designs and the sessions at work (report version 5).
 
 - **What a project reports to a team provider (report version 5, spec 21).** Beside what version 4 carries, a report now holds each spec's id, title, outcome line and requirement ids; each layer's and lane's deliverable kind; each lane's layers and paths; each approval's story, and the GitHub login of the person who gave it, when code-kit knows who was at the machine; the security review's rules; each story's spec-check result and place in the merge queue; the design register's entries; and the sessions at work, with the code-kit and model each runs, when it started and the file it last edited. Nothing else of the specs or the plan is sent: no acceptance criteria, requirement bodies or decisions. `code-kit team report --dry-run` shows it all before anything is sent. A report from an older code-kit is still valid.
 - **Labels.** A layer or a lane can name what it delivers with `label` ("Screens", "API contract"). Without one, the kind is taken from its name.
