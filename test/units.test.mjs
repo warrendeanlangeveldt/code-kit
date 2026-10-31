@@ -107,6 +107,18 @@ test('validation names each problem', () => {
   assert.deepEqual(validate([]), ['the config must be a JSON object']);
 });
 
+test("a layer's or lane's label is a short name for what it delivers", () => {
+  const c = clone();
+  c.layers[0].label = 'API contract';
+  c.lanes.web.label = 'Screens';
+  assert.deepEqual(validate(c), []);
+  c.layers[0].label = 'x'.repeat(61);
+  c.lanes.web.label = 'two\nlines';
+  const problems = validate(c).join('\n');
+  assert.match(problems, /layers\[0\]\.label must be a short name/);
+  assert.match(problems, /lanes\.web\.label must be a short name/);
+});
+
 test('defaults: the kit and memory belong to the lead, the kit is protected', () => {
   const dir = mkdtempSync(join(tmpdir(), 'code-kit-unit-'));
   try {
@@ -1899,6 +1911,74 @@ test('HUBR-2 a report holds only the fields its allow-list names', async () => {
   assert.deepEqual(snapshotProblems(v4), []);
   v4.stories[0].summary = 'x'.repeat(601);
   assert.match(snapshotProblems(v4)[0], /summary: not a summary/);
+  // Version 5: the specs, deliverable kinds, lanes, approvers, the security rules, each story's
+  // spec-check and queue place, the design register and the sessions; a version 4 report is still valid.
+  const v5 = structuredClone(good);
+  v5.version = 5;
+  v5.stories[0] = { ...v5.stories[0], check: 'partial', queuePosition: 1 };
+  v5.specs = [
+    {
+      id: '03',
+      file: 'docs/specs/03-booking.md',
+      title: 'Booking',
+      outcome: 'A customer books without calling us.',
+      requirements: ['BOOK-1'],
+    },
+  ];
+  v5.approvals[0] = { ...v5.approvals[0], who: 'person', approver: 'kim', story: 'ST-4' };
+  v5.rules.layers[0].label = 'Screens';
+  v5.rules.lanes = [
+    { name: 'web', label: 'Screens', layers: ['web'], paths: ['apps/web/**'], exclude: [] },
+  ];
+  v5.rules.security = { reviewer: true, kinds: ['sign-in', 'dependencies'], requirements: [] };
+  v5.designs = [
+    {
+      screen: 'Bookings list',
+      file: 'apps/web/app/bookings/page.tsx',
+      story: 'ST-1',
+      approved: '2026-10-11',
+      tool: 'paper',
+      state: 'handed-over',
+      states: ['default', 'empty'],
+    },
+  ];
+  v5.sessions = [
+    {
+      id: 'a1b2c3d4-0000',
+      role: 'lead',
+      person: 'kim',
+      codeKit: '0.28.0',
+      model: 'claude-sonnet-4',
+      started: 1_700_000_000_000,
+      editing: 'apps/web/list.tsx',
+      editedAt: 1_700_000_100_000,
+    },
+  ];
+  assert.deepEqual(snapshotProblems(v5), []);
+  assert.deepEqual(snapshotProblems({ ...v5, sessions: [] }), []);
+  const badKind = structuredClone(v5);
+  badKind.rules.security.kinds = ['everything'];
+  assert.match(snapshotProblems(badKind)[0], /rules\.security\.kinds\[0\]: not one of/);
+  const badState = structuredClone(v5);
+  badState.designs[0].state = 'approved';
+  assert.match(snapshotProblems(badState)[0], /designs\[0\]\.state: not one of/);
+  const withBody = structuredClone(v5);
+  withBody.specs[0].acceptance = 'Given a booking, then…';
+  assert.match(snapshotProblems(withBody)[0], /specs\[0\]\.acceptance: not a field/);
+  const longOutcome = structuredClone(v5);
+  longOutcome.specs[0].outcome = 'x'.repeat(601);
+  assert.match(snapshotProblems(longOutcome)[0], /outcome: not a summary/);
+  // A later part's own fields aren't optional once it's there.
+  const noLabel = structuredClone(v5);
+  delete noLabel.rules.lanes[0].label;
+  assert.match(snapshotProblems(noLabel)[0], /rules\.lanes\[0\]\.label: missing/);
+  // The design register and the specs changing is news; the sessions alone aren't.
+  const edited = structuredClone(v5);
+  edited.sessions[0].editing = 'apps/web/detail.tsx';
+  assert.equal(snapshotHash(edited, EVENT_PARTS), snapshotHash(v5, EVENT_PARTS));
+  const redesigned = structuredClone(v5);
+  redesigned.designs[0].state = 'problems';
+  assert.notEqual(snapshotHash(redesigned, EVENT_PARTS), snapshotHash(v5, EVENT_PARTS));
   // Nowhere for code, a diff or a prompt to go.
   const withDiff = structuredClone(good);
   withDiff.stories[0].diff = '--- a/x\n+++ b/x';
@@ -1926,6 +2006,70 @@ test('HUBR-2 a report holds only the fields its allow-list names', async () => {
   const moved = structuredClone(good);
   moved.stories[0].stage = 'queued';
   assert.notEqual(snapshotHash(moved, EVENT_PARTS), snapshotHash(good, EVENT_PARTS));
+});
+
+test("HUBR-2 a layer's or lane's deliverable kind: its label, or what its name gives", async () => {
+  const { deliverableKind } = await import('../hooks/lib/snapshot.mjs');
+  assert.equal(deliverableKind('schemas'), 'API contract');
+  assert.equal(deliverableKind('web'), 'Screens');
+  assert.equal(deliverableKind('data'), 'Data');
+  assert.equal(deliverableKind('domain'), 'Service');
+  assert.equal(deliverableKind('qa'), 'Tests');
+  assert.equal(deliverableKind('design'), 'Design');
+  assert.equal(deliverableKind('billing-sync'), 'Billing sync');
+  assert.equal(deliverableKind('web', '  Pages '), 'Pages');
+});
+
+test("HUBR-2 each spec's id, title, outcome line and requirements, from the specs", async () => {
+  const { readSpecs } = await import('../hooks/lib/plan.mjs');
+  const dir = mkdtempSync(join(tmpdir(), 'ck-specs-'));
+  mkdirSync(join(dir, 'specs'));
+  writeFileSync(
+    join(dir, 'specs/03-booking.md'),
+    '# 03. Booking\n\n**Status:** agreed\n**Outcome:** A customer books without calling us.\n\n## Requirements\n\n### BOOK-1 The list\n\nText.\n\n### BOOK-2 Old (removed)\n',
+  );
+  writeFileSync(join(dir, 'specs/payments.md'), '# Payments\n\n### PAY-1 Pay\n');
+  writeFileSync(join(dir, 'specs/principles.md'), '# Principles\n\nBe kind.\n');
+  writeFileSync(join(dir, 'specs/plan.md'), '# Plan\n\n**Outcome:** not a spec\n');
+  assert.deepEqual(readSpecs(dir, 'specs', 'specs/plan.md'), [
+    {
+      id: '03',
+      file: 'specs/03-booking.md',
+      title: 'Booking',
+      outcome: 'A customer books without calling us.',
+      requirements: ['BOOK-1'],
+    },
+    {
+      id: 'payments',
+      file: 'specs/payments.md',
+      title: 'Payments',
+      outcome: null,
+      requirements: ['PAY-1'],
+    },
+  ]);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test('HUBR-2 the model a session runs on: what SessionStart says, or its last reply', async () => {
+  const { modelOf } = await import('../hooks/lib/hook.mjs');
+  const dir = mkdtempSync(join(tmpdir(), 'ck-model-'));
+  const transcript = join(dir, 't.jsonl');
+  writeFileSync(
+    transcript,
+    [
+      { type: 'assistant', message: { model: 'claude-opus-4' } },
+      { type: 'assistant', message: { model: 'claude-sonnet-4' } },
+      { type: 'assistant', message: { model: '<synthetic>' } },
+      { type: 'user', message: { content: 'hi' } },
+    ]
+      .map((e) => JSON.stringify(e))
+      .join('\n'),
+  );
+  assert.equal(modelOf({ model: 'claude-haiku-4', transcript_path: transcript }), 'claude-haiku-4');
+  assert.equal(modelOf({ transcript_path: transcript }), 'claude-sonnet-4');
+  assert.equal(modelOf({ transcript_path: join(dir, 'none.jsonl') }), null);
+  assert.equal(modelOf({}), null);
+  rmSync(dir, { recursive: true, force: true });
 });
 
 test('HUBR-5 a milestone target in the plan', async () => {

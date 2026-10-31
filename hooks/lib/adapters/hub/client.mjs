@@ -646,6 +646,7 @@ async function daemon({ root, session, watch }) {
         session,
         branch: git(root, 'symbolic-ref', '--short', '-q', 'HEAD'),
         agents: agents.map(({ type, tool, branch }) => ({ type, tool, branch })),
+        ...sessionFacts(root, session),
       });
     } catch {
       // reported on the next try
@@ -740,6 +741,27 @@ function trim(file) {
     const lines = readFileSync(file, 'utf8').trim().split('\n');
     writeFileSync(file, lines.slice(-EVENTS_KEPT).join('\n') + '\n');
   } catch {}
+}
+
+/**
+ * What code-kit recorded of the session (SESS-1): the code-kit and model it runs, when it started (ms),
+ * and the file it last edited, by path only, while that was in the last ten minutes.
+ */
+export function sessionFacts(root, session, now = Date.now()) {
+  const record = readJson(
+    join(stateDir(root), 'sessions', `${String(session).replace(/[^\w.-]/g, '_')}.json`),
+    {},
+  );
+  const str = (v, max) =>
+    typeof v === 'string' && v && !/[\r\n]/.test(v) ? v.slice(0, max) : null;
+  const started = Date.parse(record?.started ?? '');
+  const edited = Date.parse(record?.editing?.at ?? '');
+  return {
+    codeKit: str(record?.codeKit, 40),
+    model: str(record?.model, 120),
+    started: Number.isFinite(started) ? started : null,
+    editing: now - edited < 10 * 60_000 ? str(record?.editing?.path, 300) : null,
+  };
 }
 
 /** Starts the daemon for a session, detached; one per session. */

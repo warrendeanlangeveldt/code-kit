@@ -142,6 +142,26 @@ export function securityReasons({ files = [], added = [], cites = [], security =
   return reasons;
 }
 
+/** Every kind of reason a change gets the security review for: the sensitive kinds, then the rest. */
+export const SECURITY_KINDS = [...SENSITIVE.map((s) => s.kind), 'dependencies', 'requirements'];
+
+/**
+ * The security review's rules for a project: whether it has the reviewer agent, the kinds of change
+ * that get the review, and the ids of its specs' security requirements, a story citing any of which
+ * gets it too. { reviewer, kinds, requirements }.
+ */
+export function securityRules(root, config) {
+  const specs = config.docs?.specs;
+  const texts = specs
+    ? markdownFiles(root, specs).map((f) => readFileSync(join(root, f), 'utf8'))
+    : [];
+  return {
+    reviewer: existsSync(join(root, SECURITY_AGENT_FILE)),
+    kinds: SECURITY_KINDS,
+    requirements: [...securityRequirementIds(texts)],
+  };
+}
+
 /** The reasons as one sentence: "sign-in or sessions (src/auth/login.ts), dependencies (package.json)". */
 export const reasonsInWords = (reasons) =>
   reasons.map((r) => `${r.why} (${examples(r.where)})`).join('; ');

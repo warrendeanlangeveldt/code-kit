@@ -9,9 +9,13 @@ import { execFileSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { APPROVAL_LOG } from './rules.mjs';
 import { approverOf } from './journal.mjs';
-import { readQueue } from './queue.mjs';
+import { readQueue, waiting } from './queue.mjs';
 import { sendBacks } from './reviews.mjs';
-import { readMilestones, specCheckRows } from './plan.mjs';
+import { readMilestones, readSpecs, specCheckRows } from './plan.mjs';
+import { handedOver, entryProblems, readRegister, toolOf } from './designs.mjs';
+import { SECURITY_KINDS, securityRules } from './security.mjs';
+import { sessions } from './sessions.mjs';
+import { storyOfBranch } from './teamfacts.mjs';
 import { storyTimes } from './timeline.mjs';
 import { trail } from './storymap.mjs';
 import {
@@ -20,6 +24,7 @@ import {
   LEVELS,
   ORIGINS,
   SOURCES,
+  laneLayers,
   projectStandards,
   sourceOf,
 } from './standards.mjs';
@@ -28,9 +33,12 @@ import { slicesOf } from './schedule.mjs';
 
 /**
  * 2 adds the project's standards (code-kit spec 22); 3 the plan's slices (spec 23, SCHED-2); 4 each
- * story's summary and each requirement's title.
+ * story's summary and each requirement's title; 5 the specs (id, title, outcome line, requirement ids),
+ * each layer's and lane's deliverable kind, the lanes with their layers and paths, each approval's
+ * approver and story, the security review's rules, each story's spec-check result and place in the
+ * merge queue, the design register's entries, and the sessions at work.
  */
-export const SNAPSHOT_VERSION = 4;
+export const SNAPSHOT_VERSION = 5;
 
 /** A story's stage, as a report names it. */
 export const STAGES = [
@@ -44,6 +52,10 @@ export const STAGES = [
   'done',
 ];
 export const AGENT_KINDS = ['lead', 'lane', 'reviewer', 'security-reviewer', 'background'];
+/** A spec-check report's status for a requirement, and for a story, its worst requirement's. */
+export const CHECKS = ['done', 'partial', 'missing', 'conflicts'];
+/** A design register entry's state: its files handed over and as approved, only in a tool, or not as approved. */
+export const DESIGN_STATES = ['handed-over', 'in-tool', 'problems'];
 
 /**
  * The allow-list. A leaf is a kind: `id` (ST-4, API-2), `handle` (a GitHub login), `name` (a lane, a
@@ -79,6 +91,10 @@ export const SNAPSHOT_SCHEMA = {
       claimedBy: 'handle?',
       // Added in version 4.
       summary: 'summary?',
+      // Added in version 5: the spec-check report's worst status on its branch (`none` with no report),
+      // and its place in the merge queue (1 merges next) while its branch waits there.
+      check: `enum:${[...CHECKS, 'none'].join('|')}?`,
+      queuePosition: 'count?',
     },
   ],
   sendBacks: [{ story: 'id', at: 'ms', reason: 'line?' }],
@@ -90,10 +106,24 @@ export const SNAPSHOT_SCHEMA = {
       stories: ['id'],
       built: ['path'],
       tested: ['path'],
-      check: 'enum:done|partial|missing|conflicts|none',
+      check: `enum:${[...CHECKS, 'none'].join('|')}`,
     },
   ],
-  approvals: [{ what: 'name', path: 'path?', who: 'enum:person|lead', at: 'ms', branch: 'name?' }],
+  // Version 5: each spec, by the id the project gives it, its title, its outcome line and its
+  // requirements' ids. Nothing else of its text.
+  specs: [{ id: 'name', file: 'path', title: 'title?', outcome: 'summary?', requirements: ['id'] }],
+  approvals: [
+    {
+      what: 'name',
+      path: 'path?',
+      who: 'enum:person|lead',
+      at: 'ms',
+      branch: 'name?',
+      // Added in version 5: the person's GitHub login, when code-kit knew it; the story of its branch.
+      approver: 'handle?',
+      story: 'id?',
+    },
+  ],
   usage: [
     {
       story: 'id?',
@@ -104,11 +134,48 @@ export const SNAPSHOT_SCHEMA = {
     },
   ],
   rules: {
-    layers: [{ name: 'name', mayImport: ['name'] }],
+    // `label`, added in version 5: the layer's deliverable kind ("Data", "Service").
+    layers: [{ name: 'name', mayImport: ['name'], label: 'name?' }],
     protected: [{ glob: 'path', approval: 'name' }],
     delegated: { protected: ['name'], dependencies: 'bool', merge: 'bool' },
     designGate: 'bool',
+    // Version 5: each lane, its deliverable kind, the layers its paths fall in, and what it owns.
+    lanes: [{ name: 'name', label: 'name', layers: ['name'], paths: ['path'], exclude: ['path'] }],
+    // Version 5: whether the project has the security reviewer, the kinds of change it reviews, and
+    // the security requirements a story citing gets it for.
+    security: {
+      reviewer: 'bool',
+      kinds: [`enum:${SECURITY_KINDS.join('|')}`],
+      requirements: ['id'],
+    },
   },
+  // Version 5: the design register's entries, by screen, the code file, the design story, when it was
+  // approved, the tool it was drawn in, its state and its states' names.
+  designs: [
+    {
+      screen: 'name',
+      file: 'path',
+      story: 'id?',
+      approved: 'date?',
+      tool: 'name?',
+      state: `enum:${DESIGN_STATES.join('|')}`,
+      states: ['name'],
+    },
+  ],
+  // Version 5: the sessions at work on this machine: the lead or a working one, its person's GitHub
+  // login, the code-kit and model it runs, when it started, and the file it last edited, and when.
+  sessions: [
+    {
+      id: 'name',
+      role: 'enum:lead|working',
+      person: 'handle?',
+      codeKit: 'name?',
+      model: 'name?',
+      started: 'ms',
+      editing: 'path?',
+      editedAt: 'ms?',
+    },
+  ],
   // Spec 22: each standard that applies, by id and title, how it's applied and where it came from;
   // its why in one line at most, and its evidence only as counts.
   standards: [
@@ -128,8 +195,19 @@ export const SNAPSHOT_SCHEMA = {
   ],
 };
 
-/** Parts a report from an older code-kit doesn't have yet: valid when missing, checked when there. */
-export const LATER_PARTS = ['standards', 'slices'];
+/**
+ * Parts a report from an older code-kit doesn't have yet: valid when missing, checked when there. Each
+ * is a dotted path into the allow-list, `[]` for a list's items; a leaf that may be missing ends in `?`.
+ */
+export const LATER_PARTS = [
+  'standards',
+  'slices',
+  'specs',
+  'designs',
+  'sessions',
+  'rules.lanes',
+  'rules.security',
+];
 
 export const SUMMARY_MAX = 600;
 
@@ -167,6 +245,8 @@ const KINDS = {
 
 /** What's wrong with a snapshot against the allow-list, as `path: problem` lines; empty when valid. */
 export function snapshotProblems(value, shape = SNAPSHOT_SCHEMA, at = 'snapshot') {
+  const later = (k) =>
+    LATER_PARTS.includes(`${at}.${k}`.replace(/^snapshot\./, '').replace(/\[\d+\]/g, '[]'));
   if (typeof shape === 'string') {
     const optional = shape.endsWith('?');
     const kind = optional ? shape.slice(0, -1) : shape;
@@ -185,7 +265,7 @@ export function snapshotProblems(value, shape = SNAPSHOT_SCHEMA, at = 'snapshot'
   return [
     ...extra.map((k) => `${at}.${k}: not a field a report may hold`),
     ...Object.entries(shape)
-      .filter(([k]) => !(shape === SNAPSHOT_SCHEMA && LATER_PARTS.includes(k) && !(k in value)))
+      .filter(([k]) => !(later(k) && !(k in value)))
       .flatMap(([k, s]) => snapshotProblems(value[k], s, `${at}.${k}`)),
   ];
 }
@@ -206,10 +286,39 @@ export const EVENT_PARTS = [
   'stories',
   'sendBacks',
   'requirements',
+  'specs',
   'approvals',
   'rules',
   'standards',
+  'designs',
 ];
+
+/** The deliverable kinds a layer's or lane's name gives, when the config gives it no `label`. */
+const KINDS_BY_NAME = [
+  [/^(schemas?|contracts?|api|types|openapi|graphql|protos?)$/, 'API contract'],
+  [/^(web|mobile|ui|app|apps|screens?|frontend|client|pages|views?)$/, 'Screens'],
+  [/^(data|db|database|migrations?|storage|sql)$/, 'Data'],
+  [/^(domain|core|services?|backend|server|workers?|functions|logic|ai|jobs)$/, 'Service'],
+  [/^(tests?|qa|e2e|quality)$/, 'Tests'],
+  [/^(design|designs|ux)$/, 'Design'],
+  [/^(infra|infrastructure|platform|ops|devops|deploy|ci)$/, 'Infrastructure'],
+  [/^(docs?|documentation|runbooks?)$/, 'Docs'],
+];
+
+/**
+ * A layer's or lane's deliverable kind: its `label`, or else what its name gives ("schemas" →
+ * "API contract", "web" → "Screens"), or else its name, capitalised, its hyphens as spaces.
+ */
+export function deliverableKind(name, label = null) {
+  if (typeof label === 'string' && label.trim()) return label.trim().slice(0, 120);
+  const n = String(name ?? '').toLowerCase();
+  const found = KINDS_BY_NAME.find(([re]) => re.test(n))?.[1];
+  if (found) return found;
+  const words = String(name ?? '')
+    .replace(/[-_]+/g, ' ')
+    .trim();
+  return (words.charAt(0).toUpperCase() + words.slice(1)).slice(0, 120) || 'Code';
+}
 
 const git = (root, ...args) => {
   try {
@@ -277,8 +386,6 @@ function checkedRows(root, story) {
   return [];
 }
 
-const CHECKS = ['done', 'partial', 'missing', 'conflicts'];
-
 /**
  * The snapshot (HUBR-2) from what code-kit already computed: `status` is buildStatus's, `base` the
  * branch stories merge into, `claims` the team's claims as last read, `version` code-kit's.
@@ -293,10 +400,14 @@ export function buildSnapshot({
   now = Date.now(),
 }) {
   const times = new Map(storyTimes(root, status.stories, base).map((t) => [t.id, t]));
-  const queued = new Map(
-    readQueue(root)
-      .filter((e) => e.state === 'waiting' || e.state === 'merging')
-      .map((e) => [e.branch, Date.parse(e.passed)]),
+  const inQueue = waiting(readQueue(root));
+  const queued = new Map(inQueue.map((e) => [e.branch, Date.parse(e.passed)]));
+  const place = new Map(inQueue.map((e, i) => [e.branch, i + 1]));
+  // Each story's spec-check report, on its branch: the requirements' statuses, and the story's worst.
+  const rowsOf = new Map(
+    status.stories
+      .filter((s) => s.branchExists)
+      .map((s) => [s.id, checkedRows(root, s).filter((r) => CHECKS.includes(r.status))]),
   );
   const backs = sendBacks(root);
   const claimed = new Map(claims.map((c) => [c.story, c.by]));
@@ -332,6 +443,8 @@ export function buildSnapshot({
       },
       claimedBy: claimed.get(s.id) ?? null,
       summary: reportedSummary(s.summary),
+      check: worstCheck(rowsOf.get(s.id) ?? []),
+      queuePosition: place.get(s.branch) ?? null,
     };
   });
 
@@ -352,10 +465,8 @@ export function buildSnapshot({
     .map((b) => ({ story: byBranch.get(b.branch), at: Date.parse(b.at), reason: line(b.reason) }));
 
   const checks = new Map();
-  for (const s of status.stories)
-    if (s.branchExists)
-      for (const row of checkedRows(root, s))
-        if (CHECKS.includes(row.status)) checks.set(row.requirement, row.status);
+  for (const rows of rowsOf.values())
+    for (const row of rows) checks.set(row.requirement, row.status);
   const requirements = trail(root, status, base).map((r) => ({
     id: r.id,
     title: line(r.title),
@@ -379,12 +490,16 @@ export function buildSnapshot({
     const key = `${e.approval}|${e.file ?? ''}|${at}`;
     if (seen.has(key) || !ms(at) || !KINDS.name(e.approval)) continue;
     seen.add(key);
+    const who = approverOf(e);
+    const story = KINDS.name(e.branch) ? storyOfBranch(e.branch) : null;
     approvals.push({
       what: e.approval,
       path: KINDS.path(e.file) ? e.file : null,
-      who: approverOf(e),
+      who,
       at,
       branch: KINDS.name(e.branch) ? e.branch : null,
+      approver: who === 'person' && KINDS.handle(e.approver) ? e.approver : null,
+      story: KINDS.id(story) ? story : null,
     });
   }
 
@@ -402,10 +517,15 @@ export function buildSnapshot({
     stories,
     sendBacks: sendBackList,
     requirements,
+    specs: reportedSpecs(root, config, line),
     approvals,
     usage: recordedUsage(root),
     rules: {
-      layers: (config.layers ?? []).map((l) => ({ name: l.name, mayImport: l.mayImport ?? [] })),
+      layers: (config.layers ?? []).map((l) => ({
+        name: l.name,
+        mayImport: l.mayImport ?? [],
+        label: deliverableKind(l.name, l.label),
+      })),
       protected: (config.protected ?? [])
         .filter((p) => KINDS.path(p.glob) && KINDS.name(p.approval))
         .map((p) => ({ glob: p.glob, approval: p.approval })),
@@ -415,10 +535,95 @@ export function buildSnapshot({
         merge: Boolean(delegate?.merge),
       },
       designGate: Boolean(config.designGate),
+      lanes: Object.entries(config.lanes ?? {}).map(([name, lane]) => ({
+        name,
+        label: deliverableKind(name, lane.label),
+        layers: laneLayers(lane, config),
+        paths: (lane.paths ?? []).filter((p) => KINDS.path(p)),
+        exclude: (lane.exclude ?? []).filter((p) => KINDS.path(p)),
+      })),
+      security: securityRules(root, config),
     },
     standards: reportedStandards(root, config, line),
+    designs: reportedDesigns(root, config),
+    sessions: reportedSessions(root, now),
   };
   return snapshot;
+}
+
+/** A story's spec-check result: its report's worst status (conflicts, missing, partial), `none` without one. */
+function worstCheck(rows) {
+  if (!rows.length) return 'none';
+  return [...CHECKS].reverse().find((c) => rows.some((r) => r.status === c));
+}
+
+/** Each spec as a report holds it: its id, file, title, outcome line and requirements' ids. */
+function reportedSpecs(root, config, line) {
+  const { specs, plan } = config.docs ?? {};
+  if (!specs) return [];
+  return readSpecs(root, specs, plan)
+    .filter((sp) => KINDS.name(sp.id) && KINDS.path(sp.file))
+    .map((sp) => ({
+      id: sp.id,
+      file: sp.file,
+      title: line(sp.title),
+      outcome: reportedSummary(sp.outcome),
+      requirements: sp.requirements,
+    }));
+}
+
+/**
+ * The design register's entries (spec 24): handed over (its files there, as approved), only in a design
+ * tool, or with problems (a file missing or changed, a state the spec lists without a design).
+ */
+function reportedDesigns(root, config) {
+  const { entries } = readRegister(root, config);
+  const one = (v, max = 120) =>
+    typeof v === 'string' && v.trim() ? v.replace(/\s+/g, ' ').trim().slice(0, max) : null;
+  return entries
+    .filter((e) => e && KINDS.path(e.file))
+    .map((e) => {
+      const approved = String(e.approved ?? '').slice(0, 10);
+      return {
+        screen: one(e.screen) ?? e.file.slice(0, 120),
+        file: e.file,
+        story: KINDS.id(e.story) ? e.story : null,
+        approved: KINDS.date(approved) ? approved : null,
+        tool: one(toolOf(e, null)),
+        state: !handedOver(e)
+          ? 'in-tool'
+          : entryProblems(root, e, config.docs?.specs).length
+            ? 'problems'
+            : 'handed-over',
+        states: (handedOver(e) ? e.states : []).map((st) => one(st?.name)).filter(Boolean),
+      };
+    });
+}
+
+/**
+ * The sessions at work on this machine's checkout (SESS-1): what code-kit recorded as each started and
+ * acted. A session that has ended, or gone quiet past SESSION_LIVE_MS, isn't at work.
+ */
+function reportedSessions(root, now) {
+  const ms = (iso) => {
+    const t = Date.parse(iso ?? '');
+    return Number.isInteger(t) && t > 0 ? t : null;
+  };
+  return sessions(root, now)
+    .filter((s) => s.live && KINDS.name(s.id) && ms(s.started))
+    .map((s) => {
+      const editing = s.editing && KINDS.path(s.editing.path) ? s.editing : null;
+      return {
+        id: s.id,
+        role: s.role === 'lead' ? 'lead' : 'working',
+        person: KINDS.handle(s.login) ? s.login : null,
+        codeKit: KINDS.name(s.codeKit) ? s.codeKit : null,
+        model: KINDS.name(s.model) ? s.model : null,
+        started: ms(s.started),
+        editing: editing?.path ?? null,
+        editedAt: editing ? ms(editing.at) : null,
+      };
+    });
 }
 
 /**

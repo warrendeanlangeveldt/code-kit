@@ -22,6 +22,8 @@ import { entryProblems, readRegister } from './lib/designs.mjs';
 import { globToRegExp, matchesAny } from './lib/glob.mjs';
 import { noteBefore } from './lane-audit.mjs';
 import { storyMerges } from './lib/queue.mjs';
+import { approverOf } from './lib/journal.mjs';
+import { loginHere } from './lib/sessions.mjs';
 import { TESTS_APPROVAL, commitWeakenings } from './lib/regression.mjs';
 import {
   STANDARDS_APPROVAL,
@@ -569,11 +571,15 @@ function committedFiles() {
 function recordApprovals() {
   const { files, gone, git } = committedFiles();
   const lines = [];
+  // The person who gave an approval, by their GitHub login: the developer at this machine, where it was
+  // given. Only when code-kit has the login cached; the lead's own approvals have no approver.
+  const login = loginHere(root);
   const record = (file, fields) =>
     lines.push(
       JSON.stringify({
         at: new Date().toISOString(),
         ...fields,
+        ...(login && approverOf(fields) === 'person' ? { approver: login } : {}),
         file,
         branch,
         actor: actor.label,

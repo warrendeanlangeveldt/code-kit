@@ -11,6 +11,7 @@ import { join } from 'node:path';
 import { matchesAny } from './glob.mjs';
 import { CLI, projectWorktrees } from './rules.mjs';
 import { shortSession } from './laneclaims.mjs';
+import { isHandle } from './teamfacts.mjs';
 
 export { shortSession };
 export const SESSIONS_DIR = '.claude/state/sessions';
@@ -20,20 +21,37 @@ export const SESSION_LIVE_MS = 15 * 60_000;
 const SEEN_EVERY_MS = 60_000;
 /** The uncommitted files a session wrote, kept for SESS-5: at most this many. */
 const WROTE_KEPT = 500;
+/** The file a session edits is noted again at most this often, unless it's another file. */
+const EDITING_EVERY_MS = 30_000;
+/** The code-kit a session runs, as it starts: the plugin can be updated while other sessions run. */
+const KIT_VERSION = (() => {
+  try {
+    return JSON.parse(readFileSync(new URL('../../package.json', import.meta.url), 'utf8')).version;
+  } catch {
+    return null;
+  }
+})();
 
 const main = (root) => projectWorktrees(root)[0] ?? root;
 const dirOf = (root) => join(main(root), SESSIONS_DIR);
 const safe = (id) => String(id).replace(/[^\w.-]/g, '_');
 const fileOf = (root, id) => join(dirOf(root), `${safe(id)}.json`);
 
-/** The person at this machine: their GitHub login if code-kit has it cached, or the OS user. */
-export function personHere(root) {
+/** The person at this machine by their GitHub login, when code-kit has it cached, or null. */
+export function loginHere(root) {
   try {
     const cached = JSON.parse(readFileSync(join(main(root), '.claude/state/whoami.json'), 'utf8'));
-    if (cached?.login) return cached.login;
+    if (isHandle(cached?.login)) return cached.login;
   } catch {
-    // not cached: the OS user
+    // not cached
   }
+  return null;
+}
+
+/** The person at this machine: their GitHub login if code-kit has it cached, or the OS user. */
+export function personHere(root) {
+  const login = loginHere(root);
+  if (login) return login;
   try {
     return userInfo().username || null;
   } catch {
@@ -89,38 +107,60 @@ export const leadSession = (root, now = Date.now()) =>
 /**
  * SESS-2: a session starting (or resumed). It's the lead when no other live session is; otherwise a
  * working session. A resumed session keeps the role it had, unless it was the lead and another session
- * has led since.
+ * has led since. `model` is the model it runs on, when Claude Code says (SessionStart's `model`); the
+ * session also keeps its person's GitHub login, when code-kit knows it, and the code-kit it runs.
  */
-export function startSession(root, id, now = Date.now()) {
+export function startSession(root, id, now = Date.now(), { model = null } = {}) {
   const at = new Date(now).toISOString();
   const had = readSession(root, id);
   const lead = leadSession(root, now);
   return write(root, {
     id,
     person: had?.person ?? personHere(root),
+    login: loginHere(root) ?? had?.login ?? null,
     role: lead && lead.id !== id ? 'working' : 'lead',
     started: had?.started ?? at,
     seen: at,
     ended: null,
     task: had?.task ?? null,
     wrote: had?.wrote ?? [],
+    model: model ?? had?.model ?? null,
+    codeKit: KIT_VERSION,
+    editing: had?.editing ?? null,
   });
 }
 
-/** A hook saw the session act: it's still there. A session code-kit hadn't seen starts here. */
-export function seeSession(root, id, now = Date.now()) {
+/**
+ * A hook saw the session act: it's still there. A session code-kit hadn't seen starts here. `facts()`
+ * gives what's read only when the record is written (the model it runs on now), at most once a minute.
+ */
+export function seeSession(root, id, now = Date.now(), facts = () => ({})) {
   if (!id) return null;
   const had = readSession(root, id);
-  if (!had || had.ended) return startSession(root, id, now);
+  if (!had || had.ended) return startSession(root, id, now, facts());
   // A lead that went quiet past SESSION_LIVE_MS, while another session took the lead, works now.
   const lead = had.role === 'lead' ? leadSession(root, now) : null;
   const demoted = lead && lead.id !== id;
   if (!demoted && now - Date.parse(had.seen) < SEEN_EVERY_MS) return had;
+  const { model } = facts();
   return write(root, {
     ...had,
     seen: new Date(now).toISOString(),
     ...(demoted ? { role: 'working' } : {}),
+    ...(model ? { model } : {}),
   });
+}
+
+/**
+ * The file the session last edited, in any of the project's checkouts: { path, at }, for the team
+ * provider's presence and the report. `rel` is relative to the checkout it's in.
+ */
+export function noteEditing(root, id, rel, now = Date.now()) {
+  if (!id || !rel) return;
+  const had = readSession(root, id) ?? startSession(root, id, now);
+  const was = had.editing;
+  if (was?.path === rel && now - Date.parse(was.at) < EDITING_EVERY_MS) return;
+  write(root, { ...had, editing: { path: rel, at: new Date(now).toISOString() } });
 }
 
 /** The session ended: it's no longer live, and leads nothing. Its task stays, stale, for SESS-4. */

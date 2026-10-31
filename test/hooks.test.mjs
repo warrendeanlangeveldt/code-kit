@@ -722,16 +722,25 @@ try {
       "This is the person's decision",
     );
     approve('design', 0, 'Approve the sign-in screens');
+    // HUBR-2: the developer at this machine, by the GitHub login code-kit has cached, gave it.
+    put(
+      '.claude/state/whoami.json',
+      JSON.stringify({ login: 'kim', at: new Date().toISOString() }),
+    );
     expect(
       'with their approval it may',
       bash('git add design/approved-screens.json && git commit -m d'),
       0,
     );
     expect(
-      "and the log records the person's approval, not the lead's",
-      truth(logLines()[0]?.approval === 'design', JSON.stringify(logLines())),
+      "and the log records the person's approval, not the lead's, with the person's login",
+      truth(
+        logLines()[0]?.approval === 'design' && logLines()[0]?.approver === 'kim',
+        JSON.stringify(logLines()),
+      ),
       0,
     );
+    rmSync(join(repo, '.claude/state/whoami.json'));
     rmSync(join(repo, '.claude/approvals/design'));
     rmSync(logFile);
     git('reset', '-q');
@@ -8785,15 +8794,61 @@ else process.exit(1);
     const g = (...args) => execFileSync('git', ['-C', repo, ...args], { encoding: 'utf8', env });
     execFileSync('git', ['init', '-q', '-b', 'main', repo]);
     g('remote', 'add', 'origin', 'https://github.com/acme/booking.git');
-    const hubConfig = (team) =>
-      JSON.stringify({ ...JSON.parse(fixture), team: { techLead: 'lead', ...team } }, null, 2);
+    // HUBR-2: the web lane names its deliverable kind; the rest are given theirs by their names.
+    const hubConfig = (team) => {
+      const c = JSON.parse(fixture);
+      c.lanes.web.label = 'Office screens';
+      return JSON.stringify({ ...c, team: { techLead: 'lead', ...team } }, null, 2);
+    };
     mkdirSync(join(repo, '.claude/state'), { recursive: true });
     mkdirSync(join(repo, 'docs/spec'), { recursive: true });
     writeFileSync(join(repo, '.claude/code-kit.json'), hubConfig({ provider: { hub: hubUrl } }));
     writeFileSync(join(repo, '.gitignore'), '.claude/state/\n.claude/approvals/\n');
     writeFileSync(
       join(repo, 'docs/spec/booking.md'),
-      '# Booking\n\n### BOOK-1 The booking list\n\nText.\n',
+      '# 03. Booking\n\n**Outcome:** A customer books without calling us.\n\n### BOOK-1 The booking list\n\nText.\n\n## Security requirements\n\n### BOOK-9 Only staff see bookings\n\nStaff sign in before they see a booking.\n',
+    );
+    // The design register: one screen approved, its design still only in the design tool.
+    mkdirSync(join(repo, 'design'), { recursive: true });
+    writeFileSync(
+      join(repo, 'design/approved-screens.json'),
+      JSON.stringify({
+        screens: [
+          {
+            file: 'apps/office/app/bookings/page.tsx',
+            screen: 'Bookings list',
+            story: 'ST-3',
+            approved: '2026-10-11',
+            design: 'paper:bookings-list',
+          },
+        ],
+      }),
+    );
+    // The approval log on the base: the person's design approval, by kim, and the lead's package.
+    writeFileSync(
+      join(repo, '.claude/approval-log.jsonl'),
+      `${[
+        {
+          at: '2026-10-11T01:00:00.000Z',
+          approval: 'design',
+          reason: 'bookings list, as shown',
+          grantedAt: '2026-10-11T00:59:00.000Z',
+          approver: 'kim',
+          file: 'design/approved-screens.json',
+          branch: 'design/st-3',
+        },
+        {
+          at: '2026-10-12T01:00:00.000Z',
+          approval: 'dep-zod',
+          reason: 'zod for the form (approved by the lead within the delegated rules)',
+          grantedAt: '2026-10-12T00:59:00.000Z',
+          approver: 'kim',
+          file: 'package.json',
+          branch: 'web/st-4',
+        },
+      ]
+        .map((e) => JSON.stringify(e))
+        .join('\n')}\n`,
     );
     writeFileSync(
       join(repo, 'docs/spec/plan.md'),
@@ -8802,6 +8857,18 @@ else process.exit(1);
     g('add', '-A');
     g('commit', '-q', '-m', 'init');
     g('push', '-q', 'origin', 'main');
+    // ST-4's branch waits in the merge queue, and its spec-check report finds BOOK-1 partly built.
+    writeFileSync(
+      join(repo, '.claude/state/merge-queue.json'),
+      JSON.stringify([
+        { branch: 'web/st-4', commit: null, passed: new Date().toISOString(), state: 'waiting' },
+      ]),
+    );
+    mkdirSync(join(repo, '.claude/state/spec-check'), { recursive: true });
+    writeFileSync(
+      join(repo, '.claude/state/spec-check/web_st-4.md'),
+      '| Requirement | Status | Where |\n| --- | --- | --- |\n| BOOK-1 | partial | apps/office/list.tsx |\n',
+    );
     // kim is signed in to the hub on this machine, and known to code-kit for its GitHub fallback.
     mkdirSync(join(home, '.config/code-kit-hub'), { recursive: true });
     writeFileSync(
@@ -8852,6 +8919,20 @@ else process.exit(1);
         0,
       );
 
+      // HUBR-2: a session at work, on the model Claude Code started it on, editing a file.
+      const hookIn = (name, input, ...args) =>
+        spawnSync('node', [join(hooks, name), ...args], {
+          input: JSON.stringify({ session_id: 's1', cwd: repo, ...input }),
+          env,
+          encoding: 'utf8',
+        });
+      hookIn('session.mjs', { model: 'claude-test-model' }, 'start');
+      mkdirSync(join(repo, 'apps/office'), { recursive: true });
+      writeFileSync(join(repo, 'apps/office/list.tsx'), 'export const list = [];\n');
+      hookIn('post-edit-check.mjs', {
+        tool_name: 'Write',
+        tool_input: { file_path: join(repo, 'apps/office/list.tsx') },
+      });
       // HUBR-2, HUBR-4: what a report holds, shown before anything is sent.
       const dry = kit('team', 'report', '--dry-run');
       const snapshot = JSON.parse(dry.stdout || '{}');
@@ -8875,12 +8956,107 @@ else process.exit(1);
             snapshot.milestones[0].target === '2026-11-30' &&
             snapshot.requirements[0].id === 'BOOK-1' &&
             snapshot.rules.layers.length > 0 &&
-            snapshot.version === 4 &&
+            snapshot.version === 5 &&
             snapshot.stories[0].summary === 'The list of bookings for a day, newest first.' &&
             typeof snapshot.requirements[0].title === 'string' &&
             snapshot.requirements[0].title.length > 0 &&
             !/diff|prompt|contents/.test(Object.keys(snapshot).join()),
           JSON.stringify(snapshotProblems(snapshot)) + dry.stdout.slice(0, 400),
+        ),
+        0,
+      );
+      const kitVersion = JSON.parse(readFileSync(join(here, '..', 'package.json'), 'utf8')).version;
+      const laneOf = (name) => snapshot.rules?.lanes?.find((l) => l.name === name);
+      const [byPerson, byLead] = snapshot.approvals ?? [];
+      expect(
+        "HUBR-2 version 5: each spec's id, title, outcome line and requirements, and nothing else of it",
+        truth(
+          JSON.stringify(snapshot.specs) ===
+            JSON.stringify([
+              {
+                id: '03',
+                file: 'docs/spec/booking.md',
+                title: 'Booking',
+                outcome: 'A customer books without calling us.',
+                requirements: ['BOOK-1', 'BOOK-9'],
+              },
+            ]) && !dry.stdout.includes('Staff sign in before'),
+          JSON.stringify(snapshot.specs),
+        ),
+        0,
+      );
+      expect(
+        "each layer's and lane's deliverable kind, and each lane's layers and paths",
+        truth(
+          snapshot.rules.layers.find((l) => l.name === 'schemas')?.label === 'API contract' &&
+            laneOf('web')?.label === 'Office screens' &&
+            laneOf('data')?.label === 'Data' &&
+            JSON.stringify(laneOf('web')?.paths) === JSON.stringify(['apps/office/**']) &&
+            JSON.stringify(laneOf('mobile')?.exclude) === JSON.stringify(['apps/field/e2e/**']) &&
+            laneOf('ai')?.layers.includes('domain'),
+          JSON.stringify(snapshot.rules.lanes),
+        ),
+        0,
+      );
+      expect(
+        "each approval's approver, only where the person gave it, and its story",
+        truth(
+          byPerson?.who === 'person' &&
+            byPerson.approver === 'kim' &&
+            byPerson.story === 'ST-3' &&
+            byLead?.who === 'lead' &&
+            byLead.approver === null &&
+            byLead.story === 'ST-4',
+          JSON.stringify(snapshot.approvals),
+        ),
+        0,
+      );
+      expect(
+        "the security review's rules: no reviewer agent yet, the kinds it reviews, the security requirements",
+        truth(
+          snapshot.rules.security?.reviewer === false &&
+            snapshot.rules.security.kinds.includes('sign-in') &&
+            snapshot.rules.security.kinds.includes('dependencies') &&
+            JSON.stringify(snapshot.rules.security.requirements) === JSON.stringify(['BOOK-9']),
+          JSON.stringify(snapshot.rules.security),
+        ),
+        0,
+      );
+      expect(
+        "the design register's entries, and each story's place in the merge queue",
+        truth(
+          JSON.stringify(snapshot.designs) ===
+            JSON.stringify([
+              {
+                screen: 'Bookings list',
+                file: 'apps/office/app/bookings/page.tsx',
+                story: 'ST-3',
+                approved: '2026-10-11',
+                tool: 'paper',
+                state: 'in-tool',
+                states: [],
+              },
+            ]) &&
+            snapshot.stories[0].queuePosition === 1 &&
+            snapshot.stories[0].check === 'none',
+          JSON.stringify({ designs: snapshot.designs, story: snapshot.stories[0] }),
+        ),
+        0,
+      );
+      const [at] = snapshot.sessions ?? [];
+      expect(
+        'the session at work: its person, code-kit, model, start and the file it edits',
+        truth(
+          snapshot.sessions?.length === 1 &&
+            at.id === 's1' &&
+            at.role === 'lead' &&
+            at.person === 'kim' &&
+            at.codeKit === kitVersion &&
+            at.model === 'claude-test-model' &&
+            at.started > 0 &&
+            at.editing === 'apps/office/list.tsx' &&
+            at.editedAt >= at.started,
+          JSON.stringify(snapshot.sessions),
         ),
         0,
       );
@@ -8907,8 +9083,10 @@ else process.exit(1);
       expect(
         "a story's stage moving is sent at once",
         truth(
-          reports.length === 2 && reports[1].stories[0].stage === 'building',
-          JSON.stringify(reports.map((r) => r.stories[0].stage)),
+          reports.length === 2 &&
+            reports[1].stories[0].stage === 'building' &&
+            reports[1].stories[0].check === 'partial',
+          JSON.stringify(reports.map((r) => [r.stories[0].stage, r.stories[0].check])),
         ),
         0,
       );
@@ -8970,7 +9148,12 @@ else process.exit(1);
               (c) =>
                 c.op === 'presence' &&
                 c.input.session === 's1' &&
-                c.input.agents?.[0]?.type === 'lead',
+                c.input.agents?.[0]?.type === 'lead' &&
+                // HUBR-2: and the session's code-kit, model, start and the file it edits.
+                c.input.codeKit === kitVersion &&
+                c.input.model === 'claude-test-model' &&
+                c.input.started > 0 &&
+                c.input.editing === 'apps/office/list.tsx',
             ),
           ),
           JSON.stringify(seen().calls.filter((c) => c.op === 'presence')),

@@ -56,6 +56,35 @@ const field = (lines, name) =>
     .find(Boolean)?.[1]
     .trim() ?? '';
 
+/**
+ * Every spec in the specs (code-kit's spec template): [{ id, file, title, outcome, requirements }]. `id`
+ * is the number its `# ` heading starts with ("# 21. The hub adapter" → "21"), or else the file's name;
+ * `title` the rest of that heading; `outcome` its `**Outcome:**` line, or null; `requirements` the ids of
+ * the requirements it holds (removed ones left out). A file with neither an outcome nor a requirement
+ * (principles, architecture) isn't a spec. `plan` is the plan, left out where it sits among the specs.
+ */
+export function readSpecs(root, specsPath, plan = null) {
+  const requirements = readRequirements(root, specsPath);
+  const found = [];
+  for (const file of markdownFiles(root, specsPath)) {
+    if (file === plan) continue;
+    const lines = readFileSync(join(root, file), 'utf8').split('\n');
+    const heading = lines.map((l) => l.match(/^#\s+(.+?)\s*$/)).find(Boolean)?.[1] ?? null;
+    const numbered = heading?.match(/^(\d+[A-Za-z]?)[.:)]?\s+(.+)$/);
+    const outcome = field(lines, 'Outcome') || null;
+    const ids = requirements.filter((r) => r.file === file && !r.removed).map((r) => r.id);
+    if (!outcome && !ids.length) continue;
+    found.push({
+      id: numbered ? numbered[1] : file.split('/').pop().replace(/\.md$/, ''),
+      file,
+      title: numbered ? numbered[2] : heading,
+      outcome,
+      requirements: ids,
+    });
+  }
+  return found;
+}
+
 /** The first paragraph under a story's `**Field:**` lines, on one line, or null. */
 function summaryOf(body) {
   const start = body.findIndex((l) => l.trim() && !/^\*\*[^*]+:\*\*/.test(l.trim()));
