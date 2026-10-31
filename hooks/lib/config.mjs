@@ -439,6 +439,9 @@ export function validate(c) {
   return p;
 }
 
+/** A deliverable kind's name (a layer's or lane's `label`): one line, at most 60 characters. */
+const isLabel = (v) => isStr(v) && v.trim().length > 0 && v.length <= 60 && !/[\r\n]/.test(v);
+
 function validateLanes(c, need) {
   if (!need(isObj(c.lanes), '"lanes" must be an object (it may be empty)')) return;
   const agents = new Set();
@@ -452,6 +455,10 @@ function validateLanes(c, need) {
     need(
       lane.exclude === undefined || isList(lane.exclude),
       `lanes.${name}.exclude must be a list of globs`,
+    );
+    need(
+      lane.label === undefined || isLabel(lane.label),
+      `lanes.${name}.label must be a short name for what the lane delivers, such as "Screens" or "API contract" (one line, at most 60 characters)`,
     );
     need(!agents.has(lane.agent), `lanes.${name}.agent "${lane.agent}" is used by another lane`);
     agents.add(lane.agent);
@@ -482,6 +489,10 @@ function validateLayers(c, need, each) {
     need(
       l.denyPackages === undefined || isList(l.denyPackages),
       `${at}.denyPackages must be a list of globs`,
+    );
+    need(
+      l.label === undefined || isLabel(l.label),
+      `${at}.label must be a short name for what the layer delivers, such as "Data" or "Service" (one line, at most 60 characters)`,
     );
   });
   const aliases = c.importAliases;

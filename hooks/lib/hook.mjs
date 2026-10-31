@@ -18,7 +18,7 @@ export function start() {
   if (!config && !error) process.exit(0);
   // SESS-1: the session acting is still there; one code-kit hadn't seen starts here.
   try {
-    seeSession(project, input.session_id);
+    seeSession(project, input.session_id, Date.now(), () => ({ model: modelOf(input) }));
   } catch {
     // a read-only checkout: the session goes unrecorded
   }
@@ -36,6 +36,24 @@ const TAIL_BYTES = 64 * 1024;
 export function apiStopOf(input) {
   // A lane agent's own transcript: the session's ends where the lead is, not where the agent stopped.
   const path = input?.agent_id ? input.agent_transcript_path : input?.transcript_path;
+  const entry = lastAssistant(path);
+  return entry?.isApiErrorMessage ? (entry.error ?? 'unknown') : null;
+}
+
+/**
+ * The model the session runs on: the one SessionStart names, or the one its transcript's last reply
+ * came from (Claude Code writes it on each), or null. Never a lane agent's: that's the session's lead.
+ */
+export function modelOf(input) {
+  if (typeof input?.model === 'string' && input.model) return input.model.slice(0, 120);
+  // A reply Claude Code made up itself (an error, a cut-off turn) names `<synthetic>`: not a model.
+  const named = (e) =>
+    !e.isApiErrorMessage && typeof e.message?.model === 'string' && /^[^<\s]/.test(e.message.model);
+  return lastAssistant(input?.transcript_path, named)?.message.model.slice(0, 120) ?? null;
+}
+
+/** The last of the model's entries in a transcript's end that `keep` accepts, or null. */
+function lastAssistant(path, keep = () => true) {
   if (!path) return null;
   let fd;
   try {
@@ -45,19 +63,20 @@ export function apiStopOf(input) {
     const buffer = Buffer.alloc(length);
     readSync(fd, buffer, 0, length, size - length);
     // The last of the model's entries: what Claude Code adds after it (a hook's note) says nothing.
-    const entry = buffer
-      .toString('utf8')
-      .split('\n')
-      .reverse()
-      .map((line) => {
-        try {
-          return JSON.parse(line);
-        } catch {
-          return null;
-        }
-      })
-      .find((e) => e?.type === 'assistant');
-    return entry?.isApiErrorMessage ? (entry.error ?? 'unknown') : null;
+    return (
+      buffer
+        .toString('utf8')
+        .split('\n')
+        .reverse()
+        .map((line) => {
+          try {
+            return JSON.parse(line);
+          } catch {
+            return null;
+          }
+        })
+        .find((e) => e?.type === 'assistant' && keep(e)) ?? null
+    );
   } catch {
     return null;
   } finally {

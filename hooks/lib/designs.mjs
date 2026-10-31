@@ -36,11 +36,12 @@ export function readRegister(root, config, text = null) {
 /** HAND-2: whether an entry's design is files in the repository rather than only in a design tool. */
 export const handedOver = (entry) => Array.isArray(entry?.states) && entry.states.length > 0;
 
-/** The tool an entry's design lives in, for an entry not handed over yet: "paper" from "paper:…". */
-export const toolOf = (entry) =>
-  entry?.source?.tool ??
-  String(entry?.design ?? '').match(/^([a-z][\w-]*):/i)?.[1] ??
-  'the design tool';
+/**
+ * The tool an entry's design lives in: "paper" from "paper:…" for an entry not handed over yet, or
+ * `fallback` when the entry doesn't say.
+ */
+export const toolOf = (entry, fallback = 'the design tool') =>
+  entry?.source?.tool ?? String(entry?.design ?? '').match(/^([a-z][\w-]*):/i)?.[1] ?? fallback;
 
 /**
  * HAND-2: the states the specs' `## Screens` sections give `screen`: its `**States:**` line, or else the

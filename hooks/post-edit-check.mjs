@@ -10,7 +10,7 @@ import { block, start } from './lib/hook.mjs';
 import { brokenLayerRule, layerProblems } from './lib/layers.mjs';
 import { noteFor } from './lib/standards.mjs';
 import { projectWorktrees, relativeTo, worktreeRoot } from './lib/rules.mjs';
-import { noteWrite } from './lib/sessions.mjs';
+import { noteEditing, noteWrite } from './lib/sessions.mjs';
 
 const { input, project, config, error } = start();
 const target = input.tool_input?.file_path;
@@ -23,6 +23,8 @@ const rel = relativeTo(root, target);
 if (!existsSync(join(root, rel))) process.exit(0);
 // SESS-5: in the checkout every session shares, which session wrote the file, for a blocked git to name.
 if (root === projectWorktrees(project)[0]) noteWrite(project, input.session_id, rel);
+// The file the session is editing, in whichever checkout: for the team provider's presence and report.
+noteEditing(project, input.session_id, rel);
 
 // Violations recorded in the baseline (brownfield code as it was adopted) don't block; new ones do.
 const layers = layerProblems(rel, readFileSync(join(root, rel), 'utf8'), config);

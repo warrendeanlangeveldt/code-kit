@@ -9,6 +9,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { loadConfig } from './lib/config.mjs';
 import { releaseSession } from './lib/laneclaims.mjs';
+import { modelOf } from './lib/hook.mjs';
 import { endSession, startSession } from './lib/sessions.mjs';
 import { projectDir } from './lib/rules.mjs';
 
@@ -22,7 +23,8 @@ const project = projectDir();
 const { config } = loadConfig(project);
 const session = input.session_id ?? null;
 if (config && session && process.argv[2] === 'start') {
-  startSession(project, session);
+  // The model the session starts on, when Claude Code names it, or its transcript's (a resumed one).
+  startSession(project, session, Date.now(), { model: modelOf(input) });
   // LEAN-8: the worktrees left done with since the last session go, in the background: a project with
   // many of them never holds up a session's start.
   const cli = fileURLToPath(new URL('../bin/code-kit.mjs', import.meta.url));

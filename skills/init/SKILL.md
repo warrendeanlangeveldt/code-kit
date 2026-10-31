@@ -54,11 +54,13 @@ Write `.claude/code-kit.draft.json`. Follow `${CLAUDE_PLUGIN_ROOT}/README.md` â€
   - `paths`: globs matching where that layer's code really lives;
   - `mayImport`: the direction the docs set. For brownfield code, the direction most of the code already follows;
   - `denyPackages`: packages forbidden for that layer, for example `node:*` or a vendor SDK outside its adapter.
+  - `label` (optional): what the layer delivers, in a few words ("API contract", "Data", "Service"), when its name doesn't say it.
   - Also add `importAliases` for path aliases in `tsconfig` `paths` that the graph can't see. Workspace package names are found automatically.
   - The import check reads JavaScript and TypeScript. For another language, record the layers anyway (agents and spec-check use them), and say the import check doesn't cover that language yet.
 - **`lanes`:** one per documented or discovered ownership area. Each needs:
   - `agent`: a kebab-case agent name, for example `api-engineer`;
   - `paths` and `exclude`: every path must have exactly one owner.
+  - `label` (optional): what the lane delivers, in a few words ("Screens", "Tests"), when its name doesn't say it.
 - **A QA lane:** when lanes own screens, or the plan's journeys cross lanes, a `qa` lane with a `test-engineer` agent owning the end-to-end suites (the plan's work split names them; brownfield: the folders the existing end-to-end tests live in), even if the docs forgot it. Its agent's proving command runs the suites. Add a `checks` entry for them scoped by `files` to the suites, so verify runs them when they change. Unit tests stay with each lane.
 - **`setup`:** `3`, the version of this setup, so `code-kit next` can tell an older project what re-running init adds.
 - **`lead.paths`:** contracts, specs, design, root config, and anything the docs reserve for the lead.
