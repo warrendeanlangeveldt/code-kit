@@ -150,6 +150,7 @@ import { SETTINGS, parseSetting, settingOf, withSetting } from '../hooks/lib/har
 import { claimLead, readLoop, releaseLead, writeLoop } from '../hooks/lib/loop-state.mjs';
 import {
   claimChanges,
+  isIntentId,
   storyOfBranch,
   syncBoard,
   readCache,
@@ -158,7 +159,14 @@ import {
   teamProvider,
   whoami,
 } from '../hooks/lib/team.mjs';
-import { codeowners, decisionRecord, slugOf } from '../hooks/lib/teamfacts.mjs';
+import {
+  codeowners,
+  decisionRecord,
+  driftHoldWords,
+  driftHolds,
+  driftUnchecked,
+  slugOf,
+} from '../hooks/lib/teamfacts.mjs';
 import {
   APPROVAL_MINUTES,
   approvalLifetime,
@@ -255,6 +263,7 @@ const actGiven = option('--act');
 const foundGiven = option('--found');
 const howGiven = option('--how');
 const leaseGiven = option('--lease');
+const intentGiven = option('--intent');
 const touchesGiven = option('--touches');
 const techLeadGiven = option('--tech-lead');
 const staleDaysGiven = option('--stale-days');
@@ -698,14 +707,41 @@ function publish() {
   out(publishAfter(config, byPerson).trim());
 }
 
+/**
+ * HUBR-9: the team provider's word on drift for `branches`: which its open findings hold (`holds`,
+ * Map(branch → findings)), why in words (`words(branch, findings)`), and `note`, that nothing was
+ * checked, when it didn't answer. `fresh` asks it now, as a merge does; otherwise its state as last read,
+ * as the queue's list and `next` do. GitHub's provider checks no drift, so it's never asked.
+ */
+function driftNow(config, branches, { fresh = false } = {}) {
+  const none = { holds: new Map(), note: null, words: () => '' };
+  const team = teamOf(config);
+  if (!team || team.provider === 'github' || !branches.length) return none;
+  const root = resolve('.');
+  const state = fresh ? teamProvider(root, team).state({ fresh: true }) : readCache(root);
+  if (!state && !fresh) return none;
+  return {
+    holds: driftHolds(state, branches),
+    note: driftUnchecked(state),
+    words: (branch, findings) =>
+      driftHoldWords(branch, findings, {
+        techLead: team.techLead,
+        provider: state?.provider?.name ?? team.provider.name ?? null,
+      }),
+  };
+}
+
 function merge(branch) {
   const { config } = load();
   const byPerson = mergeMode();
+  const drift = driftNow(config, [branch], { fresh: true });
+  const findings = drift.holds.get(branch);
+  if (findings) die(`Nothing was merged. ${drift.words(branch, findings)}`);
   try {
     const { message } = mergeOne(branch, config, byPerson);
     // A branch merged outside the queue leaves it too, as one the queue merged would.
     settle(resolve('.'), branch, 'merged');
-    out(`${message}${publishAfter(config, byPerson)}`);
+    out(`${message}${publishAfter(config, byPerson)}${drift.note ? ` ${drift.note}` : ''}`);
   } catch (e) {
     if (e instanceof MergeStop) die(e.message);
     throw e;
@@ -984,11 +1020,24 @@ function queue() {
     const entries = readQueue(root);
     if (!waiting(entries).length) return out('The merge queue is empty.');
     // MQ-7: the first branch that can merge: one queued with partners waits until they're queued too.
-    const { head, partners, held } = nextToMerge(entries);
-    if (!head)
-      return out(
-        `Nothing can merge yet: ${held.map((h) => `${h.branch} merges together with ${h.missing.join(', ')}, which ${h.missing.length === 1 ? "isn't" : "aren't"} queued yet`).join('; ')}.`,
+    // HUBR-9: and one the team provider's drift findings hold waits until they clear.
+    const drift = driftNow(
+      config,
+      waiting(entries).map((e) => e.branch),
+      { fresh: true },
+    );
+    const { head, partners, held, drifting } = nextToMerge(entries, drift.holds);
+    const holding = drifting.map((d) => drift.words(d.branch, d.findings));
+    const unchecked = drift.note ? ` ${drift.note}` : '';
+    if (!head) {
+      const waits = held.map(
+        (h) =>
+          `${h.branch} merges together with ${h.missing.join(', ')}, which ${h.missing.length === 1 ? "isn't" : "aren't"} queued yet`,
       );
+      return out(
+        `Nothing can merge yet${waits.length ? `: ${waits.join('; ')}.` : '.'}${holding.length ? ` ${holding.join(' ')}` : ''}`,
+      );
+    }
     const group = [head, ...partners];
     // One merge at a time: a second run while the first verifies would merge the same head twice.
     if (mergingNow(head))
@@ -1024,7 +1073,7 @@ function queue() {
       const published = publishAfter(config, byPerson);
       const left = waiting(readQueue(root));
       return out(
-        `${message}${published}${left.length ? ` Next in the queue: ${left[0].branch}.` : ' The queue is empty.'}`,
+        `${message}${published}${left.length ? ` Next in the queue: ${left[0].branch}.` : ' The queue is empty.'}${holding.length ? ` ${holding.join(' ')}` : ''}${unchecked}`,
       );
     } catch (e) {
       if (!(e instanceof MergeStop)) throw e;
@@ -1062,15 +1111,33 @@ function queue() {
       'code-kit queue [--json] | queue add <branch> [--with <branch>,…] | queue drop <branch> | queue rules | queue merge --delegated|--person',
     );
   const entries = readQueue(root);
-  if (flag('--json')) return out(JSON.stringify(entries, null, 2));
   const left = waiting(entries);
+  // HUBR-9: what the team provider's findings hold, as last read (a merge asks it again).
+  const drift = driftNow(
+    config,
+    left.map((e) => e.branch),
+  );
+  if (flag('--json'))
+    return out(
+      JSON.stringify(
+        entries.map((e) =>
+          left.includes(e) && drift.holds.has(e.branch)
+            ? { ...e, drift: drift.holds.get(e.branch) }
+            : e,
+        ),
+        null,
+        2,
+      ),
+    );
   if (!left.length) out('The merge queue is empty.');
   else out(`${left.length} waiting to merge, in order:`);
   left.forEach((e, i) =>
     out(
-      `  ${i + 1}. ${e.branch} (passed review ${e.passed}${e.commit ? ` at ${e.commit.slice(0, 7)}` : ''})`,
+      `  ${i + 1}. ${e.branch} (passed review ${e.passed}${e.commit ? ` at ${e.commit.slice(0, 7)}` : ''})${drift.holds.has(e.branch) ? ' · held by the drift check' : ''}`,
     ),
   );
+  for (const [branch, findings] of drift.holds) out(drift.words(branch, findings));
+  if (left.length && drift.note) out(drift.note);
 }
 
 /**
@@ -2104,16 +2171,22 @@ function teamCommand() {
   const holderWords = (h) =>
     `${h.story} is claimed by ${h.by} (${ago(h.at)}). Ask them, or the tech lead (${team.techLead}), to release it.`;
   if (sub === 'claim') {
-    if (!story) die('code-kit team claim <story> [--lease "<glob>,<glob>"]');
+    if (!story) die('code-kit team claim <story> [--lease "<glob>,<glob>"] [--intent <number>]');
     const lease = (leaseGiven ?? '')
       .split(',')
       .map((g) => g.trim())
       .filter(Boolean);
-    const r = provider.claim(story, lease);
+    // HUBR-2: the intent this story carries out, so its pull request is the intent's.
+    const intent = intentGiven === undefined ? null : Number(intentGiven.replace(/^#/, ''));
+    if (intentGiven !== undefined && !isIntentId(intent))
+      die(
+        `"${intentGiven}" isn't an intent's number: give it as code-kit intend printed it (#12).`,
+      );
+    const r = provider.claim(story, lease, intent);
     if (r.holder) die(holderWords(r.holder));
     if (!r.ok) die(r.why);
     return out(
-      `Claimed ${story} as ${r.claim.by}${lease.length ? `, leasing ${lease.join(', ')}` : ''}.`,
+      `Claimed ${story} as ${r.claim.by}${lease.length ? `, leasing ${lease.join(', ')}` : ''}${intent ? `, carrying out intent #${intent}` : ''}.`,
     );
   }
   // TEAM-12: the plan mirrored onto the team's GitHub Project.
@@ -2234,7 +2307,7 @@ function teamCommand() {
   out(state.claims.length ? 'Claims:' : 'Nothing is claimed.');
   for (const c of state.claims)
     out(
-      `  ${c.story} by ${c.by}, ${ago(c.at)}${c.stale ? ` · stale, nothing since ${ago(c.active)}` : ''}${c.lease.length ? ` · leases ${c.lease.join(', ')}` : ''}`,
+      `  ${c.story} by ${c.by}, ${ago(c.at)}${c.stale ? ` · stale, nothing since ${ago(c.active)}` : ''}${c.lease.length ? ` · leases ${c.lease.join(', ')}` : ''}${c.intent ? ` · carries out intent #${c.intent}` : ''}`,
     );
   if (state.intents.length) out('Intents:');
   for (const i of state.intents)
@@ -2257,13 +2330,14 @@ function snapshotNow(team) {
   if (!config.docs?.specs || !config.docs?.plan) return null;
   const from = base(config, false);
   const status = buildStatus('.', config, from, tracked());
-  const claims = (readCache(resolve('.')) ?? {}).claims ?? [];
+  const { claims = [], pulls = [] } = readCache(resolve('.')) ?? {};
   return buildSnapshot({
     root: resolve('.'),
     config,
     status,
     base: from,
     claims,
+    pulls,
     version: JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version,
   });
 }

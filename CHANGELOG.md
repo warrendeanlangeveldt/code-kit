@@ -2,6 +2,15 @@
 
 What changed in each release of code-kit, newest first. Versions follow the plugin manifest and the npm package `@warren-dean/code-kit`. Each release is also on [GitHub Releases](https://github.com/warrendeanlangeveldt/code-kit/releases).
 
+## Unreleased
+
+A team provider's drift findings can hold a merge, and what a project reports covers models, security reviews, intents' pull requests and claims (report version 6).
+
+- **Drift holds a merge (spec 21, HUBR-9).** Where a team's hosted provider checks each push for drift and its setting says what blocks a merge (a finding against a spec or decision, any finding, or nothing), the merge queue holds a branch while the provider has an open finding on it at that level, and goes on with the next. `code-kit queue`, `queue merge`, `merge` and `next` name the finding, say the tech lead decides, and how it clears: resolved on the provider, or a push the drift check no longer finds conflicting. The band offers no Merge for a held branch and says why. GitHub alone checks no drift, so it never holds; a provider that can't be reached holds nothing, and code-kit says drift wasn't checked.
+- **What a project reports (report version 6, spec 21).** Each usage row now names the model its requests ran on. Each story whose branch needs the security review says why (the kinds of change), whether the security reviewer ran, when, and what it found, as counts of findings and blockers only. Each intent a story's claim carries out has that story's open pull request, and whether it's a draft. The team's claims are reported with when each was taken and last renewed (claimed again, its lease grown or its branch pushed), and whether it's stale; no claim renews on a schedule. A report from an older code-kit is still valid.
+- **Intents and claims.** `code-kit team claim <story> --intent <number>` records the intent a story carries out on its claim; a claim again keeps it. The dispatch skill does this when it starts an intent's work.
+- **The security reviewer's findings** are recorded in the story's event log as it stops, whether the lead waited on it or it ran in the background, so the review shows as run, with what it found.
+
 ## 0.28.0 (2026-10-31)
 
 What a project reports to a team provider now covers its outcomes, who approved what, its designs and the sessions at work (report version 5).

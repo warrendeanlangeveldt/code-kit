@@ -19,6 +19,8 @@ import { ciFindings } from './ci.mjs';
 import { storyModels } from './dispatches.mjs';
 import { pickPerLane } from './schedule.mjs';
 import { reconcileAll } from './events.mjs';
+import { readCache, teamOf } from './team.mjs';
+import { driftHoldWords, driftHolds, driftUnchecked } from './teamfacts.mjs';
 
 export const DRAFT_FILE = '.claude/code-kit.draft.json';
 export const BRIEF_STATES = ['framed', 'explored', 'scoped', 'specified', 'planned', 'ready'];
@@ -276,9 +278,26 @@ export function nextStep(root, base) {
   // A branch already in the merge queue has passed its review: it isn't reviewed again.
   const entries = readQueue(root);
   const inQueue = waiting(entries);
+  // HUBR-9: the team provider's drift findings, as last read, hold the branches they're on.
+  const team = teamOf(config);
+  const teamState = team && team.provider !== 'github' && inQueue.length ? readCache(root) : null;
+  const drift = teamState
+    ? driftHolds(
+        teamState,
+        inQueue.map((e) => e.branch),
+      )
+    : new Map();
   // MQ-7: what can merge next; a branch queued with partners waits until they're queued too.
-  const { head: mergeHead, held: heldGroups } = nextToMerge(entries);
+  const { head: mergeHead, held: heldGroups, drifting } = nextToMerge(entries, drift);
   const queued = inQueue.map((e) => e.branch);
+  const driftWords = drifting.map((d) =>
+    driftHoldWords(d.branch, d.findings, {
+      techLead: team?.techLead,
+      provider: teamState?.provider?.name ?? team?.provider?.name ?? null,
+    }),
+  );
+  const driftNote = teamState ? driftUnchecked(teamState) : null;
+  const heldByDrift = new Set(drifting.map((d) => d.branch));
   // MQ-1: a queue merge running now (its verify takes minutes) isn't asked for again.
   const merging = mergingNow(inQueue[0]) ? inQueue[0].branch : null;
   const ids = (state) =>
@@ -374,10 +393,13 @@ export function nextStep(root, base) {
       `${queued[0]} passed review and is next to merge, but ${delegation.into} has no code-kit rules committed yet. Put the rules the person approved onto it (code-kit queue rules); then the queue merges under them.`,
       { args: delegation.into },
     );
-  if (queued.length && !leadMerges)
+  const mergeable = queued.filter((b) => !heldByDrift.has(b));
+  if (mergeable.length && !leadMerges)
     attention.push(
-      `${queued.join(', ')} passed review and ${queued.length === 1 ? 'waits' : 'wait'} for the person to merge (code-kit queue merge --person, or Merge in the code-kit band).`,
+      `${mergeable.join(', ')} passed review and ${mergeable.length === 1 ? 'waits' : 'wait'} for the person to merge (code-kit queue merge --person, or Merge in the code-kit band).`,
     );
+  attention.push(...driftWords);
+  if (driftNote) attention.push(driftNote);
   if (merging)
     attention.push(
       `${merging} is being merged now (queue merge is running); it says when it's done.`,
@@ -485,11 +507,15 @@ export function nextStep(root, base) {
       'wait',
       `${building.join(', ')} ${building.length === 1 ? 'is' : 'are'} being built; nothing else can start until one finishes. A lane that stopped without finishing is dispatched again.`,
     );
-  // Stories waiting on branches in the merge queue wait for the merge, not on a broken plan.
+  // Stories waiting on branches in the merge queue wait for the merge, not on a broken plan. HUBR-9: a
+  // queue that only drift findings hold says which, and how each clears.
+  const heldOnly = !mergeHead && driftWords.length ? driftWords.join(' ') : null;
   if (queued.length)
     return result(
       'wait',
-      `${queued.join(', ')} passed review and ${queued.length === 1 ? 'waits' : 'wait'} to be merged; the stories that depend on ${queued.length === 1 ? 'it' : 'them'} start after.`,
+      heldOnly
+        ? `${heldOnly} The stories that depend on ${queued.length === 1 ? 'it' : 'them'} start after.`
+        : `${queued.join(', ')} passed review and ${queued.length === 1 ? 'waits' : 'wait'} to be merged; the stories that depend on ${queued.length === 1 ? 'it' : 'them'} start after.`,
     );
   if (unbuildable.length)
     return result(
@@ -510,7 +536,7 @@ export function nextStep(root, base) {
   if (queued.length)
     return result(
       'wait',
-      `${queued.join(', ')} ${queued.length === 1 ? 'waits' : 'wait'} to be merged.`,
+      heldOnly ?? `${queued.join(', ')} ${queued.length === 1 ? 'waits' : 'wait'} to be merged.`,
     );
   return result(
     'done',

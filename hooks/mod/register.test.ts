@@ -5265,6 +5265,8 @@ test('HUBR-6 with a hosted provider, the mod sends the session agents and token 
   };
   const clock = await start($, on, w);
   await $.tool.call({ tool: 'Bash', tool_use_id: 'tu-p', command: 'cat secrets.txt' } as any);
+  // A model request by the lead: its tokens go with the model the step ran on (report version 6).
+  await request($, undefined, 10);
   await clock.advance(30000);
   const pulses = () => w.acts.filter((a) => a[0] === 'team' && a[1] === 'pulse');
   expect(pulses().length).toBe(1);
@@ -5272,7 +5274,9 @@ test('HUBR-6 with a hosted provider, the mod sends the session agents and token 
   expect(w.pulses[0].agents.main).toMatchObject({ type: 'lead', tool: 'Bash' });
   // By tool name only: never what the call read or ran.
   expect(JSON.stringify(w.pulses[0])).not.toMatch(/secrets/);
-  expect(typeof w.pulses[0].usage).toBe('object');
+  expect(Object.values(w.pulses[0].usage)).toContainEqual(
+    expect.objectContaining({ kind: 'lead', model: 'claude-sonnet-5-5' }),
+  );
 });
 
 test('HUBR-6 a team on GitHub sends no pulse', async ($, on) => {

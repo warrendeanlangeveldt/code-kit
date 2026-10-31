@@ -1,5 +1,5 @@
-// Teams (docs/specs/16-teams.md), the pure parts: names, story branches, staleness and what an intent
-// touches. Shared by the hooks and CLI (team.mjs) and the mod, which runs without Node.
+// Teams (docs/specs/16-teams.md), the pure parts: names, story branches, staleness, what an intent
+// touches and which drift findings hold a merge (spec 21, HUBR-9). Shared by the hooks and CLI (team.mjs) and the mod, which runs without Node.
 
 /** A GitHub handle: letters, digits and single hyphens, at most 39 characters. */
 export const isHandle = (h) =>
@@ -189,3 +189,81 @@ export const boardValues = (story, claim) => ({
 /** The fields whose value changed since the last sync: [[field, value]]. */
 export const boardChanges = (before = {}, now) =>
   BOARD_FIELDS.filter((f) => (before[f] ?? '') !== now[f]).map((f) => [f, now[f]]);
+
+// --- drift holds (spec 21, HUBR-9) ---------------------------------------------------------------------
+
+/**
+ * What a team provider's "What blocks a merge" setting may say: a finding against a spec or decision,
+ * any finding, or nothing. A provider that says none (GitHub, or an older hosted one) holds nothing.
+ */
+export const MERGE_HOLDS = ['spec-or-decision', 'any', 'nothing'];
+
+/** What a drift finding is against, from its `conflictsWith`: spec, decision, branch or intent. */
+export const findingKind = (f) => String(f?.conflictsWith ?? '').split(/[\s#]/)[0] || null;
+
+/** Whether a finding holds a merge at the provider's level. Its severity doesn't change that. */
+export function holdsMerge(finding, level) {
+  if (level === 'any') return true;
+  if (level === 'spec-or-decision') return ['spec', 'decision'].includes(findingKind(finding));
+  return false;
+}
+
+/** Whether the team's state came from its provider, not its fallback or a cache it couldn't renew. */
+export const providerAnswered = (state) =>
+  Boolean(state) && state.reachable !== false && !state.fallback;
+
+/**
+ * The open drift findings that hold `branch` in the merge queue, by the provider's state: its level
+ * (`mergeHolds`) and its findings. None when the provider didn't answer: code-kit doesn't hold on what
+ * it couldn't check (`driftUnchecked` says so).
+ */
+export function driftHoldsOf(state, branch) {
+  if (!providerAnswered(state)) return [];
+  const level = MERGE_HOLDS.includes(state.mergeHolds) ? state.mergeHolds : 'nothing';
+  if (level === 'nothing') return [];
+  return (Array.isArray(state.findings) ? state.findings : []).filter(
+    (f) => f && f.branch === branch && !f.resolved && holdsMerge(f, level),
+  );
+}
+
+/** Each of `branches` the provider's findings hold: Map(branch → findings). */
+export function driftHolds(state, branches) {
+  const held = new Map();
+  for (const b of branches) {
+    const found = driftHoldsOf(state, b);
+    if (found.length) held.set(b, found);
+  }
+  return held;
+}
+
+const against = (f) =>
+  findingKind(f) === 'intent' ? f.conflictsWith : `the ${f.conflictsWith ?? 'work in flight'}`;
+const oneLine = (s, max = 200) =>
+  String(s ?? '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, max);
+
+/**
+ * Why a branch is held, in words an agent or person can act on: each finding, who decides, and how it
+ * clears. `provider` is the team provider's name as its state gives it; `techLead` the team's.
+ */
+export function driftHoldWords(branch, findings, { techLead = null, provider = null } = {}) {
+  const where = provider ?? 'the team provider';
+  const each = findings.map(
+    (f) =>
+      `against ${against(f)}${f.severity ? ` (a ${f.severity})` : ''}: ${oneLine(f.title || f.text)}${f.url ? ` (${f.url})` : ''}`,
+  );
+  const one = each.length === 1;
+  const found = one
+    ? `the drift check found it ${each[0]}`
+    : `the drift check found it ${each.length} times: ${each.join('; ')}`;
+  return `${branch} is held from merging: ${found}. ${techLead ? `The tech lead (${techLead})` : 'The tech lead'} decides: if the work still stands, resolve ${one ? 'the finding' : 'the findings'} on ${where}; otherwise push a fix to ${branch}, and the drift check clears ${one ? 'it' : 'each'} once a push no longer conflicts. It merges as soon as nothing holds it.`;
+}
+
+/** When the provider didn't answer, that drift findings weren't checked, in words; null when they were. */
+export function driftUnchecked(state) {
+  if (providerAnswered(state)) return null;
+  const why = oneLine(state?.fallback ?? state?.why ?? "The team provider can't be reached.");
+  return `${why.replace(/\.$/, '')}, so drift findings weren't checked: merges don't wait on them until it answers.`;
+}

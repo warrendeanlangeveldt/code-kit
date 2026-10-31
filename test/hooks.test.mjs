@@ -92,7 +92,7 @@ http.createServer((req, res) => {
 const HUB_SERVER = `
 const http = require('node:http');
 const calls = [], reports = [], streams = new Set();
-let claims = [], id = 0, org = null;
+let claims = [], id = 0, org = null, drift = {}, pulls = [];
 const send = (res, code, obj) => { res.writeHead(code, { 'content-type': 'application/json' }); res.end(JSON.stringify(obj)); };
 http.createServer((req, res) => {
   let body = '';
@@ -100,6 +100,9 @@ http.createServer((req, res) => {
     const p = new URL(req.url, 'http://x').pathname;
     if (p === '/test/seen') return send(res, 200, { calls, reports });
     if (p === '/test/standards') { org = JSON.parse(body); return send(res, 200, { ok: true }); }
+    // HUBR-9: the repository's "What blocks a merge" and its open drift findings; HUBR-2: open pulls.
+    if (p === '/test/drift') { drift = JSON.parse(body); return send(res, 200, { ok: true }); }
+    if (p === '/test/pulls') { pulls = JSON.parse(body); return send(res, 200, { ok: true }); }
     if (p === '/test/event') {
       const e = { id: ++id, kind: 'claim', text: 'sam claimed ST-5', at: new Date().toISOString() };
       claims.push({ story: 'ST-5', by: 'sam', at: e.at, lease: [] });
@@ -120,8 +123,14 @@ http.createServer((req, res) => {
     if (op === 'whoami') return send(res, 200, { login: 'kim' });
     if (op === 'claim') {
       const held = claims.find((c) => c.story === input.story);
-      if (held) return send(res, 200, { ok: false, holder: held });
-      const c = { story: input.story, by: 'kim', at: new Date().toISOString(), lease: input.lease ?? [] };
+      if (held && held.by !== 'kim') return send(res, 200, { ok: false, holder: held });
+      // A claim again by its holder adds to its lease, and keeps its intent unless it names one.
+      if (held) {
+        held.lease = [...new Set([...held.lease, ...(input.lease ?? [])])];
+        if (input.intent) held.intent = input.intent;
+        return send(res, 200, { ok: true, claim: held });
+      }
+      const c = { story: input.story, by: 'kim', at: new Date().toISOString(), lease: input.lease ?? [], ...(input.intent ? { intent: input.intent } : {}) };
       claims.push(c);
       return send(res, 200, { ok: true, claim: c });
     }
@@ -131,7 +140,7 @@ http.createServer((req, res) => {
       return send(res, 200, { ok: true, released: Boolean(c), claim: c });
     }
     if (op === 'state')
-      return send(res, 200, { hub: true, at: new Date().toISOString(), reachable: true, github: true, me: 'kim', techLead: 'lead', owners: {}, staleDays: 3, claims, intents: [], pulls: [], setup: [], sessions: [] });
+      return send(res, 200, { hub: true, at: new Date().toISOString(), reachable: true, github: true, me: 'kim', techLead: 'lead', owners: {}, staleDays: 3, claims: claims.map((c) => ({ ...c, active: c.at, stale: false })), intents: [], pulls, setup: [], sessions: [], ...drift });
     if (op === 'report') { reports.push(input.snapshot); return send(res, 200, { ok: true }); }
     if (op === 'standards' && org) return send(res, 200, org);
     if (op === 'presence' || op === 'leave') return send(res, 200, { ok: true });
@@ -2962,6 +2971,17 @@ else process.exit(2);
     expect(
       'the holder can claim it again, with a grown lease',
       truth(regrown.status === 0, regrown.stderr),
+      0,
+    );
+    // HUBR-2: the intent the story carries out, on its claim; a claim again without one keeps it.
+    sam('team', 'claim', 'ST-9', '--intent', '12');
+    sam('team', 'claim', 'ST-9', '--lease', 'packages/core/**');
+    const named = JSON.parse(dev2('team', '--json', '--fresh').stdout || '{}').claims?.find(
+      (c) => c.story === 'ST-9',
+    );
+    expect(
+      "HUBR-2 a claim names the intent its story carries out on GitHub's claim ref, and keeps it",
+      truth(named?.intent === 12 && named.lease.includes('apps/web/**'), JSON.stringify(named)),
       0,
     );
     // The same clone, now as the tech lead.
@@ -8956,7 +8976,7 @@ else process.exit(1);
             snapshot.milestones[0].target === '2026-11-30' &&
             snapshot.requirements[0].id === 'BOOK-1' &&
             snapshot.rules.layers.length > 0 &&
-            snapshot.version === 5 &&
+            snapshot.version === 6 &&
             snapshot.stories[0].summary === 'The list of bookings for a day, newest first.' &&
             typeof snapshot.requirements[0].title === 'string' &&
             snapshot.requirements[0].title.length > 0 &&
@@ -9107,6 +9127,314 @@ else process.exit(1);
         0,
       );
       writeFileSync(join(repo, '.claude/code-kit.json'), hubConfig({ provider: { hub: hubUrl } }));
+
+      // --- HUBR-2 version 6: usage by model, security reviews, an intent's pull request, claims ----
+      const post = (path, body) =>
+        execFileSync('curl', ['-s', '-X', 'POST', '-d', JSON.stringify(body), `${hubUrl}${path}`]);
+      const fresh = () => kit('team', '--json', '--fresh');
+      const claimRef = () =>
+        JSON.parse(
+          execFileSync(
+            'git',
+            ['-C', bare, 'for-each-ref', '--format=%(contents)', 'refs/code-kit/claims/ST-4'],
+            { encoding: 'utf8' },
+          ).trim() || '{}',
+        );
+      const withIntent = kit('team', 'claim', 'ST-4', '--intent', '#12');
+      expect(
+        'HUBR-2 a claim names the intent its story carries out, through the hub and on its mirror',
+        truth(
+          withIntent.status === 0 &&
+            /carrying out intent #12/.test(withIntent.stdout) &&
+            seen().calls.some((c) => c.op === 'claim' && c.input.intent === 12) &&
+            claimRef().intent === 12,
+          withIntent.stdout + withIntent.stderr + JSON.stringify(claimRef()),
+        ),
+        0,
+      );
+      expect(
+        "and an intent that isn't a number is refused, saying how to give it",
+        kit('team', 'claim', 'ST-4', '--intent', 'soon'),
+        1,
+        "isn't an intent's number",
+      );
+      // ST-4's branch changes sign-in, so it needs the security review; its pull request is a draft.
+      g('switch', '-q', 'web/st-4');
+      writeFileSync(join(repo, 'apps/office/login.tsx'), 'export const login = () => null;\n');
+      g('add', 'apps/office/login.tsx');
+      g('commit', '-q', '-m', 'ST-4 sign-in');
+      g('switch', '-q', 'main');
+      post('/test/pulls', [
+        {
+          number: 31,
+          title: 'ST-4 Booking list',
+          by: 'kim',
+          branch: 'web/st-4',
+          draft: true,
+          updated: new Date().toISOString(),
+          url: 'https://github.com/acme/booking/pull/31',
+        },
+      ]);
+      fresh();
+      const securityCall = (id, extra = {}) => ({
+        tool_name: 'Agent',
+        tool_use_id: id,
+        tool_input: {
+          subagent_type: 'security-reviewer',
+          description: 'Security review web/st-4',
+          prompt: 'Review web/st-4 for ST-4.',
+          ...extra,
+        },
+      });
+      const reviewOf = () =>
+        (JSON.parse(kit('team', 'report', '--dry-run').stdout || '{}').securityReviews ?? []).find(
+          (r) => r.story === 'ST-4',
+        );
+      const due = reviewOf();
+      expect(
+        'HUBR-2 version 6: a story whose branch needs the security review, before the reviewer runs',
+        truth(
+          due?.needed === true &&
+            JSON.stringify(due.reasons) === JSON.stringify(['sign-in']) &&
+            due.ran === false &&
+            due.result === null,
+          JSON.stringify(due),
+        ),
+        0,
+      );
+      // One run in the background: its launch names it, and its report has no findings block.
+      hookIn('act.mjs', securityCall('tu-bg', { run_in_background: true }), 'start');
+      hookIn(
+        'act.mjs',
+        {
+          ...securityCall('tu-bg', { run_in_background: true }),
+          tool_response: { status: 'async_launched', agentId: 'ag-bg' },
+        },
+        'end',
+      );
+      hookIn(
+        'act.mjs',
+        { agent_id: 'ag-bg', agent_type: 'security-reviewer', last_assistant_message: 'Done.' },
+        'handback',
+      );
+      const unread = reviewOf();
+      expect(
+        "a background security review that stopped without a findings block ran, and isn't read as a pass",
+        truth(
+          unread?.ran === true &&
+            unread.result === 'unread' &&
+            unread.findings === null &&
+            unread.at > 0,
+          JSON.stringify(unread),
+        ),
+        0,
+      );
+      // One the lead waits on: a blocker and a nit, counted, on the story its description names.
+      const findingsBlock = `I attacked the sign-in.\n\n\`\`\`json\n${JSON.stringify({
+        findings: [
+          { severity: 'blocker', where: 'apps/office/login.tsx:1', text: 'Attack: … Fix: …' },
+          { severity: 'nit', where: 'apps/office/login.tsx:1', text: 'Harden later.' },
+        ],
+      })}\n\`\`\`\n`;
+      hookIn('act.mjs', securityCall('tu-fg'), 'start');
+      hookIn(
+        'act.mjs',
+        {
+          agent_id: 'ag-fg',
+          agent_type: 'security-reviewer',
+          last_assistant_message: findingsBlock,
+        },
+        'handback',
+      );
+      hookIn(
+        'act.mjs',
+        {
+          ...securityCall('tu-fg'),
+          tool_response: { content: [{ type: 'text', text: findingsBlock }] },
+        },
+        'end',
+      );
+      // The session's usage, by the model each request ran on, as the mod's pulse keeps it.
+      kitIn(
+        JSON.stringify({
+          usage: {
+            'lead||claude-opus-5-5': {
+              story: null,
+              kind: 'lead',
+              model: 'claude-opus-5-5',
+              input: 900,
+              output: 100,
+              cache: 50,
+            },
+            'a1|ST-4|claude-haiku-5': {
+              story: 'ST-4',
+              kind: 'lane',
+              model: 'claude-haiku-5',
+              input: 50,
+              output: 10,
+              cache: 0,
+            },
+          },
+        }),
+        'team',
+        'pulse',
+        '--session',
+        's1',
+      );
+      const v6dry = kit('team', 'report', '--dry-run');
+      const v6 = JSON.parse(v6dry.stdout || '{}');
+      const reviewed = (v6.securityReviews ?? []).find((r) => r.story === 'ST-4');
+      expect(
+        'HUBR-2 version 6: the security review that ran, when, and what it found, as counts only',
+        truth(
+          snapshotProblems(v6).length === 0 &&
+            v6.version === 6 &&
+            reviewed?.ran === true &&
+            reviewed.result === 'findings' &&
+            reviewed.findings === 2 &&
+            reviewed.blockers === 1 &&
+            reviewed.branch === 'web/st-4' &&
+            !v6dry.stdout.includes('Attack:') &&
+            !v6dry.stdout.includes('Harden later'),
+          JSON.stringify(snapshotProblems(v6)) + JSON.stringify(reviewed),
+        ),
+        0,
+      );
+      expect(
+        "each usage row's model",
+        truth(
+          v6.usage?.some(
+            (u) => u.kind === 'lead' && u.model === 'claude-opus-5-5' && u.input === 900,
+          ) && v6.usage.some((u) => u.story === 'ST-4' && u.model === 'claude-haiku-5'),
+          JSON.stringify(v6.usage),
+        ),
+        0,
+      );
+      const st4Claim = (v6.claims ?? []).find((c) => c.story === 'ST-4');
+      expect(
+        "the intent ST-4's claim carries out, with its draft pull request; and the claim, with when it was last renewed",
+        truth(
+          JSON.stringify(v6.intents) ===
+            JSON.stringify([{ id: 12, story: 'ST-4', pull: 31, draft: true }]) &&
+            st4Claim?.by === 'kim' &&
+            st4Claim.at > 0 &&
+            st4Claim.active >= st4Claim.at &&
+            st4Claim.stale === false &&
+            st4Claim.lease.includes('apps/web/**'),
+          JSON.stringify({ intents: v6.intents, claims: v6.claims }),
+        ),
+        0,
+      );
+
+      // --- HUBR-9: the merge queue holds a branch with an open drift finding -----------------------
+      const finding = {
+        id: 7,
+        branch: 'web/st-4',
+        by: 'kim',
+        conflictsWith: 'spec docs/spec/booking.md',
+        severity: 'concern',
+        title: 'BOOK-1 changed on main',
+        text: 'BOOK-1 has changed on main since web/st-4 started.',
+        story: 'ST-4',
+        at: new Date().toISOString(),
+        url: `${hubUrl}/acme/booking/drift/7`,
+      };
+      const queued = () =>
+        JSON.parse(readFileSync(join(repo, '.claude/state/merge-queue.json'), 'utf8'));
+      post('/test/drift', { mergeHolds: 'spec-or-decision', findings: [finding] });
+      fresh();
+      const listed = kit('queue');
+      expect(
+        "HUBR-9 the queue shows the branch the hub's finding against a spec holds, why, who decides and how it clears",
+        truth(
+          /1\. web\/st-4 .*· held by the drift check/.test(listed.stdout) &&
+            listed.stdout.includes(
+              'web/st-4 is held from merging: the drift check found it against the spec docs/spec/booking.md (a concern): BOOK-1 changed on main',
+            ) &&
+            listed.stdout.includes(
+              'The tech lead (lead) decides: if the work still stands, resolve the finding on code-kit hub; otherwise push a fix to web/st-4, and the drift check clears it once a push no longer conflicts.',
+            ),
+          listed.stdout,
+        ),
+        0,
+      );
+      const forMod = JSON.parse(kit('queue', '--json').stdout || '[]');
+      expect(
+        'and queue --json gives the mod the finding, so the band offers no Merge for it',
+        truth(
+          forMod.find((e) => e.branch === 'web/st-4')?.drift?.[0]?.id === 7,
+          JSON.stringify(forMod),
+        ),
+        0,
+      );
+      const told = JSON.parse(kit('next', '--json').stdout || '{}');
+      expect(
+        "HUBR-9 the lead's next step names the held branch's finding",
+        truth(
+          (told.attention ?? []).some((a) =>
+            /^web\/st-4 is held from merging: .*BOOK-1 changed on main/.test(a),
+          ) && !(told.attention ?? []).some((a) => /web\/st-4 passed review and waits/.test(a)),
+          JSON.stringify(told),
+        ),
+        0,
+      );
+      const tried = kit('queue', 'merge', '--person');
+      expect(
+        'HUBR-9 queue merge merges nothing while the finding is open, and the branch keeps its place',
+        truth(
+          tried.status === 0 &&
+            /^Nothing can merge yet\. web\/st-4 is held from merging/.test(tried.stdout) &&
+            queued().some((e) => e.branch === 'web/st-4' && e.state === 'waiting'),
+          tried.stdout + tried.stderr,
+        ),
+        0,
+      );
+      expect(
+        'and merging the branch itself is refused the same way',
+        kit('merge', 'web/st-4', '--person'),
+        1,
+        'web/st-4 is held from merging',
+      );
+      // At this level a finding against another branch holds nothing; at "any finding", it does.
+      const other = {
+        ...finding,
+        id: 8,
+        conflictsWith: 'branch web/st-5',
+        title: 'web/st-5 changes the same files',
+      };
+      post('/test/drift', { mergeHolds: 'spec-or-decision', findings: [other] });
+      fresh();
+      const notHeld = kit('queue').stdout;
+      post('/test/drift', { mergeHolds: 'any', findings: [other] });
+      fresh();
+      const heldByAny = kit('queue').stdout;
+      expect(
+        'HUBR-9 only a finding at the hub’s level holds: against another branch, only at "any finding"',
+        truth(
+          !/held by the drift check|held from merging/.test(notHeld) &&
+            /web\/st-4 is held from merging: the drift check found it against the branch web\/st-5/.test(
+              heldByAny,
+            ),
+          notHeld + heldByAny,
+        ),
+        0,
+      );
+      // Resolved on the hub (or cleared by a push): it merges.
+      post('/test/drift', { mergeHolds: 'any', findings: [] });
+      const through = kit('queue', 'merge', '--person');
+      expect(
+        'HUBR-9 once the finding is resolved, the queue merges the branch',
+        truth(
+          through.status === 0 &&
+            /^Merged web\/st-4 into main/.test(through.stdout) &&
+            !/held from merging/.test(through.stdout),
+          through.stdout + through.stderr,
+        ),
+        0,
+      );
+      // The later checks need ST-4 claimed and waiting again.
+      kit('team', 'claim', 'ST-4', '--lease', 'apps/web/**');
+      kit('queue', 'add', 'web/st-4');
 
       // HUBR-6: code-kit's own session hooks hold the live link; the mod's pulse carries presence.
       kitIn(
@@ -9376,7 +9704,9 @@ else process.exit(1);
       );
       if (daemonOf().pid) process.kill(daemonOf().pid, 'SIGTERM');
 
-      // TEAM-8 and HUBR-7: the hub gone, claims go through GitHub, and intents wait for the hub.
+      // TEAM-8 and HUBR-7: the hub gone, claims go through GitHub, and intents wait for the hub. HUBR-9:
+      // the finding it last held web/st-4 for can't be checked, so nothing is held for it.
+      post('/test/drift', { mergeHolds: 'any', findings: [finding] });
       hubServer.kill();
       pause(200);
       const fellBack = JSON.parse(kit('team', '--json', '--fresh').stdout || '{}');
@@ -9387,6 +9717,22 @@ else process.exit(1);
             fellBack.claims?.some((c) => c.story === 'ST-4' && c.by === 'kim') &&
             !(fellBack.setup ?? []).some((x) => /Discussions|discussion category/.test(x)),
           JSON.stringify(fellBack),
+        ),
+        0,
+      );
+      const downQueue = kit('queue').stdout;
+      const downNext = JSON.parse(kit('next', '--json').stdout || '{}');
+      expect(
+        "HUBR-9 with the hub unreachable, nothing is held for drift, and the queue and next step say it wasn't checked",
+        truth(
+          /1\. web\/st-4/.test(downQueue) &&
+            !/held by the drift check/.test(downQueue) &&
+            /can't be reached.*, so drift findings weren't checked: merges don't wait on them until it answers\./.test(
+              downQueue,
+            ) &&
+            (downNext.attention ?? []).some((a) => /drift findings weren't checked/.test(a)) &&
+            !(downNext.attention ?? []).some((a) => /held from merging/.test(a)),
+          downQueue + JSON.stringify(downNext.attention),
         ),
         0,
       );

@@ -13,9 +13,10 @@ import { readQueue, waiting } from './queue.mjs';
 import { sendBacks } from './reviews.mjs';
 import { readMilestones, readSpecs, specCheckRows } from './plan.mjs';
 import { handedOver, entryProblems, readRegister, toolOf } from './designs.mjs';
-import { SECURITY_KINDS, securityRules } from './security.mjs';
+import { SECURITY_KINDS, securityReview, securityRules } from './security.mjs';
+import { securityReviews } from './events.mjs';
 import { sessions } from './sessions.mjs';
-import { storyOfBranch } from './teamfacts.mjs';
+import { isHandle, storyOfBranch } from './teamfacts.mjs';
 import { storyTimes } from './timeline.mjs';
 import { trail } from './storymap.mjs';
 import {
@@ -36,9 +37,11 @@ import { slicesOf } from './schedule.mjs';
  * story's summary and each requirement's title; 5 the specs (id, title, outcome line, requirement ids),
  * each layer's and lane's deliverable kind, the lanes with their layers and paths, each approval's
  * approver and story, the security review's rules, each story's spec-check result and place in the
- * merge queue, the design register's entries, and the sessions at work.
+ * merge queue, the design register's entries, and the sessions at work; 6 each usage row's model, the
+ * security reviews each story needed and whether they ran, the pull request of each intent a claim
+ * carries out, and the team's claims with when each was last renewed.
  */
-export const SNAPSHOT_VERSION = 5;
+export const SNAPSHOT_VERSION = 6;
 
 /** A story's stage, as a report names it. */
 export const STAGES = [
@@ -56,6 +59,8 @@ export const AGENT_KINDS = ['lead', 'lane', 'reviewer', 'security-reviewer', 'ba
 export const CHECKS = ['done', 'partial', 'missing', 'conflicts'];
 /** A design register entry's state: its files handed over and as approved, only in a tool, or not as approved. */
 export const DESIGN_STATES = ['handed-over', 'in-tool', 'problems'];
+/** What a security review that ran found: nothing, findings, or a report without a findings block that reads. */
+export const SECURITY_RESULTS = ['pass', 'findings', 'unread'];
 
 /**
  * The allow-list. A leaf is a kind: `id` (ST-4, API-2), `handle` (a GitHub login), `name` (a lane, a
@@ -128,11 +133,34 @@ export const SNAPSHOT_SCHEMA = {
     {
       story: 'id?',
       kind: `enum:${AGENT_KINDS.join('|')}`,
+      // Added in version 6: the model the requests ran on, as Claude Code names it.
+      model: 'name?',
       input: 'count',
       output: 'count',
       cache: 'count',
     },
   ],
+  // Version 6: each story that needs the security review on its branch, or whose security reviewer ran:
+  // why it needs it (the kinds of change), whether the reviewer ran, when it reported, and what it found.
+  securityReviews: [
+    {
+      story: 'id',
+      branch: 'name?',
+      needed: 'bool?',
+      reasons: [`enum:${SECURITY_KINDS.join('|')}`],
+      ran: 'bool',
+      at: 'ms?',
+      result: `enum:${SECURITY_RESULTS.join('|')}?`,
+      findings: 'count?',
+      blockers: 'count?',
+    },
+  ],
+  // Version 6: each intent a claim says its story carries out, and that story's open pull request.
+  intents: [{ id: 'count', story: 'id', pull: 'count?', draft: 'bool?' }],
+  // Version 6: the team's claims: who holds each story, since when, what it leases, when it was last
+  // renewed (claimed again, its lease grown, its branch pushed) and whether it's stale. No lease renews
+  // on a schedule.
+  claims: [{ story: 'id', by: 'handle', at: 'ms', active: 'ms?', stale: 'bool', lease: ['path'] }],
   rules: {
     // `label`, added in version 5: the layer's deliverable kind ("Data", "Service").
     layers: [{ name: 'name', mayImport: ['name'], label: 'name?' }],
@@ -207,6 +235,9 @@ export const LATER_PARTS = [
   'sessions',
   'rules.lanes',
   'rules.security',
+  'securityReviews',
+  'intents',
+  'claims',
 ];
 
 export const SUMMARY_MAX = 600;
@@ -291,6 +322,8 @@ export const EVENT_PARTS = [
   'rules',
   'standards',
   'designs',
+  'securityReviews',
+  'intents',
 ];
 
 /** The deliverable kinds a layer's or lane's name gives, when the config gives it no `label`. */
@@ -366,8 +399,9 @@ export function recordedUsage(root) {
     for (const e of entries) {
       if (!AGENT_KINDS.includes(e.kind)) continue;
       const story = KINDS.id(e.story) ? e.story : null;
-      const key = `${story}|${e.kind}`;
-      const was = sums.get(key) ?? { story, kind: e.kind, input: 0, output: 0, cache: 0 };
+      const model = KINDS.name(e.model) && e.model ? e.model : null;
+      const key = `${story}|${e.kind}|${model}`;
+      const was = sums.get(key) ?? { story, kind: e.kind, model, input: 0, output: 0, cache: 0 };
       for (const k of ['input', 'output', 'cache'])
         was[k] += Number.isInteger(e[k]) && e[k] > 0 ? e[k] : 0;
       sums.set(key, was);
@@ -388,7 +422,8 @@ function checkedRows(root, story) {
 
 /**
  * The snapshot (HUBR-2) from what code-kit already computed: `status` is buildStatus's, `base` the
- * branch stories merge into, `claims` the team's claims as last read, `version` code-kit's.
+ * branch stories merge into, `claims` and `pulls` the team's claims and open pull requests as last
+ * read, `version` code-kit's.
  */
 export function buildSnapshot({
   root,
@@ -396,6 +431,7 @@ export function buildSnapshot({
   status,
   base,
   claims = [],
+  pulls = [],
   version,
   now = Date.now(),
 }) {
@@ -547,8 +583,89 @@ export function buildSnapshot({
     standards: reportedStandards(root, config, line),
     designs: reportedDesigns(root, config),
     sessions: reportedSessions(root, now),
+    securityReviews: reportedSecurityReviews(root, config, status, base),
+    intents: reportedIntents(claims, pulls),
+    claims: reportedClaims(claims),
   };
   return snapshot;
+}
+
+/**
+ * Version 6: each story that needs the security review on its branch now (security.mjs, for a branch
+ * still at work), or whose security reviewer ran (the event log's record of its findings).
+ */
+function reportedSecurityReviews(root, config, status, base) {
+  const ran = securityReviews(root);
+  const out = [];
+  for (const s of status.stories) {
+    if (!KINDS.id(s.id)) continue;
+    const review = ran.get(s.id) ?? null;
+    let need = null;
+    if (s.branchExists && s.state !== 'done')
+      try {
+        need = securityReview(root, { base, branch: s.branch, config });
+      } catch {
+        // the branch can't be compared with the base: whether it needs the review isn't known
+      }
+    if (!review && !need?.needed) continue;
+    const counted = review && !review.unread;
+    const count = (v) => (Number.isInteger(v) && v >= 0 ? v : null);
+    out.push({
+      story: s.id,
+      branch: KINDS.name(s.branch) ? s.branch : null,
+      needed: need ? need.needed : null,
+      reasons: need
+        ? [...new Set(need.reasons.map((r) => r.kind))].filter((k) => SECURITY_KINDS.includes(k))
+        : [],
+      ran: Boolean(review),
+      at: review ? msOf(review.at) : null,
+      result: !review ? null : review.unread ? 'unread' : review.findings ? 'findings' : 'pass',
+      findings: counted ? count(review.findings) : null,
+      blockers: counted ? count(review.blockers) : null,
+    });
+  }
+  return out;
+}
+
+const msOf = (iso) => {
+  const t = Date.parse(iso ?? '');
+  return Number.isInteger(t) && t > 0 ? t : null;
+};
+
+/**
+ * Version 6: each intent a claim names (`code-kit team claim <story> --intent <n>`), with its story and
+ * that story's open pull request, by its branch, draft or not; none while it has no pull request open.
+ */
+function reportedIntents(claims, pulls) {
+  return claims
+    .filter((c) => Number.isInteger(c?.intent) && c.intent > 0 && KINDS.id(c.story))
+    .map((c) => {
+      const pr = pulls.find((p) => storyOfBranch(p?.branch) === c.story);
+      return {
+        id: c.intent,
+        story: c.story,
+        pull: Number.isInteger(pr?.number) && pr.number > 0 ? pr.number : null,
+        draft: pr ? Boolean(pr.draft) : null,
+      };
+    });
+}
+
+/**
+ * Version 6: the team's claims as the provider last gave them: when each was taken, when it was last
+ * renewed by work (`active`: claimed again, its lease grown or its branch pushed) and whether that's
+ * longer ago than the team's stale days. A claim never renews on a schedule.
+ */
+function reportedClaims(claims) {
+  return claims
+    .filter((c) => KINDS.id(c?.story) && isHandle(c.by) && msOf(c.at))
+    .map((c) => ({
+      story: c.story,
+      by: c.by,
+      at: msOf(c.at),
+      active: msOf(c.active),
+      stale: c.stale === true,
+      lease: (Array.isArray(c.lease) ? c.lease : []).filter((p) => KINDS.path(p)),
+    }));
 }
 
 /** A story's spec-check result: its report's worst status (conflicts, missing, partial), `none` without one. */

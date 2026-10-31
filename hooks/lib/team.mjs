@@ -33,6 +33,8 @@ export {
 };
 
 const isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
+/** An intent's number, as the provider keeps it. */
+export const isIntentId = (n) => Number.isInteger(n) && n > 0;
 
 /** What's wrong with `team` and the lanes' `owners`, as the config's other problems are worded. */
 export function teamProblems(c) {
@@ -154,9 +156,11 @@ export function whoami(root, now = Date.now()) {
 
 // --- the provider (TEAM-2) ----------------------------------------------------------------------------
 //
-// The core talks to the team through one interface: whoami, claim(story, lease), release(story),
+// The core talks to the team through one interface: whoami, claim(story, lease, intent), release(story),
 // state() and intend(about, touches), report(snapshot) (HUBR-1) and standards() (STD-6: an
-// organisation's standards and this project's waivers, `{ standards, waivers, version }`). The GitHub
+// organisation's standards and this project's waivers, `{ standards, waivers, version }`). A provider
+// that checks drift says in its state what holds a merge (`mergeHolds`) and lists its open `findings`
+// (HUBR-9); GitHub's checks none, so it holds nothing. The GitHub
 // provider is built in; any other is a command named in the config, called with the operation's name
 // and its input as JSON on stdin, answering JSON.
 
@@ -173,7 +177,14 @@ function claimOf(message) {
   try {
     const c = JSON.parse(message);
     return isStoryId(c.story) && isHandle(c.by)
-      ? { story: c.story, by: c.by, at: c.at, lease: Array.isArray(c.lease) ? c.lease : [] }
+      ? {
+          story: c.story,
+          by: c.by,
+          at: c.at,
+          lease: Array.isArray(c.lease) ? c.lease : [],
+          // HUBR-2: the intent the story carries out, when its claim names one.
+          ...(isIntentId(c.intent) ? { intent: c.intent } : {}),
+        }
       : null;
   } catch {
     return null;
@@ -197,10 +208,12 @@ export function teamProvider(root, team) {
       const r = command[op](...args);
       if (!down(r) && r !== null) return r;
       const g = github[op](...args);
-      // The state says it came through GitHub, and why, for the band.
-      return op === 'state' && g
-        ? { ...g, fallback: r?.why ?? "The team provider can't be reached." }
-        : g;
+      if (op !== 'state' || !g) return g;
+      // The state says it came through GitHub, and why, for the band; kept so, so the hooks, `next` and
+      // the queue reading it later know the provider didn't answer (HUBR-9: no drift was checked).
+      const fell = { ...g, fallback: r?.why ?? "The team provider can't be reached." };
+      writeCache(root, fell);
+      return fell;
     };
   // A claim taken while the provider was down lives only on GitHub; one the provider doesn't know is
   // released there too, so it can't outlive its story (a merged story's claim, stuck and going stale).
@@ -403,7 +416,8 @@ function githubProvider(root, team) {
 
   const provider = {
     whoami: () => ({ login: me() }),
-    claim(story, lease = []) {
+    /** `intent`: the intent the story carries out (HUBR-2); a claim again keeps the one it has. */
+    claim(story, lease = [], intent = null) {
       if (!isStoryId(story)) return { ok: false, why: `"${story}" isn't a story id.` };
       const by = me();
       if (!by) return { ok: false, why: 'Sign in to GitHub first (gh auth login).' };
@@ -423,8 +437,9 @@ function githubProvider(root, team) {
       const tree = git(['mktree'], { input: '' }).stdout.trim();
       // A lease only grows while the story is open: a claim again adds to it.
       lease = [...new Set([...(held?.lease ?? []), ...lease])];
-      const message = JSON.stringify({ story, by, at, lease });
-      const sha = git(['commit-tree', tree, '-m', message], { env }).stdout.trim();
+      const named = isIntentId(intent) ? intent : (held?.intent ?? null);
+      const claim = { story, by, at, lease, ...(named ? { intent: named } : {}) };
+      const sha = git(['commit-tree', tree, '-m', JSON.stringify(claim)], { env }).stdout.trim();
       const pushed = pushClaim(story, sha, held?.sha ?? '');
       if (!ok(pushed)) {
         // Someone claimed it between our fetch and push: say who.
@@ -433,7 +448,7 @@ function githubProvider(root, team) {
         return holder && holder.by !== by ? { ok: false, holder } : notReached();
       }
       provider.forget();
-      return { ok: true, claim: { story, by, at, lease } };
+      return { ok: true, claim };
     },
     /** `merged`: the story merged, so its claim ends whoever releases it. */
     release(story, { merged = false } = {}) {
@@ -575,7 +590,13 @@ function githubProvider(root, team) {
         GIT_COMMITTER_EMAIL: email,
       };
       const tree = git(['mktree'], { input: '' }).stdout.trim();
-      const message = JSON.stringify({ story, by: to, at, lease: held.lease });
+      const message = JSON.stringify({
+        story,
+        by: to,
+        at,
+        lease: held.lease,
+        ...(held.intent ? { intent: held.intent } : {}),
+      });
       const sha = git(['commit-tree', tree, '-m', message], { env }).stdout.trim();
       if (!ok(pushClaim(story, sha, held.sha))) return notReached();
       provider.forget();
@@ -770,7 +791,8 @@ function commandProvider(root, team, command) {
   };
   return {
     whoami: () => call('whoami'),
-    claim: (story, lease = []) => call('claim', { story, lease }),
+    claim: (story, lease = [], intent = null) =>
+      call('claim', { story, lease, ...(isIntentId(intent) ? { intent } : {}) }),
     release: (story, { merged = false } = {}) => call('release', { story, merged }),
     state: ({ fresh = false } = {}) => {
       const s = call('state', { fresh });

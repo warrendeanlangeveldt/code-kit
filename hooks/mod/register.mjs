@@ -1261,11 +1261,12 @@ export function register(on) {
         $.ui.invalidate('ui.render');
       },
       // USE-1: a model request's tokens, put down to the agent that made it and its story and lane.
-      measure: async (agentId, usage) => {
+      measure: async (agentId, usage, ranOn = null) => {
         if (agentId && !agentsSeen.has(agentId))
           for (const a of (await $.agent.list().catch(() => [])) ?? []) agentsSeen.set(a.id, a);
         const who = attribution(agentId, agentsSeen.get(agentId) ?? null, model.check, model.state);
-        ledger = withUsage(ledger, who, usage);
+        // HUBR-2, report version 6: by the model the request ran on, as the step names it.
+        ledger = withUsage(ledger, who, usage, ranOn);
         $.ui.invalidate('ui.render');
         // LEAN-5: a lane agent past its context limit is told to wrap up; its story goes on fresh.
         const limit = harness().agents.lanes.contextLimit;
@@ -2436,7 +2437,7 @@ export function register(on) {
   on('turn.step', async function* ($, e, next) {
     const res = yield* next(e);
     if (e.agentId) activityOf(e.agentId, 0).at = await $.clock.now();
-    if (res?.usage && act) await act.measure(e.agentId, res.usage).catch(() => {});
+    if (res?.usage && act) await act.measure(e.agentId, res.usage, e.model).catch(() => {});
     return res;
   });
   // USE-4: the plan's 5-hour use, as Claude Code measures it.

@@ -226,7 +226,16 @@ const URGENCY = [
   'report',
   'worktree',
 ];
-const NOTES = new Set(['usage', 'paused', 'finish', 'done', 'teamDown', 'elsewhere', 'loop']);
+const NOTES = new Set([
+  'usage',
+  'paused',
+  'finish',
+  'done',
+  'teamDown',
+  'elsewhere',
+  'loop',
+  'drift',
+]);
 
 /** What a line is, in a word or two, for the Needs you panel. */
 const NEED_WORD = {
