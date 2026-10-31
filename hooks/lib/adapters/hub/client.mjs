@@ -294,7 +294,13 @@ function mirrorClaim(root, op, input, result) {
         'commit-tree',
         tree,
         '-m',
-        JSON.stringify({ story: c.story, by: c.by, at: c.at, lease: c.lease }),
+        JSON.stringify({
+          story: c.story,
+          by: c.by,
+          at: c.at,
+          lease: c.lease,
+          ...(Number.isInteger(c.intent) && c.intent > 0 ? { intent: c.intent } : {}),
+        }),
       ],
       { encoding: 'utf8', env },
     ).trim();

@@ -121,10 +121,12 @@ export function mergingNow(entry) {
 /**
  * MQ-7: what the queue merges next. A branch queued `with` others merges only together with them, once
  * each is queued too: verified as one tree, merged one after another. Until then it waits, and the
- * queue goes on with the next. `{ head, partners, held }`: `head` null when nothing can merge yet;
- * `held` lists each waiting branch with the partners it still needs queued.
+ * queue goes on with the next. HUBR-9: a branch the team provider's drift findings hold (`drift`,
+ * Map(branch → findings), from `driftHolds`) waits too, with its group, until they clear. `{ head,
+ * partners, held, drifting }`: `head` null when nothing can merge yet; `held` lists each waiting branch
+ * with the partners it still needs queued; `drifting` each one waiting on findings, with them.
  */
-export function nextToMerge(entries) {
+export function nextToMerge(entries, drift = new Map()) {
   const queue = waiting(entries);
   const queued = new Set(queue.map((e) => e.branch));
   // A partner already merged on its own is no longer waited for.
@@ -148,8 +150,15 @@ export function nextToMerge(entries) {
     return group;
   };
   const held = [];
+  const drifting = [];
+  let head = null;
+  let partners = [];
   for (const e of queue) {
     const group = groupOf(e);
+    // A group lands as one, so a finding on any of its branches holds them all.
+    const findings = [...group].flatMap((b) => drift.get(b) ?? []);
+    if (findings.length) drifting.push({ branch: e.branch, findings });
+    if (head) continue;
     const missing = [...group]
       .flatMap((b) => queue.find((y) => y.branch === b)?.with ?? [])
       .filter((b) => !queued.has(b) && !merged.has(b));
@@ -157,10 +166,11 @@ export function nextToMerge(entries) {
       held.push({ branch: e.branch, missing: [...new Set(missing)] });
       continue;
     }
-    const partners = queue.filter((x) => x.branch !== e.branch && group.has(x.branch));
-    return { head: e, partners, held };
+    if (findings.length) continue;
+    head = e;
+    partners = queue.filter((x) => x.branch !== e.branch && group.has(x.branch));
   }
-  return { head: null, partners: [], held };
+  return { head, partners, held, drifting };
 }
 
 /** MQ-7: a queued branch's partners, which it merges together with. */

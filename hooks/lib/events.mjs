@@ -22,6 +22,7 @@ import { globToRegExp } from './glob.mjs';
 import { projectWorktrees } from './rules.mjs';
 import { readQueue, settle, waiting } from './queue.mjs';
 import { sessions } from './sessions.mjs';
+import { isSecurityReviewer } from './security.mjs';
 
 export const EVENTS_DIR = '.claude/state/events';
 const OPEN_DIR = `${EVENTS_DIR}/.open`;
@@ -253,7 +254,53 @@ function base(ctx, now) {
     target: ctx.target ?? null,
     branch: ctx.branch ?? null,
     head: ctx.head ?? null,
+    // The agent type an Agent call starts, for the security review's record (HUBR-2).
+    ...(ctx.agentType ? { agentType: ctx.agentType } : {}),
   };
+}
+
+/** An agent's id in a tool's response (a background agent's launch names it), or null. */
+export function agentIdOf(response, depth = 0) {
+  if (!response || typeof response !== 'object' || depth > 4) return null;
+  for (const [k, v] of Object.entries(response)) {
+    if ((k === 'agentId' || k === 'agent_id') && typeof v === 'string' && v) return v;
+    const found = agentIdOf(v, depth + 1);
+    if (found) return found;
+  }
+  return null;
+}
+
+/**
+ * HUBR-2: the security review a stopping security reviewer was started for: the Agent call's end that
+ * named `agentId` (one run in the background), else the latest call starting a security reviewer that
+ * hasn't ended (one the lead waits on). Each review is recorded once; null when none is open.
+ */
+export function securityReviewFor(root, agentId) {
+  let open = null;
+  for (const story of loggedStories(root)) {
+    const events = readEvents(root, story);
+    const done = new Set(events.filter((e) => e.kind === 'security-review').map((e) => e.act));
+    const ended = new Set(events.filter((e) => e.phase === 'end').map((e) => e.act));
+    for (const e of events) {
+      if (!isSecurityReviewer(e.agentType) || !e.act || done.has(e.act)) continue;
+      if (e.phase === 'end' && agentId && e.result?.agent === agentId) return e;
+      if (e.phase === 'start' && !ended.has(e.act) && (!open || e.at > open.at)) open = e;
+    }
+  }
+  return open;
+}
+
+/**
+ * HUBR-2: each story's last security review, from its log: { at, findings, blockers } or { at, unread }
+ * when the reviewer's report had no findings block that reads. Map(story → review).
+ */
+export function securityReviews(root) {
+  const found = new Map();
+  for (const story of loggedStories(root))
+    for (const e of readEvents(root, story))
+      if (e.kind === 'security-review' && e.phase === 'note')
+        found.set(story, { at: e.at, branch: e.branch ?? null, ...(e.result ?? {}) });
+  return found;
 }
 
 /** The commit a checkout is at, short; null outside git. */
@@ -334,6 +381,8 @@ export function replay(events) {
       state.phase = 'stopped';
       continue;
     }
+    // What the security reviewer found is a record of its review, not the end of an act.
+    if (e.kind === 'security-review') continue;
     if (!e.act) continue;
     const act = acts.get(e.act) ?? { start: null, end: null, reconciled: null };
     acts.set(e.act, act);

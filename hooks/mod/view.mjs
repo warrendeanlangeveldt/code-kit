@@ -455,8 +455,16 @@ export function bandLines({
       text: `background agents paused: plan at ${plan.percent}%`,
       actions: [],
     });
-  // MQ-2: where the lead doesn't merge, the head of the queue waits for the person's Merge.
-  const next = queue.find((e) => ['waiting', 'merging'].includes(e.state));
+  // MQ-2: where the lead doesn't merge, the head of the queue waits for the person's Merge. HUBR-9: a
+  // branch the team provider's drift findings hold (`drift`, from `queue --json`) isn't offered; it's said.
+  const inQueue = queue.filter((e) => ['waiting', 'merging'].includes(e.state));
+  const next = inQueue.find((e) => !e.drift?.length);
+  for (const e of inQueue.filter((x) => x.drift?.length && !working))
+    lines.push({
+      kind: 'drift',
+      text: `${e.branch} is held by the drift check: ${e.drift[0].title || e.drift[0].conflictsWith}`,
+      actions: [],
+    });
   const autonomous = (check?.harness?.autonomy ?? 'autonomous') === 'autonomous';
   // SETUP-2: with no rules on the base yet, the lead puts them there first and then merges.
   const leadMerges = autonomous && (check?.delegatesMerge || check?.firstMerge);
@@ -1159,11 +1167,15 @@ export function attribution(agentId, agent, check, state) {
   return { key: agentId, lane, story: named ?? laneStory(lane), background: false };
 }
 
-/** The ledger with one request added: entries by agent and story, their tokens summed. */
-export function withUsage(ledger, who, usage) {
-  const id = `${who.key}|${who.story ?? ''}`;
+/**
+ * The ledger with one request added: entries by agent, story and the model the request ran on (as
+ * Claude Code names it on the step), their tokens summed.
+ */
+export function withUsage(ledger, who, usage, model = null) {
+  const named = typeof model === 'string' && model && !/[\r\n]/.test(model) ? model : null;
+  const id = `${who.key}|${who.story ?? ''}${named ? `|${named}` : ''}`;
   const t = tokensOf(usage);
-  const was = ledger[id] ?? { ...who, input: 0, output: 0, cache: 0 };
+  const was = ledger[id] ?? { ...who, model: named, input: 0, output: 0, cache: 0 };
   return {
     ...ledger,
     [id]: {
@@ -1176,9 +1188,9 @@ export function withUsage(ledger, who, usage) {
 }
 
 /**
- * HUBR-2: the ledger as a report carries it: [{ story, kind, input, output, cache }], each entry's kind
- * (lead, lane, reviewer, security-reviewer or background) from who made it and `typeOf(key)`, the agent's
- * type. Tokens only: no prompt, no message.
+ * HUBR-2: the ledger as a report carries it: [{ story, kind, model, input, output, cache }], each entry's
+ * kind (lead, lane, reviewer, security-reviewer or background) from who made it and `typeOf(key)`, the
+ * agent's type, and the model its requests ran on (report version 6). Tokens only: no prompt, no message.
  */
 export function usageForReport(ledger, typeOf = () => null) {
   return Object.fromEntries(
@@ -1196,7 +1208,14 @@ export function usageForReport(ledger, typeOf = () => null) {
                 : 'background';
       return [
         id,
-        { story: e.story ?? null, kind, input: e.input, output: e.output, cache: e.cache },
+        {
+          story: e.story ?? null,
+          kind,
+          model: e.model ?? null,
+          input: e.input,
+          output: e.output,
+          cache: e.cache,
+        },
       ];
     }),
   );

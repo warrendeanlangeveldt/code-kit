@@ -13,6 +13,34 @@ import { storyOfBranch } from './teamfacts.mjs';
 export const SECURITY_AGENT = 'security-reviewer';
 export const SECURITY_AGENT_FILE = `.claude/agents/${SECURITY_AGENT}.md`;
 
+/** Whether an agent type is the security reviewer: the project's, or a plugin's (`<plugin>:security-reviewer`). */
+export const isSecurityReviewer = (type) =>
+  new RegExp(`(^|:)${SECURITY_AGENT}$`).test(String(type ?? ''));
+
+const GRADES = ['blocker', 'concern', 'nit'];
+
+/**
+ * HUBR-2: what the security reviewer's report found, from its last fenced json block (its template's
+ * `{"findings": [...]}`): { findings, blockers }, the findings graded blocker, concern or nit counted, or
+ * null when the report has no block that reads.
+ */
+export function securityOutcome(report) {
+  const blocks = [...String(report ?? '').matchAll(/```json\s*\n([\s\S]*?)```/g)];
+  if (!blocks.length) return null;
+  let data;
+  try {
+    data = JSON.parse(blocks.at(-1)[1]);
+  } catch {
+    return null;
+  }
+  if (!Array.isArray(data?.findings)) return null;
+  const graded = data.findings.filter((f) => GRADES.includes(f?.severity));
+  return {
+    findings: graded.length,
+    blockers: graded.filter((f) => f.severity === 'blocker').length,
+  };
+}
+
 // Tests, docs and design files describe the change; the review looks at the code that ships.
 const NOT_SHIPPED =
   /(^|\/)(tests?|__tests__|e2e|docs?|design)\/|\.(test|spec|stories)\.[^/]+$|_test\.(go|py)$|(^|\/)test_[^/]+\.py$|\.(md|mdx|txt|png|jpe?g|gif|svg|webp)$/i;

@@ -1979,6 +1979,73 @@ test('HUBR-2 a report holds only the fields its allow-list names', async () => {
   const redesigned = structuredClone(v5);
   redesigned.designs[0].state = 'problems';
   assert.notEqual(snapshotHash(redesigned, EVENT_PARTS), snapshotHash(v5, EVENT_PARTS));
+  // Version 6: each usage row's model, the security reviews, each intent's pull request and the claims;
+  // a version 5 report (above) and one with none of them are still valid.
+  const v6 = structuredClone(v5);
+  v6.version = 6;
+  v6.usage[0].model = 'claude-opus-5-5';
+  v6.securityReviews = [
+    {
+      story: 'ST-4',
+      branch: 'web/st-4',
+      needed: true,
+      reasons: ['sign-in', 'dependencies'],
+      ran: true,
+      at: 1_700_000_200_000,
+      result: 'findings',
+      findings: 2,
+      blockers: 1,
+    },
+    {
+      story: 'ST-5',
+      branch: 'web/st-5',
+      needed: true,
+      reasons: ['payments'],
+      ran: false,
+      at: null,
+      result: null,
+      findings: null,
+      blockers: null,
+    },
+  ];
+  v6.intents = [{ id: 12, story: 'ST-4', pull: 31, draft: true }];
+  v6.claims = [
+    {
+      story: 'ST-4',
+      by: 'sam',
+      at: 1_700_000_000_000,
+      active: 1_700_000_150_000,
+      stale: false,
+      lease: ['apps/web/**'],
+    },
+  ];
+  assert.deepEqual(snapshotProblems(v6), []);
+  const badResult = structuredClone(v6);
+  badResult.securityReviews[0].result = 'approved';
+  assert.match(snapshotProblems(badResult)[0], /securityReviews\[0\]\.result: not one of/);
+  const badReason = structuredClone(v6);
+  badReason.securityReviews[0].reasons = ['src/auth/login.ts'];
+  assert.match(snapshotProblems(badReason)[0], /reasons\[0\]: not one of/);
+  // A finding's text has nowhere to go: a review is counts only.
+  const withText = structuredClone(v6);
+  withText.securityReviews[0].text = 'Attack: … Fix: …';
+  assert.match(snapshotProblems(withText)[0], /securityReviews\[0\]\.text: not a field/);
+  const badIntent = structuredClone(v6);
+  badIntent.intents[0].about = 'Move reports to the data lane';
+  assert.match(snapshotProblems(badIntent)[0], /intents\[0\]\.about: not a field/);
+  const noStale = structuredClone(v6);
+  delete noStale.claims[0].stale;
+  assert.match(snapshotProblems(noStale)[0], /claims\[0\]\.stale: missing/);
+  // A review that ran, or an intent's pull request opening, is news; a claim renewed alone isn't.
+  const reviewed = structuredClone(v6);
+  reviewed.securityReviews[1] = { ...reviewed.securityReviews[1], ran: true, result: 'pass' };
+  assert.notEqual(snapshotHash(reviewed, EVENT_PARTS), snapshotHash(v6, EVENT_PARTS));
+  const opened = structuredClone(v6);
+  opened.intents[0].draft = false;
+  assert.notEqual(snapshotHash(opened, EVENT_PARTS), snapshotHash(v6, EVENT_PARTS));
+  const renewed = structuredClone(v6);
+  renewed.claims[0].active += 60_000;
+  assert.equal(snapshotHash(renewed, EVENT_PARTS), snapshotHash(v6, EVENT_PARTS));
   // Nowhere for code, a diff or a prompt to go.
   const withDiff = structuredClone(good);
   withDiff.stories[0].diff = '--- a/x\n+++ b/x';
@@ -2099,11 +2166,12 @@ test('HUBR-2 and HUBR-6 usage by kind of agent, and an agent present by tool and
       output: 2,
       cache: 1,
     },
-    'a1|ST-4': {
+    'a1|ST-4|claude-sonnet-5-5': {
       key: 'a1',
       lane: 'web',
       story: 'ST-4',
       background: false,
+      model: 'claude-sonnet-5-5',
       input: 100,
       output: 20,
       cache: 5,
@@ -2126,13 +2194,16 @@ test('HUBR-2 and HUBR-6 usage by kind of agent, and an agent present by tool and
     Object.values(usage).map((u) => u.kind),
     ['lead', 'lane', 'reviewer', 'security-reviewer', 'background'],
   );
-  assert.deepEqual(usage['a1|ST-4'], {
+  // Report version 6: each row names the model its requests ran on; a row from before, none.
+  assert.deepEqual(usage['a1|ST-4|claude-sonnet-5-5'], {
     story: 'ST-4',
     kind: 'lane',
+    model: 'claude-sonnet-5-5',
     input: 100,
     output: 20,
     cache: 5,
   });
+  assert.equal(usage['lead|'].model, null);
   const lanes = [{ name: 'web', branch: 'web/st-4' }];
   assert.deepEqual(
     presenceOf({ agentId: 'a1', type: 'web-engineer', tool: 'Edit', lane: 'web', lanes, at: 5 }),
@@ -3677,4 +3748,143 @@ test("a check's long output never stops it: its exit code decides, and its end i
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test('HUBR-9 drift findings hold a merge at the provider’s level, and say who decides and how it clears', async () => {
+  const { driftHoldsOf, driftHolds, driftHoldWords, driftUnchecked, holdsMerge, findingKind } =
+    await import('../hooks/lib/teamfacts.mjs');
+  const { nextToMerge } = await import('../hooks/lib/queue.mjs');
+  const spec = {
+    id: 7,
+    branch: 'web/st-4',
+    conflictsWith: 'spec docs/specs/03-booking.md',
+    severity: 'concern',
+    title: 'BOOK-1 changed on main',
+    text: 'BOOK-1 has changed on main since web/st-4 started.',
+    url: 'https://provider.example/acme/booking/drift/7',
+  };
+  const branch = {
+    ...spec,
+    id: 8,
+    conflictsWith: 'branch web/st-5',
+    title: 'web/st-5 changes the same files',
+  };
+  const intent = {
+    ...spec,
+    id: 9,
+    branch: 'web/st-6',
+    conflictsWith: 'intent #12',
+    title: 'Intent #12 touches what this changes',
+  };
+  assert.deepEqual([spec, branch, intent].map(findingKind), ['spec', 'branch', 'intent']);
+  assert.ok(holdsMerge({ conflictsWith: 'decision docs/decisions/0003-x.md' }, 'spec-or-decision'));
+  assert.equal(holdsMerge(branch, 'spec-or-decision'), false);
+  assert.equal(holdsMerge(branch, 'any'), true);
+  assert.equal(holdsMerge(spec, 'nothing'), false);
+  const state = (mergeHolds, extra = {}) => ({
+    reachable: true,
+    mergeHolds,
+    findings: [spec, branch, intent],
+    ...extra,
+  });
+  const ids = (found) => found.map((f) => f.id);
+  // Against a spec or decision: only the spec finding holds web/st-4; any finding: both of its.
+  assert.deepEqual(ids(driftHoldsOf(state('spec-or-decision'), 'web/st-4')), [7]);
+  assert.deepEqual(ids(driftHoldsOf(state('any'), 'web/st-4')), [7, 8]);
+  assert.deepEqual(driftHoldsOf(state('nothing'), 'web/st-4'), []);
+  // A provider that says nothing of what holds a merge (GitHub, an older one) holds nothing.
+  assert.deepEqual(driftHoldsOf({ reachable: true, findings: [spec] }, 'web/st-4'), []);
+  // One that didn't answer holds nothing, and that is said.
+  const down = state('any', { fallback: "The provider can't be reached (timed out)." });
+  assert.deepEqual(driftHoldsOf(down, 'web/st-4'), []);
+  assert.match(
+    driftUnchecked(down),
+    /can't be reached \(timed out\), so drift findings weren't checked/,
+  );
+  assert.equal(driftUnchecked(state('any')), null);
+  assert.match(driftUnchecked(null), /can't be reached/);
+  const words = driftHoldWords('web/st-4', [spec], { techLead: 'lead', provider: 'the provider' });
+  assert.match(
+    words,
+    /^web\/st-4 is held from merging: the drift check found it against the spec docs\/specs\/03-booking\.md \(a concern\): BOOK-1 changed on main \(https:\/\/provider\.example\/acme\/booking\/drift\/7\)\./,
+  );
+  assert.match(
+    words,
+    /The tech lead \(lead\) decides: if the work still stands, resolve the finding on the provider; otherwise push a fix to web\/st-4, and the drift check clears it once a push no longer conflicts\./,
+  );
+
+  // The queue goes on with the next branch; a group with a held member waits as one.
+  const entry = (b, extra = {}) => ({ branch: b, state: 'waiting', passed: 'x', ...extra });
+  const holds = driftHolds(state('spec-or-decision'), ['web/st-4', 'web/st-5', 'web/st-6']);
+  assert.deepEqual([...holds.keys()], ['web/st-4']);
+  const order = nextToMerge([entry('web/st-4'), entry('web/st-5')], holds);
+  assert.equal(order.head.branch, 'web/st-5');
+  assert.deepEqual(
+    order.drifting.map((d) => [d.branch, d.findings[0].id]),
+    [['web/st-4', 7]],
+  );
+  const grouped = nextToMerge(
+    [entry('web/st-5', { with: ['web/st-4'] }), entry('web/st-4'), entry('web/st-6')],
+    holds,
+  );
+  assert.equal(grouped.head.branch, 'web/st-6');
+  assert.deepEqual(
+    grouped.drifting.map((d) => d.branch),
+    ['web/st-5', 'web/st-4'],
+  );
+  assert.equal(nextToMerge([entry('web/st-4')], holds).head, null);
+  // Cleared: nothing holds it, and it merges next.
+  assert.equal(nextToMerge([entry('web/st-4')], new Map()).head.branch, 'web/st-4');
+
+  // The band offers no Merge for a held branch; it says why.
+  const band = bandLines({
+    state: projectState({ valid: true, lanes: {} }, { problems: [], stories: [] }, null, new Set()),
+    requests: { open: [] },
+    stops: [],
+    queue: [entry('web/st-4', { drift: [spec] }), entry('web/st-5')],
+    check: { harness: { autonomy: 'off' } },
+  });
+  assert.deepEqual(
+    band.filter((l) => ['queue', 'drift'].includes(l.kind)).map((l) => l.text),
+    ['web/st-4 is held by the drift check: BOOK-1 changed on main', 'web/st-5 is next to merge'],
+  );
+});
+
+test('HUBR-2 the security reviewer’s findings counted, and usage kept by model', async () => {
+  const { securityOutcome, isSecurityReviewer } = await import('../hooks/lib/security.mjs');
+  const { agentIdOf } = await import('../hooks/lib/events.mjs');
+  const report = (findings) =>
+    `I attacked the sign-in.\n\n\`\`\`json\n${JSON.stringify({ findings })}\n\`\`\`\n`;
+  assert.deepEqual(
+    securityOutcome(
+      report([
+        { severity: 'blocker', where: 'a.ts:1', text: 'Attack: … Fix: …' },
+        { severity: 'nit', where: 'b.ts:2', text: '…' },
+        { severity: 'bogus', text: 'not graded' },
+      ]),
+    ),
+    { findings: 2, blockers: 1 },
+  );
+  assert.deepEqual(securityOutcome(report([])), { findings: 0, blockers: 0 });
+  assert.equal(securityOutcome('No block at all.'), null);
+  assert.equal(securityOutcome('```json\n{ not json\n```'), null);
+  assert.ok(isSecurityReviewer('security-reviewer') && isSecurityReviewer('kit:security-reviewer'));
+  assert.ok(!isSecurityReviewer('reviewer') && !isSecurityReviewer(null));
+  assert.equal(agentIdOf({ status: 'async_launched', agentId: 'ag-1' }), 'ag-1');
+  assert.equal(agentIdOf({ content: [{ type: 'text', text: 'done' }] }), null);
+
+  const who = { key: 'lead', lane: 'lead', story: null, background: false };
+  const t = { input_tokens: 10, output_tokens: 2, cache_read_input_tokens: 1 };
+  let ledger = withUsage({}, who, t, 'claude-opus-5-5');
+  ledger = withUsage(ledger, who, t, 'claude-haiku-5');
+  ledger = withUsage(ledger, who, t, 'claude-opus-5-5');
+  ledger = withUsage(ledger, who, t);
+  assert.deepEqual(
+    Object.values(ledger).map((e) => [e.model, e.input]),
+    [
+      ['claude-opus-5-5', 20],
+      ['claude-haiku-5', 10],
+      [null, 10],
+    ],
+  );
 });
