@@ -8625,6 +8625,30 @@ else process.exit(1);
       0,
     );
 
+    // REG-1: a test the check's runner leaves out passes everywhere, having never run.
+    g.git('checkout', '-q', 'main');
+    g.git('checkout', '-q', '-b', 'web/fix-taken-slots');
+    gPut(
+      'apps/office/booking.mjs',
+      'export const free = (slots) => slots.filter((s) => !s.taken);\n',
+    );
+    gPut(
+      'apps/office/slow/booking.test.mjs',
+      `import { test } from 'node:test';\nimport assert from 'node:assert';\nimport { free } from '../booking.mjs';\ntest('a taken slot is not free', () => { assert.deepEqual(free([{ taken: true }]), []); });\n`,
+    );
+    gCommit('fix taken slots');
+    res = gVerify();
+    expect(
+      'REG-1 a fix whose test the check never runs fails verify, saying so, not that it passes without the fix',
+      truth(
+        res.status === 1 &&
+          said(res).includes("so they don't run them (apps/office/slow/booking.test.mjs)") &&
+          !said(res).includes('also pass without the fix'),
+        said(res),
+      ),
+      0,
+    );
+
     // REG-1: a test that fails without the fix only because it calls what the fix adds.
     g.git('checkout', '-q', 'main');
     g.git('checkout', '-q', '-b', 'web/fix-cancel');
