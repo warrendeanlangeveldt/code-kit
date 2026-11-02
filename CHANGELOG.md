@@ -2,6 +2,16 @@
 
 What changed in each release of code-kit, newest first. Versions follow the plugin manifest and the npm package `@warren-dean/code-kit`. Each release is also on [GitHub Releases](https://github.com/warrendeanlangeveldt/code-kit/releases).
 
+## Unreleased
+
+- **A merge run from inside a lane's worktree is recorded.** Running `code-kit queue merge` from the worktree of the branch it merges used to remove that worktree, and with it the way back to the queue: the branch stayed queued, and the next `queue merge` verified it again against the base it was already in. Every queue command now finds the main checkout first, and the merge keeps the worktree it's run from (it goes at the next merge), saying so.
+- **A queued branch the base already holds leaves the queue as merged.** It's never verified again, so a fix branch already merged is no longer sent back as "a fix that adds no test". `code-kit merge <branch>` says the same.
+- **The merge queue checks with installs that match the merged tree.** It copies the base's checkout's installs (the main checkout's), not the branch worktree's, which could be far behind the base or have none. Where the merged tree's manifests or lockfiles differ from them, it installs in its own checkout first, with `regression.prepare` if set, else the install the lockfile calls for (pnpm, npm, yarn, bun or uv); an install that fails there keeps the branch in its place instead of sending it back. Where code-kit knows no install for what differs, the merge says which installs it used and that they may not match.
+- **A tool pnpm can't find is named as not installed.** `pnpm exec` exits 254 with `Command "tsc" not found` after a stray `undefined` line; that's now read like a missing command (skipped and named, or failed where the check sets `"ifMissing": "fail"`), and the `undefined` line is left out of what a failed check shows.
+- **A merge group's lane branch built on its lead partner's isn't blamed for the lead's files.** Each member of a `--with` group is held to its own lane's paths for its own changes, measured against the base merged with its partners.
+- **A busy main checkout no longer fails a merge at the end.** Only uncommitted changes to files the merge changes stop it, and it looks before the verify as well as after; other tools' changes to other files there are carried as they are.
+- **Holding on purpose.** `code-kit defer <story>… --reason "…" [--until <date or time>]` holds stories: `next`, the loop and the merge queue don't dispatch, review or merge them until then, or until `code-kit defer release <story>`, so the lead isn't asked about them every half hour. `code-kit queue pause --reason "…"` and `code-kit queue resume` hold the whole merge queue. `next` lists each hold with its reason, `queue` shows them, and the band shows them as notes with no Merge or Review. code-kit's part of CLAUDE.md tells the lead about both, so `code-kit next` asks for it to be brought up to date.
+
 ## 0.29.0 (2026-10-31)
 
 A team provider's drift findings can hold a merge, and what a project reports covers models, security reviews, intents' pull requests and claims (report version 6).

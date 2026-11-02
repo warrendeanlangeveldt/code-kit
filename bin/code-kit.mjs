@@ -51,6 +51,10 @@
 //   ci check [--json] | ci usage [--days N] [--json]
 //                                    what the project's CI spends and what multiplies it (spec 25)
 //   release <version>                cut release/<version> from the base and push it: the full CI runs there
+//   queue pause --reason "…" | queue resume
+//                                    the lead holds the whole merge queue on purpose, and lets it go (MQ-8)
+//   defer <story>... --reason "…" [--until <date|ISO time>] | defer release <story>... | defer [--json]
+//                                    stories the lead holds on purpose: not dispatched, reviewed or merged (LOOP-15)
 // --config <file> reads a draft (.claude/code-kit.draft.json) instead of .claude/code-kit.json.
 import { execFileSync, spawnSync } from 'node:child_process';
 import {
@@ -134,7 +138,10 @@ import {
   mergingNow,
   nextToMerge,
   setPartners,
+  pauseQueue,
+  queuePause,
   readQueue,
+  resumeQueue,
   settle,
   waiting,
 } from '../hooks/lib/queue.mjs';
@@ -193,7 +200,14 @@ import {
 import { heldTo, laneOfBranch, verifyBranch } from '../hooks/lib/verify.mjs';
 import { skippedLine } from '../hooks/lib/checks.mjs';
 import { TESTS_APPROVAL } from '../hooks/lib/regression.mjs';
-import { freshCheckout } from '../hooks/lib/checkout.mjs';
+import { freshCheckout, matchInstalls } from '../hooks/lib/checkout.mjs';
+import {
+  activeDeferrals,
+  deferStories,
+  deferralWords,
+  parseUntil,
+  releaseStories,
+} from '../hooks/lib/deferrals.mjs';
 import { laneClaim, laneClaims, releaseLane, shortSession } from '../hooks/lib/laneclaims.mjs';
 import { slicesOf } from '../hooks/lib/schedule.mjs';
 import {
@@ -274,6 +288,7 @@ const storyGiven = option('--story');
 const whyGiven = option('--why');
 const whatGiven = option('--what');
 const withGiven = option('--with');
+const untilGiven = option('--until');
 const expectedGiven = option('--expected');
 const commandGiven = option('--command');
 const refusalGiven = option('--refusal');
@@ -692,7 +707,7 @@ function publishAfter(config, byPerson) {
   const mode = target.branches.publish;
   if (!mode) return '';
   const mayMove = byPerson || target.approvals.delegate?.push === true;
-  return ` ${publishBase(resolve('.'), into, { mode, mayMove }).message}`;
+  return ` ${publishBase(mainCheckout(resolve('.')), into, { mode, mayMove }).message}`;
 }
 
 /** `publish --delegated|--person`: publishes what's merged and not yet on the remote, as a merge does. */
@@ -737,14 +752,17 @@ function merge(branch) {
   const drift = driftNow(config, [branch], { fresh: true });
   const findings = drift.holds.get(branch);
   if (findings) die(`Nothing was merged. ${drift.words(branch, findings)}`);
+  const root = mainCheckout(resolve('.'));
   try {
     const { message } = mergeOne(branch, config, byPerson);
     // A branch merged outside the queue leaves it too, as one the queue merged would.
-    settle(resolve('.'), branch, 'merged');
+    settle(root, branch, 'merged');
     out(`${message}${publishAfter(config, byPerson)}${drift.note ? ` ${drift.note}` : ''}`);
   } catch (e) {
-    if (e instanceof MergeStop) die(e.message);
-    throw e;
+    if (!(e instanceof MergeStop)) throw e;
+    if (e.kind !== 'already') die(e.message);
+    settle(root, branch, 'merged', 'already in the base');
+    out(e.message);
   }
 }
 
@@ -769,9 +787,15 @@ function mergeOne(branch, config, byPerson, commit = null, partners = []) {
   if (!target.branches.protected.includes(into))
     refuse(`${into} isn't a protected branch; merge into it with git.`);
   if (target.branches.protected.includes(branch)) refuse(`${branch} is itself a protected branch.`);
-  const root = resolve('.');
+  // The main checkout, found once, before anything is removed: a merge run from inside the lane's own
+  // worktree must still reach the project's state when that worktree is done with.
+  const root = mainCheckout(resolve('.'));
   const g = (cwd, ...a) =>
-    execFileSync('git', ['-C', cwd, ...a], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+    execFileSync('git', ['-C', cwd, ...a], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+      maxBuffer: 64 * 1024 * 1024,
+    });
   try {
     g(root, 'rev-parse', '--verify', '--quiet', `refs/heads/${branch}`);
   } catch {
@@ -782,10 +806,31 @@ function mergeOne(branch, config, byPerson, commit = null, partners = []) {
       .split('\n\n')
       .map((w) => ({ path: w.match(/^worktree (.+)$/m)?.[1], ref: w.match(/^branch (.+)$/m)?.[1] }))
       .find((w) => w.ref === `refs/heads/${b}`)?.path;
-  const clean = (dir, b) => {
-    if (g(dir, 'status', '--porcelain', '--untracked-files=no').trim())
-      fail(`${b} has uncommitted changes in ${dir}; commit or stash them first.`);
+  const contains = (ref, commit) =>
+    spawnSync('git', ['-C', root, 'merge-base', '--is-ancestor', commit, ref]).status === 0;
+  // What a checkout holds uncommitted, tracked or not: each path, a rename's both.
+  const uncommitted = (dir) => {
+    const parts = g(dir, 'status', '--porcelain=v1', '-z', '--untracked-files=all').split('\0');
+    const paths = [];
+    for (let i = 0; i < parts.length; i++) {
+      if (!parts[i]) continue;
+      paths.push(parts[i].slice(3));
+      if (/^[RC]/.test(parts[i])) paths.push(parts[++i]);
+    }
+    return paths;
   };
+  // MQ-1: only what the merge changes has to be committed in the base's checkout: git carries every other
+  // change, which tools sharing the checkout (a log a tool appends to each turn) make at any time.
+  const inTheWay = (dir, tips) => {
+    const lands = new Set(
+      tips.flatMap((t) =>
+        g(dir, 'diff', '--name-only', '--no-renames', `HEAD...${t}`).split('\n').filter(Boolean),
+      ),
+    );
+    return uncommitted(dir).filter((f) => lands.has(f));
+  };
+  const dirtyWords = (dir, files) =>
+    `Nothing was merged: ${into}'s checkout (${dir}) has uncommitted changes to ${files.length === 1 ? 'a file' : 'files'} this merge changes (${files.slice(0, 5).join(', ')}${files.length > 5 ? `, and ${files.length - 5} more` : ''}). Commit or stash ${files.length === 1 ? 'it' : 'them'} there, then merge again; changes to other files are carried as they are.`;
   const temporary = [];
   // A stop is thrown at once, so every way out of here removes the temporary worktrees first.
   const cleanup = () => {
@@ -819,14 +864,31 @@ function mergeOne(branch, config, byPerson, commit = null, partners = []) {
         `Nothing was merged: ${branch} has moved on since its review passed (${commit.slice(0, 7)} → ${tip.slice(0, 7)}). Review it again, then queue it.`,
         'moved',
       );
+    // A branch whose commit the base already holds has nothing left to merge: it isn't verified again
+    // (against the base it's an empty change, which says nothing) and never sent back.
+    if (contains(into, tip))
+      fail(
+        `${branch} is already merged into ${into}: ${into} holds its commit ${tip.slice(0, 7)}, so there's nothing of it left to merge.`,
+        'already',
+      );
     // MQ-1: verified as it will land: the branch merged with the base as it is now, in a fresh checkout
-    // with its own copy of the installs (the branch's worktree's, else the main checkout's), so neither
-    // a stale branch head nor a checkout without dependencies decides it.
+    // with its own copy of the installs. They're the base's checkout's (the main checkout's), which match
+    // the base; where the merged tree's manifests or lockfiles differ from them, the install runs there.
+    // A branch's worktree can be far behind the base, or have no installs at all.
+    const baseCheckout = checkedOut(into);
+    const installsFrom = baseCheckout ?? root;
+    if (baseCheckout) {
+      const blocking = inTheWay(baseCheckout, [
+        tip,
+        ...partners.map((p) => `refs/heads/${p.branch}`),
+      ]);
+      if (blocking.length) fail(dirtyWords(baseCheckout, blocking));
+    }
     let fresh;
     try {
       fresh = freshCheckout(root, into, {
         merge: tip,
-        installsFrom: checkedOut(branch) ?? root,
+        installsFrom,
         prefix: 'code-kit-merge-',
       });
     } catch (e) {
@@ -838,29 +900,47 @@ function mergeOne(branch, config, byPerson, commit = null, partners = []) {
     }
     temporary.push(fresh);
     const verifyIn = fresh.dir;
-    // MQ-7: a group lands as one: its partners merged into the same tree, which the checks run on.
-    const members = partners.map((p) => ({
-      ...p,
-      tip: g(root, 'rev-parse', `refs/heads/${p.branch}`).trim(),
-    }));
-    for (const m of members) {
-      const merged = spawnSync(
+    // MQ-7: a group lands as one: its partners merged into the same tree, which the checks run on. A
+    // partner the base already holds has nothing left to merge.
+    const members = partners
+      .map((p) => ({ ...p, tip: g(root, 'rev-parse', `refs/heads/${p.branch}`).trim() }))
+      .filter((m) => !contains(into, m.tip));
+    const mergeInto = (dir, ref) =>
+      spawnSync(
         'git',
-        ['-C', verifyIn, '-c', 'user.name=code-kit', '-c', 'user.email=code-kit@localhost'].concat([
+        ['-C', dir, '-c', 'user.name=code-kit', '-c', 'user.email=code-kit@localhost'].concat([
           'merge',
           '--no-ff',
           '--no-edit',
           '--quiet',
-          m.tip,
+          ref,
         ]),
         { encoding: 'utf8' },
       );
+    for (const m of members) {
+      const merged = mergeInto(verifyIn, m.tip);
       if (merged.status !== 0)
         fail(
-          `Nothing was merged: ${m.branch} doesn't merge cleanly with ${branch} on ${into}. Merge one into the other and resolve it there, then merge again.\n${`${merged.stdout}${merged.stderr}`.trim()}`,
+          `Nothing was merged: ${m.branch} doesn't merge cleanly with ${branch} on ${into}. Merge one into the other and resolve it there, then merge again.\n${`${merged.stdout ?? ''}${merged.stderr ?? ''}`.trim()}`,
           'conflict',
         );
     }
+    // MQ-1: the checks run with installs that match the merged tree, and say whose they were.
+    const installs = matchInstalls(verifyIn, installsFrom, { prepare: config.regression?.prepare });
+    const installedWith = installs.command
+      ? `installed with \`${installs.command}\` in the merged tree, since ${installs.differ.length ? `its ${installs.differ.join(', ')} differ${installs.differ.length === 1 ? 's' : ''} from ${installsFrom}'s` : `${installsFrom} had nothing installed`}`
+      : installs.differ.length
+        ? `with the installs of ${installsFrom}, which may not match: the merged tree's ${installs.differ.join(', ')} differ${installs.differ.length === 1 ? 's' : ''} from its, and code-kit knows no install for them (set regression.prepare to the command that installs, and the queue runs it there)`
+        : installs.copied
+          ? `with the installs of ${installsFrom}`
+          : installs.lockfile
+            ? `with no installs, since ${installsFrom} has none: install there, and the queue copies them`
+            : null;
+    if (installs.failed)
+      fail(
+        `Nothing was merged: the merged tree's checks need its own installs (${installs.differ.length ? `its ${installs.differ.join(', ')} differ from ${installsFrom}'s` : `${installsFrom} has nothing installed`}), and \`${installs.command}\` ${installs.failed.missing ? "isn't installed here" : 'failed'} in ${verifyIn}${installs.failed.output ? `:\n${installs.failed.output}` : '.'}\nThat says nothing against ${branch}, so it keeps its place in the queue. Make the install work (or set regression.prepare to the command that installs), then merge again.`,
+        'installs',
+      );
     const lane = members.length ? null : laneOfBranch(branch, config);
     const { changed, found, skipped, unfinished } = verifyBranch({
       root: verifyIn,
@@ -870,13 +950,29 @@ function mergeOne(branch, config, byPerson, commit = null, partners = []) {
       checks: true,
       branch,
     });
-    // Each member is still held to its own lane's paths, on its own tree.
+    // MQ-7: each member is still held to its own lane's paths, for its own changes alone: measured against
+    // the base merged with its partners, so a lane's branch built on its lead partner's (as dispatch has
+    // it) isn't held to the partner's files. A partner built on this member already holds the member's
+    // commits, so it's left out of the member's base, which would otherwise show no change at all.
     for (const b of members.length ? [{ branch, tip }, ...members] : []) {
-      const own = freshCheckout(root, into, { merge: b.tip, prefix: 'code-kit-merge-' });
+      const own = freshCheckout(root, into, { prefix: 'code-kit-merge-' });
       temporary.push(own);
+      const others = [{ branch, tip }, ...members].filter(
+        (x) => x.branch !== b.branch && !contains(x.tip, b.tip),
+      );
+      for (const o of others) {
+        const merged = mergeInto(own.dir, o.tip);
+        if (merged.status !== 0)
+          fail(
+            `Nothing was merged: ${o.branch} doesn't merge cleanly with ${b.branch}'s partners on ${into}. Merge one into the other and resolve it there, then merge again.\n${`${merged.stdout ?? ''}${merged.stderr ?? ''}`.trim()}`,
+            'conflict',
+          );
+      }
+      const withPartners = g(own.dir, 'rev-parse', 'HEAD').trim();
+      g(own.dir, 'checkout', '--quiet', '--detach', b.tip);
       const held = verifyBranch({
         root: own.dir,
-        base: into,
+        base: withPartners,
         config,
         lane: laneOfBranch(b.branch, config),
         checks: false,
@@ -896,17 +992,19 @@ function mergeOne(branch, config, byPerson, commit = null, partners = []) {
     // #62: a check that only ran out of time says nothing against the branch: it's tried again.
     if (problems.length === 1 && unfinished)
       fail(
-        `Nothing was merged: a check on ${branch} didn't finish, which says nothing against the branch (checked in ${verifyIn}):\n  ${problems[0]}\nIt stays at the head of the queue; merge again once fewer suites are running.`,
+        `Nothing was merged: a check on ${branch} didn't finish, which says nothing against the branch (checked in ${verifyIn}${installedWith ? `, ${installedWith}` : ''}):\n  ${problems[0]}\nIt stays at the head of the queue; merge again once fewer suites are running.`,
         'unfinished',
       );
     if (problems.length)
       fail(
-        `Nothing was merged. code-kit verify found ${problems.length} problem(s) on ${branch} (checked in ${verifyIn}):\n  ${problems.join('\n  ')}\nSend it back to its lane, or fix it, then merge again.`,
+        `Nothing was merged. code-kit verify found ${problems.length} problem(s) on ${branch} (checked in ${verifyIn}${installedWith ? `, ${installedWith}` : ''}):\n  ${problems.join('\n  ')}\nSend it back to its lane, or fix it, then merge again.`,
         'verify',
         problems[0].split('\n')[0],
       );
     const mergeIn = checkedOut(into) ?? worktree(into, false);
-    clean(mergeIn, into);
+    // Checked again now the verify is done: only changes to what the merge changes stop it.
+    const blocking = inTheWay(mergeIn, [tip, ...members.map((m) => m.tip)]);
+    if (blocking.length) fail(dirtyWords(mergeIn, blocking));
     const before = g(mergeIn, 'rev-parse', 'HEAD').trim();
     const together = members.length
       ? ` together with ${members.map((m) => m.branch).join(', ')} (MQ-7)`
@@ -942,7 +1040,7 @@ function mergeOne(branch, config, byPerson, commit = null, partners = []) {
     const stories = [branch, ...members.map((m) => m.branch)].map(storyOfBranch).filter(Boolean);
     let unreleased = '';
     if (team) {
-      const provider = teamProvider(resolve('.'), team);
+      const provider = teamProvider(root, team);
       for (const story of stories) {
         const left = provider.release(story, { merged: true });
         if (!left?.ok)
@@ -951,18 +1049,48 @@ function mergeOne(branch, config, byPerson, commit = null, partners = []) {
       for (const s of mergedClaims(root, provider.state()?.claims ?? [], into))
         if (!stories.includes(s)) provider.release(s, { merged: true });
     }
-    // LEAN-8: the merged branch's worktree, and any other that's done with, go now.
-    const pruned = pruneWorktrees(root, config).removed;
-    const removed = pruned.length
-      ? ` Removed ${pruned.length} worktree${pruned.length === 1 ? '' : 's'} that ${pruned.length === 1 ? 'was' : 'were'} done with.`
-      : '';
+    // LEAN-8: the merged branch's worktree, and any other that's done with, go now; not the one this
+    // command runs in, which would leave its shell in a folder that's gone.
+    const { removed: pruned, kept } = pruneWorktrees(root, config);
+    const here = kept.find((k) => k.here);
+    const removed = `${
+      pruned.length
+        ? ` Removed ${pruned.length} worktree${pruned.length === 1 ? '' : 's'} that ${pruned.length === 1 ? 'was' : 'were'} done with.`
+        : ''
+    }${here?.merged ? ` Kept ${here.label}'s worktree, since this command runs in it: it goes at the next merge.` : ''}`;
     return {
       into,
-      message: `Merged ${branch}${together} into ${into}: verify passed on ${changed.length} file(s)${lane ? `, held to ${heldTo(lane)}` : ''}, at ${tip.slice(0, 7)}.${skipped.length ? ` ${notRun(skipped)}` : ''}${removed}${unreleased}`,
+      message: `Merged ${branch}${together} into ${into}: verify passed on ${changed.length} file(s)${lane ? `, held to ${heldTo(lane)}` : ''}, at ${tip.slice(0, 7)}${installs.command ? `, ${installedWith}` : ''}.${skipped.length ? ` ${notRun(skipped)}` : ''}${removed}${unreleased}`,
     };
   } finally {
     cleanup();
   }
+}
+
+/** A local branch's commit, or null when there's no such branch. */
+function branchTip(branch) {
+  try {
+    return execFileSync('git', ['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+  } catch {
+    return null;
+  }
+}
+
+/** LOOP-15: the branches of the stories the lead holds now, Map(branch → hold), by the plan's branch names. */
+function heldBranches(root, config) {
+  const holds = activeDeferrals(root);
+  if (!holds.length) return new Map();
+  const byBranch = new Map();
+  const branches = waiting(readQueue(root)).map((e) => e.branch);
+  for (const b of branches) {
+    const story = storyOfBranch(b);
+    const hold = story && holds.find((h) => h.story === story.toUpperCase());
+    if (hold) byBranch.set(b, hold);
+  }
+  return byBranch;
 }
 
 /**
@@ -973,8 +1101,31 @@ function mergeOne(branch, config, byPerson, commit = null, partners = []) {
  */
 function queue() {
   const { config } = load();
-  const root = resolve('.');
+  // The main checkout, where the queue is kept, found once: a merge run from inside a lane's worktree
+  // must still reach the queue once that worktree is done with.
+  const root = mainCheckout(resolve('.'));
+  const into = intoName ?? config.branches.protected[0];
   const [sub, branch] = rest;
+  // MQ-8: the lead pauses the whole queue on purpose, with why; branches are still queued meanwhile.
+  if (sub === 'pause') {
+    if (!reason?.trim())
+      die(
+        'code-kit queue pause --reason "…": say why the queue waits, so the person and the band can see it.',
+      );
+    const was = queuePause(root);
+    pauseQueue(root, reason.trim(), callerSession);
+    return out(
+      `${was ? 'The merge queue stays paused, now' : 'Paused the merge queue'}: ${reason.trim()}. Nothing merges, and nothing offers a merge, until code-kit queue resume.`,
+    );
+  }
+  if (sub === 'resume') {
+    const was = resumeQueue(root);
+    return out(
+      was
+        ? `The merge queue merges again (it was paused: ${was.reason}).`
+        : "The merge queue wasn't paused.",
+    );
+  }
   if (sub === 'add' || sub === 'drop') {
     if (!branch) die(`code-kit queue ${sub} <branch>`);
     if (sub === 'drop')
@@ -1017,8 +1168,25 @@ function queue() {
   if (sub === 'rules') return rulesOntoBase(root, config);
   if (sub === 'merge') {
     const byPerson = mergeMode();
+    const paused = queuePause(root);
+    if (paused)
+      return out(
+        `The merge queue is paused (${paused.reason}, since ${paused.at.slice(0, 16).replace('T', ' ')}): nothing was merged. code-kit queue resume lets it merge again.`,
+      );
+    // A queued branch whose commit the base already holds (merged outside the queue, or by a run that
+    // couldn't record it) is settled as merged: never verified again, never sent back.
+    const already = waiting(readQueue(root)).filter((e) => {
+      const at = e.commit ?? branchTip(e.branch);
+      return (
+        at && spawnSync('git', ['-C', root, 'merge-base', '--is-ancestor', at, into]).status === 0
+      );
+    });
+    for (const e of already) settle(root, e.branch, 'merged', `already in ${into}`);
+    const settledWords = already.length
+      ? `${already.map((e) => e.branch).join(', ')} ${already.length === 1 ? 'was' : 'were'} already merged into ${into}, so ${already.length === 1 ? 'it leaves' : 'they leave'} the queue as merged. `
+      : '';
     const entries = readQueue(root);
-    if (!waiting(entries).length) return out('The merge queue is empty.');
+    if (!waiting(entries).length) return out(`${settledWords}The merge queue is empty.`);
     // MQ-7: the first branch that can merge: one queued with partners waits until they're queued too.
     // HUBR-9: and one the team provider's drift findings hold waits until they clear.
     const drift = driftNow(
@@ -1026,8 +1194,20 @@ function queue() {
       waiting(entries).map((e) => e.branch),
       { fresh: true },
     );
-    const { head, partners, held, drifting } = nextToMerge(entries, drift.holds);
-    const holding = drifting.map((d) => drift.words(d.branch, d.findings));
+    // LOOP-15: a branch whose story the lead holds waits, with its group, until the hold ends.
+    const deferredBy = heldBranches(root, config);
+    const { head, partners, held, drifting, deferred } = nextToMerge(
+      entries,
+      drift.holds,
+      deferredBy,
+    );
+    const holding = [
+      ...drifting.map((d) => drift.words(d.branch, d.findings)),
+      ...deferred.map(
+        (d) =>
+          `${d.branch} waits: ${deferralWords(d.hold)} (code-kit defer release ${d.hold.story}).`,
+      ),
+    ];
     const unchecked = drift.note ? ` ${drift.note}` : '';
     if (!head) {
       const waits = held.map(
@@ -1035,7 +1215,7 @@ function queue() {
           `${h.branch} merges together with ${h.missing.join(', ')}, which ${h.missing.length === 1 ? "isn't" : "aren't"} queued yet`,
       );
       return out(
-        `Nothing can merge yet${waits.length ? `: ${waits.join('; ')}.` : '.'}${holding.length ? ` ${holding.join(' ')}` : ''}`,
+        `${settledWords}Nothing can merge yet${waits.length ? `: ${waits.join('; ')}.` : '.'}${holding.length ? ` ${holding.join(' ')}` : ''}`,
       );
     }
     const group = [head, ...partners];
@@ -1073,20 +1253,26 @@ function queue() {
       const published = publishAfter(config, byPerson);
       const left = waiting(readQueue(root));
       return out(
-        `${message}${published}${left.length ? ` Next in the queue: ${left[0].branch}.` : ' The queue is empty.'}${holding.length ? ` ${holding.join(' ')}` : ''}${unchecked}`,
+        `${settledWords}${message}${published}${left.length ? ` Next in the queue: ${left[0].branch}.` : ' The queue is empty.'}${holding.length ? ` ${holding.join(' ')}` : ''}${unchecked}`,
       );
     } catch (e) {
       if (!(e instanceof MergeStop)) throw e;
-      // MQ-3: a conflict or a failed verify goes back to the lane; a refusal leaves the queue as it is.
-      if (e.kind === 'refused') die(e.message);
+      // MQ-3: a conflict or a failed verify goes back to the lane; a refusal leaves the queue as it is,
+      // and so does an install or a check that couldn't run, which says nothing against the branch.
+      if (['refused', 'unfinished', 'installs'].includes(e.kind)) die(e.message);
+      if (e.kind === 'already') {
+        for (const m of group) settle(root, m.branch, 'merged', `already in ${into}`);
+        const left = waiting(readQueue(root));
+        return out(
+          `${e.message} It leaves the queue as merged.${left.length ? ` Next in the queue: ${left[0].branch}.` : ' The queue is empty.'}`,
+        );
+      }
       // A branch that moved after its review leaves the queue for the lead to review it again; it
       // isn't sent back, since nothing is wrong with it yet.
-      if (e.kind === 'unfinished') die(e.message);
       if (e.kind === 'moved') {
         settle(root, head.branch, 'moved', 'changed after its review');
         die(`${e.message}\n${head.branch} leaves the queue until then.`);
       }
-      const into = intoName ?? config.branches.protected[0];
       const after = lastMerged(entries);
       const why =
         e.kind === 'conflict'
@@ -1108,10 +1294,12 @@ function queue() {
   }
   if (sub !== undefined)
     die(
-      'code-kit queue [--json] | queue add <branch> [--with <branch>,…] | queue drop <branch> | queue rules | queue merge --delegated|--person',
+      'code-kit queue [--json] | queue add <branch> [--with <branch>,…] | queue drop <branch> | queue rules | queue merge --delegated|--person | queue pause --reason "…" | queue resume',
     );
   const entries = readQueue(root);
   const left = waiting(entries);
+  const paused = queuePause(root);
+  const deferredBy = heldBranches(root, config);
   // HUBR-9: what the team provider's findings hold, as last read (a merge asks it again).
   const drift = driftNow(
     config,
@@ -1120,20 +1308,29 @@ function queue() {
   if (flag('--json'))
     return out(
       JSON.stringify(
-        entries.map((e) =>
-          left.includes(e) && drift.holds.has(e.branch)
-            ? { ...e, drift: drift.holds.get(e.branch) }
-            : e,
-        ),
+        entries.map((e) => ({
+          ...e,
+          ...(left.includes(e) && drift.holds.has(e.branch)
+            ? { drift: drift.holds.get(e.branch) }
+            : {}),
+          ...(left.includes(e) && deferredBy.has(e.branch)
+            ? { deferred: deferredBy.get(e.branch) }
+            : {}),
+          ...(left.includes(e) && paused ? { paused } : {}),
+        })),
         null,
         2,
       ),
+    );
+  if (paused)
+    out(
+      `The merge queue is paused: ${paused.reason} (since ${paused.at.slice(0, 16).replace('T', ' ')}). code-kit queue resume lets it merge again.`,
     );
   if (!left.length) out('The merge queue is empty.');
   else out(`${left.length} waiting to merge, in order:`);
   left.forEach((e, i) =>
     out(
-      `  ${i + 1}. ${e.branch} (passed review ${e.passed}${e.commit ? ` at ${e.commit.slice(0, 7)}` : ''})${drift.holds.has(e.branch) ? ' · held by the drift check' : ''}`,
+      `  ${i + 1}. ${e.branch} (passed review ${e.passed}${e.commit ? ` at ${e.commit.slice(0, 7)}` : ''})${drift.holds.has(e.branch) ? ' · held by the drift check' : ''}${deferredBy.has(e.branch) ? ` · ${deferralWords(deferredBy.get(e.branch))}` : ''}`,
     ),
   );
   for (const [branch, findings] of drift.holds) out(drift.words(branch, findings));
@@ -1668,6 +1865,69 @@ function releaseCommand(version) {
     r.stories.length
       ? `Stories in it since ${r.since ?? 'the start'}: ${r.stories.join(', ')}.`
       : `No story ids in its commits since ${r.since ?? 'the start'}.`,
+  );
+}
+
+/**
+ * LOOP-15: stories the lead holds on purpose. `defer <story>… --reason "…" [--until <date|ISO time>]`
+ * holds them: `next`, the loop and the merge queue don't dispatch, review or merge them until the time
+ * comes or `defer release <story>…`. `defer [--json]` lists the holds in force.
+ */
+function deferCommand() {
+  const { config } = load();
+  const root = mainCheckout(resolve('.'));
+  const [sub, ...ids] = rest;
+  const usageLine =
+    'code-kit defer <story>… --reason "…" [--until <date|ISO time>] | defer release <story>… | defer [--json]';
+  if (sub === undefined) {
+    const holds = activeDeferrals(root);
+    if (flag('--json')) return out(JSON.stringify(holds, null, 2));
+    if (!holds.length) return out('No story is held.');
+    out(`${holds.length} ${holds.length === 1 ? 'story is' : 'stories are'} held:`);
+    for (const h of holds) out(`  ${deferralWords(h)}`);
+    return;
+  }
+  const isStory = (id) => /^[a-z][a-z0-9]*-\d+$/i.test(id);
+  if (sub === 'release') {
+    if (!ids.length || !ids.every(isStory)) die(usageLine);
+    const ended = releaseStories(root, ids);
+    const was = new Set(ended.map((h) => h.story));
+    const notHeld = ids.map((id) => id.toUpperCase()).filter((id) => !was.has(id));
+    return out(
+      [
+        ended.length
+          ? `Released ${ended.map((h) => h.story).join(', ')}: ${ended.length === 1 ? 'it goes' : 'they go'} on as the plan has ${ended.length === 1 ? 'it' : 'them'}.`
+          : null,
+        notHeld.length
+          ? `${notHeld.join(', ')} ${notHeld.length === 1 ? "wasn't" : "weren't"} held.`
+          : null,
+      ]
+        .filter(Boolean)
+        .join(' '),
+    );
+  }
+  const stories = [sub, ...ids];
+  if (!stories.every(isStory)) die(usageLine);
+  if (!reason?.trim())
+    die(
+      'code-kit defer needs --reason "…": what the story waits on, so the person and the band can see why it isn\'t moving.',
+    );
+  const { until, error } = parseUntil(untilGiven);
+  if (error) die(error);
+  const plan = config.docs?.plan;
+  if (plan) {
+    const known = new Set(readStories(root, plan).map((s) => s.id));
+    const unknown = stories.map((s) => s.toUpperCase()).filter((s) => !known.has(s));
+    if (unknown.length)
+      die(`There is no story ${unknown.join(', ')} in ${plan}; nothing was held.`);
+  }
+  const made = deferStories(root, stories, {
+    reason: reason.trim(),
+    until,
+    session: callerSession,
+  });
+  out(
+    `${made.map(deferralWords).join('. ')}. Nothing dispatches, reviews or merges ${made.length === 1 ? 'it' : 'them'} until ${until ? 'then, or ' : ''}code-kit defer release ${made.map((h) => h.story).join(' ')}.`,
   );
 }
 
@@ -2992,6 +3252,7 @@ const commands = {
   decisions: decisionsCommand,
   task: taskCommand,
   hold: () => (rest.length === 1 ? hold(rest[0]) : usage()),
+  defer: deferCommand,
   queue,
   team: teamCommand,
   intend: intendCommand,
@@ -3044,6 +3305,8 @@ function usage() {
       '              | ci check [--json] | ci usage [--days N] [--json] | release <version>\n' +
       '              | hold <id> [--minutes N] | hold <id> --answer approved|refused\n' +
       '              | queue [--json] | queue add|drop <branch> | queue rules | queue merge --delegated|--person\n' +
+      '              | queue pause --reason "…" | queue resume\n' +
+      '              | defer <story>... --reason "…" [--until <date|ISO time>] | defer release <story>... | defer [--json]\n' +
       '              | loop [--json] | loop pause|resume | loop lead|release --session id [--take]\n' +
       '              | map <story>|project [--json] | trail [--json] | journal [--json]\n' +
       '              | story <id> [--json] | timeline [--json]\n' +

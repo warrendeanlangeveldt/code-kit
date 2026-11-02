@@ -3850,6 +3850,87 @@ test('HUBR-9 drift findings hold a merge at the provider’s level, and say who 
   );
 });
 
+test('LOOP-15 and MQ-8 holds the lead makes on purpose: a story, and the whole merge queue', async () => {
+  const { nextToMerge } = await import('../hooks/lib/queue.mjs');
+  const { parseUntil, deferralWords } = await import('../hooks/lib/deferrals.mjs');
+  const { needsOf } = await import('../hooks/mod/board.mjs');
+  const entry = (b, extra = {}) => ({ branch: b, state: 'waiting', passed: 'x', ...extra });
+  const hold = { story: 'ST-4', reason: 'the partner ships first', until: null };
+  const deferredBy = new Map([['web/st-4', hold]]);
+  // A held story's branch waits, and so does its group; the queue goes on with the next.
+  const order = nextToMerge([entry('web/st-4'), entry('web/st-5')], new Map(), deferredBy);
+  assert.equal(order.head.branch, 'web/st-5');
+  assert.deepEqual(
+    order.deferred.map((d) => [d.branch, d.hold.story]),
+    [['web/st-4', 'ST-4']],
+  );
+  const grouped = nextToMerge(
+    [entry('web/st-5', { with: ['web/st-4'] }), entry('web/st-4')],
+    new Map(),
+    deferredBy,
+  );
+  assert.equal(grouped.head, null);
+  assert.deepEqual(
+    grouped.deferred.map((d) => d.branch),
+    ['web/st-5', 'web/st-4'],
+  );
+
+  const now = Date.parse('2026-11-02T00:00:00Z');
+  assert.equal(parseUntil(undefined, now).until, null);
+  assert.equal(parseUntil('2026-11-03T09:00:00Z', now).until, '2026-11-03T09:00:00.000Z');
+  assert.match(parseUntil('2026-11-01T00:00:00Z', now).error, /has already passed/);
+  assert.match(parseUntil('next week', now).error, /isn't a date/);
+  // A date holds until that day begins, where the person is.
+  assert.equal(parseUntil('2026-11-10', now).until, new Date(2026, 10, 10).toISOString());
+  assert.equal(deferralWords(hold), 'ST-4 is held: the partner ships first');
+  assert.equal(
+    deferralWords({ ...hold, until: new Date(2026, 10, 10).toISOString() }),
+    'ST-4 is held until 2026-11-10: the partner ships first',
+  );
+
+  // The band offers no Merge while the queue is paused, nor for a held story's branch, and says why.
+  const lines = (nextStep, queue) =>
+    bandLines({
+      state: projectState(
+        { valid: true, lanes: {} },
+        { problems: [], stories: [] },
+        null,
+        new Set(),
+      ),
+      requests: { open: [] },
+      stops: [],
+      queue,
+      nextStep,
+      check: { harness: { autonomy: 'off' } },
+    })
+      .filter((l) => ['queue', 'queuePaused', 'deferred'].includes(l.kind))
+      .map((l) => l.text);
+  assert.deepEqual(
+    lines({ queuePaused: { reason: 'the base is being released', at: 'x' } }, [entry('web/st-5')]),
+    ['merge queue paused: the base is being released'],
+  );
+  assert.deepEqual(
+    lines({ deferred: [{ ...hold, words: deferralWords(hold) }] }, [
+      entry('web/st-4', { deferred: hold }),
+      entry('web/st-5'),
+    ]),
+    ['ST-4 is held: the partner ships first', 'web/st-5 is next to merge'],
+  );
+  // They're notes in the Needs you panel: last, with nothing to press.
+  const needs = needsOf([
+    { kind: 'deferred', text: 'ST-4 is held: x', actions: [] },
+    {
+      kind: 'queue',
+      text: 'web/st-5 is next to merge',
+      actions: [{ id: 'mergeQueue', label: 'Merge' }],
+    },
+  ]);
+  assert.deepEqual(
+    needs.map((l) => l.kind),
+    ['queue', 'deferred'],
+  );
+});
+
 test('HUBR-2 the security reviewer’s findings counted, and usage kept by model', async () => {
   const { securityOutcome, isSecurityReviewer } = await import('../hooks/lib/security.mjs');
   const { agentIdOf } = await import('../hooks/lib/events.mjs');
