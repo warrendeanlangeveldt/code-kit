@@ -31,6 +31,32 @@ const stripComment = (line) => {
   }
   return line;
 };
+/** A one-line map's entries (`group: x, cancel-in-progress: true`), split at commas outside quotes and `${{ }}`. */
+function flowMap(body) {
+  const parts = [];
+  let quote = null;
+  let depth = 0;
+  let start = 0;
+  for (let i = 0; i < body.length; i++) {
+    const c = body[i];
+    if (quote) {
+      if (c === quote) quote = null;
+    } else if (c === '"' || c === "'") quote = c;
+    else if (c === '{' || c === '[') depth += 1;
+    else if (c === '}' || c === ']') depth -= 1;
+    else if (c === ',' && depth === 0) {
+      parts.push(body.slice(start, i));
+      start = i + 1;
+    }
+  }
+  parts.push(body.slice(start));
+  const out = {};
+  for (const part of parts) {
+    const m = /^\s*("[^"]*"|'[^']*'|[^:]+?):(?:\s+|$)(.*)$/s.exec(part);
+    if (m) out[unquote(m[1])] = scalar(m[2]);
+  }
+  return out;
+}
 const scalar = (v) => {
   const t = v.trim();
   if (t === '') return null;
@@ -40,7 +66,7 @@ const scalar = (v) => {
       .split(',')
       .map((x) => unquote(x))
       .filter(Boolean);
-  if (t.startsWith('{') && t.endsWith('}')) return {};
+  if (t.startsWith('{') && t.endsWith('}')) return flowMap(t.slice(1, -1));
   if (t === 'true') return true;
   if (t === 'false') return false;
   if (/^-?\d+(\.\d+)?$/.test(t)) return Number(t);
@@ -206,7 +232,14 @@ export function workflowFindings(file, text, base) {
       `${untimed.length === 1 ? 'job' : 'jobs'} ${untimed.join(', ')} ${untimed.length === 1 ? 'has' : 'have'} no timeout-minutes, so a hung step runs up to GitHub's ${GITHUB_LIMIT_MINUTES / 60} hours`,
       'give each job a timeout-minutes a little over its usual run',
     );
-  const cancels = (c) => c && typeof c === 'object' && c['cancel-in-progress'] === true;
+  // Concurrency is decided when cancel-in-progress is set: true, an expression (`${{ … }}`, such as
+  // cancelling pull requests' runs but never an apply), or false on purpose, for a workflow that must
+  // never be stopped half-way (a deploy, an infrastructure apply). Left out, every push runs to the end.
+  const cancels = (c) =>
+    c &&
+    typeof c === 'object' &&
+    (typeof c['cancel-in-progress'] === 'boolean' ||
+      /^\s*\$\{\{[\s\S]*\}\}\s*$/.test(String(c['cancel-in-progress'] ?? '')));
   if (
     onPr &&
     !cancels(doc.concurrency) &&

@@ -71,7 +71,7 @@ Write `.claude/code-kit.draft.json`. Follow `${CLAUDE_PLUGIN_ROOT}/README.md` â€
   - `screens`: a glob for each such lane's screen files (routes, pages, views), from the architecture's folders, with `not` for tests and stories;
   - `howTo`: "Design it first: run /code-kit:design for this area's design story, and a person approves it.";
   - a `protected` entry for the register (approval `design`, why "only approved designs are built"). Never put `design` in `approvals.delegate`: approving a design is the person's.
-- **`shell.block`:** deploy, release and production commands reserved for CI or a person.
+- **`shell.block`:** deploy, release and production commands reserved for CI or a person. Each rule that names a command (`cdk deploy`, `supabase db push`, `terraform apply`) gets `"command": true`, with a pattern for the command and its arguments (`"cdk\\s+deploy\\b"`), so a grep, a heredoc or a commit message that mentions the command isn't refused, while running it, after `cd â€¦`, through `npx` or `pnpm exec`, or in `sh -c`, still is. Leave `command` out only for a rule about the whole line, such as a download piped into a shell.
 - **`shell.restricted`:** commands that affect a shared local service, limited to the lanes that own it.
 - **`postEdit`:** the project's existing per-file linters and formatters, with `{file}`.
 - **`checks`:** the typecheck, test, architecture and database commands, each scoped by `files`. Only include commands that pass on the current code, or ones the person chose to keep.

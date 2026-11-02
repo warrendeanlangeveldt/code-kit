@@ -3,7 +3,7 @@
 // other tools read (`code-kit trace <path> --json`); Context Graph's adapter uses it to anchor a file's
 // card in the spec and to show the layer rule before an agent drafts an edit.
 import { execFileSync } from 'node:child_process';
-import { matchesAny } from './glob.mjs';
+import { literalPath, matchesAny } from './glob.mjs';
 import { layerOf } from './layers.mjs';
 import { readRequirements, readStories } from './plan.mjs';
 import { ownerOf, reviewerOf } from './rules.mjs';
@@ -23,7 +23,8 @@ const git = (root, ...args) => {
 /** Story ids named by the commits that changed `rel`, and by the current branch if it is a story branch. */
 export function storiesOf(root, rel) {
   const ids = new Set();
-  for (const m of git(root, 'log', '--format=%B', '--', rel).matchAll(/\bST-\d+\b/g)) ids.add(m[0]);
+  for (const m of git(root, 'log', '--format=%B', '--', literalPath(rel)).matchAll(/\bST-\d+\b/g))
+    ids.add(m[0]);
   const branch = git(root, 'rev-parse', '--abbrev-ref', 'HEAD').trim();
   const onBranch = /^[\w-]+\/(st-\d+)$/i.exec(branch)?.[1];
   if (onBranch) ids.add(onBranch.toUpperCase());

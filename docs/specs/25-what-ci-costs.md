@@ -60,7 +60,7 @@ The template's job runs `verify --no-checks` on each pull request: ownership, la
 - `every-merge`: a workflow that runs on every push to the base branch. Run it on `release/**` instead.
 - `every-pr`: a workflow with jobs over 10 minutes (from its recent runs, or its test and build steps) on every pull request. Run it on `release/**` instead, keeping a fast check on pull requests if the project wants one.
 - `no-timeout`: a job without `timeout-minutes`, so a hung test runs up to GitHub's six hours.
-- `no-concurrency`: a workflow on pull requests without `cancel-in-progress`, so every push runs to the end.
+- `no-concurrency`: a workflow on pull requests whose `concurrency` (the workflow's, or every job's) leaves `cancel-in-progress` out, so every push runs to the end. Setting it is the decision, whatever its value: `true`; an expression such as `${{ github.event_name == 'pull_request' }}`, which cancels pull requests' runs and never an apply; or `false`, for a workflow that must never stop half-way (a deploy, an infrastructure apply), whose runs then queue. The one-line form, `concurrency: { group: …, cancel-in-progress: true }`, counts the same.
 - `code-kit-checks`: code-kit's own workflow, written before this, running `verify` with the checks. Add `--no-checks`.
 
 init runs it when it sets CI up, and shows the person the changes it proposes; they're applied only as the person approves them (approval `ci`). `next` mentions them as attention, with the count and the files.
@@ -69,6 +69,7 @@ init runs it when it sets CI up, and shows the person the changes it proposes; t
 
 - Given a workflow with `on: push: branches: [main]` and no `timeout-minutes`, then `ci check` lists `every-merge` and `no-timeout` for it, each with its fix.
 - Given a workflow on `push: branches: ['release/**']` with timeouts and concurrency, then it lists nothing for it.
+- Given a workflow on pull requests whose `cancel-in-progress` is an expression, or `false`, then it lists no `no-concurrency` for it; with a `concurrency` group and no `cancel-in-progress`, it does.
 
 ### CIC-3 A release is a branch
 

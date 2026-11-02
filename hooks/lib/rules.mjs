@@ -30,7 +30,7 @@ import { homedir } from 'node:os';
 import { basename, dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DEPENDENCY_APPROVAL, isDependencyFile } from './dependencies.mjs';
-import { globToRegExp, matchesAny } from './glob.mjs';
+import { globToRegExp, literalPath, matchesAny } from './glob.mjs';
 import { noteFor } from './standards.mjs';
 
 export const APPROVAL_LOG = '.claude/approval-log.jsonl';
@@ -572,7 +572,7 @@ function commitsFrom(root, path, at) {
       [
         ...['-C', root, 'log', '--all', '--format=%H'],
         `--since=@${Math.floor(Date.parse(at) / 1000)}`,
-        ...['--', path],
+        ...['--', literalPath(path)],
       ],
       { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] },
     )
@@ -795,7 +795,7 @@ export function writeProblem(actor, rel, root, config) {
   if (target === approvals || target.startsWith(`${approvals}/`))
     return `${rel} is an approval. Only a person creates approvals, with a \`!\` shell command.`;
   if (rel.startsWith('..'))
-    return outsideAllowed(actor, rel, root, config) ? null : `${rel} is outside the repository.`;
+    return outsideAllowed(actor, rel, root, config) ? null : outsideProblem(actor, rel);
   if (SECRETS(rel))
     return `${rel} may hold secrets. Secrets never go in files an agent writes; use the secret store.`;
   if (rel === APPROVAL_LOG)
@@ -830,13 +830,42 @@ export function writeProblem(actor, rel, root, config) {
 const readonlyProblem = (actor, rel) =>
   `${actor.label} is read-only; it may not write ${rel}. If a command you ran changed it (a build, a formatter or a code generator), put it back with git restore -- ${rel} (or delete it if it's new), and run such commands only in a throwaway worktree of the branch.`;
 
-// Claude Code's own temporary folders (a session's scratchpad, its tool output): no repository's files.
-const CLAUDE_TEMP = ['/private/tmp/claude-*/**', '/tmp/claude-*/**'];
+/**
+ * Whether `rel` is in the folder Claude Code gives this session for its own temporary files
+ * (`/tmp/claude-<uid>/<project>/<session id>/`: its scratchpad and its tool output), outside every
+ * repository. A session's id is its own, so the folder is no other session's or project's.
+ */
+function inSessionTemp(actor, rel, root) {
+  if (!actor.session || !/^[\w.-]+$/.test(actor.session)) return false;
+  // `rel` is from the root's real path: /tmp is /private/tmp on macOS.
+  const parts = resolve(realPath(root), rel)
+    .replace(/^\/private(?=\/tmp\/)/, '')
+    .split('/');
+  return (
+    parts[1] === 'tmp' &&
+    /^claude-[^/]+$/.test(parts[2] ?? '') &&
+    Boolean(parts[3]) &&
+    parts[4] === actor.session &&
+    parts.length > 5
+  );
+}
+
+/** Why a write outside the repository is refused, and where the actor's temporary files go instead. */
+function outsideProblem(actor, rel) {
+  if (actor.kind === 'readonly')
+    return `${rel} is outside the repository, and ${actor.label} is read-only: it writes no files, temporary ones included.`;
+  const own = actor.session
+    ? `this session's own scratchpad, the folder Claude Code gives it under /tmp/claude-<uid>/<project>/${actor.session}/scratchpad/`
+    : "this session's own scratchpad, the folder Claude Code gives it under /tmp/claude-<uid>/<project>/<session id>/scratchpad/";
+  return `${rel} is outside the repository. Temporary files (a probe, a throwaway harness) go in ${own}; another session's is not this one's to write.${actor.kind === 'lead' ? ' Anywhere else outside the repository is the config\'s "lead.outside".' : ''}`;
+}
 
 function outsideAllowed(actor, rel, root, config) {
   const target = resolve(root, rel);
-  // A lane's scratch files go where Claude Code's own do, outside every repository.
-  if (actor.kind === 'lane') return CLAUDE_TEMP.some((g) => globToRegExp(g).test(target));
+  // The session's scratch files go where Claude Code's own do, outside every repository.
+  if (actor.kind === 'lane' || actor.kind === 'lead') {
+    if (inSessionTemp(actor, rel, root)) return true;
+  }
   if (actor.kind !== 'lead') return false;
   return config.lead.outside.some((g) =>
     globToRegExp(resolve(root, g.replace(/^~(?=\/)/, homedir()))).test(target),

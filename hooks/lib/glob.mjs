@@ -40,3 +40,10 @@ export function globToRegExp(glob) {
 }
 
 export const matchesAny = (path, globs = []) => globs.some((g) => globToRegExp(g).test(path));
+
+/**
+ * A file's path as a git pathspec that names exactly that file: git reads `*`, `?` and `[…]` in a
+ * pathspec as a pattern, so a route file such as `app/[id].tsx` would otherwise match `app/i.tsx`
+ * and miss itself.
+ */
+export const literalPath = (path) => `:(literal)${path}`;
