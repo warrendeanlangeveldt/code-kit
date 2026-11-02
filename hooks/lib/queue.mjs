@@ -1,7 +1,7 @@
 // The merge queue (docs/specs/09-merge-queue.md): branches that passed the lead's review, merged one at
 // a time in the order they passed, each verified against the base as it is then. Kept in the main
 // checkout, beside the requests and reviews, so every worktree and a restarted session see the same.
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { projectWorktrees } from './rules.mjs';
 import { GIT, commandsOf } from './shell.mjs';
@@ -80,11 +80,12 @@ export function dequeue(root, branch) {
  * review, so it's reviewed again), or waiting again.
  */
 export function settle(root, branch, state, reason = null, now = Date.now()) {
-  const entries = readQueue(root).map((e) =>
-    e.branch === branch && ['waiting', 'merging'].includes(e.state)
-      ? { ...e, state, at: new Date(now).toISOString(), ...(reason ? { reason } : {}) }
-      : e,
-  );
+  const entries = readQueue(root).map((e) => {
+    if (e.branch !== branch || !['waiting', 'merging'].includes(e.state)) return e;
+    // The merge that settled it is over: its process no longer marks the entry.
+    const { pid: _pid, ...rest } = e;
+    return { ...rest, state, at: new Date(now).toISOString(), ...(reason ? { reason } : {}) };
+  });
   // Merged and sent-back entries move behind the waiting ones' history, in the order they settled.
   const settled = entries.filter((e) => e.branch === branch && e.state === state);
   writeQueue(root, [...entries.filter((e) => !settled.includes(e)), ...settled]);
@@ -122,11 +123,13 @@ export function mergingNow(entry) {
  * MQ-7: what the queue merges next. A branch queued `with` others merges only together with them, once
  * each is queued too: verified as one tree, merged one after another. Until then it waits, and the
  * queue goes on with the next. HUBR-9: a branch the team provider's drift findings hold (`drift`,
- * Map(branch → findings), from `driftHolds`) waits too, with its group, until they clear. `{ head,
- * partners, held, drifting }`: `head` null when nothing can merge yet; `held` lists each waiting branch
- * with the partners it still needs queued; `drifting` each one waiting on findings, with them.
+ * Map(branch → findings), from `driftHolds`) waits too, with its group, until they clear. MQ-8: so does
+ * a branch whose story the lead holds (`deferred`, Map(branch → hold), from `activeDeferrals`). `{ head,
+ * partners, held, drifting, deferred }`: `head` null when nothing can merge yet; `held` lists each
+ * waiting branch with the partners it still needs queued; `drifting` each one waiting on findings,
+ * with them; `deferred` each one whose group holds a held story, with that hold.
  */
-export function nextToMerge(entries, drift = new Map()) {
+export function nextToMerge(entries, drift = new Map(), deferredBy = new Map()) {
   const queue = waiting(entries);
   const queued = new Set(queue.map((e) => e.branch));
   // A partner already merged on its own is no longer waited for.
@@ -151,6 +154,7 @@ export function nextToMerge(entries, drift = new Map()) {
   };
   const held = [];
   const drifting = [];
+  const deferred = [];
   let head = null;
   let partners = [];
   for (const e of queue) {
@@ -158,7 +162,9 @@ export function nextToMerge(entries, drift = new Map()) {
     // A group lands as one, so a finding on any of its branches holds them all.
     const findings = [...group].flatMap((b) => drift.get(b) ?? []);
     if (findings.length) drifting.push({ branch: e.branch, findings });
-    if (head) continue;
+    const hold = [...group].map((b) => deferredBy.get(b)).find(Boolean);
+    if (hold) deferred.push({ branch: e.branch, hold });
+    if (head || hold) continue;
     const missing = [...group]
       .flatMap((b) => queue.find((y) => y.branch === b)?.with ?? [])
       .filter((b) => !queued.has(b) && !merged.has(b));
@@ -170,7 +176,40 @@ export function nextToMerge(entries, drift = new Map()) {
     head = e;
     partners = queue.filter((x) => x.branch !== e.branch && group.has(x.branch));
   }
-  return { head, partners, held, drifting };
+  return { head, partners, held, drifting, deferred };
+}
+
+export const PAUSE_FILE = '.claude/state/merge-queue-paused.json';
+
+const pauseFile = (root) => join(projectWorktrees(root)[0] ?? root, PAUSE_FILE);
+
+/**
+ * MQ-8: the lead's deliberate pause of the whole queue, { reason, at, session } or null: while it's
+ * paused, the queue merges nothing and nothing offers a merge; branches are still queued.
+ */
+export function queuePause(root) {
+  try {
+    const p = JSON.parse(readFileSync(pauseFile(root), 'utf8'));
+    return p && typeof p.reason === 'string' ? p : null;
+  } catch {
+    return null;
+  }
+}
+
+/** MQ-8: pauses the queue with why; a pause already in force takes the new reason. */
+export function pauseQueue(root, reason, session = null, now = Date.now()) {
+  const file = pauseFile(root);
+  mkdirSync(dirname(file), { recursive: true });
+  const pause = { reason, at: new Date(now).toISOString(), ...(session ? { session } : {}) };
+  writeFileSync(file, `${JSON.stringify(pause, null, 2)}\n`);
+  return pause;
+}
+
+/** MQ-8: lets the queue merge again; the pause it ended, or null when it wasn't paused. */
+export function resumeQueue(root) {
+  const was = queuePause(root);
+  if (was) rmSync(pauseFile(root), { force: true });
+  return was;
 }
 
 /** MQ-7: a queued branch's partners, which it merges together with. */

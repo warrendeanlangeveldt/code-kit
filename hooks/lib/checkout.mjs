@@ -4,9 +4,10 @@
 // the like): a link back to a worktree's installs resolves outside the checkout, which path-sensitive
 // tools refuse, and an install run in it would rewrite the worktree's own.
 import { execFileSync, spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { platform, tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
+import { isDependencyFile } from './dependencies.mjs';
 
 // The folders an install puts beside the code, which a fresh checkout lacks.
 const INSTALLS = new Set(['node_modules', '.venv', 'venv']);
@@ -102,4 +103,80 @@ export function freshCheckout(
   }
   copyInstalls(installsFrom, dir);
   return { dir, remove };
+}
+
+/**
+ * The manifests and lockfiles tracked in either checkout whose content differs between the two working
+ * trees: where installs copied from `from` may not match the code in `dir`.
+ */
+export function dependencyDifferences(from, dir) {
+  const tracked = (d) => {
+    try {
+      return git(d, 'ls-files')
+        .split('\n')
+        .filter((f) => f && isDependencyFile(f));
+    } catch {
+      return [];
+    }
+  };
+  const read = (d, f) => {
+    try {
+      return readFileSync(join(d, f), 'utf8');
+    } catch {
+      return null;
+    }
+  };
+  return [...new Set([...tracked(from), ...tracked(dir)])]
+    .filter((f) => read(from, f) !== read(dir, f))
+    .sort();
+}
+
+// The install each lockfile at the top of a checkout calls for, run without changing the lockfile, and
+// the manifests and lockfiles of its ecosystem, whose changes it installs.
+const JS = [
+  'package.json',
+  'pnpm-lock.yaml',
+  'package-lock.json',
+  'npm-shrinkwrap.json',
+  'yarn.lock',
+];
+const INSTALLERS = [
+  ['pnpm-lock.yaml', 'pnpm install --frozen-lockfile --prefer-offline', JS],
+  ['package-lock.json', 'npm ci --prefer-offline --no-audit --no-fund', JS],
+  ['npm-shrinkwrap.json', 'npm ci --prefer-offline --no-audit --no-fund', JS],
+  ['yarn.lock', 'yarn install --frozen-lockfile', JS],
+  ['bun.lock', 'bun install --frozen-lockfile', [...JS, 'bun.lock']],
+  ['bun.lockb', 'bun install --frozen-lockfile', [...JS, 'bun.lockb']],
+  ['uv.lock', 'uv sync --frozen', ['pyproject.toml', 'uv.lock']],
+];
+
+/**
+ * MQ-1: makes the installs in the fresh checkout `dir` match its tree. Installs copied from `from` match
+ * only while their manifests and lockfiles are the same: where they differ (the base gained a workspace
+ * package since they were installed), the project's install runs in `dir`, never in `from`: `prepare`
+ * where the project sets one, else the install its lockfile calls for, when the files that differ are
+ * that lockfile's ecosystem's. `{ differ, copied, lockfile, command, failed }`: `differ`, the files that
+ * differ; `copied`, whether any installs were copied in; `lockfile`, whether a lockfile code-kit knows
+ * is there; `command`, the install run (null when none was needed or none is known); `failed`,
+ * { missing, output } when it didn't succeed.
+ */
+export function matchInstalls(dir, from, { prepare = null, timeout = 900000 } = {}) {
+  const differ = dependencyDifferences(from, dir);
+  const copied = installsOf(dir).length > 0;
+  const present = INSTALLERS.filter(([lock]) => existsSync(join(dir, lock)));
+  const known = present.find(([, , files]) => differ.some((f) => files.includes(basename(f))));
+  const command = differ.length ? (prepare ?? known?.[1] ?? null) : null;
+  const facts = { differ, copied, lockfile: present.length > 0 };
+  if (!command) return { ...facts, command: null, failed: null };
+  const res = spawnSync(command, { cwd: dir, shell: true, encoding: 'utf8', timeout });
+  if (res.status === 0) return { ...facts, command, failed: null };
+  const output = `${res.stdout ?? ''}${res.stderr ?? ''}`.trim().split('\n').slice(-20).join('\n');
+  return {
+    ...facts,
+    command,
+    failed: {
+      missing: res.status === 127,
+      output: output || (res.error ? String(res.error.code ?? res.error.message) : ''),
+    },
+  };
 }

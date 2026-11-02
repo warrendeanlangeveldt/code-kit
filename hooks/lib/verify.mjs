@@ -189,6 +189,8 @@ const NOISE = [
   /^\(node:\d+\) \[?\w*\]? ?(DeprecationWarning|ExperimentalWarning|Warning)\b/,
   /^\(Use `node --trace-(deprecation|warnings) /,
   /^\s*$/,
+  // A tool printing a value it never had (pnpm exec, before it says a command isn't installed).
+  /^\s*undefined\s*$/,
 ];
 const FAILING = /\b(fail(ed|ing|s)?|error|✗|✘|×|expected|received|assert|panic|traceback)\b/i;
 

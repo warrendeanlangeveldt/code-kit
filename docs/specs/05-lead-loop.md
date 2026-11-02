@@ -31,6 +31,9 @@
 | Lead lease | at       | timestamp | yes      | When it last renewed the lease; one not renewed for 90 seconds has lapsed                                           |
 | Agent      | lastCall | timestamp | yes      | The agent's last tool call, from the session's events                                                               |
 | Agent      | restarts | integer   | yes      | Restarts by the loop for the current story, at most 2                                                               |
+| Hold       | story    | string    | yes      | A story the lead holds on purpose (LOOP-15)                                                                         |
+| Hold       | reason   | string    | yes      | What it waits on, in the lead's words                                                                               |
+| Hold       | until    | timestamp | no       | When it ends by itself; without one, it lasts until released                                                        |
 
 Loop steps are kept for the session and shown in the pane; they aren't written to the repository. The lead lease is kept with the pause in `.claude/state/loop.json`, in the main checkout.
 
@@ -186,6 +189,16 @@ Across steps, the loop never prompts a step a second time while the project stan
 - Given an overloaded API, then the loop tries again after 5 minutes, then 10.
 - Given the hold, when the person types to the lead, then the hold ends and the loop goes on after that turn.
 - Given "Review ST-4" and "Review ST-9" next in turn, and the project standing still, then each is prompted once.
+
+### LOOP-15 The lead holds a story on purpose
+
+Parking (LOOP-13) is for stories waiting on work still going, and wakes after 30 minutes; a lead deliberately leaving a story alone for longer (it waits on something outside the build, or on a date) would be asked about it again every half hour. So the lead holds it, saying why: `code-kit defer <story>… --reason "…" [--until <date or ISO time>]`. A held story isn't dispatched, reviewed or merged: `next` leaves it out of every step and lists it under attention with its reason and how it ends, the loop never prompts it, and the merge queue keeps its branch, with its group, in place while it merges the next (MQ-8). The band shows each hold as a note, and offers no Review or Merge for it. A hold ends at its `--until` time, on its own, or with `code-kit defer release <story>…`; `code-kit defer` lists those in force. Holds are kept in `.claude/state/deferred.json` in the main checkout. With only held stories left to start, `next` waits, naming them, rather than calling the plan broken.
+
+**Acceptance**
+
+- Given ST-2 finished and held "waiting on the partner API", then `next` offers no review of it and lists "ST-2 is held: waiting on the partner API"; once released, it's offered for review.
+- Given ST-2 held until a date, when the date comes, then it's offered again without being released.
+- Given `defer` without a reason, a time already past or a story the plan doesn't have, then nothing is held and the refusal says why.
 
 ## Quality targets
 

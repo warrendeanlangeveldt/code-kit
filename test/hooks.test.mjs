@@ -10,6 +10,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   rmSync,
   utimesSync,
   writeFileSync,
@@ -5178,6 +5179,365 @@ else process.exit(2);
     q.git('checkout', '-q', 'main');
   }
 
+  // --- the merge queue, run as leads run it: from a lane's worktree, with installs, groups, a busy base
+  {
+    const m = newRepo(false);
+    cleanups.push(m.dir);
+    mkdirSync(join(m.dir, '.claude'), { recursive: true });
+    const mConfig = (extra = {}) => ({
+      ...JSON.parse(fixture),
+      approvals: { delegate: { merge: true } },
+      checks: [],
+      ...extra,
+    });
+    writeFileSync(join(m.dir, '.claude/code-kit.json'), JSON.stringify(mConfig()));
+    writeFileSync(
+      join(m.dir, '.gitignore'),
+      '.claude/approvals/\n.claude/state/\n.claude/worktrees/\nnode_modules/\n',
+    );
+    mkdirSync(join(m.dir, 'docs'), { recursive: true });
+    writeFileSync(join(m.dir, 'docs/notes.md'), 'notes\n');
+    writeFileSync(join(m.dir, 'pnpm-lock.yaml'), 'v1\n');
+    m.git('add', '-A');
+    m.git('commit', '-q', '-m', 'kit');
+    const mKit = (cwd, ...args) => spawnSync('node', [kitCli, ...args], { cwd, encoding: 'utf8' });
+    const says = (res, text) =>
+      truth(res.status === 0 && res.stdout.includes(text), res.stdout + res.stderr);
+    const mQueue = () => JSON.parse(mKit(m.dir, 'queue', '--json').stdout);
+    const stateOf = (branch) => mQueue().find((e) => e.branch === branch)?.state;
+    // A lane's worktree, as Claude Code makes one for its agent, with one commit on its branch.
+    const laneTree = (branch, files, from = 'main') => {
+      const wt = join(m.dir, '.claude/worktrees', branch.replace(/\W+/g, '-'));
+      m.git('worktree', 'add', '-q', '-b', branch, wt, from);
+      for (const [rel, body] of Object.entries(files)) {
+        mkdirSync(dirname(join(wt, rel)), { recursive: true });
+        writeFileSync(join(wt, rel), body);
+      }
+      execFileSync('git', ['-C', wt, 'add', '-A']);
+      execFileSync('git', [
+        '-C',
+        wt,
+        '-c',
+        'user.email=t@t',
+        '-c',
+        'user.name=t',
+        'commit',
+        '-q',
+        '-m',
+        branch,
+      ]);
+      return wt;
+    };
+
+    // #1: the lead runs the queue from inside the lane's worktree, which the merge is done with.
+    const inside = laneTree('web/st-30', { 'apps/office/thirty.ts': 'export const t = 30;\n' });
+    mKit(inside, 'queue', 'add', 'web/st-30');
+    const fromInside = mKit(inside, 'queue', 'merge', '--delegated');
+    expect(
+      "MQ-1 a merge run from the lane's own worktree settles its queue entry as merged",
+      truth(
+        fromInside.status === 0 &&
+          fromInside.stdout.includes('Merged web/st-30 into main') &&
+          fromInside.stdout.includes('The queue is empty.') &&
+          stateOf('web/st-30') === 'merged',
+        fromInside.stdout + fromInside.stderr + JSON.stringify(mQueue()),
+      ),
+      0,
+    );
+    expect(
+      "LEAN-8 and keeps the worktree it runs in, saying so, so the lead's shell isn't left nowhere",
+      truth(
+        fromInside.stdout.includes(
+          "Kept web/st-30's worktree, since this command runs in it: it goes at the next merge.",
+        ) &&
+          existsSync(join(inside, '.git')) &&
+          !existsSync(join(inside, '.claude/state/merge-queue.json')),
+        fromInside.stdout,
+      ),
+      0,
+    );
+    const again = mKit(inside, 'queue', 'merge', '--delegated');
+    expect(
+      'MQ-1 the next queue merge merges nothing again',
+      truth(
+        again.status === 0 && again.stdout.includes('The merge queue is empty.'),
+        again.stdout + again.stderr,
+      ),
+      0,
+    );
+    mKit(m.dir, 'worktrees', 'prune');
+    expect('LEAN-8 from the main checkout, that worktree goes', truth(!existsSync(inside)), 0);
+
+    // #1: a queued branch the base already holds is settled as merged: never verified, never sent back.
+    laneTree('web/fix-total', { 'apps/office/total.ts': 'export const total = 2;\n' });
+    mKit(m.dir, 'queue', 'add', 'web/fix-total');
+    m.git('merge', '-q', '--no-ff', '-m', 'merged by hand', 'web/fix-total');
+    const held = mKit(m.dir, 'queue', 'merge', '--delegated');
+    expect(
+      'MQ-1 a queued branch already merged into the base leaves the queue as merged, unverified',
+      truth(
+        held.status === 0 &&
+          held.stdout.includes('web/fix-total was already merged into main') &&
+          !held.stdout.includes('adds or changes no test') &&
+          stateOf('web/fix-total') === 'merged' &&
+          !existsSync(join(m.dir, '.claude/state/reviews.jsonl')),
+        held.stdout + held.stderr,
+      ),
+      0,
+    );
+    expect(
+      'MQ-1 and merge <branch> says it is already merged',
+      says(mKit(m.dir, 'merge', 'web/fix-total', '--delegated'), 'is already merged into main'),
+      0,
+    );
+
+    // #2: the merged tree is checked with the base's installs, and installs again where its lockfile differs.
+    const install =
+      'test "$(cat pnpm-lock.yaml)" != v3 && mkdir -p node_modules && touch "node_modules/marker-$(cat pnpm-lock.yaml)"';
+    writeFileSync(
+      join(m.dir, '.claude/code-kit.json'),
+      JSON.stringify(
+        mConfig({
+          regression: { prepare: install },
+          checks: [
+            {
+              name: 'typecheck',
+              files: ['apps/office/**'],
+              run: ['test -f "node_modules/marker-$(cat pnpm-lock.yaml)"'],
+            },
+          ],
+        }),
+      ),
+    );
+    m.git('commit', '-q', '-am', 'checks need the install');
+    mkdirSync(join(m.dir, 'node_modules'), { recursive: true });
+    writeFileSync(join(m.dir, 'node_modules/marker-v1'), '');
+    const plain = laneTree('web/st-31', { 'apps/office/one.ts': 'export const one = 1;\n' });
+    expect(
+      'the lane worktree has no installs of its own',
+      truth(!existsSync(join(plain, 'node_modules'))),
+      0,
+    );
+    mKit(m.dir, 'queue', 'add', 'web/st-31');
+    const withBase = mKit(m.dir, 'queue', 'merge', '--delegated');
+    expect(
+      "MQ-1 the merged tree's checks use the base's installs, not the lane worktree's (it has none)",
+      truth(
+        withBase.status === 0 && stateOf('web/st-31') === 'merged',
+        withBase.stdout + withBase.stderr,
+      ),
+      0,
+    );
+    laneTree('web/st-32', {
+      'apps/office/two.ts': 'export const two = 2;\n',
+      'pnpm-lock.yaml': 'v2\n',
+    });
+    mKit(m.dir, 'queue', 'add', 'web/st-32');
+    const reinstalled = mKit(m.dir, 'queue', 'merge', '--delegated');
+    expect(
+      'MQ-1 where the merged lockfile differs from the installs, the install runs in the merged tree',
+      truth(
+        reinstalled.status === 0 &&
+          reinstalled.stdout.includes('installed with `test "$(cat pnpm-lock.yaml)"') &&
+          reinstalled.stdout.includes('since its pnpm-lock.yaml differs from') &&
+          stateOf('web/st-32') === 'merged' &&
+          !existsSync(join(m.dir, 'node_modules/marker-v2')),
+        reinstalled.stdout + reinstalled.stderr,
+      ),
+      0,
+    );
+    laneTree('web/st-33', {
+      'apps/office/three.ts': 'export const three = 3;\n',
+      'pnpm-lock.yaml': 'v3\n',
+    });
+    mKit(m.dir, 'queue', 'add', 'web/st-33');
+    const noInstall = mKit(m.dir, 'queue', 'merge', '--delegated');
+    expect(
+      'MQ-1 an install that fails there keeps the branch in its place, not sent back, and says so plainly',
+      truth(
+        noInstall.status === 1 &&
+          noInstall.stderr.includes("the merged tree's checks need its own installs") &&
+          noInstall.stderr.includes('keeps its place in the queue') &&
+          !noInstall.stderr.includes('undefined') &&
+          !noInstall.stderr.includes('sent back') &&
+          stateOf('web/st-33') === 'waiting',
+        noInstall.stderr + JSON.stringify(mQueue()),
+      ),
+      0,
+    );
+    mKit(m.dir, 'queue', 'drop', 'web/st-33');
+    writeFileSync(
+      join(m.dir, '.claude/code-kit.json'),
+      JSON.stringify(
+        mConfig({
+          anyActor: ['pnpm-lock.yaml', 'Gemfile.lock'],
+          checks: [
+            {
+              name: 'typecheck',
+              files: ['apps/office/**'],
+              run: ['test -f "node_modules/marker-$(cat pnpm-lock.yaml)"'],
+            },
+          ],
+        }),
+      ),
+    );
+    m.git('commit', '-q', '-am', 'no install set');
+    laneTree('web/st-34', {
+      'apps/office/four.ts': 'export const four = 4;\n',
+      'Gemfile.lock': 'gems\n',
+    });
+    mKit(m.dir, 'queue', 'add', 'web/st-34');
+    const unmatched = mKit(m.dir, 'queue', 'merge', '--delegated');
+    expect(
+      'MQ-1 with no install it knows for what differs, a failure says the installs used may not match',
+      truth(
+        unmatched.status === 1 &&
+          unmatched.stderr.includes(
+            `with the installs of ${realpathSync(m.dir)}, which may not match: the merged tree's Gemfile.lock differs from its`,
+          ) &&
+          !unmatched.stderr.includes('undefined'),
+        unmatched.stdout + unmatched.stderr,
+      ),
+      0,
+    );
+    writeFileSync(join(m.dir, '.claude/code-kit.json'), JSON.stringify(mConfig()));
+    m.git('commit', '-q', '-am', 'no checks');
+
+    // #3: a lane's branch built on its lead partner's is held only to its own changes.
+    laneTree('lead/st-40', { 'docs/forty.md': 'the lead writes this\n' });
+    laneTree('web/st-41', { 'apps/office/forty-one.ts': 'export const f = 41;\n' }, 'lead/st-40');
+    mKit(m.dir, 'queue', 'add', 'lead/st-40', '--with', 'web/st-41');
+    mKit(m.dir, 'queue', 'add', 'web/st-41');
+    const group = mKit(m.dir, 'queue', 'merge', '--delegated');
+    expect(
+      "MQ-7 a lane member built on its lead partner isn't blamed for the partner's files",
+      truth(
+        group.status === 0 &&
+          group.stdout.includes('together with web/st-41') &&
+          !group.stdout.includes("doesn't own") &&
+          stateOf('lead/st-40') === 'merged' &&
+          stateOf('web/st-41') === 'merged',
+        group.stdout + group.stderr,
+      ),
+      0,
+    );
+    laneTree('lead/st-42', { 'docs/forty-two.md': 'the lead writes this\n' });
+    laneTree(
+      'web/st-43',
+      {
+        'apps/office/forty-three.ts': 'export const f = 43;\n',
+        'docs/sneaked.md': 'not the lane\n',
+      },
+      'lead/st-42',
+    );
+    mKit(m.dir, 'queue', 'add', 'lead/st-42', '--with', 'web/st-43');
+    mKit(m.dir, 'queue', 'add', 'web/st-43');
+    const breach = mKit(m.dir, 'queue', 'merge', '--delegated');
+    expect(
+      'MQ-7 but each is still held to its own lane for what it changed itself',
+      truth(
+        breach.status === 1 &&
+          breach.stderr.includes("web/st-43: docs/sneaked.md: the web lane doesn't own it") &&
+          !breach.stderr.includes('docs/forty-two.md'),
+        breach.stderr,
+      ),
+      0,
+    );
+
+    // #4: the base's checkout gets busy while the queue verifies: only what the merge changes matters.
+    const busyLog = join(realpathSync(m.dir), 'docs/notes.md');
+    writeFileSync(
+      join(m.dir, '.claude/code-kit.json'),
+      JSON.stringify(
+        mConfig({
+          checks: [
+            { name: 'office', files: ['apps/office/**'], run: [`echo turn >> "${busyLog}"`] },
+          ],
+        }),
+      ),
+    );
+    m.git('commit', '-q', '-am', 'a check that writes to the main checkout');
+    laneTree('web/st-50', { 'apps/office/fifty.ts': 'export const f = 50;\n' });
+    mKit(m.dir, 'queue', 'add', 'web/st-50');
+    const busy = mKit(m.dir, 'queue', 'merge', '--delegated');
+    expect(
+      'MQ-1 a change made in the base checkout during verify, to a file the merge leaves alone, is carried',
+      truth(
+        busy.status === 0 &&
+          stateOf('web/st-50') === 'merged' &&
+          readFileSync(busyLog, 'utf8').includes('turn') &&
+          m.git('status', '--porcelain').includes('docs/notes.md'),
+        busy.stdout + busy.stderr,
+      ),
+      0,
+    );
+    laneTree('web/st-51', { 'apps/office/fifty-one.ts': 'export const f = 51;\n' });
+    mkdirSync(join(m.dir, 'apps/office'), { recursive: true });
+    writeFileSync(join(m.dir, 'apps/office/fifty-one.ts'), 'someone else\n');
+    mKit(m.dir, 'queue', 'add', 'web/st-51');
+    const inWay = mKit(m.dir, 'queue', 'merge', '--delegated');
+    expect(
+      'MQ-1 uncommitted changes to a file the merge changes refuse it before the verify, and keep its place',
+      truth(
+        inWay.status === 1 &&
+          inWay.stderr.includes(
+            'has uncommitted changes to a file this merge changes (apps/office/fifty-one.ts)',
+          ) &&
+          !inWay.stderr.includes('code-kit verify found') &&
+          stateOf('web/st-51') === 'waiting',
+        inWay.stderr,
+      ),
+      0,
+    );
+    rmSync(join(m.dir, 'apps/office/fifty-one.ts'));
+    mKit(m.dir, 'queue', 'drop', 'web/st-51');
+
+    // pnpm exec says a command isn't installed in its own way (exit 254, after a bare "undefined").
+    mkdirSync(join(m.dir, 'tools'), { recursive: true });
+    writeFileSync(
+      join(m.dir, 'tools/exec.sh'),
+      `echo undefined\necho ' ERR_PNPM_RECURSIVE_EXEC_FIRST_FAIL  Command "tsc" not found' >&2\nexit 254\n`,
+    );
+    const typesCheck = (extra = {}) =>
+      JSON.stringify(
+        mConfig({
+          checks: [
+            { name: 'types', files: ['apps/office/**'], run: ['sh tools/exec.sh'], ...extra },
+          ],
+        }),
+      );
+    writeFileSync(join(m.dir, '.claude/code-kit.json'), typesCheck({ ifMissing: 'fail' }));
+    m.git('add', 'tools/exec.sh', '.claude/code-kit.json');
+    m.git('commit', '-q', '-m', 'a check through pnpm exec');
+    laneTree('web/st-60', { 'apps/office/sixty.ts': 'export const s = 60;\n' });
+    mKit(m.dir, 'queue', 'add', 'web/st-60');
+    const pnpmMissing = mKit(m.dir, 'queue', 'merge', '--delegated');
+    expect(
+      "a tool pnpm exec can't find is named as not installed, without its stray undefined",
+      truth(
+        pnpmMissing.status === 1 &&
+          pnpmMissing.stderr.includes(
+            'types: `tsc` is not installed. Install it so the check can run.',
+          ) &&
+          !pnpmMissing.stderr.includes('undefined'),
+        pnpmMissing.stderr,
+      ),
+      0,
+    );
+    writeFileSync(join(m.dir, '.claude/code-kit.json'), typesCheck());
+    m.git('commit', '-q', '-am', 'the check may be skipped');
+    laneTree('web/st-61', { 'apps/office/sixty-one.ts': 'export const s = 61;\n' });
+    mKit(m.dir, 'queue', 'add', 'web/st-61');
+    expect(
+      "and where the check may be skipped, the merge says it didn't run",
+      says(
+        mKit(m.dir, 'queue', 'merge', '--delegated'),
+        "Not run, because a tool isn't installed here: types (`tsc` isn't installed)",
+      ),
+      0,
+    );
+  }
+
   // --- approvals reach lanes in their own worktrees ----------------------------------------------
   git('worktree', 'add', '-q', '.claude/worktrees/dep', '-b', 'web/st-7');
   const laneTree = join(repo, '.claude/worktrees/dep');
@@ -7642,6 +8002,80 @@ else process.exit(1);
   vCommit('ST-2 fix');
   v.git('checkout', '-q', 'main');
   nextIs('once the lane commits its fix, the branch goes to review again', v.dir, 'review', 'ST-2');
+  // LOOP-15: a story the lead holds on purpose isn't offered for review, with why, until it's released.
+  expect('LOOP-15 defer needs a reason', vCli('defer', 'ST-2'), 1, 'code-kit defer needs --reason');
+  expect(
+    'LOOP-15 defer refuses a time already past',
+    vCli('defer', 'ST-2', '--reason', 'x', '--until', '2001-01-01'),
+    1,
+    'has already passed',
+  );
+  expect(
+    "LOOP-15 defer refuses a story the plan doesn't have",
+    vCli('defer', 'ST-99', '--reason', 'x'),
+    1,
+    'There is no story ST-99',
+  );
+  const deferredNow = vCli('defer', 'ST-2', '--reason', 'waiting on the partner API');
+  expect(
+    'LOOP-15 defer holds a story, and says until when',
+    truth(
+      deferredNow.status === 0 &&
+        deferredNow.stdout.includes('ST-2 is held: waiting on the partner API') &&
+        deferredNow.stdout.includes('code-kit defer release ST-2'),
+      deferredNow.stdout + deferredNow.stderr,
+    ),
+    0,
+  );
+  const whileDeferred = nextIn(v.dir);
+  expect(
+    'LOOP-15 next offers no review of a held story, and lists it under attention with the reason',
+    truth(
+      !(whileDeferred.step === 'review' && whileDeferred.args.includes('ST-2')) &&
+        whileDeferred.attention.some((a) =>
+          a.startsWith('ST-2 is held: waiting on the partner API.'),
+        ) &&
+        whileDeferred.deferred[0]?.story === 'ST-2' &&
+        whileDeferred.deferred[0]?.branch === 'web/st-2',
+      JSON.stringify(whileDeferred),
+    ),
+    0,
+  );
+  expect(
+    'LOOP-15 defer lists the holds in force',
+    says(vCli('defer'), 'ST-2 is held: waiting on the partner API'),
+    0,
+  );
+  const future = new Date(Date.now() + 3 * 86400000);
+  const day = `${future.getFullYear()}-${String(future.getMonth() + 1).padStart(2, '0')}-${String(future.getDate()).padStart(2, '0')}`;
+  expect(
+    'LOOP-15 a hold can last until a date',
+    says(
+      vCli('defer', 'ST-2', '--reason', 'waiting on the partner API', '--until', day),
+      `ST-2 is held until ${day}: waiting on the partner API`,
+    ),
+    0,
+  );
+  mkdirSync(join(v.dir, '.claude/state'), { recursive: true });
+  writeFileSync(
+    join(v.dir, '.claude/state/deferred.json'),
+    JSON.stringify([
+      {
+        story: 'ST-2',
+        reason: 'waiting on the partner API',
+        until: new Date(Date.now() - 1000).toISOString(),
+        at: new Date().toISOString(),
+      },
+    ]),
+  );
+  nextIs('LOOP-15 once its time has passed, the story goes on by itself', v.dir, 'review', 'ST-2');
+  vCli('defer', 'ST-2', '--reason', 'waiting on the partner API');
+  expect(
+    'LOOP-15 defer release lets it go on',
+    says(vCli('defer', 'release', 'ST-2'), 'Released ST-2'),
+    0,
+  );
+  nextIs('LOOP-15 released, it is reviewed', v.dir, 'review', 'ST-2');
   // The merge queue: a branch whose review passed isn't reviewed again; the person merges it here.
   vCli('queue', 'add', 'web/st-2');
   const waitingMerge = nextIn(v.dir);
@@ -7674,6 +8108,76 @@ else process.exit(1);
     'merge',
     'web/st-2',
   );
+  // MQ-8: the lead pauses the whole queue on purpose: nothing merges, and next offers no merge.
+  expect(
+    'MQ-8 queue pause needs a reason',
+    vCli('queue', 'pause'),
+    1,
+    'code-kit queue pause --reason',
+  );
+  expect(
+    'MQ-8 queue pause holds the queue, with why',
+    says(
+      vCli('queue', 'pause', '--reason', 'the base is being released'),
+      'Paused the merge queue: the base is being released',
+    ),
+    0,
+  );
+  const whilePaused = nextIn(v.dir);
+  expect(
+    'MQ-8 next offers no merge while the queue is paused, and says why',
+    truth(
+      whilePaused.step !== 'merge' &&
+        whilePaused.queuePaused?.reason === 'the base is being released' &&
+        whilePaused.attention.some((a) =>
+          a.startsWith('The merge queue is paused: the base is being released.'),
+        ),
+      JSON.stringify(whilePaused),
+    ),
+    0,
+  );
+  const pausedMerge = vCli('queue', 'merge', '--delegated');
+  expect(
+    'MQ-8 queue merge merges nothing while paused',
+    truth(
+      pausedMerge.status === 0 &&
+        pausedMerge.stdout.includes('The merge queue is paused (the base is being released') &&
+        JSON.parse(vCli('queue', '--json').stdout).some(
+          (e) => e.branch === 'web/st-2' && e.state === 'waiting' && e.paused,
+        ),
+      pausedMerge.stdout + pausedMerge.stderr,
+    ),
+    0,
+  );
+  expect(
+    'MQ-8 the queue lists the pause',
+    says(vCli('queue'), 'The merge queue is paused: the base is being released'),
+    0,
+  );
+  expect(
+    'MQ-8 queue resume lets it merge again',
+    says(vCli('queue', 'resume'), 'The merge queue merges again'),
+    0,
+  );
+  nextIs('MQ-8 resumed, the head is offered to merge again', v.dir, 'merge', 'web/st-2');
+  // LOOP-15: a held story's branch isn't merged by the queue, nor offered by next.
+  vCli('defer', 'ST-2', '--reason', 'the partner ships first');
+  const heldMerge = vCli('queue', 'merge', '--delegated');
+  expect(
+    "LOOP-15 the queue doesn't merge a held story's branch, and says why",
+    truth(
+      heldMerge.status === 0 &&
+        heldMerge.stdout.includes('web/st-2 waits: ST-2 is held: the partner ships first') &&
+        nextIn(v.dir).step !== 'merge' &&
+        JSON.parse(vCli('queue', '--json').stdout).some(
+          (e) => e.branch === 'web/st-2' && e.state === 'waiting' && e.deferred?.story === 'ST-2',
+        ),
+      heldMerge.stdout + heldMerge.stderr,
+    ),
+    0,
+  );
+  vCli('defer', 'release', 'ST-2');
+  nextIs('LOOP-15 released, its branch is offered to merge', v.dir, 'merge', 'web/st-2');
   markMerging(v.dir, 'web/st-2', process.pid);
   const whileMerging = nextIn(v.dir);
   expect(

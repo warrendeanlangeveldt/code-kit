@@ -8,7 +8,8 @@ import { loadConfig, mergeDelegation } from './config.mjs';
 import { buildStatus, readStories, DESIGN, LEAD } from './plan.mjs';
 import { pendingSetup } from './adapters/index.mjs';
 import { CONFIG_FILE, SETUP_VERSION } from './config.mjs';
-import { mergingNow, nextToMerge, readQueue, waiting } from './queue.mjs';
+import { mergingNow, nextToMerge, queuePause, readQueue, waiting } from './queue.mjs';
+import { activeDeferrals, deferralWords } from './deferrals.mjs';
 import { designsFor, handedOver, readRegister, toolOf } from './designs.mjs';
 import { decidedBy, laneOf, openRequests } from './rules.mjs';
 import { instructionsState } from './instructions.mjs';
@@ -21,7 +22,7 @@ import { storyModels } from './dispatches.mjs';
 import { pickPerLane } from './schedule.mjs';
 import { reconcileAll } from './events.mjs';
 import { readCache, teamOf } from './team.mjs';
-import { driftHoldWords, driftHolds, driftUnchecked } from './teamfacts.mjs';
+import { driftHoldWords, driftHolds, driftUnchecked, storyOfBranch } from './teamfacts.mjs';
 
 export const DRAFT_FILE = '.claude/code-kit.draft.json';
 export const BRIEF_STATES = ['framed', 'explored', 'scoped', 'specified', 'planned', 'ready'];
@@ -85,7 +86,9 @@ const hasMarkdown = (dir) => {
 };
 
 /**
- * { step, why, args, then, attention, brief, worktrees }. `brief`: the brief's open questions (ASK-4);
+ * { step, why, args, then, attention, brief, worktrees, deferred, queuePaused }. `brief`: the brief's open
+ * questions (ASK-4); `deferred`: the stories the lead holds, { story, reason, until, at, branch } (LOOP-15);
+ * `queuePaused`: the lead's pause of the merge queue, { reason, at }, or null (MQ-8);
  * `worktrees`: the merged ones still holding changes, { branch, story, changes, files }, for the person (LEAN-8);
  * `models`: each story offered to a lane, with the model it runs on and why, { story, model, why } (SCHED-3). `step` is a skill (spec-design, init, check, dispatch,
  * review), `merge` (the head of the merge queue, where the lead merges), `wait` (lanes are
@@ -99,6 +102,9 @@ export function nextStep(root, base) {
   let holdingTrees = [];
   // SCHED-3: the model each story offered to a lane runs on, and why.
   let models = [];
+  // LOOP-15, MQ-8: what the lead holds on purpose: stories, and the whole merge queue.
+  let deferred = [];
+  let queuePaused = null;
   const result = (step, why, extra = {}) => ({
     step,
     why,
@@ -108,6 +114,8 @@ export function nextStep(root, base) {
     brief: briefQuestions,
     worktrees: holdingTrees,
     models,
+    deferred,
+    queuePaused,
     ...extra,
   });
   const isRepo = git(root, 'rev-parse', '--is-inside-work-tree') === 'true';
@@ -276,6 +284,20 @@ export function nextStep(root, base) {
       `${stopped.join(', ')} ${stopped.length === 1 ? 'has its branch but no commits, and no agent on it' : 'have their branches but no commits, and no agent on them'}: ${stopped.length === 1 ? 'it goes' : 'they go'} to a fresh agent, on the same branch.`,
     );
 
+  // LOOP-15: a story the lead holds isn't dispatched, reviewed or merged until the hold ends.
+  const holds = activeDeferrals(root);
+  const heldIds = new Set(holds.map((h) => h.story));
+  deferred = holds.map((h) => ({
+    ...h,
+    branch: status.stories.find((s) => s.id === h.story)?.branch ?? null,
+    words: deferralWords(h),
+  }));
+  for (const h of holds)
+    attention.push(
+      `${deferralWords(h)}. Nothing dispatches, reviews or merges it until ${h.until ? 'then, or ' : ''}code-kit defer release ${h.story}.`,
+    );
+  // MQ-8: the lead's pause of the merge queue: nothing merges, and no merge is offered.
+  queuePaused = queuePause(root);
   // A branch already in the merge queue has passed its review: it isn't reviewed again.
   const entries = readQueue(root);
   const inQueue = waiting(entries);
@@ -289,7 +311,14 @@ export function nextStep(root, base) {
       )
     : new Map();
   // MQ-7: what can merge next; a branch queued with partners waits until they're queued too.
-  const { head: mergeHead, held: heldGroups, drifting } = nextToMerge(entries, drift);
+  const deferredBy = new Map(
+    inQueue.flatMap((e) => {
+      const story = storyOfBranch(e.branch);
+      const hold = story && holds.find((h) => h.story === story);
+      return hold ? [[e.branch, hold]] : [];
+    }),
+  );
+  const { head: mergeHead, held: heldGroups, drifting } = nextToMerge(entries, drift, deferredBy);
   const queued = inQueue.map((e) => e.branch);
   const driftWords = drifting.map((d) =>
     driftHoldWords(d.branch, d.findings, {
@@ -304,6 +333,7 @@ export function nextStep(root, base) {
   const ids = (state) =>
     status.stories
       .filter((s) => s.state === state && !(state === 'review' && queued.includes(s.branch)))
+      .filter((s) => state === 'in progress' || !heldIds.has(s.id))
       .map((s) => s.id);
   const [review, building, blocked, fixes] = ['review', 'in progress', 'blocked', 'sent back'].map(
     ids,
@@ -320,7 +350,7 @@ export function nextStep(root, base) {
     (Boolean(config.lanes[s.lane]) || s.lane === LEAD || s.lane === DESIGN) &&
     (s.requirements.length > 0 || s.noRequirements) &&
     s.requirements.every((r) => defined.has(r));
-  const readyStories = status.stories.filter((s) => s.state === 'ready');
+  const readyStories = status.stories.filter((s) => s.state === 'ready' && !heldIds.has(s.id));
   // The lead's own stories are built by the lead, not dispatched to a lane agent.
   const forLead = readyStories.filter((s) => buildable(s) && s.lane === LEAD).map((s) => s.id);
   const ready = readyStories
@@ -388,14 +418,18 @@ export function nextStep(root, base) {
   const leadMerges = delegation.delegated && config.harness.autonomy === 'autonomous';
   // SETUP-2: a base with no rules committed (a project set up before setup committed them there): the
   // lead puts the approved rules onto it, and the queue merges under them from then on.
-  if (queued.length && delegation.first)
+  if (queued.length && delegation.first && !queuePaused)
     return result(
       'rules',
       `${queued[0]} passed review and is next to merge, but ${delegation.into} has no code-kit rules committed yet. Put the rules the person approved onto it (code-kit queue rules); then the queue merges under them.`,
       { args: delegation.into },
     );
-  const mergeable = queued.filter((b) => !heldByDrift.has(b));
-  if (mergeable.length && !leadMerges)
+  const mergeable = queued.filter((b) => !heldByDrift.has(b) && !deferredBy.has(b));
+  if (queuePaused)
+    attention.push(
+      `The merge queue is paused: ${queuePaused.reason}. Nothing merges until code-kit queue resume${queued.length ? `; ${queued.join(', ')} ${queued.length === 1 ? 'waits' : 'wait'} in it` : ''}.`,
+    );
+  else if (mergeable.length && !leadMerges)
     attention.push(
       `${mergeable.join(', ')} passed review and ${mergeable.length === 1 ? 'waits' : 'wait'} for the person to merge (code-kit queue merge --person, or Merge in the code-kit band).`,
     );
@@ -409,7 +443,7 @@ export function nextStep(root, base) {
     attention.push(
       `${h.branch} passed review and merges together with ${h.missing.join(', ')}: it waits until ${h.missing.length === 1 ? 'that is' : 'they are'} reviewed and queued.`,
     );
-  if (mergeHead && leadMerges && !merging)
+  if (mergeHead && leadMerges && !merging && !queuePaused)
     return result(
       'merge',
       `${mergeHead.branch} passed review and is next in the merge queue${queued.length > 1 ? ` (then ${queued.filter((b) => b !== mergeHead.branch).join(', ')})` : ''}.`,
@@ -545,7 +579,11 @@ export function nextStep(root, base) {
     );
   // Stories waiting on branches in the merge queue wait for the merge, not on a broken plan. HUBR-9: a
   // queue that only drift findings hold says which, and how each clears.
-  const heldOnly = !mergeHead && driftWords.length ? driftWords.join(' ') : null;
+  const heldOnly = queuePaused
+    ? `The merge queue is paused: ${queuePaused.reason}.`
+    : !mergeHead && driftWords.length
+      ? driftWords.join(' ')
+      : null;
   if (queued.length)
     return result(
       'wait',
@@ -563,6 +601,12 @@ export function nextStep(root, base) {
     return result(
       'wait',
       `${waitingOnPerson.map((s) => `${s.id} waits on the person (${s.waitingFor.id})`).join('; ')}${blocked.length ? `; ${blocked.join(', ')} ${blocked.length === 1 ? 'waits' : 'wait'} on ${waitingOnPerson.length === 1 ? 'it' : 'them'}` : ''}. Carry on with anything else; their answer is sent to you.`,
+    );
+  // LOOP-15: what's left waits on stories the lead holds, or is one of them.
+  if (holds.length && status.stories.some((s) => heldIds.has(s.id) && s.state !== 'done'))
+    return result(
+      'wait',
+      `${holds.map(deferralWords).join('; ')}. Nothing else can start; the loop goes on when a hold ends or is released.`,
     );
   if (blocked.length)
     return result(

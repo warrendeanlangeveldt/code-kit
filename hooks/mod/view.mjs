@@ -414,8 +414,12 @@ export function bandLines({
   // build themselves, does a finished story wait in the band for their Review or Merge; otherwise the
   // loop prompts the lead (or, under propose, offers the step with Go).
   const loopOff = (check?.harness?.autonomy ?? 'autonomous') === 'off';
+  // LOOP-15: a story the lead holds isn't offered for review.
+  const heldStories = new Set((nextStep?.deferred ?? []).map((d) => d.story));
   const inReview = loopOff
-    ? state.lanes.filter((l) => l.state === 'in review').map((l) => l.story)
+    ? state.lanes
+        .filter((l) => l.state === 'in review' && !heldStories.has(l.story?.id))
+        .map((l) => l.story)
     : [];
   if (inReview.length && !working) {
     const [story] = inReview;
@@ -458,11 +462,28 @@ export function bandLines({
   // MQ-2: where the lead doesn't merge, the head of the queue waits for the person's Merge. HUBR-9: a
   // branch the team provider's drift findings hold (`drift`, from `queue --json`) isn't offered; it's said.
   const inQueue = queue.filter((e) => ['waiting', 'merging'].includes(e.state));
-  const next = inQueue.find((e) => !e.drift?.length);
+  // MQ-8: the lead's pause of the queue (from `next`, or carried on each entry by `queue --json`);
+  // LOOP-15: a branch whose story the lead holds isn't offered either.
+  const queuePaused = nextStep?.queuePaused ?? inQueue.find((e) => e.paused)?.paused ?? null;
+  const next = queuePaused ? null : inQueue.find((e) => !e.drift?.length && !e.deferred);
   for (const e of inQueue.filter((x) => x.drift?.length && !working))
     lines.push({
       kind: 'drift',
       text: `${e.branch} is held by the drift check: ${e.drift[0].title || e.drift[0].conflictsWith}`,
+      actions: [],
+    });
+  if (queuePaused && !working)
+    lines.push({
+      kind: 'queuePaused',
+      text: `merge queue paused: ${queuePaused.reason}`,
+      actions: [],
+    });
+  const deferred = nextStep?.deferred ?? [];
+  if (deferred.length && !working)
+    lines.push({
+      kind: 'deferred',
+      text: `${deferred.length > 1 ? `${deferred.length} stories held: ` : ''}${deferred[0].words ?? `${deferred[0].story} is held: ${deferred[0].reason}`}`,
+      deferred,
       actions: [],
     });
   const autonomous = (check?.harness?.autonomy ?? 'autonomous') === 'autonomous';

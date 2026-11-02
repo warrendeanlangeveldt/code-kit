@@ -36,6 +36,9 @@ function runCommand(command, cwd, timeout) {
   }
 }
 
+// pnpm exec's word for a command that isn't installed, which it exits 254 with (after a bare "undefined").
+const MISSING_TOOL = /ERR_PNPM_\w+\s+Command "([^"]+)" not found/;
+
 /** The directories a check runs in: each changed one matching `each` that still exists, or the worktree. */
 function directories(check, files, root) {
   if (!check.each) return [root];
@@ -63,13 +66,20 @@ function runCheck(check, files, root, actor, skipped) {
     for (const command of check.run) {
       const res = runCommand(command, cwd, (check.timeoutSeconds ?? 240) * 1000);
       const where = cwd === root ? '' : ` in ${cwd.slice(root.length + 1)}`;
-      if (res.status === 127) {
+      // A tool that isn't there: the shell's 127, or a package manager's own word for it (pnpm exec's).
+      const tool = res.status === 254 ? res.output.match(MISSING_TOOL)?.[1] : null;
+      if (res.status === 127 || tool) {
+        const what = tool ?? command;
         if (check.ifMissing === 'fail')
           return {
             check: check.name,
-            title: `${check.name}: \`${command}\` is not installed${where}. Install it so the check can run.`,
+            title: `${check.name}: \`${what}\` is not installed${where}. Install it so the check can run.`,
           };
-        skipped.push({ check: check.name, command, where: where.replace(/^ in /, '') || null });
+        skipped.push({
+          check: check.name,
+          command: what,
+          where: where.replace(/^ in /, '') || null,
+        });
         return null; // not installed yet (fresh clone): the check can't run
       }
       // #62: a check that ran out of time didn't fail; it's marked so a merge can try it again.

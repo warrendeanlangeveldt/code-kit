@@ -30,6 +30,8 @@ The build runs from the specs in `{{docs.specs}}` and the stories in `{{docs.pla
 
 {{if ci}}Pull requests run `code-kit verify`, and it must pass before a person merges to a protected branch.{{end}}
 
+When you mean to leave a story alone for a while (it waits on something outside the build, or on a date), hold it rather than letting the loop ask about it again: `code-kit defer <story> --reason "…" [--until <date>]`, and `code-kit defer release <story>` when it can go on. `code-kit queue pause --reason "…"` holds the whole merge queue the same way, until `code-kit queue resume`.
+
 A story reaches the base only through the merge queue: never merge a story's branch into another branch with git. Where the remote's base only moves through pull requests, `"branches.publish": "pull-request"` has code-kit open them after each merge. The merge queue checks each story before it merges, so the project's full CI runs on its release branches, not on every merge. Releasing is the person's decision: when they ask for a release, cut it with `code-kit release <version>`, which branches `release/<version>` from the base and pushes it, and the full CI runs there once. Never cut one unasked. `code-kit ci check` says what in the project's workflows still runs per story, and `code-kit ci usage` what the project spent on GitHub Actions.
 
 Changing the rules means editing `.claude/code-kit.json` (the lead only), then running the `code-kit:check` skill.

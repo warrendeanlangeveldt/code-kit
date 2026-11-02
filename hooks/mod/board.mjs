@@ -235,6 +235,8 @@ const NOTES = new Set([
   'elsewhere',
   'loop',
   'drift',
+  'queuePaused',
+  'deferred',
 ]);
 
 /** What a line is, in a word or two, for the Needs you panel. */
