@@ -5565,6 +5565,61 @@ else process.exit(2);
       ),
       0,
     );
+    mKit(m.dir, 'queue', 'drop', 'web/st-34');
+    // A service in a subfolder with its own lockfile: its install runs in that folder. A stand-in uv
+    // records what it synced, where.
+    const bin = join(m.dir, '.claude/state/bin');
+    mkdirSync(bin, { recursive: true });
+    writeFileSync(
+      join(bin, 'uv'),
+      '#!/bin/sh\n[ "$1 $2" = "sync --frozen" ] && mkdir -p .venv && touch ".venv/synced-$(cat uv.lock)"\n',
+    );
+    chmodSync(join(bin, 'uv'), 0o755);
+    mkdirSync(join(m.dir, 'workers/py'), { recursive: true });
+    writeFileSync(join(m.dir, 'workers/py/pyproject.toml'), '[project]\nname = "py"\n');
+    writeFileSync(join(m.dir, 'workers/py/uv.lock'), 'u1\n');
+    writeFileSync(
+      join(m.dir, '.gitignore'),
+      `${readFileSync(join(m.dir, '.gitignore'), 'utf8')}.venv/\n`,
+    );
+    writeFileSync(
+      join(m.dir, '.claude/code-kit.json'),
+      JSON.stringify(
+        mConfig({
+          anyActor: ['workers/py/uv.lock'],
+          checks: [
+            {
+              name: 'service tests',
+              files: ['workers/py/**'],
+              run: ['test -f "workers/py/.venv/synced-$(cat workers/py/uv.lock)"'],
+            },
+          ],
+        }),
+      ),
+    );
+    m.git('add', '-A');
+    m.git('commit', '-q', '-m', 'a python service');
+    laneTree('backend/st-35', {
+      'workers/py/app.py': 'import added\n',
+      'workers/py/uv.lock': 'u2\n',
+    });
+    mKit(m.dir, 'queue', 'add', 'backend/st-35');
+    const nested = spawnSync('node', [kitCli, 'queue', 'merge', '--delegated'], {
+      cwd: m.dir,
+      encoding: 'utf8',
+      env: { ...process.env, PATH: `${bin}:${process.env.PATH}` },
+    });
+    expect(
+      'MQ-1 a lockfile in a subfolder that differs gets its own install, run in that folder',
+      truth(
+        nested.status === 0 &&
+          nested.stdout.includes("installed with `(cd 'workers/py' && uv sync --frozen)`") &&
+          stateOf('backend/st-35') === 'merged' &&
+          !existsSync(join(m.dir, 'workers/py/.venv')),
+        nested.stdout + nested.stderr,
+      ),
+      0,
+    );
     writeFileSync(join(m.dir, '.claude/code-kit.json'), JSON.stringify(mConfig()));
     m.git('commit', '-q', '-am', 'no checks');
 

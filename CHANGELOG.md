@@ -7,6 +7,7 @@ What changed in each release of code-kit, newest first. Versions follow the plug
 - **Setting a shell variable before a commit.** A commit in the same command after `f=docs/x.md` or `export MSG="…"` is no longer refused: setting a variable writes no file. A value that runs a command (`$(…)` or backticks) is still refused, and a `git add "$f"` still counts as staging every changed file, since what it names can't be read in advance.
 - **Releasing a worktree while the lead's reviewer works on its story.** `code-kit worktrees release` no longer says the lane's agent is still at work because a reviewer the lead started is acting on the same story. Only the branch's own lane agent counts.
 - **A fix's test the checks never run.** Where a check passes without running a fix's test (the test runner's default config leaves the file out), verify no longer says the test passes without the fix. It breaks the test on purpose, sees the check still pass, and says the check doesn't run it, so it can't tell.
+- **A lockfile in a subfolder.** When a branch changes the lockfile of a service in a subfolder (a Python service's `uv.lock` beside its `pyproject.toml`, say), the merge queue now runs that lockfile's install in that folder of the merged tree, so the checks see the new dependency. Before, it only looked for lockfiles at the top.
 
 ## 0.30.1 (2026-11-02)
 
