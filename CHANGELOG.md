@@ -2,7 +2,9 @@
 
 What changed in each release of code-kit, newest first. Versions follow the plugin manifest and the npm package `@warren-dean/code-kit`. Each release is also on [GitHub Releases](https://github.com/warrendeanlangeveldt/code-kit/releases).
 
-## Unreleased
+## 0.30.0 (2026-11-02)
+
+Fixes from how code-kit is used: screens are built from their exported designs and compared in review, the merge queue lands what it verified and only holds a branch to its own changes, and the lead can hold stories and the queue on purpose. code-kit's part of CLAUDE.md is now version 12, so `next` asks to bring it up to date first.
 
 - **A screen waits for its design as files (spec 24, HAND-6).** A register entry that names only an artboard in the design tool no longer lets a lane write the screen: the write is refused, saying the lead hands the design over with `/code-kit:design --hand-over` first. `code-kit next` doesn't dispatch a story that builds such a screen; its step is the hand-over (`design` with `handOver: true`), and the loop asks the lead for it.
 - **The review's comparison is recorded (HAND-7).** The review records the screenshot of each built state it set beside the design: `code-kit designs evidence <story> <screen> <state> <screenshot.png>`, refused unless it's a PNG at the design's viewport. `verify`, and so the merge queue, report each approved state of a lane branch's screens with no screenshot since the screen last changed. In CI, where the review's records aren't, verify says it didn't check them.
