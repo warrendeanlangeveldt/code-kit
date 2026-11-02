@@ -9401,9 +9401,20 @@ else process.exit(1);
       1,
       'still at work on web/st-2',
     );
+    // The lead's reviewer, still polling for verify on the story, isn't the lane's agent at work.
+    const helper = JSON.stringify({
+      at: new Date(Date.now() - 10_000).toISOString(),
+      story: 'ST-2',
+      actor: 'code-kit:reviewer',
+      agent: 'r1',
+      session: 's1',
+      kind: 'run',
+      phase: 'start',
+      branch: 'web/st-2',
+    });
     writeFileSync(
       join(events, 'ST-2.jsonl'),
-      `${act('edit', 'end', 60_000)}\n${act('handback', 'note', 30_000)}\n`,
+      `${act('edit', 'end', 60_000)}\n${act('handback', 'note', 30_000)}\n${helper}\n`,
     );
     expect(
       'released for a fresh agent: the worktree goes, the branch and its report stay',

@@ -5,6 +5,7 @@ What changed in each release of code-kit, newest first. Versions follow the plug
 ## Unreleased
 
 - **Setting a shell variable before a commit.** A commit in the same command after `f=docs/x.md` or `export MSG="…"` is no longer refused: setting a variable writes no file. A value that runs a command (`$(…)` or backticks) is still refused, and a `git add "$f"` still counts as staging every changed file, since what it names can't be read in advance.
+- **Releasing a worktree while the lead's reviewer works on its story.** `code-kit worktrees release` no longer says the lane's agent is still at work because a reviewer the lead started is acting on the same story. Only the branch's own lane agent counts.
 
 ## 0.30.1 (2026-11-02)
 
