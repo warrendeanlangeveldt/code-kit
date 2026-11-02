@@ -11,7 +11,7 @@ import { isDependencyFile } from './dependencies.mjs';
 import { entryProblems, freshEntries, readRegister, statesWithoutEvidence } from './designs.mjs';
 import { evidenceRecords } from './reviews.mjs';
 import { storyOfBranch } from './teamfacts.mjs';
-import { matchesAny } from './glob.mjs';
+import { literalPath, matchesAny } from './glob.mjs';
 import { layerProblems } from './layers.mjs';
 import { STANDARDS_APPROVAL, standardsFile, standardsWeakenings } from './standards.mjs';
 import { TESTS_APPROVAL, branchWeakenings, fixOf, proveFix } from './regression.mjs';
@@ -138,7 +138,7 @@ function logEntries(root, base) {
  */
 function signedByPerson(root, from, file, signedBy) {
   if (!signedBy) return false;
-  const out = git(root, 'log', '--format=%B%x1e', `${from}..HEAD`, '--', file);
+  const out = git(root, 'log', '--format=%B%x1e', `${from}..HEAD`, '--', literalPath(file));
   const messages = out
     .split('\x1e')
     .map((m) => m.trim())
@@ -340,8 +340,16 @@ export function verifyBranch({
           Boolean(r.sha) &&
           spawnSync('git', ['-C', root, 'merge-base', '--is-ancestor', r.sha, 'HEAD']).status ===
             0 &&
-          spawnSync('git', ['-C', root, 'diff', '--quiet', r.sha, 'HEAD', '--', r.file]).status ===
-            0;
+          spawnSync('git', [
+            '-C',
+            root,
+            'diff',
+            '--quiet',
+            r.sha,
+            'HEAD',
+            '--',
+            literalPath(r.file),
+          ]).status === 0;
         const story = storyOfBranch(name) ?? name;
         for (const { entry, state } of statesWithoutEvidence(entries, present, records, current))
           found.evidence.push(

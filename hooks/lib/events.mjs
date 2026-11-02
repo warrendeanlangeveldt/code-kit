@@ -15,10 +15,10 @@ import {
 import { spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
-import { CODE_KIT, GIT, commandsOf } from './shell.mjs';
+import { CODE_KIT, GIT, commandsOf, ruleMatches } from './shell.mjs';
 import { addedPackages } from './dependencies.mjs';
 import { storyOfBranch } from './teamfacts.mjs';
-import { globToRegExp } from './glob.mjs';
+import { globToRegExp, literalPath } from './glob.mjs';
 import { projectWorktrees } from './rules.mjs';
 import { readQueue, settle, waiting } from './queue.mjs';
 import { sessions } from './sessions.mjs';
@@ -65,20 +65,21 @@ const TEST =
  * approval protects), one the project blocks or restricts, or one in `execution.unrepeatable`.
  */
 export function unrepeatable(command, config) {
-  const patterns = [
-    ...(config.shell?.block ?? []).map((b) => b.pattern),
-    ...(config.shell?.restricted ?? []).map((r) => r.pattern),
-    ...(config.execution?.unrepeatable ?? []),
+  // The project's blocked and restricted commands are matched as the shell hook matches them.
+  const rules = [
+    ...(config.shell?.block ?? []),
+    ...(config.shell?.restricted ?? []),
+    ...(config.execution?.unrepeatable ?? []).map((pattern) => ({ pattern })),
   ];
-  if (patterns.some((p) => safeTest(p, command))) return true;
+  if (rules.some((r) => safeTest(r, command))) return true;
   const migrations = (config.protected ?? []).filter((p) => p.approval === 'migration');
   return command
     .split(/\s+/)
     .some((w) => migrations.some((p) => globToRegExp(p.glob).test(w.replace(/^\.\//, ''))));
 }
-function safeTest(pattern, text) {
+function safeTest(rule, text) {
   try {
-    return new RegExp(pattern).test(text);
+    return ruleMatches(rule, text);
   } catch {
     return false;
   }
@@ -525,7 +526,7 @@ export function checkAct(root, act, base) {
   }
   if (act.kind === 'edit' && tree) {
     const rel = act.target?.startsWith(tree) ? act.target.slice(tree.length + 1) : act.target;
-    const changed = out(git(tree, 'status', '--porcelain', '--', rel));
+    const changed = out(git(tree, 'status', '--porcelain', '--', literalPath(rel)));
     return {
       found: changed ? 'done' : 'not done',
       how: changed ? `${rel} holds uncommitted changes` : `${rel} is as committed`,

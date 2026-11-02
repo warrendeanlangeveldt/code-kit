@@ -9,11 +9,8 @@ import { ADAPTERS, applyAdapters } from './adapters/index.mjs';
 
 export const CONFIG_FILE = '.claude/code-kit.json';
 // Claude's own memory and session scratchpad, which the lead always writes.
-export const CLAUDE_OWN = [
-  '~/.claude/projects/*/memory/**',
-  '/private/tmp/claude-*/**',
-  '/tmp/claude-*/**',
-];
+// Claude's memory. The session's own temporary folder is the lead's and the lanes' too (rules.mjs).
+export const CLAUDE_OWN = ['~/.claude/projects/*/memory/**'];
 const KIT = { glob: '.claude/**', approval: 'kit', why: 'the rules that constrain agents' };
 
 /** `{ config }` when the project has a valid config, `{ error }` when it is invalid, `{}` when it has none. */

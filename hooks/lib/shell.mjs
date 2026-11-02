@@ -52,7 +52,8 @@ const LEADING =
 /**
  * The simple commands `cmd` runs, in order: split at `;`, `&`, `|`, newlines, parentheses and
  * backticks outside quotes, heredoc bodies left out, each without leading `VAR=value` assignments.
- * Each is `{ text, code }`: `text` as written, `code` with its quoted text masked.
+ * Each is `{ text, code, whole }`: `text` as written, `code` with its quoted text masked, and `whole`
+ * as written with its leading assignments and wrappers kept.
  */
 export function commandsOf(cmd) {
   const text = withoutHeredocs(cmd);
@@ -66,7 +67,8 @@ export function commandsOf(cmd) {
     const skip = body.match(LEADING)?.[0].length ?? 0;
     const from = start + lead + skip;
     const piece = text.slice(from, start + lead + body.length);
-    if (piece) found.push({ text: piece, code: mask.slice(from, from + piece.length) });
+    if (piece)
+      found.push({ text: piece, code: mask.slice(from, from + piece.length), whole: body });
   };
   for (let i = 0; i < mask.length; i++)
     if (SEPARATOR.test(mask[i])) {
@@ -95,6 +97,9 @@ export const CODE_KIT = String.raw`(?:code-kit|node\s+(?:"[^"]*code-kit(?:\.mjs)
 
 // What a read may redirect: its errors into its output (2>&1, >&2), or anything into /dev/null.
 const HARMLESS_REDIRECT = /(?:\d+|&)?>>?\s*(?:&\d+|\/dev\/null(?![\w/.-]))/g;
+
+/** `cmd` with its harmless redirects (`2>&1`, `>&2`, anything into /dev/null) taken out: they write no file. */
+export const withoutHarmlessRedirects = (cmd) => String(cmd).replace(HARMLESS_REDIRECT, ' ');
 // An assignment before a command (GIT_PAGER=…, GIT_EXTERNAL_DIFF=…, LESSOPEN=…) can make a reader run a
 // program, so a read that sets one isn't only a read.
 const ASSIGNS = /^\s*(?:(?:sudo|exec|time|command|nohup|env)\s+|!\s+)*[A-Za-z_]\w*=/;
@@ -107,6 +112,8 @@ const READERS = [
   // less with no log file of what it shows.
   /^(?!.*\s(?:-[a-zA-Z]*[oO]|--log-file\b|--LOG-FILE\b))less(?:\s|$)/,
   /^(?!.*\s(?:--output\b|-O|--open-files-in-pager\b))git(?:\s+(?:-C\s+\S+|--no-pager|-P))*\s+(?:diff|log|show|blame|grep|status|cat-file|ls-files|shortlog|rev-parse)(?:\s|$)/,
+  // git branch only listing branches or naming the current one: no name to create, move or delete.
+  /^git(?:\s+(?:-C\s+\S+|--no-pager|-P))*\s+branch(?:\s+(?:--show-current|--list|-l|-a|--all|-r|--remotes|-vv?|--verbose|--no-color|--color|--merged|--no-merged))*\s*$/,
   // rg with no preprocessor; sort with no output file or compressor.
   /^(?!.*\s--pre\b)rg(?:\s|$)/,
   /^(?!.*\s(?:-[a-zA-Z]*o|--output\b|--compress-program\b))sort(?:\s|$)/,
@@ -173,7 +180,7 @@ const uniqPrints = (text) =>
  */
 export function readsOnly(cmd) {
   // Taken out first: `&` in `2>&1` would otherwise split the command there.
-  const read = String(cmd).replace(HARMLESS_REDIRECT, ' ');
+  const read = withoutHarmlessRedirects(cmd);
   const code = codeOf(read);
   if (/[>`]|\$\(|<\(|<>/.test(code)) return false;
   if (code.split(/[;&|\n()]/).some((piece) => ASSIGNS.test(piece))) return false;
@@ -188,4 +195,51 @@ export function readsOnly(cmd) {
       return false;
     })
   );
+}
+
+// What may come before a command it runs: a package runner (`npx`, `pnpm exec`, `uv run`…) or a wrapper
+// (`xargs`, `nice`, `timeout 60`), so a rule naming the command finds it there too.
+const WRAPPER = String.raw`(?:(?:npx|bunx|pnpx)(?:\s+-\S+)*\s+|(?:pnpm|yarn|bun)\s+(?:(?:exec|dlx|x|run)\s+)?(?:-\S+\s+)*|npm\s+(?:exec|x|run)\s+(?:--\s+)?|(?:uv|poetry|pipenv)\s+run\s+|(?:xargs|nice|nohup|time|command|exec)(?:\s+-\S+)*\s+|timeout\s+(?:-\S+\s+)*\S+\s+)`;
+// A shell handed a script (`sh -c '…'`, `bash -lc "…"`): the script's commands run too, as do eval's.
+const SHELL_SCRIPT = /^(?:ba|z|da|k)?sh\s+(?:-[a-zA-Z]+\s+)*-[a-zA-Z]*c[a-zA-Z]*\s/;
+const SCRIPT_FLAG = /^-[a-zA-Z]*c[a-zA-Z]*$/;
+
+/** The script a command hands a shell it starts (`sh -c '…'`) or `eval`, or null. */
+function scriptOf({ text, code }) {
+  const words = wordsOf(text);
+  if (/^eval\s/.test(code)) return words.slice(1).join(' ');
+  if (!SHELL_SCRIPT.test(code)) return null;
+  const at = words.findIndex((w, i) => i > 0 && SCRIPT_FLAG.test(w));
+  return at > 0 ? (words[at + 1] ?? null) : null;
+}
+
+/**
+ * Whether `cmd` runs a command `pattern` names: matched from the start of each command the line runs
+ * (after a package runner or wrapper, and inside `sh -c` or `eval`), with quoted text masked unless the
+ * pattern itself has quotes, so an argument, a heredoc or a message that mentions the command isn't it.
+ */
+export function runsNamed(cmd, pattern, depth = 0) {
+  const source = String(pattern).replace(/^\^/, '');
+  const quoted = /["']/.test(source);
+  const re = new RegExp(String.raw`^${WRAPPER}*(?:${source})`);
+  return commandsOf(cmd).some((c) => {
+    // The program's own name counts however it's quoted: `"tool" deploy` runs tool.
+    const first = c.text.match(/^(?:'[^']*'|"(?:\\.|[^"\\])*"|\S+)/)?.[0] ?? '';
+    const subject = quoted ? c.text : wordsOf(first).join('') + c.code.slice(first.length);
+    if (re.test(subject)) return true;
+    const script = depth < 3 ? scriptOf(c) : null;
+    return script !== null && runsNamed(script, pattern, depth + 1);
+  });
+}
+
+/**
+ * Whether a project's rule for a command (`shell.block`, `shell.restricted`: `{ pattern, command? }`)
+ * matches `cmd`. `command: true` matches the commands the line runs (runsNamed). Otherwise the pattern
+ * reads the whole line, except that in a line that only reads (readsOnly) quoted text is data: a grep
+ * for a blocked command doesn't run it.
+ */
+export function ruleMatches({ pattern, command }, cmd) {
+  if (command) return runsNamed(cmd, pattern);
+  const quoted = /["']/.test(pattern);
+  return new RegExp(pattern).test(!quoted && readsOnly(cmd) ? codeOf(cmd) : cmd);
 }
