@@ -8,7 +8,8 @@ import { existsSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { freshCheckout } from './checkout.mjs';
 import { runChecks } from './checks.mjs';
-import { matchesAny } from './glob.mjs';
+import { isDependencyFile } from './dependencies.mjs';
+import { literalPath, matchesAny } from './glob.mjs';
 import { readStories } from './plan.mjs';
 import { isNamedTest, isTestFile } from './testfiles.mjs';
 
@@ -257,6 +258,11 @@ export function proveFix({ root, from, base, changed, config, fix }) {
     return [
       `${what}, but it adds or changes no test. Add a test that fails without the fix: it's what stops the bug coming back.`,
     ];
+  // Records a tool writes for everyone (files any actor may write, such as an adapter's, but not the
+  // manifests and lockfiles, which can be a fix) are neither the fix's code nor its tests: they don't
+  // make a fix more than its tests, and they don't go back.
+  const shared = (f) => matchesAny(f, config.anyActor) && !isDependencyFile(f);
+  changed = changed.filter((f) => !shared(f));
   // A fix made wholly in the tests (a flaky test, a broken helper) has no code to take back: its tests
   // are the fix. REG-2 still holds them, so it can't be made by weakening one.
   if (changed.every((f) => isTestFile(f, config) || SNAPSHOT.test(f))) return [];
@@ -298,10 +304,28 @@ export function proveFix({ root, from, base, changed, config, fix }) {
         `${what}, but its tests don't pass in a fresh checkout of the branch (${withFix.title.replace(/ Fix it:$/, '')}), so code-kit can't tell whether they fail without it. If they need an install or a build first, set regression.prepare.${withFix.output ? `\n${String(withFix.output).trim().split('\n').slice(-20).join('\n')}` : ''}`,
       ];
     for (const f of revert) {
-      if (showAt(root, from, f) !== null) git(dir, 'checkout', from, '--', f);
+      if (showAt(root, from, f) !== null) git(dir, 'checkout', from, '--', literalPath(f));
       else rmSync(join(dir, f), { force: true });
     }
     const { failure: without } = runChecks(strict, tests, dir, actor);
+    // Test code the branch adds was kept for the tests to load. Where they pass without the rest of
+    // the fix, and fail without that code, the fix is the new test code itself: the base's code never
+    // had it, so the tests can't show the bug there, like tests that call only what a fix adds.
+    const added = changed.filter(
+      (f) =>
+        !tests.includes(f) &&
+        !SNAPSHOT.test(f) &&
+        isTestFile(f, config) &&
+        showAt(root, from, f) === null,
+    );
+    if (!without && added.length) {
+      for (const f of added) rmSync(join(dir, f), { force: true });
+      const { failure: unloaded } = runChecks(strict, tests, dir, actor);
+      if (unloaded)
+        return [
+          `${what}, but its tests (${tests.join(', ')}) pass without the fix's other changes, and fail without it only because they load test code the fix adds (${added.join(', ')}), which the base never had. A test that goes through the code the fix changed fails on an assertion when the bug is there: write that one. If the fix is only in the tests and their helpers, keep the branch to test files.`,
+        ];
+    }
     if (!without)
       return [
         `${what}, but its tests (${tests.join(', ')}) also pass without the fix, so they don't prove the bug and it can come back. Write a test that fails on ${base} and passes here.`,

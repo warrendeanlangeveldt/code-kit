@@ -7,6 +7,7 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { dispatches } from './dispatches.mjs';
+import { literalPath } from './glob.mjs';
 import { APPROVAL_LOG } from './rules.mjs';
 import { sendBacks } from './reviews.mjs';
 import { storyTimes } from './timeline.mjs';
@@ -27,7 +28,7 @@ const gitIn =
 
 /** When a file was first committed, in ms, or null. */
 const addedAt = (git, file) => {
-  const t = git('log', '--diff-filter=A', '--format=%ct', '--', file)
+  const t = git('log', '--diff-filter=A', '--format=%ct', '--', literalPath(file))
     .split('\n')
     .filter(Boolean)
     .at(-1);

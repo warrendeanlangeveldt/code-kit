@@ -14,7 +14,16 @@ import {
   ecosystemOf,
   isDependencyFile,
 } from './lib/dependencies.mjs';
-import { CODE_KIT, GIT, codeOf, commandsOf, readsOnly, runs } from './lib/shell.mjs';
+import {
+  CODE_KIT,
+  GIT,
+  codeOf,
+  commandsOf,
+  readsOnly,
+  ruleMatches,
+  runs,
+  withoutHarmlessRedirects,
+} from './lib/shell.mjs';
 import { block, start } from './lib/hook.mjs';
 import { CONFIG_FILE, committedConfig } from './lib/config.mjs';
 import { laneOfBranch, storyOfBranch, teamOf, teamProvider, whoami } from './lib/team.mjs';
@@ -194,8 +203,9 @@ const forPerson = actor.kind === 'lead' && config.approvals.lead;
 
 for (const { pattern, why, person, command } of config.shell.block) {
   // `command: true`: the pattern names a command, matched from the start of each one the line runs, so a
-  // heredoc or a quoted message that mentions it isn't refused. Otherwise it reads the whole text.
-  const matched = command ? runs(cmd, new RegExp(pattern)) : new RegExp(pattern).test(cmd);
+  // heredoc, an argument or a quoted message that mentions it isn't refused. Otherwise it reads the whole
+  // text, except a read's quoted arguments (lib/shell.mjs ruleMatches).
+  const matched = ruleMatches({ pattern, command }, cmd);
   if (!matched || (person && forPerson)) continue;
   const hint =
     person && actor.kind === 'lead'
@@ -356,7 +366,7 @@ if (packages.length) {
 }
 for (const { pattern, lanes, why } of config.shell.restricted) {
   const allowed = actor.kind === 'lead' || (actor.kind === 'lane' && lanes.includes(actor.lane));
-  if (!allowed && new RegExp(pattern).test(cmd))
+  if (!allowed && ruleMatches({ pattern }, cmd))
     block(`Blocked: the ${actor.label} may not run this. ${why}\nCommand: ${cmd}`);
 }
 
@@ -504,7 +514,7 @@ function committedFiles() {
     l.slice(3),
   );
   // Each git command of the chain, however it's run (`git -C <worktree> add`).
-  const pieces = commandsOf(cmd).map((c) => c.text);
+  const pieces = commandsOf(withoutHarmlessRedirects(cmd)).map((c) => c.text);
   const gitRun = (sub) =>
     pieces.map((p) => p.match(new RegExp(String.raw`^${GIT}${sub}`))).filter(Boolean);
   const commitAll = gitRun(String.raw`commit(?![\w-])(.*)`).some((m) =>
@@ -517,7 +527,14 @@ function committedFiles() {
       .filter((a) => a && !a.startsWith('-'))
       .map((a) => a.replace(/^(['"])(.*)\1$/, '$2'));
   const addRuns = gitRun(String.raw`add\b(.*)`);
-  const addAll = addRuns.some((m) => /\s(-A|--all|\.)(\s|$)/.test(` ${m[1]}`));
+  // `-A` stages everything only without paths: `git add -A <paths>` stages those paths. A pathspec with
+  // magic (`:/`, `:(top)…`) could name any file, so it counts as everything.
+  const addAll = addRuns.some(
+    (m) =>
+      /\s\.(\s|$)/.test(` ${m[1]}`) ||
+      argsOf(m).some((a) => a.startsWith(':')) ||
+      (/\s(-A|--all)(\s|$)/.test(` ${m[1]}`) && argsOf(m).length === 0),
+  );
   // `git rm` and `git mv` stage as they run: their files count though nothing has changed them yet, and
   // what they take away is gone from the commit though it's still on disk now.
   const rmArgs = gitRun(String.raw`rm\b(.*)`).flatMap(argsOf);
@@ -745,16 +762,18 @@ ${approvalHowTo(TESTS_APPROVAL, actor, root, 'weakening tests in one commit', pe
 
 // The commit hook judges what the commit holds before the command runs, so a file a command earlier in
 // the chain writes (a formatter, a script, a heredoc) can't be seen, and would go in unjudged and
-// unlogged. Before the commit, a chain may only move into the checkout and stage.
+// unlogged. Before the commit, a chain may only move into the checkout, stage, and run commands that
+// only read (lib/shell.mjs readsOnly: git's status, diff, log and show among them, with no output
+// file). Errors sent into the output or /dev/null write no file.
 const BEFORE_COMMIT = new RegExp(
-  String.raw`^(?:cd\s|${GIT}(?:add|rm|mv|status|diff|log|show|restore\s+--staged|reset\s+--soft)(?![\w-]))`,
+  String.raw`^(?:cd\s|${GIT}(?:add|rm|mv|restore\s+--staged|reset\s+--soft)(?![\w-]))`,
 );
 function writesBeforeCommit() {
-  const pieces = commandsOf(cmd);
+  const pieces = commandsOf(withoutHarmlessRedirects(cmd));
   const at = pieces.findIndex((c) => new RegExp(String.raw`^${GIT}commit(?![\w-])`).test(c.text));
   return pieces
     .slice(0, Math.max(at, 0))
-    .find((c) => !BEFORE_COMMIT.test(c.text) || /[<>]/.test(c.code));
+    .find((c) => (!BEFORE_COMMIT.test(c.text) || /[<>]/.test(c.code)) && !readsOnly(c.whole));
 }
 
 if (commits) {
