@@ -1207,7 +1207,7 @@ function trailCommand() {
     die('trail needs docs.specs and docs.plan in the config. The spec-design skill writes both.');
   const from = base(config, false);
   const status = buildStatus('.', config, from, tracked());
-  const rows = trail(resolve('.'), status, from);
+  const rows = trail(resolve('.'), status, from, config);
   if (flag('--json')) return out(JSON.stringify({ base: from, requirements: rows }, null, 2));
   for (const r of rows)
     out(

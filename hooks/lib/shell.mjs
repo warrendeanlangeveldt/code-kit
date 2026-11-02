@@ -92,3 +92,100 @@ export const GIT = String.raw`git\s+(?:-[Cc]\s+(?:"[^"]*"|'[^']*'|\S+)\s+)*`;
 
 /** code-kit's command line however it's run: installed, through node (its path quoted or not), or npx. */
 export const CODE_KIT = String.raw`(?:code-kit|node\s+(?:"[^"]*code-kit(?:\.mjs)?"|'[^']*code-kit(?:\.mjs)?'|\S*code-kit(?:\.mjs)?)|npx\s+(?:--yes\s+|-y\s+)?@warren-dean\/code-kit(?:@\S+)?)`;
+
+// What a read may redirect: its errors into its output (2>&1, >&2), or anything into /dev/null.
+const HARMLESS_REDIRECT = /(?:\d+|&)?>>?\s*(?:&\d+|\/dev\/null(?![\w/.-]))/g;
+// An assignment before a command (GIT_PAGER=…, GIT_EXTERNAL_DIFF=…, LESSOPEN=…) can make a reader run a
+// program, so a read that sets one isn't only a read.
+const ASSIGNS = /^\s*(?:(?:sudo|exec|time|command|nohup|env)\s+|!\s+)*[A-Za-z_]\w*=/;
+
+// Commands that read files or what comes down the pipe and print, and write nothing whatever their
+// arguments. git reads its history: only `-C` before the subcommand (a `-c` setting can name a program
+// to run), and no output file or pager program.
+const READERS = [
+  /^(?:cd|pwd|cat|head|tail|wc|grep|egrep|fgrep|cut|jq|nl|tr|ls|stat|diff|cmp|echo|printf|true)(?:\s|$)/,
+  // less with no log file of what it shows.
+  /^(?!.*\s(?:-[a-zA-Z]*[oO]|--log-file\b|--LOG-FILE\b))less(?:\s|$)/,
+  /^(?!.*\s(?:--output\b|-O|--open-files-in-pager\b))git(?:\s+(?:-C\s+\S+|--no-pager|-P))*\s+(?:diff|log|show|blame|grep|status|cat-file|ls-files|shortlog|rev-parse)(?:\s|$)/,
+  // rg with no preprocessor; sort with no output file or compressor.
+  /^(?!.*\s--pre\b)rg(?:\s|$)/,
+  /^(?!.*\s(?:-[a-zA-Z]*o|--output\b|--compress-program\b))sort(?:\s|$)/,
+];
+
+/** A command's words, quotes taken off. */
+const wordsOf = (text) =>
+  (text.match(/'[^']*'|"(?:\\.|[^"\\])*"|\S+/g) ?? []).map((w) =>
+    w.replace(/^(['"])(.*)\1$/s, '$2'),
+  );
+
+// A sed script that only prints, deletes from what it prints, numbers or quits: `5,20p`, `$p`, `/x/p`.
+const SED_ADDRESS = String.raw`(?:\d+|\$|/(?:[^/\\]|\\.)*/)`;
+const SED_PRINTS = new RegExp(
+  String.raw`^(?:\s*(?:${SED_ADDRESS}(?:\s*,\s*${SED_ADDRESS})?)?\s*[pdq=]\s*)(?:;(?:\s*(?:${SED_ADDRESS}(?:\s*,\s*${SED_ADDRESS})?)?\s*[pdq=]\s*))*;?$`,
+);
+
+/** Whether a sed command only prints: no in-place edit, no script file, and every script only prints. */
+function sedPrints(text) {
+  const words = wordsOf(text).slice(1);
+  const scripts = [];
+  let expressions = false;
+  const files = [];
+  for (let i = 0; i < words.length; i++) {
+    const w = words[i];
+    if (w === '-e' || w === '--expression') {
+      expressions = true;
+      scripts.push(words[++i] ?? '');
+    } else if (w.startsWith('--expression=')) {
+      expressions = true;
+      scripts.push(w.slice('--expression='.length));
+    } else if (w === '--quiet' || w === '--silent' || w === '-n') continue;
+    else if (/^-[nErsuz]+$/.test(w)) continue;
+    else if (w.startsWith('-'))
+      return false; // -i, -I, -f and anything else
+    else files.push(w);
+  }
+  if (!expressions && files.length) scripts.push(files.shift());
+  return scripts.length > 0 && scripts.every((s) => SED_PRINTS.test(s));
+}
+
+/** Whether an awk command only prints: -F and -v only, and no redirect, pipe, system() or getline. */
+function awkPrints(text) {
+  const words = wordsOf(text).slice(1);
+  for (let i = 0; i < words.length; i++) {
+    if (!words[i].startsWith('-')) break;
+    if (words[i] === '-v') i++;
+    else if (!/^-F/.test(words[i])) return false;
+  }
+  return !/[>|]|\b(?:system|getline|fflush|close)\b/.test(text);
+}
+
+/** Whether a uniq command names no output file: at most one file, the one it reads. */
+const uniqPrints = (text) =>
+  wordsOf(text)
+    .slice(1)
+    .filter((w) => !w.startsWith('-')).length <= 1;
+
+/**
+ * Whether `cmd` only reads and prints, so it can't write any file: every command of the chain is a
+ * reader (`cd`, git's history, cat, head, tail, grep, wc, jq, cut, sort, uniq, awk without redirects,
+ * sed -n printing lines…), piped or chained into each other, with no command's output in its
+ * arguments, no variable set before a command, and no redirect but `2>&1` or into /dev/null.
+ */
+export function readsOnly(cmd) {
+  // Taken out first: `&` in `2>&1` would otherwise split the command there.
+  const read = String(cmd).replace(HARMLESS_REDIRECT, ' ');
+  const code = codeOf(read);
+  if (/[>`]|\$\(|<\(|<>/.test(code)) return false;
+  if (code.split(/[;&|\n()]/).some((piece) => ASSIGNS.test(piece))) return false;
+  const parts = commandsOf(read);
+  return (
+    parts.length > 0 &&
+    parts.every(({ text, code: c }) => {
+      if (READERS.some((re) => re.test(c))) return true;
+      if (/^sed(?:\s|$)/.test(c)) return sedPrints(text);
+      if (/^awk(?:\s|$)/.test(c)) return awkPrints(text);
+      if (/^uniq(?:\s|$)/.test(c)) return uniqPrints(text);
+      return false;
+    })
+  );
+}

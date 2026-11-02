@@ -2,6 +2,13 @@
 
 What changed in each release of code-kit, newest first. Versions follow the plugin manifest and the npm package `@warren-dean/code-kit`. Each release is also on [GitHub Releases](https://github.com/warrendeanlangeveldt/code-kit/releases).
 
+## Unreleased
+
+- **What counts as a test is one rule (spec 18).** Every check that asks now agrees: a file named as a test (`*.test.*`, `*.spec.*`, `*.smoke.*`, `test_*.py`, `*_test.go`, `*_test.py`) or in a test folder (`test/`, `tests/`, `__tests__/`, `e2e/`, `smoke/`), or your `tests` globs where the config has them. A fix whose tests are smoke scripts is no longer refused as bringing no test.
+- **A fix's proof takes test helpers back too (REG-1).** Proving a fix keeps only the files named as tests and takes everything else back to the base, helpers and harness modules in test folders included, so a fix made in a test harness is no longer reported as "its tests pass without the fix". A helper the branch adds stays, for its tests to load. A fix made wholly in test files still passes as before.
+- **The person's approval after the lead's commit (WHO-1).** Where the lead merges and the person approves a protected change the lead already committed, the lead no longer has to touch the file again. With their approval in force, the lead's next commit (`git commit -m "Record the person's <approval> approval for <file>"`, nothing staged) records the approval in the log for the file as the branch holds it, by its content's hash, and `verify` accepts it while the file is unchanged. `verify`'s refusal says exactly what to run.
+- **Reading the approval log through the shell.** Read-only forms are allowed: a `cd` first, `2>&1` or a redirect into `/dev/null`, and `cat`, `head`, `tail`, `grep`, `wc`, `jq`, `cut`, `sort`, `uniq`, `awk` and `sed -n` printing lines, alone or piped from git's `diff`, `log`, `show` and `blame`. Anything that could write it is still refused: redirects into a file, `tee`, `sed -i`, `cp`, `mv`, editors, interpreters, a command's output in its arguments, and variables set before a command. The refusal lists the allowed forms.
+
 ## 0.29.0 (2026-10-31)
 
 A team provider's drift findings can hold a merge, and what a project reports covers models, security reviews, intents' pull requests and claims (report version 6).

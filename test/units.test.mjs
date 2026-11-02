@@ -12,7 +12,7 @@ import { importsOf, layerProblems } from '../hooks/lib/layers.mjs';
 import { diffConfigs, ownershipMoves } from '../hooks/lib/diff.mjs';
 import { newProblems } from '../hooks/lib/baseline.mjs';
 import { addedPackages, dependencyApproval, isDependencyFile } from '../hooks/lib/dependencies.mjs';
-import { commandsOf, runs, withoutHeredocs } from '../hooks/lib/shell.mjs';
+import { commandsOf, readsOnly, runs, withoutHeredocs } from '../hooks/lib/shell.mjs';
 import { storyMerges } from '../hooks/lib/queue.mjs';
 import { publishTitle } from '../hooks/lib/publish.mjs';
 import {
@@ -916,6 +916,80 @@ test("the mod: ACT-1 a prefilled reason names the command itself, not the agent'
     }),
     'Approve dayjs for any agent: npm install dayjs',
   );
+});
+
+test('shell: a command that only reads, and every form that could write', () => {
+  const L = '.claude/approval-log.jsonl';
+  const reads = [
+    `cd /x/y && git log -p -- ${L} | head -40`,
+    `git diff main...HEAD -- ${L} 2>&1 | tail -5`,
+    `git show HEAD:${L} 2>/dev/null | jq -c .`,
+    `tail -3 ${L}`,
+    `grep -n spec ${L}`,
+    `wc -l ${L}`,
+    `cat ${L}`,
+    `cat ${L} | head`,
+    `cut -d'"' -f4 ${L} | sort | uniq -c`,
+    `sed -n '1,5p' ${L}`,
+    `sed -n 3p ${L}`,
+    `sed -n -e '$p' ${L}`,
+    `sed -n '/spec/p' ${L}`,
+    `awk -F, '{print $1}' ${L}`,
+    `jq -r '.file' ${L} | sort -u`,
+    `cd "/a b" && tail -n 2 "${L}"`,
+    `git -C /x log --oneline -- ${L} >/dev/null 2>&1`,
+    `cat ${L} &>/dev/null`,
+    `grep -c lead ${L} || true`,
+  ];
+  for (const c of reads) assert.ok(readsOnly(c), `reads only: ${c}`);
+  const writes = [
+    `echo x >> ${L}`,
+    `cat ${L} > x`,
+    `cat ${L} >| x`,
+    `git show HEAD:${L} > /tmp/l`,
+    `git log -p -- ${L} | tee ${L}`,
+    `tee -a ${L}`,
+    `sed -i '' s/a/b/ ${L}`,
+    `sed -n 'w out' ${L}`,
+    `sed -n '1p;w x' ${L}`,
+    `sed 's/a/b/w x' ${L}`,
+    `sed -n -f s.sed ${L}`,
+    `cp x ${L}`,
+    `mv x ${L}`,
+    `ln -sf x ${L}`,
+    `rm ${L}`,
+    `vim ${L}`,
+    `python3 -c "open('${L}','a')"`,
+    `node -e 1 ${L}`,
+    `perl -pi -e 1 ${L}`,
+    `dd of=${L}`,
+    `truncate -s0 ${L}`,
+    `: > ${L}`,
+    `awk '{print > "x"}' ${L}`,
+    `awk '{system("rm x")}' ${L}`,
+    `awk -f p.awk ${L}`,
+    `awk '{print | "sh"}' ${L}`,
+    `cat $(echo ${L})`,
+    `cat \`echo ${L}\``,
+    `diff <(cat x) ${L}`,
+    `cat x 1<>${L}`,
+    `exec 3>${L}`,
+    `{ cat x; } > ${L}`,
+    `GIT_PAGER=tee git log ${L}`,
+    `env GIT_EXTERNAL_DIFF=./w git diff ${L}`,
+    `git -c core.pager=tee log -- ${L}`,
+    `git diff --output=${L}`,
+    `git grep -Ovim x -- ${L}`,
+    `git checkout -- ${L}`,
+    `sort -o ${L} ${L}`,
+    `uniq a ${L}`,
+    `less -o ${L} x`,
+    `rg --pre ./w x ${L}`,
+    `xargs rm < ${L}`,
+    `cat ${L} | sh`,
+    `find . -name approval-log.jsonl -delete`,
+  ];
+  for (const c of writes) assert.ok(!readsOnly(c), `could write: ${c}`);
 });
 
 test('shell: the simple commands a command runs, apart from the text it carries', () => {
@@ -2501,6 +2575,31 @@ test('ONB-7 an older setup is missing the security reviewer, with or without scr
     /^a security reviewer \(\.claude\/agents\/security-reviewer\.md\)/,
   );
   assert.deepEqual(setupGaps(config, [], ['.claude/agents/security-reviewer.md']), []);
+});
+
+test('what counts as a test: named as one or in a test folder; a helper beside one is not named', async () => {
+  const { isNamedTest, isTestFile } = await import('../hooks/lib/testfiles.mjs');
+  for (const f of [
+    'src/a.test.ts',
+    'src/a.spec.tsx',
+    'apps/web/checkout.smoke.mjs',
+    'tools/test_parse.py',
+    'pkg/parse_test.go',
+    'svc/parse_test.py',
+  ]) {
+    assert.ok(isTestFile(f), f);
+    assert.ok(isNamedTest(f), f);
+  }
+  for (const f of ['apps/web/smoke/checkout.mjs', 'tests/e2e/workers/pool.mjs', '__tests__/x.js']) {
+    assert.ok(isTestFile(f), f);
+    assert.ok(!isNamedTest(f), f);
+  }
+  for (const f of ['src/latest.ts', 'src/smoker.ts', 'docs/tests/plan.md', 'src/a.test.md'])
+    assert.ok(!isTestFile(f), f);
+  // A project's own `tests` globs replace the conventions.
+  const config = { tests: ['checks/**/*.mjs'] };
+  assert.ok(isTestFile('checks/a/b.mjs', config) && isNamedTest('checks/a/b.mjs', config));
+  assert.ok(!isTestFile('src/a.test.ts', config));
 });
 
 test('REG-2 what weakens a test: a skip or focus marker, fewer cases, fewer assertions', async () => {

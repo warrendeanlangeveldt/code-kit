@@ -11,6 +11,7 @@ import { readEvents } from './events.mjs';
 import { laneClaims } from './laneclaims.mjs';
 import { waitingStories } from './questions.mjs';
 import { sentBack } from './reviews.mjs';
+import { isTestFile } from './testfiles.mjs';
 import { WORKTREES_DIR } from './worktrees.mjs';
 
 export const REQUIREMENT = /\b(?!ST-)([A-Z][A-Z0-9]*-\d+)\b/g;
@@ -22,9 +23,6 @@ export const DROPPED = 'dropped';
 export const LEAD = 'lead';
 /** ONB-2: the pseudo-lane for design stories, which the lead designs with the person before any screen is built. */
 export const DESIGN = 'design';
-// Test files, by the usual conventions. Tests name the requirement IDs they prove.
-const TEST =
-  /(^|\/)(tests?|__tests__|e2e)\/|\.(test|spec)\.[^/]+$|_test\.(go|py)$|(^|\/)test_[^/]+\.py$/;
 
 /** The markdown files at `path`: the file itself, or every one under the folder, sorted. */
 export const markdownFiles = (root, path) => {
@@ -168,11 +166,11 @@ export function readMilestones(root, planPath) {
 
 export const storyBranch = (story) => `${story.lane}/${story.id.toLowerCase()}`;
 
-/** Requirement IDs each tracked test file names: { id: [file, ...] }. */
-export function testedRequirements(root, files, specsPath) {
+/** Requirement IDs each tracked test file names (tests name the IDs they prove): { id: [file, ...] }. */
+export function testedRequirements(root, files, specsPath, config) {
   const tested = {};
   for (const file of files) {
-    if (!TEST.test(file) || file.endsWith('.md') || file.startsWith(`${specsPath}/`)) continue;
+    if (!isTestFile(file, config) || file.startsWith(`${specsPath}/`)) continue;
     let body;
     try {
       body = readFileSync(join(root, file), 'utf8');
@@ -403,7 +401,7 @@ export function buildStatus(root, config, base, files) {
   const { specs, plan } = config.docs;
   const requirements = readRequirements(root, specs).filter((r) => r.file !== plan);
   const stories = storyStates(root, readStories(root, plan), base);
-  const tested = testedRequirements(root, files, specs);
+  const tested = testedRequirements(root, files, specs, config);
   const problems = traceProblems(requirements, stories, Object.keys(config.lanes));
   const byRequirement = requirements.map((r) => {
     const covering = stories.filter((s) => s.state !== DROPPED && s.requirements.includes(r.id));

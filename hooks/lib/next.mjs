@@ -13,6 +13,7 @@ import { handedOver, readRegister, toolOf } from './designs.mjs';
 import { decidedBy, laneOf, openRequests } from './rules.mjs';
 import { instructionsState } from './instructions.mjs';
 import { SECURITY_AGENT_FILE } from './security.mjs';
+import { isTestFile } from './testfiles.mjs';
 import { laneClaims } from './laneclaims.mjs';
 import { keptBecause, worktrees } from './worktrees.mjs';
 import { ciFindings } from './ci.mjs';
@@ -546,7 +547,8 @@ export function nextStep(root, base) {
 
 const SCREEN_LANE = /(^|-)(web|mobile|frontend|front-end|ui|desktop|ios|android|admin|portal)(-|$)/;
 const SCREEN_FILE = /\.(tsx|jsx|vue|svelte|swift|dart)$/;
-const TEST_FILE = /(^|\/)(__tests__|e2e|tests?)\/|\.(test|spec|stories)\.\w+$/;
+// A story file shows a screen in isolation; like a test, it isn't one.
+const STORIES_FILE = /\.stories\.\w+$/;
 const QA_LANE = /(^|-)(qa|e2e|tests?)(-|$)/;
 
 /**
@@ -569,7 +571,9 @@ export function setupGaps(config, stories, files = []) {
 function screenGaps(config, stories, files) {
   const lanes = Object.entries(config.lanes);
   const holdsScreens = new Set(
-    files.filter((f) => SCREEN_FILE.test(f) && !TEST_FILE.test(f)).map((f) => laneOf(f, config)),
+    files
+      .filter((f) => SCREEN_FILE.test(f) && !isTestFile(f, config) && !STORIES_FILE.test(f))
+      .map((f) => laneOf(f, config)),
   );
   const screens = lanes
     .filter(

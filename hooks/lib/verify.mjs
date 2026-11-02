@@ -15,12 +15,14 @@ import { STANDARDS_APPROVAL, standardsFile, standardsWeakenings } from './standa
 import { TESTS_APPROVAL, branchWeakenings, fixOf, proveFix } from './regression.mjs';
 import {
   APPROVAL_LOG,
+  APPROVALS_DIR,
   SECRETS,
   laneOf,
   ownerOf,
   owns,
   protectedEntry,
   leadNeedsApproval,
+  relayCommand,
   screenProblem,
 } from './rules.mjs';
 
@@ -35,6 +37,15 @@ const git = (root, ...args) =>
 function showAt(root, ref, rel) {
   try {
     return git(root, 'show', `${ref}:${rel}`);
+  } catch {
+    return null;
+  }
+}
+
+/** The hash of a file's content at `ref` (git's blob id), or null when it doesn't exist there. */
+function blobAt(root, ref, rel) {
+  try {
+    return git(root, 'rev-parse', '--verify', '-q', `${ref}:${rel}`).trim();
   } catch {
     return null;
   }
@@ -241,15 +252,17 @@ export function verifyBranch({
       );
     // WHO-1: where the lead merges, its own change to what the person keeps needs the person's approval,
     // unless the base already holds it as the branch does (the setup's rules, put onto the base first).
+    // An approval recorded after the change names the content it approved (`blob`), and covers only that.
     else if (
       guarded &&
-      logged.get(f)?.approval === 'lead' &&
       !signed &&
       leadNeedsApproval(guarded.approval, config) &&
+      (logged.get(f)?.approval === 'lead' ||
+        (logged.get(f)?.blob && logged.get(f).blob !== blobAt(root, 'HEAD', f))) &&
       showAt(root, base, f) !== showAt(root, 'HEAD', f)
     )
       found.protected.push(
-        `${f} is ${guarded.why}, and the lead changed it without the person's ${guarded.approval} approval. The lead merges here, so nobody else reviews it: ask the person, and commit it again once their approval is in force.`,
+        `${f} is ${guarded.why}, and the lead ${logged.get(f)?.approval === 'lead' ? 'changed it without' : 'changed it since it had'} the person's ${guarded.approval} approval. The lead merges here, so nobody else reviews it. Ask the person; once they approve it (they run \`! echo "<what you are approving>" > ${APPROVALS_DIR}/${guarded.approval}\`${config.approvals?.lead ? `, or you record their words with \`${relayCommand(guarded.approval)}\`` : ''}), record their approval for the file as it is with a commit of its own: \`git commit -m "Record the person's ${guarded.approval} approval for ${f}"\`. The commit hook logs it; the file doesn't need to change.`,
       );
     if (matchesAny(f, config.anyActor)) continue;
     if (lane === 'lead') {

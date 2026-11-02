@@ -478,11 +478,36 @@ try {
     2,
   );
   expect(
-    'reading the log through the shell is refused too, and the refusal says to use the Read tool',
-    bash('cat .claude/approval-log.jsonl | head'),
+    'and the refusal says which reads are allowed, and that the Read tool reads it too',
+    bash('echo x >> .claude/approval-log.jsonl'),
     2,
-    'with the Read tool',
+    'no redirect but 2>&1 or into /dev/null',
   );
+  for (const read of [
+    'cat .claude/approval-log.jsonl | head',
+    'tail -3 .claude/approval-log.jsonl',
+    'grep -n spec .claude/approval-log.jsonl',
+    'wc -l .claude/approval-log.jsonl',
+    `cd ${repo} && git log -p -- .claude/approval-log.jsonl 2>&1 | cut -c1-80`,
+    'git show HEAD:.claude/approval-log.jsonl 2>/dev/null | jq -c .file',
+    "git diff main...HEAD -- .claude/approval-log.jsonl | sed -n '1,20p'",
+    "awk -F, '{ print $1 }' .claude/approval-log.jsonl",
+  ])
+    expect(`the log may be read through the shell: ${read}`, bash(read, 'web-engineer'), 0);
+  for (const write of [
+    "sed -i '' 1d .claude/approval-log.jsonl",
+    "sed -n '1p;w x' .claude/approval-log.jsonl",
+    'cp /tmp/x .claude/approval-log.jsonl',
+    'mv /tmp/x .claude/approval-log.jsonl',
+    `python3 -c "open('.claude/approval-log.jsonl', 'a').write('x')"`,
+    `awk '{ print > "x" }' .claude/approval-log.jsonl`,
+    'cat $(echo .claude/approval-log.jsonl)',
+    'GIT_PAGER=tee git log -- .claude/approval-log.jsonl',
+    'git -c core.pager=tee log -- .claude/approval-log.jsonl',
+    'git diff --output=.claude/approval-log.jsonl',
+    `cd ${repo} && cat .claude/approval-log.jsonl 2>&1 > /tmp/copy`,
+  ])
+    expect(`but nothing that could write it: ${write}`, bash(write, 'web-engineer'), 2);
   expect(
     "a lane may read the log's history with git, as a review does",
     bash('git diff main...HEAD -- .claude/approval-log.jsonl | head -40', 'web-engineer'),
@@ -7755,6 +7780,79 @@ else process.exit(1);
       0,
     );
 
+    // REG-1: a fix whose tests are smoke scripts, in a smoke folder: they're its tests.
+    g.git('checkout', '-q', 'main');
+    g.git('checkout', '-q', '-b', 'web/fix-smoke');
+    gConfig({
+      checks: [
+        {
+          name: 'office smoke',
+          files: ['apps/office/**'],
+          run: ['for f in apps/office/smoke/*.mjs; do node "$f" || exit 1; done'],
+        },
+      ],
+    });
+    gPut(
+      'apps/office/booking.mjs',
+      'export const free = (slots) => slots.filter((s) => !s.taken);\n',
+    );
+    gPut(
+      'apps/office/smoke/taken.mjs',
+      `import assert from 'node:assert';\nimport { free } from '../booking.mjs';\nassert.deepEqual(free([{ taken: true }]), []);\n`,
+    );
+    gCommit('fix taken slots, with a smoke script');
+    res = gVerify();
+    expect(
+      'REG-1 a fix whose tests are smoke scripts brings a test, and they prove it',
+      truth(
+        !said(res).includes('adds or changes no test') && !said(res).includes('This branch fixes'),
+        said(res),
+      ),
+      0,
+    );
+    gConfig();
+    g.git('checkout', '-q', '--', '.');
+
+    // REG-1: a harness module beside the tests is code the fix changed, so it goes back without the
+    // fix; a helper the branch adds stays, for the tests to load.
+    g.git('checkout', '-q', 'main');
+    gPut(
+      'apps/office/e2e/workers/pick.mjs',
+      `import { free } from '../../booking.mjs';\nexport const pick = (slots) => free(slots);\n`,
+    );
+    gCommit('a worker for the end-to-end tests');
+    g.git('checkout', '-q', '-b', 'web/fix-worker');
+    gConfig({
+      checks: [
+        {
+          name: 'office e2e',
+          files: ['apps/office/**'],
+          run: ['node --test apps/office/e2e/*.spec.mjs'],
+        },
+      ],
+    });
+    gPut(
+      'apps/office/e2e/workers/pick.mjs',
+      `import { free } from '../../booking.mjs';\nexport const pick = (slots) => free(slots).filter((s) => !s.taken);\n`,
+    );
+    gPut('apps/office/e2e/workers/slots.mjs', 'export const taken = () => [{ taken: true }];\n');
+    gPut('apps/office/booking.mjs', 'export const free = (slots) => slots; // the slots offered\n');
+    gPut(
+      'apps/office/e2e/pick.spec.mjs',
+      `import { test } from 'node:test';\nimport assert from 'node:assert';\nimport { pick } from './workers/pick.mjs';\nimport { taken } from './workers/slots.mjs';\ntest('a taken slot is not picked', () => { assert.deepEqual(pick(taken()), []); });\n`,
+    );
+    gCommit('fix the worker offering taken slots');
+    res = gVerify();
+    expect(
+      'REG-1 a harness module the fix changed goes back with the code, so its test proves the fix',
+      truth(!said(res).includes('This branch fixes'), said(res)),
+      0,
+    );
+    gConfig();
+    g.git('checkout', '-q', '--', '.');
+    g.git('checkout', '-q', 'main');
+    g.git('reset', '-q', '--hard', 'HEAD~1');
+
     // REG-1: a story that isn't a fix isn't asked to prove one.
     g.git('checkout', '-q', 'main');
     g.git('checkout', '-q', '-b', 'web/st-3');
@@ -8156,12 +8254,77 @@ else process.exit(1);
       ),
       0,
     );
+    expect(
+      'and says how to record the approval once the person gives it, with nothing to change in the file',
+      truth(
+        byLead.stdout.includes('.claude/approvals/design') &&
+          byLead.stdout.includes(
+            'git commit -m "Record the person\'s design approval for design/approved-screens.json"',
+          ),
+        byLead.stdout,
+      ),
+      0,
+    );
     const byPerson = leadCommit('design');
     expect(
       "and passes it with the person's approval logged",
       truth(byPerson.status === 0, byPerson.stdout + byPerson.stderr),
       0,
     );
+
+    // The person approves after the lead committed: the lead's next commit records their approval for
+    // the file as the branch holds it, and verify accepts it until the file changes again.
+    leadCommit('lead');
+    t.git('checkout', '-q', 'lead/st-1');
+    const tBash = (command) =>
+      spawnSync('node', [join(hooks, 'guard-bash.mjs')], {
+        input: JSON.stringify({ cwd: t.dir, tool_input: { command } }),
+        env: { ...process.env, CLAUDE_PROJECT_DIR: t.dir },
+        encoding: 'utf8',
+      });
+    const record = 'git commit -m "Record the person\'s design approval"';
+    const before = readFileSync(join(t.dir, '.claude/approval-log.jsonl'), 'utf8');
+    expect('with no approval in force, the commit records nothing', tBash(record), 0);
+    expect(
+      'and the log is unchanged',
+      truth(readFileSync(join(t.dir, '.claude/approval-log.jsonl'), 'utf8') === before),
+      0,
+    );
+    mkdirSync(join(t.dir, '.claude/approvals'), { recursive: true });
+    writeFileSync(join(t.dir, '.claude/approvals/design'), 'The screens as drawn are right\n');
+    const recorded = tBash(record);
+    const entry = JSON.parse(
+      readFileSync(join(t.dir, '.claude/approval-log.jsonl'), 'utf8').trim().split('\n').at(-1),
+    );
+    expect(
+      "WHO-1 the person's approval given after the lead's commit is recorded for the file as it is",
+      truth(
+        recorded.status === 0 &&
+          entry.file === 'design/approved-screens.json' &&
+          entry.approval === 'design' &&
+          entry.reason === 'The screens as drawn are right' &&
+          entry.blob === t.git('rev-parse', 'HEAD:design/approved-screens.json').trim() &&
+          t.git('diff', '--cached', '--name-only').includes('.claude/approval-log.jsonl'),
+        recorded.stderr + JSON.stringify(entry),
+      ),
+      0,
+    );
+    t.git('commit', '-q', '-m', "Record the person's design approval");
+    rmSync(join(t.dir, '.claude/approvals/design'));
+    let res = tCli('verify', '--base', 'main', '--no-checks');
+    expect('and verify passes the branch', truth(res.status === 0, res.stdout + res.stderr), 0);
+    writeFileSync(join(t.dir, 'design/approved-screens.json'), '{"screens":[],"later":true}\n');
+    t.git('commit', '-q', '-am', 'changed outside Claude Code');
+    res = tCli('verify', '--base', 'main', '--no-checks');
+    expect(
+      'but not once the file changes after the approval it was recorded with',
+      truth(
+        res.status === 1 && res.stdout.includes('changed it since it had the person'),
+        res.stdout + res.stderr,
+      ),
+      0,
+    );
+    t.git('checkout', '-q', 'main');
   }
 
   // --- LEAN-6: worktrees released for a fresh agent, and pruned once merged ------------------------

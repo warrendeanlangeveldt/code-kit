@@ -9,6 +9,7 @@ import { join } from 'node:path';
 import { isDependencyFile } from './dependencies.mjs';
 import { markdownFiles, readStories } from './plan.mjs';
 import { storyOfBranch } from './teamfacts.mjs';
+import { isTestFile } from './testfiles.mjs';
 
 export const SECURITY_AGENT = 'security-reviewer';
 export const SECURITY_AGENT_FILE = `.claude/agents/${SECURITY_AGENT}.md`;
@@ -42,8 +43,9 @@ export function securityOutcome(report) {
 }
 
 // Tests, docs and design files describe the change; the review looks at the code that ships.
-const NOT_SHIPPED =
-  /(^|\/)(tests?|__tests__|e2e|docs?|design)\/|\.(test|spec|stories)\.[^/]+$|_test\.(go|py)$|(^|\/)test_[^/]+\.py$|\.(md|mdx|txt|png|jpe?g|gif|svg|webp)$/i;
+const DESCRIBES =
+  /(^|\/)(docs?|design)\/|\.stories\.[^/]+$|\.(md|mdx|txt|png|jpe?g|gif|svg|webp)$/i;
+const notShipped = (f, config) => isTestFile(f, config) || DESCRIBES.test(f);
 
 /**
  * What makes a change sensitive, by kind: `path` matches a changed file's path, `code` (one pattern or
@@ -148,12 +150,19 @@ const examples = (list) =>
 /**
  * Why a change needs the security review, in words, one per kind: [{ kind, why, where: [...] }].
  * Empty when it touches nothing sensitive. `files` are the changed files, `added` the added lines,
- * `cites` the story's requirements and `security` the IDs of the specs' security requirements.
+ * `cites` the story's requirements and `security` the IDs of the specs' security requirements; the
+ * `config`'s `tests` say which files are tests.
  */
-export function securityReasons({ files = [], added = [], cites = [], security = new Set() }) {
+export function securityReasons({
+  files = [],
+  added = [],
+  cites = [],
+  security = new Set(),
+  config,
+}) {
   const reasons = [];
-  const shipped = files.filter((f) => !NOT_SHIPPED.test(f));
-  const lines = added.filter((a) => !NOT_SHIPPED.test(a.file));
+  const shipped = files.filter((f) => !notShipped(f, config));
+  const lines = added.filter((a) => !notShipped(a.file, config));
   for (const s of SENSITIVE) {
     const code = [s.code].flat();
     const where = [
@@ -217,7 +226,13 @@ export function securityReview(root, { base, branch, config }) {
   const texts = specs
     ? markdownFiles(root, specs).map((f) => readFileSync(join(root, f), 'utf8'))
     : [];
-  const reasons = securityReasons({ files, added, cites, security: securityRequirementIds(texts) });
+  const reasons = securityReasons({
+    files,
+    added,
+    cites,
+    security: securityRequirementIds(texts),
+    config,
+  });
   return {
     branch,
     story,
