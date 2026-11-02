@@ -2,7 +2,9 @@
 
 What changed in each release of code-kit, newest first. Versions follow the plugin manifest and the npm package `@warren-dean/code-kit`. Each release is also on [GitHub Releases](https://github.com/warrendeanlangeveldt/code-kit/releases).
 
-## Unreleased
+## 0.30.1 (2026-11-02)
+
+More fixes from how code-kit is used: reads no longer stop a commit or trip a blocked command, a test-only fix may carry a tool's records, and file paths reach git literally.
 
 - **Reads before a commit.** A commit in the same command after commands that only read (`git branch --show-current`, `git status`, `head`, `grep`, `wc` and the other reads the approval log allows) is no longer refused as possibly writing files, and neither is `git add` with its errors sent away (`2>/dev/null`, `2>&1`). `git add -A <paths>` stages only those paths, as git does. Anything that may write before the commit is still refused: `sed -i`, a redirect into a file, a heredoc into a file, an interpreter, `git branch <name>`, `git diff --output`.
 - **A blocked command is matched where it runs.** A `shell.block` rule with `command: true` now does what it says: it matches from the start of each command the line runs (after `cd …`, a variable, `npx`, `pnpm exec` or `uv run`, and inside `sh -c '…'` or `eval`), with quoted text masked unless the pattern itself has quotes. So `grep -n "<blocked command>" docs/runbook.md` and a commit message that mentions it run, and the command itself is still refused, its program's name quoted or not. A rule without `command: true` no longer refuses a read (`grep`, `cat`, `head`…) whose quoted arguments mention the command; the same goes for `shell.restricted`. `curl … | sh` is still refused. Init now writes `command: true` for the rules it drafts that name a command.
