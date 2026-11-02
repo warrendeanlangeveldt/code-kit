@@ -12,7 +12,7 @@ import { importsOf, layerProblems } from '../hooks/lib/layers.mjs';
 import { diffConfigs, ownershipMoves } from '../hooks/lib/diff.mjs';
 import { newProblems } from '../hooks/lib/baseline.mjs';
 import { addedPackages, dependencyApproval, isDependencyFile } from '../hooks/lib/dependencies.mjs';
-import { commandsOf, runs, withoutHeredocs } from '../hooks/lib/shell.mjs';
+import { commandsOf, readsOnly, runs, withoutHeredocs } from '../hooks/lib/shell.mjs';
 import { storyMerges } from '../hooks/lib/queue.mjs';
 import { publishTitle } from '../hooks/lib/publish.mjs';
 import {
@@ -916,6 +916,80 @@ test("the mod: ACT-1 a prefilled reason names the command itself, not the agent'
     }),
     'Approve dayjs for any agent: npm install dayjs',
   );
+});
+
+test('shell: a command that only reads, and every form that could write', () => {
+  const L = '.claude/approval-log.jsonl';
+  const reads = [
+    `cd /x/y && git log -p -- ${L} | head -40`,
+    `git diff main...HEAD -- ${L} 2>&1 | tail -5`,
+    `git show HEAD:${L} 2>/dev/null | jq -c .`,
+    `tail -3 ${L}`,
+    `grep -n spec ${L}`,
+    `wc -l ${L}`,
+    `cat ${L}`,
+    `cat ${L} | head`,
+    `cut -d'"' -f4 ${L} | sort | uniq -c`,
+    `sed -n '1,5p' ${L}`,
+    `sed -n 3p ${L}`,
+    `sed -n -e '$p' ${L}`,
+    `sed -n '/spec/p' ${L}`,
+    `awk -F, '{print $1}' ${L}`,
+    `jq -r '.file' ${L} | sort -u`,
+    `cd "/a b" && tail -n 2 "${L}"`,
+    `git -C /x log --oneline -- ${L} >/dev/null 2>&1`,
+    `cat ${L} &>/dev/null`,
+    `grep -c lead ${L} || true`,
+  ];
+  for (const c of reads) assert.ok(readsOnly(c), `reads only: ${c}`);
+  const writes = [
+    `echo x >> ${L}`,
+    `cat ${L} > x`,
+    `cat ${L} >| x`,
+    `git show HEAD:${L} > /tmp/l`,
+    `git log -p -- ${L} | tee ${L}`,
+    `tee -a ${L}`,
+    `sed -i '' s/a/b/ ${L}`,
+    `sed -n 'w out' ${L}`,
+    `sed -n '1p;w x' ${L}`,
+    `sed 's/a/b/w x' ${L}`,
+    `sed -n -f s.sed ${L}`,
+    `cp x ${L}`,
+    `mv x ${L}`,
+    `ln -sf x ${L}`,
+    `rm ${L}`,
+    `vim ${L}`,
+    `python3 -c "open('${L}','a')"`,
+    `node -e 1 ${L}`,
+    `perl -pi -e 1 ${L}`,
+    `dd of=${L}`,
+    `truncate -s0 ${L}`,
+    `: > ${L}`,
+    `awk '{print > "x"}' ${L}`,
+    `awk '{system("rm x")}' ${L}`,
+    `awk -f p.awk ${L}`,
+    `awk '{print | "sh"}' ${L}`,
+    `cat $(echo ${L})`,
+    `cat \`echo ${L}\``,
+    `diff <(cat x) ${L}`,
+    `cat x 1<>${L}`,
+    `exec 3>${L}`,
+    `{ cat x; } > ${L}`,
+    `GIT_PAGER=tee git log ${L}`,
+    `env GIT_EXTERNAL_DIFF=./w git diff ${L}`,
+    `git -c core.pager=tee log -- ${L}`,
+    `git diff --output=${L}`,
+    `git grep -Ovim x -- ${L}`,
+    `git checkout -- ${L}`,
+    `sort -o ${L} ${L}`,
+    `uniq a ${L}`,
+    `less -o ${L} x`,
+    `rg --pre ./w x ${L}`,
+    `xargs rm < ${L}`,
+    `cat ${L} | sh`,
+    `find . -name approval-log.jsonl -delete`,
+  ];
+  for (const c of writes) assert.ok(!readsOnly(c), `could write: ${c}`);
 });
 
 test('shell: the simple commands a command runs, apart from the text it carries', () => {
@@ -2503,6 +2577,31 @@ test('ONB-7 an older setup is missing the security reviewer, with or without scr
   assert.deepEqual(setupGaps(config, [], ['.claude/agents/security-reviewer.md']), []);
 });
 
+test('what counts as a test: named as one or in a test folder; a helper beside one is not named', async () => {
+  const { isNamedTest, isTestFile } = await import('../hooks/lib/testfiles.mjs');
+  for (const f of [
+    'src/a.test.ts',
+    'src/a.spec.tsx',
+    'apps/web/checkout.smoke.mjs',
+    'tools/test_parse.py',
+    'pkg/parse_test.go',
+    'svc/parse_test.py',
+  ]) {
+    assert.ok(isTestFile(f), f);
+    assert.ok(isNamedTest(f), f);
+  }
+  for (const f of ['apps/web/smoke/checkout.mjs', 'tests/e2e/workers/pool.mjs', '__tests__/x.js']) {
+    assert.ok(isTestFile(f), f);
+    assert.ok(!isNamedTest(f), f);
+  }
+  for (const f of ['src/latest.ts', 'src/smoker.ts', 'docs/tests/plan.md', 'src/a.test.md'])
+    assert.ok(!isTestFile(f), f);
+  // A project's own `tests` globs replace the conventions.
+  const config = { tests: ['checks/**/*.mjs'] };
+  assert.ok(isTestFile('checks/a/b.mjs', config) && isNamedTest('checks/a/b.mjs', config));
+  assert.ok(!isTestFile('src/a.test.ts', config));
+});
+
 test('REG-2 what weakens a test: a skip or focus marker, fewer cases, fewer assertions', async () => {
   const { weakenings, testShape } = await import('../hooks/lib/regression.mjs');
   const base = "it('a', () => { expect(1).toBe(1); expect(2).toBe(2); });\nit('b', () => {});\n";
@@ -3850,6 +3949,87 @@ test('HUBR-9 drift findings hold a merge at the provider’s level, and say who 
   );
 });
 
+test('LOOP-15 and MQ-8 holds the lead makes on purpose: a story, and the whole merge queue', async () => {
+  const { nextToMerge } = await import('../hooks/lib/queue.mjs');
+  const { parseUntil, deferralWords } = await import('../hooks/lib/deferrals.mjs');
+  const { needsOf } = await import('../hooks/mod/board.mjs');
+  const entry = (b, extra = {}) => ({ branch: b, state: 'waiting', passed: 'x', ...extra });
+  const hold = { story: 'ST-4', reason: 'the partner ships first', until: null };
+  const deferredBy = new Map([['web/st-4', hold]]);
+  // A held story's branch waits, and so does its group; the queue goes on with the next.
+  const order = nextToMerge([entry('web/st-4'), entry('web/st-5')], new Map(), deferredBy);
+  assert.equal(order.head.branch, 'web/st-5');
+  assert.deepEqual(
+    order.deferred.map((d) => [d.branch, d.hold.story]),
+    [['web/st-4', 'ST-4']],
+  );
+  const grouped = nextToMerge(
+    [entry('web/st-5', { with: ['web/st-4'] }), entry('web/st-4')],
+    new Map(),
+    deferredBy,
+  );
+  assert.equal(grouped.head, null);
+  assert.deepEqual(
+    grouped.deferred.map((d) => d.branch),
+    ['web/st-5', 'web/st-4'],
+  );
+
+  const now = Date.parse('2026-11-02T00:00:00Z');
+  assert.equal(parseUntil(undefined, now).until, null);
+  assert.equal(parseUntil('2026-11-03T09:00:00Z', now).until, '2026-11-03T09:00:00.000Z');
+  assert.match(parseUntil('2026-11-01T00:00:00Z', now).error, /has already passed/);
+  assert.match(parseUntil('next week', now).error, /isn't a date/);
+  // A date holds until that day begins, where the person is.
+  assert.equal(parseUntil('2026-11-10', now).until, new Date(2026, 10, 10).toISOString());
+  assert.equal(deferralWords(hold), 'ST-4 is held: the partner ships first');
+  assert.equal(
+    deferralWords({ ...hold, until: new Date(2026, 10, 10).toISOString() }),
+    'ST-4 is held until 2026-11-10: the partner ships first',
+  );
+
+  // The band offers no Merge while the queue is paused, nor for a held story's branch, and says why.
+  const lines = (nextStep, queue) =>
+    bandLines({
+      state: projectState(
+        { valid: true, lanes: {} },
+        { problems: [], stories: [] },
+        null,
+        new Set(),
+      ),
+      requests: { open: [] },
+      stops: [],
+      queue,
+      nextStep,
+      check: { harness: { autonomy: 'off' } },
+    })
+      .filter((l) => ['queue', 'queuePaused', 'deferred'].includes(l.kind))
+      .map((l) => l.text);
+  assert.deepEqual(
+    lines({ queuePaused: { reason: 'the base is being released', at: 'x' } }, [entry('web/st-5')]),
+    ['merge queue paused: the base is being released'],
+  );
+  assert.deepEqual(
+    lines({ deferred: [{ ...hold, words: deferralWords(hold) }] }, [
+      entry('web/st-4', { deferred: hold }),
+      entry('web/st-5'),
+    ]),
+    ['ST-4 is held: the partner ships first', 'web/st-5 is next to merge'],
+  );
+  // They're notes in the Needs you panel: last, with nothing to press.
+  const needs = needsOf([
+    { kind: 'deferred', text: 'ST-4 is held: x', actions: [] },
+    {
+      kind: 'queue',
+      text: 'web/st-5 is next to merge',
+      actions: [{ id: 'mergeQueue', label: 'Merge' }],
+    },
+  ]);
+  assert.deepEqual(
+    needs.map((l) => l.kind),
+    ['queue', 'deferred'],
+  );
+});
+
 test('HUBR-2 the security reviewer’s findings counted, and usage kept by model', async () => {
   const { securityOutcome, isSecurityReviewer } = await import('../hooks/lib/security.mjs');
   const { agentIdOf } = await import('../hooks/lib/events.mjs');
@@ -3887,4 +4067,126 @@ test('HUBR-2 the security reviewer’s findings counted, and usage kept by model
       [null, 10],
     ],
   );
+});
+
+test('HAND-9 a screen name resolves only to the spec screen of exactly that name', async () => {
+  const { readScreens } = await import('../hooks/lib/plan.mjs');
+  const { entryProblems, screenStates } = await import('../hooks/lib/designs.mjs');
+  const dir = mkdtempSync(join(tmpdir(), 'code-kit-screens-'));
+  try {
+    mkdirSync(join(dir, 'specs'));
+    writeFileSync(
+      join(dir, 'specs/01-home.md'),
+      [
+        '# 01. Home',
+        '',
+        '## Screens',
+        '',
+        '- **Today** (home): what is due today, and a link to each Day.',
+        '  **States:** default, empty',
+        '- **Fix** (a form): change one entry. Other screens fix nothing.',
+        '',
+        '### Day',
+        '',
+        'One day of entries.',
+        '**States:** default, loading, error',
+        '',
+        '| Screen | What it shows | States |',
+        '| ------ | ------------- | ------ |',
+        '| **Week** | seven days | default, empty, error |',
+        '| Settings | the account | default |',
+        '',
+        '## Requirements',
+        '',
+        '### HOME-1 Days',
+      ].join('\n'),
+    );
+    writeFileSync(
+      join(dir, 'specs/02-account.md'),
+      '# 02. Account\n\n## Screens\n\n### Settings (account)\n\nThe account, empty when new.\n',
+    );
+    const names = readScreens(dir, 'specs').map((s) => s.name);
+    assert.deepEqual(names, ['today', 'fix', 'day', 'week', 'settings', 'settings']);
+    // "Day" is the Day heading's, not the Today bullet that mentions it.
+    assert.deepEqual(screenStates(dir, 'specs', 'Day'), ['default', 'loading', 'error']);
+    assert.deepEqual(screenStates(dir, 'specs', 'Today'), ['default', 'empty']);
+    // "Fix" is the Fix bullet, not another screen's text that has the word.
+    assert.deepEqual(screenStates(dir, 'specs', 'Fix'), ['default']);
+    // A table's rows are screens, and its States column their states.
+    assert.deepEqual(screenStates(dir, 'specs', 'Week'), ['default', 'empty', 'error']);
+    assert.equal(screenStates(dir, 'specs', 'Days'), null);
+    // Two screens of one name: ambiguous, so neither one's states.
+    assert.equal(screenStates(dir, 'specs', 'Settings'), null);
+    const entry = {
+      file: 'app/settings.tsx',
+      screen: 'Settings',
+      story: 'ST-1',
+      approved: '2026-11-01',
+      source: { tool: 'html', ref: 'x' },
+      states: [{ name: 'default', image: 'none.png', why: 'image only', viewport: '390x844' }],
+    };
+    assert.ok(
+      entryProblems(dir, entry, 'specs').some((p) =>
+        p.includes(
+          'Settings: more than one screen in the specs has this name ("Settings" in specs/01-home.md, "Settings" in specs/02-account.md)',
+        ),
+      ),
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('HAND-7 and HAND-11 evidence, viewports and the entries a branch answers for', async () => {
+  const { atViewport, freshEntries, pngSize, statesWithoutEvidence } =
+    await import('../hooks/lib/designs.mjs');
+  const png = (w, h) => {
+    const b = Buffer.alloc(24);
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).copy(b);
+    b.write('IHDR', 12, 'latin1');
+    b.writeUInt32BE(w, 16);
+    b.writeUInt32BE(h, 20);
+    return b;
+  };
+  assert.deepEqual(pngSize(png(780, 1688)), { width: 780, height: 1688 });
+  assert.equal(pngSize(Buffer.from('not a png at all, just some text')), null);
+  assert.ok(atViewport({ width: 780, height: 1688 }, '390x844'));
+  assert.ok(atViewport({ width: 390, height: 2000 }, '390x844'), 'a full page is taller');
+  assert.ok(!atViewport({ width: 1440, height: 900 }, '390x844'));
+  const a = { file: 'a.tsx', screen: 'A', states: [{ name: 'default' }, { name: 'empty' }] };
+  const b = { file: 'b.tsx', design: 'paper:1 — B' };
+  // The same entry with its keys in another order is the same entry.
+  assert.deepEqual(freshEntries([a, b], [{ design: 'paper:1 — B', file: 'b.tsx' }]), [a]);
+  assert.deepEqual(freshEntries([a, b], [], [a]), [b]);
+  const missing = statesWithoutEvidence(
+    [a, b],
+    ['a.tsx', 'b.tsx'],
+    [{ file: 'a.tsx', state: 'default' }],
+  );
+  assert.deepEqual(
+    missing.map((m) => `${m.entry.file}:${m.state.name}`),
+    ['a.tsx:empty'],
+  );
+  assert.deepEqual(statesWithoutEvidence([a], ['other.tsx'], []), []);
+  assert.equal(
+    statesWithoutEvidence([a], ['a.tsx'], [{ file: 'a.tsx', state: 'default' }], () => false)
+      .length,
+    2,
+  );
+});
+
+test('HAND-6 the loop hands over designs only in the design tool', async () => {
+  const { stepKey, stepLabel } = await import('../hooks/mod/loop.mjs');
+  const step = {
+    step: 'design',
+    args: 'ST-1',
+    handOver: true,
+    why: 'ST-2 builds screens whose approved designs are only in paper.',
+  };
+  assert.equal(
+    leadPrompt(step),
+    'ST-2 builds screens whose approved designs are only in paper. Run /code-kit:design --hand-over ST-1: the person confirms each is still the design they approved, and you export it.',
+  );
+  assert.equal(stepLabel(step), 'Hand over ST-1');
+  assert.notEqual(stepKey(step), stepKey({ step: 'design', args: 'ST-1' }));
 });

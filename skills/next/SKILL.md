@@ -30,6 +30,7 @@ It returns `step`, `why`, `args`, `then` (steps that can follow straight after) 
 | A lane waits on a request you decide                         | `decide`: approve it, or answer with an alternative       |
 | Stories finished on their branches                           | `review`, then `dispatch` what's ready                    |
 | Design stories ready (`**Lane:** design`)                    | `design`, then `dispatch` what needs no design            |
+| Ready stories whose screens' designs are only in the tool    | `design` with `handOver: true`: `--hand-over` first       |
 | Stories ready                                                | `dispatch`                                                |
 | The lead's own stories ready (`**Lane:** lead`)              | `lead`: the lead builds them itself                       |
 | Stories being built, nothing else can start                  | wait                                                      |

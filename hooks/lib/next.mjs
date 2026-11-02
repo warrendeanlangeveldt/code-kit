@@ -8,11 +8,13 @@ import { loadConfig, mergeDelegation } from './config.mjs';
 import { buildStatus, readStories, DESIGN, LEAD } from './plan.mjs';
 import { pendingSetup } from './adapters/index.mjs';
 import { CONFIG_FILE, SETUP_VERSION } from './config.mjs';
-import { mergingNow, nextToMerge, readQueue, waiting } from './queue.mjs';
-import { handedOver, readRegister, toolOf } from './designs.mjs';
+import { mergingNow, nextToMerge, queuePause, readQueue, waiting } from './queue.mjs';
+import { activeDeferrals, deferralWords } from './deferrals.mjs';
+import { designsFor, handedOver, readRegister, toolOf } from './designs.mjs';
 import { decidedBy, laneOf, openRequests } from './rules.mjs';
 import { instructionsState } from './instructions.mjs';
 import { SECURITY_AGENT_FILE } from './security.mjs';
+import { isTestFile } from './testfiles.mjs';
 import { laneClaims } from './laneclaims.mjs';
 import { keptBecause, worktrees } from './worktrees.mjs';
 import { ciFindings } from './ci.mjs';
@@ -20,7 +22,7 @@ import { storyModels } from './dispatches.mjs';
 import { pickPerLane } from './schedule.mjs';
 import { reconcileAll } from './events.mjs';
 import { readCache, teamOf } from './team.mjs';
-import { driftHoldWords, driftHolds, driftUnchecked } from './teamfacts.mjs';
+import { driftHoldWords, driftHolds, driftUnchecked, storyOfBranch } from './teamfacts.mjs';
 
 export const DRAFT_FILE = '.claude/code-kit.draft.json';
 export const BRIEF_STATES = ['framed', 'explored', 'scoped', 'specified', 'planned', 'ready'];
@@ -84,7 +86,9 @@ const hasMarkdown = (dir) => {
 };
 
 /**
- * { step, why, args, then, attention, brief, worktrees }. `brief`: the brief's open questions (ASK-4);
+ * { step, why, args, then, attention, brief, worktrees, deferred, queuePaused }. `brief`: the brief's open
+ * questions (ASK-4); `deferred`: the stories the lead holds, { story, reason, until, at, branch } (LOOP-15);
+ * `queuePaused`: the lead's pause of the merge queue, { reason, at }, or null (MQ-8);
  * `worktrees`: the merged ones still holding changes, { branch, story, changes, files }, for the person (LEAN-8);
  * `models`: each story offered to a lane, with the model it runs on and why, { story, model, why } (SCHED-3). `step` is a skill (spec-design, init, check, dispatch,
  * review), `merge` (the head of the merge queue, where the lead merges), `wait` (lanes are
@@ -98,6 +102,9 @@ export function nextStep(root, base) {
   let holdingTrees = [];
   // SCHED-3: the model each story offered to a lane runs on, and why.
   let models = [];
+  // LOOP-15, MQ-8: what the lead holds on purpose: stories, and the whole merge queue.
+  let deferred = [];
+  let queuePaused = null;
   const result = (step, why, extra = {}) => ({
     step,
     why,
@@ -107,6 +114,8 @@ export function nextStep(root, base) {
     brief: briefQuestions,
     worktrees: holdingTrees,
     models,
+    deferred,
+    queuePaused,
     ...extra,
   });
   const isRepo = git(root, 'rev-parse', '--is-inside-work-tree') === 'true';
@@ -275,6 +284,20 @@ export function nextStep(root, base) {
       `${stopped.join(', ')} ${stopped.length === 1 ? 'has its branch but no commits, and no agent on it' : 'have their branches but no commits, and no agent on them'}: ${stopped.length === 1 ? 'it goes' : 'they go'} to a fresh agent, on the same branch.`,
     );
 
+  // LOOP-15: a story the lead holds isn't dispatched, reviewed or merged until the hold ends.
+  const holds = activeDeferrals(root);
+  const heldIds = new Set(holds.map((h) => h.story));
+  deferred = holds.map((h) => ({
+    ...h,
+    branch: status.stories.find((s) => s.id === h.story)?.branch ?? null,
+    words: deferralWords(h),
+  }));
+  for (const h of holds)
+    attention.push(
+      `${deferralWords(h)}. Nothing dispatches, reviews or merges it until ${h.until ? 'then, or ' : ''}code-kit defer release ${h.story}.`,
+    );
+  // MQ-8: the lead's pause of the merge queue: nothing merges, and no merge is offered.
+  queuePaused = queuePause(root);
   // A branch already in the merge queue has passed its review: it isn't reviewed again.
   const entries = readQueue(root);
   const inQueue = waiting(entries);
@@ -288,7 +311,14 @@ export function nextStep(root, base) {
       )
     : new Map();
   // MQ-7: what can merge next; a branch queued with partners waits until they're queued too.
-  const { head: mergeHead, held: heldGroups, drifting } = nextToMerge(entries, drift);
+  const deferredBy = new Map(
+    inQueue.flatMap((e) => {
+      const story = storyOfBranch(e.branch);
+      const hold = story && holds.find((h) => h.story === story);
+      return hold ? [[e.branch, hold]] : [];
+    }),
+  );
+  const { head: mergeHead, held: heldGroups, drifting } = nextToMerge(entries, drift, deferredBy);
   const queued = inQueue.map((e) => e.branch);
   const driftWords = drifting.map((d) =>
     driftHoldWords(d.branch, d.findings, {
@@ -303,6 +333,7 @@ export function nextStep(root, base) {
   const ids = (state) =>
     status.stories
       .filter((s) => s.state === state && !(state === 'review' && queued.includes(s.branch)))
+      .filter((s) => state === 'in progress' || !heldIds.has(s.id))
       .map((s) => s.id);
   const [review, building, blocked, fixes] = ['review', 'in progress', 'blocked', 'sent back'].map(
     ids,
@@ -319,7 +350,7 @@ export function nextStep(root, base) {
     (Boolean(config.lanes[s.lane]) || s.lane === LEAD || s.lane === DESIGN) &&
     (s.requirements.length > 0 || s.noRequirements) &&
     s.requirements.every((r) => defined.has(r));
-  const readyStories = status.stories.filter((s) => s.state === 'ready');
+  const readyStories = status.stories.filter((s) => s.state === 'ready' && !heldIds.has(s.id));
   // The lead's own stories are built by the lead, not dispatched to a lane agent.
   const forLead = readyStories.filter((s) => buildable(s) && s.lane === LEAD).map((s) => s.id);
   const ready = readyStories
@@ -387,14 +418,18 @@ export function nextStep(root, base) {
   const leadMerges = delegation.delegated && config.harness.autonomy === 'autonomous';
   // SETUP-2: a base with no rules committed (a project set up before setup committed them there): the
   // lead puts the approved rules onto it, and the queue merges under them from then on.
-  if (queued.length && delegation.first)
+  if (queued.length && delegation.first && !queuePaused)
     return result(
       'rules',
       `${queued[0]} passed review and is next to merge, but ${delegation.into} has no code-kit rules committed yet. Put the rules the person approved onto it (code-kit queue rules); then the queue merges under them.`,
       { args: delegation.into },
     );
-  const mergeable = queued.filter((b) => !heldByDrift.has(b));
-  if (mergeable.length && !leadMerges)
+  const mergeable = queued.filter((b) => !heldByDrift.has(b) && !deferredBy.has(b));
+  if (queuePaused)
+    attention.push(
+      `The merge queue is paused: ${queuePaused.reason}. Nothing merges until code-kit queue resume${queued.length ? `; ${queued.join(', ')} ${queued.length === 1 ? 'waits' : 'wait'} in it` : ''}.`,
+    );
+  else if (mergeable.length && !leadMerges)
     attention.push(
       `${mergeable.join(', ')} passed review and ${mergeable.length === 1 ? 'waits' : 'wait'} for the person to merge (code-kit queue merge --person, or Merge in the code-kit band).`,
     );
@@ -408,12 +443,35 @@ export function nextStep(root, base) {
     attention.push(
       `${h.branch} passed review and merges together with ${h.missing.join(', ')}: it waits until ${h.missing.length === 1 ? 'that is' : 'they are'} reviewed and queued.`,
     );
-  if (mergeHead && leadMerges && !merging)
+  if (mergeHead && leadMerges && !merging && !queuePaused)
     return result(
       'merge',
       `${mergeHead.branch} passed review and is next in the merge queue${queued.length > 1 ? ` (then ${queued.filter((b) => b !== mergeHead.branch).join(', ')})` : ''}.`,
       { args: mergeHead.branch },
     );
+  // HAND-6: a screen story whose screens' approved designs are only in a design tool can't be built:
+  // the gate refuses each screen until the lead hands its design over. It waits, and the hand-over is
+  // the step, rather than a lane dispatched to be refused.
+  const { entries: registered } = readRegister(root, config);
+  const toHandOver = new Map();
+  for (const list of [fixes, ready]) {
+    const kept = list.filter((id) => {
+      const s = status.stories.find((x) => x.id === id);
+      const toolOnly = designsFor(registered, id, status.stories).filter(
+        (e) => !handedOver(e) && laneOf(e.file, config) === s?.lane,
+      );
+      if (toolOnly.length) toHandOver.set(id, toolOnly);
+      return !toolOnly.length;
+    });
+    list.splice(0, list.length, ...kept);
+  }
+  const onlyInTool = [...toHandOver.values()].flat();
+  const distinct = (pick) => [...new Set(onlyInTool.map(pick))];
+  const handOver = distinct((e) => e.story).sort((a, b) => a.slice(3) - b.slice(3));
+  const one = toHandOver.size === 1;
+  const handOverWhy = toHandOver.size
+    ? `${[...toHandOver.keys()].join(', ')} ${one ? 'builds' : 'build'} screens whose approved designs (${distinct((e) => e.screen ?? e.file).join(', ')}) are only in ${distinct((e) => toolOf(e)).join(', ')}, not as files a lane can build from: hand ${handOver.join(', ')} over with /code-kit:design --hand-over ${handOver.join(' ')} before ${one ? 'it is' : 'they are'} dispatched.`
+    : '';
   // SCHED-1, SCHED-2: one story for each free lane, across every session; the open slice's first.
   const busy = new Set([
     ...laneClaims(root)
@@ -438,7 +496,7 @@ export function nextStep(root, base) {
       `${sched.waiting.join(', ')} ${sched.waiting.length === 1 ? 'waits' : 'wait'} for ${sched.waiting.length === 1 ? 'its lane' : 'their lanes'}: a lane runs one story at a time.`,
     );
   // HAND-5: approved designs still only in a design tool, which no lane can read, are handed over once.
-  const toolOnly = readRegister(root, config).entries.filter((e) => !handedOver(e));
+  const toolOnly = registered.filter((e) => !handedOver(e));
   if (toolOnly.length)
     attention.push(
       `${toolOnly.length} approved screen${toolOnly.length === 1 ? ' is' : 's are'} only in ${[...new Set(toolOnly.map(toolOf))].join(', ')}, not as files a lane can build from: hand ${toolOnly.length === 1 ? 'it' : 'them'} over with /code-kit:design --hand-over.`,
@@ -453,6 +511,8 @@ export function nextStep(root, base) {
   );
   models = toDispatch.filter((id) => chosen[id]).map((id) => ({ story: id, ...chosen[id] }));
   if (review.length && forDesign.length) then.push({ step: 'design', args: forDesign.join(' ') });
+  const handOverStep = { step: 'design', args: handOver.join(' '), handOver: true };
+  if (review.length && handOver.length) then.push(handOverStep);
   if (review.length && toDispatch.length)
     then.push({ step: 'dispatch', args: toDispatch.join(' ') });
   if (forLead.length) then.push({ step: 'lead', args: forLead.join(' ') });
@@ -468,11 +528,21 @@ export function nextStep(root, base) {
       {
         args: forDesign.join(' '),
         then: [
+          ...(handOver.length ? [handOverStep] : []),
           ...(toDispatch.length ? [{ step: 'dispatch', args: toDispatch.join(' ') }] : []),
           ...(forLead.length ? [{ step: 'lead', args: forLead.join(' ') }] : []),
         ],
       },
     );
+  if (handOver.length)
+    return result('design', handOverWhy, {
+      args: handOver.join(' '),
+      handOver: true,
+      then: [
+        ...(toDispatch.length ? [{ step: 'dispatch', args: toDispatch.join(' ') }] : []),
+        ...(forLead.length ? [{ step: 'lead', args: forLead.join(' ') }] : []),
+      ],
+    });
   if (fixes.length)
     return result(
       'dispatch',
@@ -509,7 +579,11 @@ export function nextStep(root, base) {
     );
   // Stories waiting on branches in the merge queue wait for the merge, not on a broken plan. HUBR-9: a
   // queue that only drift findings hold says which, and how each clears.
-  const heldOnly = !mergeHead && driftWords.length ? driftWords.join(' ') : null;
+  const heldOnly = queuePaused
+    ? `The merge queue is paused: ${queuePaused.reason}.`
+    : !mergeHead && driftWords.length
+      ? driftWords.join(' ')
+      : null;
   if (queued.length)
     return result(
       'wait',
@@ -527,6 +601,12 @@ export function nextStep(root, base) {
     return result(
       'wait',
       `${waitingOnPerson.map((s) => `${s.id} waits on the person (${s.waitingFor.id})`).join('; ')}${blocked.length ? `; ${blocked.join(', ')} ${blocked.length === 1 ? 'waits' : 'wait'} on ${waitingOnPerson.length === 1 ? 'it' : 'them'}` : ''}. Carry on with anything else; their answer is sent to you.`,
+    );
+  // LOOP-15: what's left waits on stories the lead holds, or is one of them.
+  if (holds.length && status.stories.some((s) => heldIds.has(s.id) && s.state !== 'done'))
+    return result(
+      'wait',
+      `${holds.map(deferralWords).join('; ')}. Nothing else can start; the loop goes on when a hold ends or is released.`,
     );
   if (blocked.length)
     return result(
@@ -546,7 +626,8 @@ export function nextStep(root, base) {
 
 const SCREEN_LANE = /(^|-)(web|mobile|frontend|front-end|ui|desktop|ios|android|admin|portal)(-|$)/;
 const SCREEN_FILE = /\.(tsx|jsx|vue|svelte|swift|dart)$/;
-const TEST_FILE = /(^|\/)(__tests__|e2e|tests?)\/|\.(test|spec|stories)\.\w+$/;
+// A story file shows a screen in isolation; like a test, it isn't one.
+const STORIES_FILE = /\.stories\.\w+$/;
 const QA_LANE = /(^|-)(qa|e2e|tests?)(-|$)/;
 
 /**
@@ -569,7 +650,9 @@ export function setupGaps(config, stories, files = []) {
 function screenGaps(config, stories, files) {
   const lanes = Object.entries(config.lanes);
   const holdsScreens = new Set(
-    files.filter((f) => SCREEN_FILE.test(f) && !TEST_FILE.test(f)).map((f) => laneOf(f, config)),
+    files
+      .filter((f) => SCREEN_FILE.test(f) && !isTestFile(f, config) && !STORIES_FILE.test(f))
+      .map((f) => laneOf(f, config)),
   );
   const screens = lanes
     .filter(

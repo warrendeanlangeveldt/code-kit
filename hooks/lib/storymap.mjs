@@ -6,6 +6,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join, posix } from 'node:path';
 import { matchesAny } from './glob.mjs';
 import { CODE, importsOf, layerOf, targetOf } from './layers.mjs';
+import { isTestFile } from './testfiles.mjs';
 
 const git = (root, ...args) => {
   try {
@@ -126,8 +127,6 @@ export function laneOfFile(rel, config) {
     : null;
 }
 
-const TEST = /(^|\/)(tests?|e2e|__tests__)\/|\.(test|spec)\.[cm]?[jt]sx?$/;
-
 /**
  * MAP-1: a story's code: { story, layers, files: [{ path, layer, lane, imports }] }. `layers` are the
  * config's layers in their order, then `tests` and `other` where any file falls there; each file's
@@ -151,7 +150,9 @@ export function storyMap(root, story, config, from) {
           .filter((t) => t && t !== rel),
       ),
     ];
-    const layer = TEST.test(rel) ? 'tests' : (layerOf(rel, config.layers)?.name ?? 'other');
+    const layer = isTestFile(rel, config)
+      ? 'tests'
+      : (layerOf(rel, config.layers)?.name ?? 'other');
     return { path: rel, layer, lane: laneOfFile(rel, config), imports };
   });
   const used = new Set(files.map((f) => f.layer));
@@ -165,9 +166,10 @@ export function storyMap(root, story, config, from) {
 
 /**
  * TRAIL-1: each requirement's trail: { id, title, spec, state, stories: [{ id, state, lane }],
- * files, tests }. Files are the code its stories changed, tests aside; tests are the files that name it.
+ * files, tests }. Files are the code its stories changed, tests aside (by `config`'s `tests`); tests are the
+ * files that name it.
  */
-export function trail(root, status, from) {
+export function trail(root, status, from, config) {
   const byStory = new Map();
   const named = namedFiles(root);
   const filesOf = (s) => {
@@ -178,7 +180,9 @@ export function trail(root, status, from) {
     .filter((r) => !r.removed)
     .map((r) => {
       const stories = status.stories.filter((s) => s.requirements.includes(r.id));
-      const files = [...new Set(stories.flatMap((s) => filesOf(s)).filter((f) => !TEST.test(f)))];
+      const files = [
+        ...new Set(stories.flatMap((s) => filesOf(s)).filter((f) => !isTestFile(f, config))),
+      ];
       return {
         id: r.id,
         title: r.title,
@@ -221,7 +225,9 @@ export function projectMap(root, config, tracked, { depth = 3, most = 60 } = {})
       files: 0,
     };
     nodes.set(path, node);
-    const layer = TEST.test(rel) ? 'tests' : (layerOf(rel, config.layers)?.name ?? 'other');
+    const layer = isTestFile(rel, config)
+      ? 'tests'
+      : (layerOf(rel, config.layers)?.name ?? 'other');
     node.layers.set(layer, (node.layers.get(layer) ?? 0) + 1);
     node.files += 1;
     let source = '';

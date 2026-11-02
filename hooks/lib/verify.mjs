@@ -8,19 +8,23 @@ import { BASELINE_FILE, loadBaseline, newProblems } from './baseline.mjs';
 import { runChecks } from './checks.mjs';
 import { CONFIG_FILE } from './config.mjs';
 import { isDependencyFile } from './dependencies.mjs';
-import { entryProblems, readRegister } from './designs.mjs';
+import { entryProblems, freshEntries, readRegister, statesWithoutEvidence } from './designs.mjs';
+import { evidenceRecords } from './reviews.mjs';
+import { storyOfBranch } from './teamfacts.mjs';
 import { matchesAny } from './glob.mjs';
 import { layerProblems } from './layers.mjs';
 import { STANDARDS_APPROVAL, standardsFile, standardsWeakenings } from './standards.mjs';
 import { TESTS_APPROVAL, branchWeakenings, fixOf, proveFix } from './regression.mjs';
 import {
   APPROVAL_LOG,
+  APPROVALS_DIR,
   SECRETS,
   laneOf,
   ownerOf,
   owns,
   protectedEntry,
   leadNeedsApproval,
+  relayCommand,
   screenProblem,
 } from './rules.mjs';
 
@@ -35,6 +39,15 @@ const git = (root, ...args) =>
 function showAt(root, ref, rel) {
   try {
     return git(root, 'show', `${ref}:${rel}`);
+  } catch {
+    return null;
+  }
+}
+
+/** The hash of a file's content at `ref` (git's blob id), or null when it doesn't exist there. */
+function blobAt(root, ref, rel) {
+  try {
+    return git(root, 'rev-parse', '--verify', '-q', `${ref}:${rel}`).trim();
   } catch {
     return null;
   }
@@ -176,6 +189,8 @@ const NOISE = [
   /^\(node:\d+\) \[?\w*\]? ?(DeprecationWarning|ExperimentalWarning|Warning)\b/,
   /^\(Use `node --trace-(deprecation|warnings) /,
   /^\s*$/,
+  // A tool printing a value it never had (pnpm exec, before it says a command isn't installed).
+  /^\s*undefined\s*$/,
 ];
 const FAILING = /\b(fail(ed|ing|s)?|error|✗|✘|×|expected|received|assert|panic|traceback)\b/i;
 
@@ -194,8 +209,8 @@ export function failureOutput(output) {
 
 /**
  * The files changed, every problem with the branch, grouped as { ownership, protected, layers,
- * baseline, design, tests, regression, standards, checks }, and the checks `skipped` because a tool isn't
- * installed. `lane` holds the branch to that lane's paths; `checks: false` leaves the project's
+ * baseline, design, evidence, tests, regression, standards, checks }, and the checks `skipped` because a
+ * tool isn't installed; `evidenceUnchecked` where the review's records aren't kept (HAND-7: CI). `lane` holds the branch to that lane's paths; `checks: false` leaves the project's
  * checks to CI's own steps. `fixes` runs a fix's tests without the fix (REG-1; with the
  * checks unless said); `branch` names the branch when the checkout is detached.
  */
@@ -218,6 +233,7 @@ export function verifyBranch({
     layers: [],
     baseline: [],
     design: [],
+    evidence: [],
     tests: [],
     regression: [],
     standards: [],
@@ -241,15 +257,17 @@ export function verifyBranch({
       );
     // WHO-1: where the lead merges, its own change to what the person keeps needs the person's approval,
     // unless the base already holds it as the branch does (the setup's rules, put onto the base first).
+    // An approval recorded after the change names the content it approved (`blob`), and covers only that.
     else if (
       guarded &&
-      logged.get(f)?.approval === 'lead' &&
       !signed &&
       leadNeedsApproval(guarded.approval, config) &&
+      (logged.get(f)?.approval === 'lead' ||
+        (logged.get(f)?.blob && logged.get(f).blob !== blobAt(root, 'HEAD', f))) &&
       showAt(root, base, f) !== showAt(root, 'HEAD', f)
     )
       found.protected.push(
-        `${f} is ${guarded.why}, and the lead changed it without the person's ${guarded.approval} approval. The lead merges here, so nobody else reviews it: ask the person, and commit it again once their approval is in force.`,
+        `${f} is ${guarded.why}, and the lead ${logged.get(f)?.approval === 'lead' ? 'changed it without' : 'changed it since it had'} the person's ${guarded.approval} approval. The lead merges here, so nobody else reviews it. Ask the person; once they approve it (they run \`! echo "<what you are approving>" > ${APPROVALS_DIR}/${guarded.approval}\`${config.approvals?.lead ? `, or you record their words with \`${relayCommand(guarded.approval)}\`` : ''}), record their approval for the file as it is with a commit of its own: \`git commit -m "Record the person's ${guarded.approval} approval for ${f}"\`. The commit hook logs it; the file doesn't need to change.`,
       );
     if (matchesAny(f, config.anyActor)) continue;
     if (lane === 'lead') {
@@ -294,16 +312,42 @@ export function verifyBranch({
   }
 
   // HAND-2: each register entry the branch adds or changes, and each approved design whose files it
-  // changed, names the approved files with their hashes, every state the spec lists.
+  // changed, names the approved files with their hashes, every state the spec lists. HAND-11: an entry
+  // the base already holds (where the branch left it, as it is now, or the first protected branch's,
+  // which a lane may have merged in) is the base's, not the branch's.
   const register = config.designGate?.register;
+  let evidenceUnchecked = false;
   if (register) {
-    const old = readRegister(root, config, showAt(root, from, register) ?? '{}').entries;
+    const at = (ref) => readRegister(root, config, showAt(root, ref, register) ?? '{}').entries;
+    const entries = readRegister(root, config).entries;
+    const protectedBase = config.branches?.protected?.[0];
+    const fresh = new Set(
+      freshEntries(entries, at(from), at(base), protectedBase ? at(protectedBase) : []),
+    );
     const touched = new Set(changed);
-    for (const e of readRegister(root, config).entries) {
-      const fresh = !old.some((o) => JSON.stringify(o) === JSON.stringify(e));
+    for (const e of entries) {
       const files = (e.states ?? []).flatMap((st) => [st?.image, st?.code]).filter(Boolean);
-      if (fresh || files.some((f) => touched.has(f)))
+      if (fresh.has(e) || files.some((f) => touched.has(f)))
         found.design.push(...entryProblems(root, e, config.docs?.specs));
+    }
+    // HAND-7: a lane's branch that builds screens has the review's screenshot of each approved state.
+    const name = branch ?? currentBranchOf(root);
+    if (lane && lane !== 'lead' && name) {
+      const records = evidenceRecords(root, name);
+      if (records === null) evidenceUnchecked = true;
+      else {
+        const current = (r) =>
+          Boolean(r.sha) &&
+          spawnSync('git', ['-C', root, 'merge-base', '--is-ancestor', r.sha, 'HEAD']).status ===
+            0 &&
+          spawnSync('git', ['-C', root, 'diff', '--quiet', r.sha, 'HEAD', '--', r.file]).status ===
+            0;
+        const story = storyOfBranch(name) ?? name;
+        for (const { entry, state } of statesWithoutEvidence(entries, present, records, current))
+          found.evidence.push(
+            `${entry.screen ?? entry.file}'s ${state.name} state (${entry.file}) has no screenshot from the review beside its design (${state.image}). The review takes one of the built state at ${state.viewport ?? "the design's viewport"} and records it: code-kit designs evidence ${story} ${entry.file} ${state.name} <screenshot.png>.`,
+          );
+      }
     }
   }
 
@@ -368,5 +412,5 @@ export function verifyBranch({
       unfinished = Boolean(failure.timedOut);
     }
   }
-  return { changed, found, skipped, unfinished };
+  return { changed, found, skipped, unfinished, evidenceUnchecked };
 }

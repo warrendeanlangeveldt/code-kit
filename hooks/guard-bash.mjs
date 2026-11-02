@@ -14,11 +14,11 @@ import {
   ecosystemOf,
   isDependencyFile,
 } from './lib/dependencies.mjs';
-import { CODE_KIT, GIT, codeOf, commandsOf, runs } from './lib/shell.mjs';
+import { CODE_KIT, GIT, codeOf, commandsOf, readsOnly, runs } from './lib/shell.mjs';
 import { block, start } from './lib/hook.mjs';
 import { CONFIG_FILE, committedConfig } from './lib/config.mjs';
 import { laneOfBranch, storyOfBranch, teamOf, teamProvider, whoami } from './lib/team.mjs';
-import { entryProblems, readRegister } from './lib/designs.mjs';
+import { entryProblems, freshEntries, readRegister } from './lib/designs.mjs';
 import { globToRegExp, matchesAny } from './lib/glob.mjs';
 import { noteBefore } from './lane-audit.mjs';
 import { storyMerges } from './lib/queue.mjs';
@@ -72,21 +72,6 @@ const RUNS = [
 for (const [re, why] of RUNS) {
   if (runs(cmd, re, { quoted: false })) block(`Blocked: ${why}\nCommand: ${cmd}`);
 }
-/**
- * Whether `cmd` only reads git's history, with what it prints piped into read-only filters: `git diff
- * main...HEAD -- .claude/approval-log.jsonl`, `git log -p -- … | head`. No redirect, no tee, nothing else.
- */
-function gitReadsOnly(cmd) {
-  const code = codeOf(cmd);
-  if (/>|\btee\b|`|\$\(/.test(code)) return false;
-  const parts = commandsOf(cmd);
-  return (
-    parts.length > 0 &&
-    new RegExp(String.raw`^${GIT}(?:diff|log|show|blame)\b`).test(parts[0].code) &&
-    parts.slice(1).every((c) => /^(?:grep|head|tail|wc|cat|sort|uniq|less)\b/.test(c.code))
-  );
-}
-
 // These read the command whole: a pipe spans commands, and an approval or the log can be written
 // through a quoted path.
 const ALWAYS = [
@@ -102,8 +87,8 @@ const ALWAYS = [
   ],
   [
     /approval-log\.jsonl/,
-    "The approval audit log is appended only by the commit hook; nobody edits it. A shell command may not name it except to read its history with git (git diff, log or show, piped only into grep, head, tail or wc); read the file itself with the Read tool, which can't write.",
-    gitReadsOnly(cmd) ? '' : cmd,
+    "The approval audit log is appended only by the commit hook; nobody edits it. A shell command may name it only to read it: git diff, log, show or blame, or cat, head, tail, grep, wc, jq, cut, sort, uniq, awk or sed -n printing lines, after a `cd` and piped or chained only into each other, with no redirect but 2>&1 or into /dev/null, no command's output in its arguments ($(…) or backticks) and no variable set before a command. Run the read in that form, or read the file with the Read tool, which can't write.",
+    readsOnly(cmd) ? '' : cmd,
   ],
 ];
 for (const [re, why, text] of ALWAYS) {
@@ -564,6 +549,26 @@ function committedFiles() {
   return { files: [...new Set([...staged, ...added, ...removed, ...reset])], gone, git };
 }
 
+/** The approval log's last entry for each file, as the checkout has the log. */
+function lastEntries(root) {
+  const last = new Map();
+  let text = '';
+  try {
+    text = readFileSync(join(root, APPROVAL_LOG), 'utf8');
+  } catch {
+    return last;
+  }
+  for (const line of text.split('\n').filter(Boolean)) {
+    try {
+      const e = JSON.parse(line);
+      if (e?.file) last.set(e.file, e);
+    } catch {
+      // an unreadable line records nothing; verify reports it
+    }
+  }
+  return last;
+}
+
 // Every committed protected file is recorded in the audit log, with the person's reason when an
 // approval is in force. So is a lane's manifest or lockfile change, outside its own paths, made under a
 // dependency approval: that entry is how `code-kit verify` accepts it. The log is staged into the same
@@ -652,6 +657,27 @@ function recordApprovals() {
         grantedAt: null,
       });
   }
+  // WHO-1: where the lead merges, its own change to what the person keeps needs the person's approval.
+  // Given after the change was committed, it has nothing left to commit: so the lead's next commit, one
+  // of its own if need be, records it for each such file as the branch holds it, by its content's hash,
+  // and verify accepts that entry while the file is unchanged.
+  if (actor.kind === 'lead') {
+    const inThisCommit = new Set(files);
+    for (const [file, last] of lastEntries(root)) {
+      if (last.approval !== 'lead' || last.branch !== branch || inThisCommit.has(file)) continue;
+      const entry = protectedEntry(file, config);
+      if (!entry || !leadNeedsApproval(entry.approval, config)) continue;
+      const granted = approval(root, entry.approval, actor);
+      const blob = git('rev-parse', '--verify', '-q', `HEAD:${file}`).trim();
+      if (granted && blob)
+        record(file, {
+          approval: entry.approval,
+          reason: granted.reason,
+          grantedAt: granted.grantedAt,
+          blob,
+        });
+    }
+  }
   // REG-2: a commit that weakens a test waits for a `tests` approval: WHO-2, the lead's on a lane's
   // branch where tests are delegated, otherwise the person's (always on the lead's own). It's recorded in
   // the log, so verify accepts the branch, and used up by this commit.
@@ -738,14 +764,22 @@ if (commits) {
       `Blocked: this commit runs after \`${writer.text.slice(0, 80)}\` in the same command, which may write files code-kit can't see before the commit, so they would go in without their checks or their entry in the approval log. Run that first, on its own; then commit in a command of its own (\`git add … && git commit …\` is fine).\nCommand: ${cmd}`,
     );
   // HAND-2: a register entry this commit adds or changes names the approved design's files, as approved.
+  // HAND-11: one the branch already has, the base has, or a merge being concluded brings in isn't this
+  // commit's: a lane merging the base into its branch isn't held to the base's entries.
   const register = config.designGate?.register;
   if (register && committedFiles().files.includes(register)) {
-    const before = spawnSync('git', ['-C', root, 'show', `HEAD:${register}`], { encoding: 'utf8' });
-    const old = before.status === 0 ? readRegister(root, config, before.stdout).entries : [];
-    const same = (e) => old.some((o) => JSON.stringify(o) === JSON.stringify(e));
-    const problems = readRegister(root, config)
-      .entries.filter((e) => !same(e))
-      .flatMap((e) => entryProblems(root, e, config.docs?.specs));
+    const at = (ref) => {
+      const shown = spawnSync('git', ['-C', root, 'show', `${ref}:${register}`], {
+        encoding: 'utf8',
+      });
+      return shown.status === 0 ? readRegister(root, config, shown.stdout).entries : [];
+    };
+    const problems = freshEntries(
+      readRegister(root, config).entries,
+      at('HEAD'),
+      at(config.branches.protected[0]),
+      at('MERGE_HEAD'),
+    ).flatMap((e) => entryProblems(root, e, config.docs?.specs));
     if (problems.length)
       block(
         `Blocked: ${register} names approved designs a lane can't build from as approved:\n  ${problems.join('\n  ')}\nEach screen's design is files in the repository, every state, with its hash (docs/specs/24-designs-handed-over.md).\nCommand: ${cmd}`,

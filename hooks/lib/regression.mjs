@@ -10,18 +10,12 @@ import { freshCheckout } from './checkout.mjs';
 import { runChecks } from './checks.mjs';
 import { matchesAny } from './glob.mjs';
 import { readStories } from './plan.mjs';
+import { isNamedTest, isTestFile } from './testfiles.mjs';
 
 /** The approval that lets a test be weakened: the person's only. */
 export const TESTS_APPROVAL = 'tests';
 
-// Test files by the usual conventions, when the config names none (`tests`).
-const TEST =
-  /(^|\/)(tests?|__tests__|e2e)\/|\.(test|spec)\.[^/]+$|_test\.(go|py)$|(^|\/)test_[^/]+\.py$/;
 export const SNAPSHOT = /(^|\/)__snapshots__\/|\.snap$/;
-
-/** Whether `rel` is a test: the config's `tests` globs, or the usual conventions. */
-export const isTestFile = (rel, config) =>
-  !rel.endsWith('.md') && (config?.tests?.length ? matchesAny(rel, config.tests) : TEST.test(rel));
 
 // A case's name: it('…') / test('…') in JavaScript, def test_… in Python, func Test… in Go, @Test in JVM.
 const JS_CASE =
@@ -255,16 +249,30 @@ export const onlyUnreachable = (output) =>
  */
 export function proveFix({ root, from, base, changed, config, fix }) {
   const what = `This branch fixes ${fix.what}${fix.story ? ` (${fix.story})` : ''}`;
-  const tests = changed.filter(
+  // A test file, named as one or in a test folder (a smoke folder's scripts), brings the fix a test.
+  const brought = changed.filter(
     (f) => isTestFile(f, config) && !SNAPSHOT.test(f) && showAt(root, 'HEAD', f) !== null,
   );
-  if (!tests.length)
+  if (!brought.length)
     return [
       `${what}, but it adds or changes no test. Add a test that fails without the fix: it's what stops the bug coming back.`,
     ];
   // A fix made wholly in the tests (a flaky test, a broken helper) has no code to take back: its tests
   // are the fix. REG-2 still holds them, so it can't be made by weakening one.
   if (changed.every((f) => isTestFile(f, config) || SNAPSHOT.test(f))) return [];
+  // The tests that prove it are the ones named as tests; a helper or harness module beside them is code
+  // the fix may have changed, so it goes back with the rest. Only where the fix brings no named test do
+  // the files in its test folders stand as its tests.
+  const named = brought.filter((f) => isNamedTest(f, config));
+  const tests = named.length ? named : brought;
+  // What goes back: everything but those tests and the snapshots, except test code the branch adds,
+  // which the code without the fix never had and its tests need to load.
+  const revert = changed.filter(
+    (f) =>
+      !tests.includes(f) &&
+      !SNAPSHOT.test(f) &&
+      !(isTestFile(f, config) && showAt(root, from, f) === null),
+  );
   const covering = config.checks.filter((c) =>
     tests.some((f) => matchesAny(f, c.files) && !matchesAny(f, c.exclude)),
   );
@@ -289,8 +297,7 @@ export function proveFix({ root, from, base, changed, config, fix }) {
       return [
         `${what}, but its tests don't pass in a fresh checkout of the branch (${withFix.title.replace(/ Fix it:$/, '')}), so code-kit can't tell whether they fail without it. If they need an install or a build first, set regression.prepare.${withFix.output ? `\n${String(withFix.output).trim().split('\n').slice(-20).join('\n')}` : ''}`,
       ];
-    for (const f of changed) {
-      if (isTestFile(f, config) || SNAPSHOT.test(f)) continue;
+    for (const f of revert) {
       if (showAt(root, from, f) !== null) git(dir, 'checkout', from, '--', f);
       else rmSync(join(dir, f), { force: true });
     }

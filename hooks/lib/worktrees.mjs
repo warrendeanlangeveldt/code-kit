@@ -37,6 +37,14 @@ const real = (p) => {
     return p;
   }
 };
+/** The folder this process runs in, or null when it has gone. */
+const cwdNow = () => {
+  try {
+    return real(process.cwd());
+  } catch {
+    return null;
+  }
+};
 const alive = (pid) => {
   try {
     process.kill(pid, 0);
@@ -74,11 +82,12 @@ function hasOwnCommits(root, branch) {
 
 /**
  * LEAN-6: each worktree but the main checkout: { path, branch, story, merged, clean, changes, report,
- * kind, missing, locked: { reason, pid, live } | null, agentAtWork }. `kind` is `agent` (under
+ * kind, missing, locked: { reason, pid, live } | null, agentAtWork, here }. `here`: this command runs in
+ * it (`cwd`, the process's own folder unless given), so taking it away would leave the shell nowhere. `kind` is `agent` (under
  * .claude/worktrees), `merge` (a temporary merge checkout) or `other` (one the person made). `clean` and
  * `changes` are null where they weren't read: an unmerged worktree stays whatever it holds (cleanOf reads it).
  */
-export function worktrees(root, config, now = Date.now()) {
+export function worktrees(root, config, now = Date.now(), cwd = cwdNow()) {
   const list = git(root, 'worktree', 'list', '--porcelain');
   if (list.status !== 0) return [];
   const main = list.stdout.split('\n\n')[0];
@@ -98,6 +107,7 @@ export function worktrees(root, config, now = Date.now()) {
       const pid = Number(/\bpid (\d+)/.exec(lockLine?.[1] ?? '')?.[1]) || null;
       const missing = !existsSync(path);
       const where = real(path);
+      const here = Boolean(cwd && (cwd === where || cwd.startsWith(`${where}/`)));
       const kind = where.startsWith(`${agents}/`)
         ? 'agent'
         : where.startsWith(`${temp}/`) && TEMP_MERGE.test(basename(path))
@@ -140,6 +150,7 @@ export function worktrees(root, config, now = Date.now()) {
           lane && claims.some((c) => c.lane === lane && (c.story ?? null) === (story ?? c.story)),
         ),
         age: missing ? null : now - statSync(path).mtimeMs,
+        here,
       };
     });
 }
@@ -174,6 +185,9 @@ export function keptBecause(w) {
   if (w.missing) return null;
   if (w.kind === 'merge') return w.age < TEMP_MERGE_MS ? 'a merge may be using it now' : null;
   if (w.kind === 'other') return "it isn't one code-kit made; release it by name if it's done";
+  // A merge run from inside a lane's worktree mustn't take away the folder its own shell is in.
+  if (w.here)
+    return 'this command runs in it; it goes at the next merge or `code-kit worktrees prune` run from elsewhere';
   if (w.locked && !w.locked.pid)
     return `it's locked${w.locked.reason ? ` (${w.locked.reason})` : ''}`;
   if (!w.branch) return 'it has no branch checked out';
@@ -246,7 +260,15 @@ export function pruneWorktrees(root, config, now = Date.now()) {
     const label = w.branch ?? w.path;
     const why = keptBecause(w);
     if (why) {
-      kept.push({ label, why, branch: w.branch, changes: w.changes, kind: w.kind });
+      kept.push({
+        label,
+        why,
+        branch: w.branch,
+        changes: w.changes,
+        kind: w.kind,
+        here: w.here,
+        merged: w.merged,
+      });
       continue;
     }
     if (w.missing) continue;

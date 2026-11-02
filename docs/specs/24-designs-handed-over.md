@@ -15,8 +15,12 @@ The design tool's connection is the lead's, in the lead's session, so the approv
 | ---------- | ------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
 | 2026-10-23 | An approved design is files in the repository: each state's code where the tool gives it, and a PNG    | Lanes can't reach the design tool, and the file is what was approved even after the tool's copy changes                                               |
 | 2026-10-23 | No design adapters: the design skill says how to export from each tool, and the gate checks the result | Exporting runs through the tool's own connection in the lead's session, which code-kit's code can't call; the files can be checked whatever made them |
-| 2026-10-23 | Lanes don't get the design tool's connection                                                           | It needs the tool running with the file open, and it shows the live design rather than the approved one                                               |
+| 2026-10-23 | Lanes don't get the design tool's connection (superseded below, HAND-8)                                | It needs the tool running with the file open, and it shows the live design rather than the approved one                                               |
 | 2026-10-23 | The export is the target to match, not code to paste                                                   | It's the tool's own markup with inline styles; the screen is built from the project's design system and components                                    |
+| 2026-11-02 | A register entry with no exported states doesn't open the gate                                         | Lanes built screens from the spec's words while the entry named only an artboard they couldn't read                                                   |
+| 2026-11-02 | The review records each screenshot it compared, and verify checks every approved state has one         | The skill asked for the comparison, but nothing showed it happened, so a state could merge never compared                                             |
+| 2026-11-02 | Lanes that build screens, and the QA lane, get the design tool's read-only tools, for reference only   | The export can't carry everything the tool shows; the register's files stay the approved record, and the gate and the review hold the build to them   |
+| 2026-11-02 | A screen name resolves to the spec screen of exactly that name, or is reported as ambiguous            | Matching any line that mentioned the name gave one screen another's states                                                                            |
 
 ## In scope
 
@@ -24,8 +28,10 @@ The design tool's connection is the lead's, in the lead's session, so the approv
 - A register entry that names those files, with a hash of each.
 - The gate and `verify` refusing an entry whose files aren't there or have changed.
 - Dispatch giving the lane its screens' design files, every state.
-- The review comparing each built state with its design.
-- Handing over designs approved before this spec, once.
+- The review comparing each built state with its design, and recording each screenshot it compared.
+- Handing over designs approved before this spec, once, before any screen built from them is dispatched.
+- A design story reading as in progress until all its screens are approved.
+- A branch held only to the register entries it adds or changes.
 
 ## Out of scope
 
@@ -50,7 +56,18 @@ The design tool's connection is the lead's, in the lead's session, so the approv
 | State          | sha256   | object | yes      | `{ code, image }`: the hash of each file as approved                                               |
 | State          | why      | text   | no       | Why there's no code, when there isn't                                                              |
 
-A spec lists each screen under `## Screens` as a `### <Screen name>` heading with a `**States:**` line; a screen with no such line is held to the default state and whichever of empty, loading and error its text mentions. Files live at `design/<area>/<screen>/<state>.<ext>`, such as `design/bookings/list/empty.png` and `design/bookings/list/empty.jsx`. One design can serve several code files, such as the web and the mobile screen: each code file has its own entry, naming the same states.
+A spec lists each screen under `## Screens` as a `### <Screen name>` or `#### <Screen name>` heading, a `- **<Screen name>** (…)` bullet, or a row of a table whose Screen (or Name, or else first) column names it, with a `**States:**` line or a States column; a screen with neither is held to the default state and whichever of empty, loading and error its text mentions (HAND-9). A design story may name the screens it designs with a `**Screens:**` line in the plan; without one, they're the screens of its requirements' specs (HAND-10). Files live at `design/<area>/<screen>/<state>.<ext>`, such as `design/bookings/list/empty.png` and `design/bookings/list/empty.jsx`. One design can serve several code files, such as the web and the mobile screen: each code file has its own entry, naming the same states.
+
+The review's evidence (HAND-7) is a line in `.claude/state/reviews.jsonl`, in the main checkout, beside the send-backs:
+
+| Entity   | Field    | Type | Required | Rules                                                                                    |
+| -------- | -------- | ---- | -------- | ---------------------------------------------------------------------------------------- |
+| Evidence | verdict  | text | yes      | `evidence`                                                                               |
+| Evidence | branch   | text | yes      | The branch reviewed, and `sha` the commit it was at                                      |
+| Evidence | file     | path | yes      | The screen file, as its register entry names it, with `screen` and `state`               |
+| Evidence | image    | path | yes      | The screenshot, kept under `.claude/state/reviews/<branch>/<file>/<state>.png`, `sha256` |
+| Evidence | viewport | text | yes      | The design's viewport, and `size` the screenshot's: the viewport at 1x to 4x             |
+| Evidence | design   | path | yes      | The design's PNG it was set beside                                                       |
 
 ## Requirements
 
@@ -107,6 +124,58 @@ The lead's review of a screen story, with the reviewer, takes a screenshot of ea
 - Given 6 entries naming Paper artboards and no files, then `next` names the 6, and `--hand-over` exports each, asks the person to confirm it, and rewrites its entry with files and hashes.
 - Given one of those screens already built without its error state, then the hand-over adds a fix story for the error state, citing the screen's requirements.
 
+### HAND-6 A screen waits for its design as files
+
+A register entry that names only a design tool's artboard (no exported states) doesn't open the gate: a lane's write to that screen is refused, saying its design is only in the tool and the lead hands it over with `/code-kit:design --hand-over` first, and `verify` reports a branch that changed it. `code-kit next` doesn't dispatch a story whose lane builds such a screen: the step is `design` with `handOver: true`, naming the design stories to hand over, and the stories it holds.
+
+**Acceptance**
+
+- Given the bookings list's entry names `paper:abc — Bookings list` and no states, then the web lane's write to its screen is refused, naming `/code-kit:design --hand-over`.
+- Given ST-2 builds that screen and is otherwise ready, then `next` gives the hand-over of ST-1 and doesn't dispatch ST-2.
+
+### HAND-7 The review's comparison is recorded, and checked
+
+For each approved state of a screen the branch builds, the review records its screenshot of the built state: `code-kit designs evidence <story> <screen file or name> <state> <screenshot.png>`. It's refused when the file isn't a PNG, or wasn't taken at the design's viewport (its width the viewport's at 1x to 4x). The screenshot is kept under `.claude/state/reviews/` and the record in `reviews.jsonl` (Data, above). `verify` on a lane's branch, and so the merge queue, reports each approved state of each screen file the branch changed with no record since that file last changed. Where the review's records aren't kept (CI, a fresh clone), `verify` says it didn't check them.
+
+**Acceptance**
+
+- Given web/st-3 builds the bookings list with its default and empty states and the review recorded neither, then `verify` reports both, each with the command that records it.
+- Given a 1440x900 screenshot for a state drawn at `390x844`, then it isn't recorded.
+- Given both recorded, then `verify` reports none; given the screen changed after, it reports both again.
+
+### HAND-8 Lanes can look at the design tool, and build from the export
+
+Where the architecture or the config names a design tool with an MCP server (Paper, Figma, Pencil), init adds the server's read-only tools (the ones that read nodes, code, styles, tokens and screenshots; never one that writes, exports or opens a file) to the agents of the lanes that build screens and of the QA lane, and a line in each agent file saying the register's exported files are the approved record and the tool is for reference. Which tools are read-only is in init's text, by tool, not in code-kit's code.
+
+**Acceptance**
+
+- Given the architecture names Paper and the web lane builds screens, then the web and QA agents list Paper's read tools and none of its write tools, and say the export is what they build to.
+
+### HAND-9 A screen name means one screen
+
+A register entry's `screen` resolves only to the spec screen of exactly that name (markdown and case aside): a heading, a bullet's bold title, or a table row's name cell, never a line that mentions it. A table's States column gives that screen's states. A name more than one screen has is reported as ambiguous, naming each, instead of taking one's states.
+
+**Acceptance**
+
+- Given a `Today` bullet that mentions "each Day" and a `### Day` heading, then the Day entry is held to the Day heading's states.
+- Given `Settings` in two specs, then the entry is reported as ambiguous, naming both.
+
+### HAND-10 A design story is in progress until its screens are designed
+
+The lead commits each screen on `design/st-<n>` as the person approves it. While a screen the story designs (its plan entry's `**Screens:**`, or else its requirements' specs' screens) has no entry in the branch's register, the story reads as in progress, not finished, so `next` doesn't send it to review. The plan's `**Status:** review` says the lead is done with it anyway.
+
+**Acceptance**
+
+- Given ST-1's spec lists the bookings list and the booking detail, and its branch has only the list, then ST-1 is in progress; with both, it waits for review.
+
+### HAND-11 A branch answers for the entries it changes
+
+The commit hook and `verify` hold a branch only to register entries it adds or changes: one the commit's branch, the base, or a merge being concluded already holds as it is (whatever its key order) was judged where it came from. A lane merging the base into its branch isn't refused for the base's entries.
+
+**Acceptance**
+
+- Given main holds an entry only in Paper and web/st-2 merges main, then concluding the merge is allowed, and `verify` on the branch doesn't report that entry.
+
 ## Open questions
 
-- Whether the reviewer's screenshots of the build are kept with the review, under `.claude/state/reviews/`, for the person to see in the pull request. Owner: the person. Blocks: nothing in HAND-4's first release.
+- Whether the review's screenshots, kept under `.claude/state/reviews/`, are attached to the pull request for the person to see. Owner: the person. Blocks: nothing in HAND-7's first release.

@@ -503,7 +503,7 @@ export function buildSnapshot({
   const checks = new Map();
   for (const rows of rowsOf.values())
     for (const row of rows) checks.set(row.requirement, row.status);
-  const requirements = trail(root, status, base).map((r) => ({
+  const requirements = trail(root, status, base, config).map((r) => ({
     id: r.id,
     title: line(r.title),
     stories: r.stories.map((s) => s.id),
