@@ -172,6 +172,11 @@ export function leadPrompt(step, { cli = 'code-kit' } = {}) {
   // ONB-6: an older setup brought up to date before the next story; init shows the person the diff.
   if (step.step === 'update')
     return `Before the next story, bring code-kit's setup up to date: run /code-kit:init. ${step.why ?? ''}`.trim();
+  // HAND-6: approved designs only in a design tool, exported before the screens built from them.
+  if (step.step === 'design' && step.handOver)
+    return ids.length
+      ? `${step.why ?? `${ids.join(', ')} approved designs that are only in the design tool.`} Run /code-kit:design --hand-over ${ids.join(' ')}: the person confirms each is still the design they approved, and you export it.`
+      : null;
   // ONB-2: the screens designed, and approved by the person, before they're built.
   if (step.step === 'design')
     return ids.length
@@ -192,7 +197,8 @@ export function leadPrompt(step, { cli = 'code-kit' } = {}) {
 }
 
 /** A step's identity: the loop never submits the same step twice while the project stands still. */
-export const stepKey = (step) => `${step.step}:${step.args ?? ''}`;
+export const stepKey = (step) =>
+  `${step.step}${step.handOver ? ' --hand-over' : ''}:${step.args ?? ''}`;
 
 /** The band's words for a step (LOOP-5): "Dispatch ST-7, ST-9". */
 export function stepLabel(step) {
@@ -210,7 +216,8 @@ export function stepLabel(step) {
       design: 'Design',
       setup: 'Set up',
       update: 'Update the setup',
-    }[step.step] ?? step.step;
+      'hand-over': 'Hand over',
+    }[step.handOver ? 'hand-over' : step.step] ?? step.step;
   return ids ? `${verb} ${ids}` : verb;
 }
 

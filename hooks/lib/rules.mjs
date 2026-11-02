@@ -905,7 +905,8 @@ function specCheckProblem(rel, root) {
   return `Run the spec-check skill before writing code on this branch. Save its report (the requirement table, questions and recommendation) to ${report}, then continue.`;
 }
 
-// Screens are designed first: a screen file can be written once the register lists it.
+// Screens are designed first: a screen file can be written once the register holds its approved
+// design as files (HAND-6). An entry naming only a design tool's artboard isn't one: no lane can read it.
 export function screenProblem(rel, root, config) {
   const gate = config.designGate;
   if (!gate) return null;
@@ -919,6 +920,14 @@ export function screenProblem(rel, root, config) {
   } catch {
     return `${gate.register} is missing or invalid, so no screen can be built yet.`;
   }
-  if (screens.some((s) => s.file === rel)) return null;
+  // Handed over, as designs.mjs's handedOver() says: kept here, so the path guard loads no more than this.
+  const listed = (Array.isArray(screens) ? screens : []).filter((s) => s?.file === rel);
+  if (listed.some((s) => Array.isArray(s.states) && s.states.length > 0)) return null;
+  if (listed.length) {
+    const s = listed[0];
+    const tool =
+      s.source?.tool ?? String(s.design ?? '').match(/^([a-z][\w-]*):/i)?.[1] ?? 'the design tool';
+    return `${rel} is a screen, and its approved design${s.screen ? ` (${s.screen})` : ''} is only in ${tool}, not as files a lane can build from, so it can't be built yet.\nThe lead hands it over first with /code-kit:design --hand-over, which exports every state into design/ and rewrites its entry in ${gate.register}; then build it from those files. Until then, write a change request for the lead and work on what doesn't need the screen.`;
+  }
   return `${rel} is a screen, and its design is not approved yet.\n${gate.howTo}\nOnce a person approves it, the lead adds { "file": "${rel}", ... } to ${gate.register}.`;
 }

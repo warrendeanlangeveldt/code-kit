@@ -2,6 +2,15 @@
 
 What changed in each release of code-kit, newest first. Versions follow the plugin manifest and the npm package `@warren-dean/code-kit`. Each release is also on [GitHub Releases](https://github.com/warrendeanlangeveldt/code-kit/releases).
 
+## Unreleased
+
+- **A screen waits for its design as files (spec 24, HAND-6).** A register entry that names only an artboard in the design tool no longer lets a lane write the screen: the write is refused, saying the lead hands the design over with `/code-kit:design --hand-over` first. `code-kit next` doesn't dispatch a story that builds such a screen; its step is the hand-over (`design` with `handOver: true`), and the loop asks the lead for it.
+- **The review's comparison is recorded (HAND-7).** The review records the screenshot of each built state it set beside the design: `code-kit designs evidence <story> <screen> <state> <screenshot.png>`, refused unless it's a PNG at the design's viewport. `verify`, and so the merge queue, report each approved state of a lane branch's screens with no screenshot since the screen last changed. In CI, where the review's records aren't, verify says it didn't check them.
+- **Lanes can look at the design tool (HAND-8).** Where the architecture names a design tool with an MCP server, init gives the lanes that build screens, and the QA lane, its read-only tools, with a line saying the exported files in the register are what they build to.
+- **A screen name means one screen (HAND-9).** A register entry's screen is matched only to the spec screen of exactly that name: a `###` or `####` heading, a `- **Name**` bullet, or a table row under `## Screens`, whose States column now counts. A name two screens share is reported as ambiguous, instead of one getting the other's states.
+- **A design story stays in progress until its screens are designed (HAND-10).** Committing the first approved screen on `design/st-<n>` no longer sends the story to review: it's in progress while a screen it designs (its plan's `**Screens:**` line, or its specs' screens) isn't in the branch's register, or until the plan says `review`.
+- **Merging the base into a branch (HAND-11).** The commit hook and `verify` hold a branch only to the register entries it adds or changes, so a lane merging the base isn't refused for the base's designs that are still only in the tool.
+
 ## 0.29.0 (2026-10-31)
 
 A team provider's drift findings can hold a merge, and what a project reports covers models, security reviews, intents' pull requests and claims (report version 6).

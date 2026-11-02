@@ -16,6 +16,8 @@
 //   trace <path> [--json] what a file is for: the requirements it delivers, its lane, its layer rules
 //   designs [<story>] [--json]  the approved designs from the register: a story's screens' design files,
 //                         every state, for the lane's brief; or every entry and what's wrong with it
+//   designs evidence <story> <screen file or name> <state> <screenshot.png>
+//                         the review records its screenshot of a built state beside its design (HAND-7)
 //   next [--base ref] [--json]
 //                         the step to take now (spec-design, init, dispatch, review…), from the project's state
 //   approve <name>... --reason "…" [--lane name]
@@ -103,13 +105,16 @@ import {
 import { traceFile } from '../hooks/lib/trace.mjs';
 import { buildStatus, readStories, specCheckRows } from '../hooks/lib/plan.mjs';
 import {
+  atViewport,
   designsFor,
   entryProblems,
   handedOver,
+  pngSize,
   readRegister,
+  sha256Of,
   toolOf,
 } from '../hooks/lib/designs.mjs';
-import { recordSentBack } from '../hooks/lib/reviews.mjs';
+import { evidenceDir, recordEvidence, recordSentBack } from '../hooks/lib/reviews.mjs';
 import {
   SECURITY_AGENT,
   SECURITY_AGENT_FILE,
@@ -549,6 +554,7 @@ const VERIFY_GROUPS = {
   layers: 'Layer rules',
   baseline: 'Baseline',
   design: 'Designs before screens',
+  evidence: 'Builds compared with their designs',
   tests: 'Weakened tests',
   regression: 'Fixes and their tests',
   standards: 'Standards',
@@ -1757,7 +1763,7 @@ function verify() {
     }
   }
   const lane = laneOfBranch(branch, config);
-  const { changed, found, skipped } = verifyBranch({
+  const { changed, found, skipped, evidenceUnchecked } = verifyBranch({
     root: resolve('.'),
     base: from,
     config,
@@ -1771,7 +1777,16 @@ function verify() {
     const count = Object.values(found).reduce((n, list) => n + list.length, 0);
     out(
       JSON.stringify(
-        { base: from, branch, lane, changed: changed.length, found, problems: count, skipped },
+        {
+          base: from,
+          branch,
+          lane,
+          changed: changed.length,
+          found,
+          problems: count,
+          skipped,
+          evidenceUnchecked: Boolean(evidenceUnchecked),
+        },
         null,
         2,
       ),
@@ -1790,6 +1805,10 @@ function verify() {
     for (const p of found[key]) out(`  ${p.split('\n').join('\n    ')}`);
   }
   if (skipped.length) out(`\n${notRun(skipped)}`);
+  if (evidenceUnchecked)
+    out(
+      `\nNot checked: whether the review compared each built screen with its design (HAND-7). The review's records are kept with the lead (.claude/state/), not here; the merge queue checks them.`,
+    );
   if (count) die(`\n${count} problem(s). Fix them on this branch.`);
   out(skipped.length ? 'No problems in what ran.' : 'No problems.');
 }
@@ -2947,6 +2966,7 @@ function designsCommand() {
   if (!config.designGate) die('The project has no design gate (designGate in the config).');
   const { entries, error } = readRegister(root, config);
   if (error) die(error);
+  if (rest[0] === 'evidence') return designEvidence(root, config, entries);
   const story = rest[0];
   const stories = config.docs?.plan ? readStories(root, config.docs.plan) : [];
   const shown = (story ? designsFor(entries, story, stories) : entries).map((e) => ({
@@ -2972,6 +2992,86 @@ function designsCommand() {
     if (e.tokens) out(`  tokens: ${e.tokens}`);
     for (const p of e.handedOver ? e.problems : []) out(`  ✗ ${p}`);
   }
+}
+
+/**
+ * HAND-7: `designs evidence <story> <screen> <state> <screenshot.png>`: the review's screenshot of a
+ * built state, taken at its design's viewport and set beside the design's PNG, recorded for the story's
+ * branch at its current commit. verify, and so the merge queue, report each approved state of the
+ * screens a branch builds that has none.
+ */
+function designEvidence(root, config, entries) {
+  const [, storyArg, screenArg, stateArg, png] = rest;
+  if (!storyArg || !screenArg || !stateArg || !png)
+    die(
+      'Usage: code-kit designs evidence <story> <screen file or name> <state> <screenshot.png>, after setting the screenshot of the built state beside its design.',
+    );
+  const stories = config.docs?.plan ? readStories(root, config.docs.plan) : [];
+  const story = stories.find((s) => s.id.toLowerCase() === storyArg.toLowerCase());
+  const branch = story ? `${story.lane}/${story.id.toLowerCase()}` : storyArg;
+  const sha =
+    spawnSync('git', ['-C', root, 'rev-parse', '--verify', '--quiet', `${branch}^{commit}`], {
+      encoding: 'utf8',
+    }).stdout?.trim() ?? '';
+  if (!sha)
+    die(
+      `${storyArg} has no branch here (${branch}): name the story whose branch you reviewed, or its branch.`,
+    );
+  const designs = (story ? designsFor(entries, story.id, stories) : entries).filter(handedOver);
+  const key = (v) =>
+    String(v ?? '')
+      .trim()
+      .toLowerCase();
+  const byFile = designs.filter((e) => e.file === screenArg);
+  const matching = byFile.length ? byFile : designs.filter((e) => key(e.screen) === key(screenArg));
+  if (!matching.length)
+    die(
+      `${screenArg} isn't a screen with an approved design ${story ? `for ${story.id}` : 'in the register'}. \`code-kit designs${story ? ` ${story.id}` : ''}\` lists them; name its file or its screen.`,
+    );
+  if (matching.length > 1)
+    die(
+      `${screenArg} names more than one screen file (${matching.map((e) => e.file).join(', ')}): name the file the screenshot is of.`,
+    );
+  const [entry] = matching;
+  const state = entry.states.find((st) => key(st?.name) === key(stateArg));
+  if (!state)
+    die(
+      `${entry.screen ?? entry.file} has no approved ${stateArg} state; its states are ${entry.states.map((st) => st.name).join(', ')}.`,
+    );
+  let bytes;
+  try {
+    bytes = readFileSync(resolve(png));
+  } catch {
+    die(`${png} isn't there: take the screenshot of the built state first.`);
+  }
+  const size = pngSize(bytes);
+  if (!size) die(`${png} isn't a PNG: save the screenshot as a PNG.`);
+  if (!atViewport(size, state.viewport))
+    die(
+      `${png} is ${size.width}x${size.height}, not taken at the design's viewport (${state.viewport}, at 1x to 4x): take it again at ${state.viewport}, so it can be set beside ${state.image}.`,
+    );
+  const slug = (v) => String(v).replace(/[^\w.-]+/g, '_');
+  const kept = posix.join(slug(branch), slug(entry.file), `${slug(state.name)}.png`);
+  const dir = evidenceDir(root);
+  mkdirSync(join(dir, posix.dirname(kept)), { recursive: true });
+  writeFileSync(join(dir, kept), bytes);
+  const image = posix.join('.claude/state/reviews', kept);
+  recordEvidence(root, {
+    branch,
+    sha,
+    story: story?.id ?? null,
+    file: entry.file,
+    screen: entry.screen ?? null,
+    state: state.name,
+    design: state.image,
+    image,
+    sha256: sha256Of(dir, kept),
+    viewport: state.viewport ?? null,
+    size: `${size.width}x${size.height}`,
+  });
+  out(
+    `Recorded: ${entry.screen ?? entry.file}'s ${state.name} state on ${branch} at ${sha.slice(0, 7)}, beside ${state.image} (kept as ${image}).`,
+  );
 }
 
 const commands = {
@@ -3027,6 +3127,7 @@ function usage() {
       '              | next [--base ref] [--json] | adapters | trace <path>... [--json]\n' +
       '              | instructions [--write] [--json] | instructions show lead|lane [<lane>]\n' +
       '              | standards [--json] [--for <path>...] | designs [<story>] [--json]\n' +
+      '              | designs evidence <story> <screen file or name> <state> <screenshot.png>\n' +
       '              | worktrees [--json] | worktrees release|discard <branch> | worktrees prune [--quiet]\n' +
       '              | approve <name>... --reason "…" [--lane name]   [--config file]\n' +
       '              | merge <branch> --delegated|--person [--into branch] | publish --delegated|--person\n' +

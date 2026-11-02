@@ -5,7 +5,7 @@ description: Design a design story's screens with the person before any of them 
 
 # Design before code
 
-A screen is designed and approved before anyone builds it. The design gate refuses a lane writing a screen file until the design register lists it, and the plan's screen stories depend on their design story, so nothing is dispatched early. Designing is the lead's work with the person: you propose, they decide.
+A screen is designed and approved before anyone builds it. The design gate refuses a lane writing a screen file until the design register holds its exported design (an entry naming only an artboard in the tool doesn't count), and the plan's screen stories depend on their design story, so nothing is dispatched early. Designing is the lead's work with the person: you propose, they decide.
 
 The CLI is `node "${CLAUDE_PLUGIN_ROOT}/bin/code-kit.mjs"`.
 
@@ -13,7 +13,7 @@ The CLI is `node "${CLAUDE_PLUGIN_ROOT}/bin/code-kit.mjs"`.
 
 For each story given (`**Lane:** design` in the plan):
 
-- read the requirements it cites and the `## Screens` section of their specs: each screen, what it shows, what the person can do there, and its empty, loading and error states;
+- read the requirements it cites and the `## Screens` section of their specs: each screen, what it shows, what the person can do there, and its empty, loading and error states. A screen is a `###` or `####` heading, a `- **Name** (…)` bullet or a table row, by its exact name, with a `**States:**` line or a States column. If the story designs only some of a spec's screens, name them in the plan with a `**Screens:**` line under the story;
 - read the architecture for the design tool and the folders screens live in, and the principles for the brand, theme and accessibility targets;
 - look at the designs already approved (`design/register.json` and what it links to), so the new screens match them.
 
@@ -74,11 +74,11 @@ For each approved screen, add an entry to the register, naming the code file the
 
 `story` is this design story. One design can serve several code files, such as the web and the mobile screen: each has its own entry, naming the same states. Committing the register is refused while an entry names a file that isn't there, a hash that isn't the file's, a state with no image, or leaves out a state the spec lists for the screen; `code-kit designs` lists every entry and what's wrong with it.
 
-The register is protected by the `design` approval, which is the person's: writing it is refused until they approve, and in a session with the code-kit mod the write waits in the band for their Approve. Give the approval a reason in their words ("bookings list and detail, as shown"). Then commit the designs and the register on `design/st-<n>`, and review and merge it like the lead's own story. Once it's merged, `code-kit next` dispatches the screen stories that waited on it.
+The register is protected by the `design` approval, which is the person's: writing it is refused until they approve, and in a session with the code-kit mod the write waits in the band for their Approve. Give the approval a reason in their words ("bookings list and detail, as shown"). Then commit the designs and the register on `design/st-<n>`. Commit each screen as the person approves it: the story reads as in progress until every screen it designs is in the branch's register (or you set its `**Status:**` to `review` in the plan), and then `code-kit next` sends it to review. Review and merge it like the lead's own story. Once it's merged, `code-kit next` dispatches the screen stories that waited on it.
 
 ## Handing over designs approved before (`--hand-over`)
 
-`code-kit next` names register entries whose design is only in a design tool ("6 approved screens are only in paper"). For each, find the artboard the entry names, and ask the person whether it's still the design they approved: the tool's copy may have changed since. Once they confirm, export it as in step 4 and rewrite its entry as in step 5. Then, for each of those screens that's already built, compare the build with the export as the review does (each state's screenshot beside its PNG), and add a fix story to the plan for each difference, citing the screen's requirements.
+`code-kit next` names register entries whose design is only in a design tool ("6 approved screens are only in paper"), and holds every story that builds one of those screens, giving the `design` step with `handOver: true` and the design stories to hand over; a lane's write to such a screen is refused until it's handed over. For each, find the artboard the entry names, and ask the person whether it's still the design they approved: the tool's copy may have changed since. Once they confirm, export it as in step 4 and rewrite its entry as in step 5. Then, for each of those screens that's already built, compare the build with the export as the review does (each state's screenshot beside its PNG), and add a fix story to the plan for each difference, citing the screen's requirements.
 
 ## 6. Report
 

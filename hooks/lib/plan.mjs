@@ -85,6 +85,134 @@ export function readSpecs(root, specsPath, plan = null) {
   return found;
 }
 
+/** A screen's name as the specs and the register give it, compared: no markdown, one case, one space. */
+export const screenKey = (name) =>
+  String(name ?? '')
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')
+    .replace(/[*_`]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase();
+
+/** The states a `**States:**` line or a States cell lists, in lower case. */
+const statesOf = (text) =>
+  String(text)
+    .replace(/<br\s*\/?>/gi, ',')
+    .split(/[,;/]/)
+    .map((s) => screenKey(s).replace(/\.$/, ''))
+    .filter(Boolean);
+
+/** A `- **Name** …` bullet that lists a screen: { indent, title }, or null (a field such as `**States:**`). */
+function screenBullet(line) {
+  const m = line.match(/^(\s*)[-*]\s+\*\*([^*]+?)\*\*/);
+  return m && !/:\s*$/.test(m[2]) ? { indent: m[1].length, title: m[2] } : null;
+}
+
+const cellsOf = (line) =>
+  line
+    .trim()
+    .replace(/^\||\|$/g, '')
+    .split('|')
+    .map((c) => c.trim());
+
+/**
+ * The screens one `## Screens` section lists, from its lines: `### Name` and `#### Name` headings (a
+ * trailing `(…)` left out of the name), `- **Name** …` bullets (by the bold title; a bold title ending in
+ * a colon, such as `**States:**`, is a field, not a screen), and a table's rows (by its Screen or Name
+ * column, else its first; a States column gives the states).
+ */
+function screensIn(lines, file) {
+  const found = [];
+  const fieldStates = (body) => body.match(/\*\*States:\*\*\s*(.+)/i)?.[1] ?? null;
+  lines.forEach((line, i) => {
+    const heading = line.match(/^#{3,4}\s+(.+?)\s*$/);
+    if (heading) {
+      const end = lines.findIndex((l, j) => j > i && /^#{1,4}\s/.test(l));
+      const block = lines.slice(i, end < 0 ? undefined : end);
+      // Its own States line comes before any screen listed under it.
+      const own = block.findIndex((l, j) => j > 0 && screenBullet(l));
+      const listed = fieldStates(block.slice(0, own < 0 ? undefined : own).join('\n'));
+      const name = heading[1].replace(/\s*\([^)]*\)\s*$/, '');
+      found.push({
+        name: screenKey(name),
+        title: name.replace(/[*_`]/g, '').trim(),
+        file,
+        states: listed ? statesOf(listed) : null,
+        body: block.join('\n'),
+      });
+      return;
+    }
+    const bullet = screenBullet(line);
+    if (bullet) {
+      const { indent } = bullet;
+      const end = lines.findIndex(
+        (l, j) =>
+          j > i &&
+          (/^#{1,4}\s/.test(l) ||
+            /^\s*\|/.test(l) ||
+            (/^\s*[-*]\s/.test(l) && l.match(/^\s*/)[0].length <= indent)),
+      );
+      const body = lines.slice(i, end < 0 ? undefined : end).join('\n');
+      const listed = fieldStates(body);
+      found.push({
+        name: screenKey(bullet.title),
+        title: bullet.title.trim(),
+        file,
+        states: listed ? statesOf(listed) : null,
+        body,
+      });
+    }
+  });
+  // Tables: a header row, its separator, then a row per screen.
+  for (let i = 0; i + 1 < lines.length; i++) {
+    if (!/^\s*\|/.test(lines[i]) || !/^\s*\|[\s:|-]+\|\s*$/.test(lines[i + 1])) continue;
+    if (i > 0 && /^\s*\|/.test(lines[i - 1])) continue;
+    const header = cellsOf(lines[i]).map((c) => screenKey(c));
+    const nameAt = Math.max(
+      header.findIndex((c) => /^(screen|name)\b/.test(c)),
+      0,
+    );
+    const statesAt = header.findIndex((c) => /^states?\b/.test(c));
+    for (let j = i + 2; j < lines.length && /^\s*\|/.test(lines[j]); j++) {
+      const cells = cellsOf(lines[j]);
+      const title = (cells[nameAt] ?? '').replace(/\s*\([^)]*\)\s*$/, '');
+      if (!screenKey(title)) continue;
+      found.push({
+        name: screenKey(title),
+        title: title.replace(/[*_`]/g, '').trim(),
+        file,
+        states: statesAt >= 0 && cells[statesAt] ? statesOf(cells[statesAt]) : null,
+        body: lines[j],
+      });
+    }
+  }
+  return found;
+}
+
+/**
+ * HAND-9: every screen the specs' `## Screens` sections list: [{ name, title, file, states, body }].
+ * `name` is the screen's name compared (screenKey), `title` as written; `states` what a `**States:**`
+ * line or a States column lists, or null when neither does; `body` its text, for the states it mentions.
+ */
+export function readScreens(root, specsPath) {
+  if (!specsPath) return [];
+  const found = [];
+  for (const file of markdownFiles(root, specsPath)) {
+    let lines;
+    try {
+      lines = readFileSync(join(root, file), 'utf8').split('\n');
+    } catch {
+      continue;
+    }
+    lines.forEach((line, i) => {
+      if (!/^##\s+Screens\b/i.test(line)) return;
+      const end = lines.findIndex((l, j) => j > i && /^#{1,2}\s/.test(l));
+      found.push(...screensIn(lines.slice(i + 1, end < 0 ? undefined : end), file));
+    });
+  }
+  return found;
+}
+
 /** The first paragraph under a story's `**Field:**` lines, on one line, or null. */
 function summaryOf(body) {
   const start = body.findIndex((l) => l.trim() && !/^\*\*[^*]+:\*\*/.test(l.trim()));
@@ -99,7 +227,7 @@ function summaryOf(body) {
 }
 
 /**
- * Every story in the plan: [{ id, title, lane, requirements, dependsOn, status, fixes, milestone, slice, size, summary }].
+ * Every story in the plan: [{ id, title, lane, requirements, dependsOn, status, fixes, milestone, slice, size, screens, summary }].
  * A story's milestone is the `## ` heading above it ("Milestone 5: Your own key"), or null; its summary the
  * paragraph under its fields, on one line, or null.
  */
@@ -135,6 +263,13 @@ export function readStories(root, planPath) {
           field(body, 'Size')
             .toLowerCase()
             .match(/^(small|medium|large)\b/)?.[1] ?? null,
+        // HAND-10: the screens a design story designs, where the plan names them, or null.
+        screens: field(body, 'Screens')
+          ? field(body, 'Screens')
+              .split(/[,;]/)
+              .map((n) => n.trim())
+              .filter(Boolean)
+          : null,
         summary: summaryOf(body),
       });
     });
@@ -279,8 +414,12 @@ function worktrees(root) {
  * whatever the plan says yet. A lane's branch that never moved is `stopped`: its agent stopped before its
  * first commit, and the story is ready again (or blocked) for a fresh agent, so its lane isn't held by
  * nothing. A branch only on origin may be a teammate's, and stays in progress unless the base holds it.
+ *
+ * HAND-10: a design story's branch is committed to as each screen is approved, so with commits ahead it
+ * stays in progress while `designing(story, ref)` says screens it designs aren't in its register yet,
+ * until the plan's status says `review`.
  */
-export function storyStates(root, stories, base) {
+export function storyStates(root, stories, base, { designing = null } = {}) {
   const trees = worktrees(root);
   const backs = sentBack(root);
   const refs = branchRefs(root, base);
@@ -322,7 +461,11 @@ export function storyStates(root, stories, base) {
     if (ref && !['done', DROPPED].includes(story.status)) {
       const head = backs[branch] ? refs[ref].sha : null;
       if (head && head === backs[branch].sha) state = 'sent back';
-      else if (ahead > 0) state = building(story) ? 'in progress' : 'review';
+      else if (ahead > 0)
+        state =
+          building(story) || (story.lane === DESIGN && designing?.(story, ref))
+            ? 'in progress'
+            : 'review';
       else if (story.status === 'review') state = 'done';
       else if (builtBy(story, branch)) state = 'in progress';
       else {
@@ -398,11 +541,45 @@ export function traceProblems(requirements, stories, lanes) {
   return problems;
 }
 
+/**
+ * HAND-10: (story, ref) => whether a design story still has screens to design on its branch: a screen
+ * its plan entry names (`**Screens:**`), or else one the `## Screens` sections of its requirements'
+ * specs list, with no entry in the register as `ref` has it. The plan's `**Status:** review` says the
+ * lead is done with it, whatever is left. Null without a design gate.
+ */
+function stillDesigning(root, config, requirements) {
+  const register = config.designGate?.register;
+  if (!register) return null;
+  let screens = null;
+  return (story, ref) => {
+    if (story.status === 'review') return false;
+    let wanted = story.screens?.map(screenKey);
+    if (!wanted) {
+      screens ??= readScreens(root, config.docs?.specs);
+      const files = new Set(
+        requirements.filter((r) => story.requirements.includes(r.id)).map((r) => r.file),
+      );
+      wanted = screens.filter((s) => files.has(s.file)).map((s) => s.name);
+    }
+    if (!wanted.length) return false;
+    let entries = [];
+    try {
+      entries = JSON.parse(git(root, 'show', `${ref}:${register}`) ?? '{}').screens ?? [];
+    } catch {
+      // an unreadable register on the branch holds no screen yet
+    }
+    const named = new Set((Array.isArray(entries) ? entries : []).map((e) => screenKey(e?.screen)));
+    return wanted.some((w) => !named.has(w));
+  };
+}
+
 /** The whole picture for `code-kit status` and `code-kit next`: stories, requirements, gaps, drift. */
 export function buildStatus(root, config, base, files) {
   const { specs, plan } = config.docs;
   const requirements = readRequirements(root, specs).filter((r) => r.file !== plan);
-  const stories = storyStates(root, readStories(root, plan), base);
+  const stories = storyStates(root, readStories(root, plan), base, {
+    designing: stillDesigning(root, config, requirements),
+  });
   const tested = testedRequirements(root, files, specs);
   const problems = traceProblems(requirements, stories, Object.keys(config.lanes));
   const byRequirement = requirements.map((r) => {

@@ -8,7 +8,9 @@ import { BASELINE_FILE, loadBaseline, newProblems } from './baseline.mjs';
 import { runChecks } from './checks.mjs';
 import { CONFIG_FILE } from './config.mjs';
 import { isDependencyFile } from './dependencies.mjs';
-import { entryProblems, readRegister } from './designs.mjs';
+import { entryProblems, freshEntries, readRegister, statesWithoutEvidence } from './designs.mjs';
+import { evidenceRecords } from './reviews.mjs';
+import { storyOfBranch } from './teamfacts.mjs';
 import { matchesAny } from './glob.mjs';
 import { layerProblems } from './layers.mjs';
 import { STANDARDS_APPROVAL, standardsFile, standardsWeakenings } from './standards.mjs';
@@ -194,8 +196,8 @@ export function failureOutput(output) {
 
 /**
  * The files changed, every problem with the branch, grouped as { ownership, protected, layers,
- * baseline, design, tests, regression, standards, checks }, and the checks `skipped` because a tool isn't
- * installed. `lane` holds the branch to that lane's paths; `checks: false` leaves the project's
+ * baseline, design, evidence, tests, regression, standards, checks }, and the checks `skipped` because a
+ * tool isn't installed; `evidenceUnchecked` where the review's records aren't kept (HAND-7: CI). `lane` holds the branch to that lane's paths; `checks: false` leaves the project's
  * checks to CI's own steps. `fixes` runs a fix's tests without the fix (REG-1; with the
  * checks unless said); `branch` names the branch when the checkout is detached.
  */
@@ -218,6 +220,7 @@ export function verifyBranch({
     layers: [],
     baseline: [],
     design: [],
+    evidence: [],
     tests: [],
     regression: [],
     standards: [],
@@ -294,16 +297,42 @@ export function verifyBranch({
   }
 
   // HAND-2: each register entry the branch adds or changes, and each approved design whose files it
-  // changed, names the approved files with their hashes, every state the spec lists.
+  // changed, names the approved files with their hashes, every state the spec lists. HAND-11: an entry
+  // the base already holds (where the branch left it, as it is now, or the first protected branch's,
+  // which a lane may have merged in) is the base's, not the branch's.
   const register = config.designGate?.register;
+  let evidenceUnchecked = false;
   if (register) {
-    const old = readRegister(root, config, showAt(root, from, register) ?? '{}').entries;
+    const at = (ref) => readRegister(root, config, showAt(root, ref, register) ?? '{}').entries;
+    const entries = readRegister(root, config).entries;
+    const protectedBase = config.branches?.protected?.[0];
+    const fresh = new Set(
+      freshEntries(entries, at(from), at(base), protectedBase ? at(protectedBase) : []),
+    );
     const touched = new Set(changed);
-    for (const e of readRegister(root, config).entries) {
-      const fresh = !old.some((o) => JSON.stringify(o) === JSON.stringify(e));
+    for (const e of entries) {
       const files = (e.states ?? []).flatMap((st) => [st?.image, st?.code]).filter(Boolean);
-      if (fresh || files.some((f) => touched.has(f)))
+      if (fresh.has(e) || files.some((f) => touched.has(f)))
         found.design.push(...entryProblems(root, e, config.docs?.specs));
+    }
+    // HAND-7: a lane's branch that builds screens has the review's screenshot of each approved state.
+    const name = branch ?? currentBranchOf(root);
+    if (lane && lane !== 'lead' && name) {
+      const records = evidenceRecords(root, name);
+      if (records === null) evidenceUnchecked = true;
+      else {
+        const current = (r) =>
+          Boolean(r.sha) &&
+          spawnSync('git', ['-C', root, 'merge-base', '--is-ancestor', r.sha, 'HEAD']).status ===
+            0 &&
+          spawnSync('git', ['-C', root, 'diff', '--quiet', r.sha, 'HEAD', '--', r.file]).status ===
+            0;
+        const story = storyOfBranch(name) ?? name;
+        for (const { entry, state } of statesWithoutEvidence(entries, present, records, current))
+          found.evidence.push(
+            `${entry.screen ?? entry.file}'s ${state.name} state (${entry.file}) has no screenshot from the review beside its design (${state.image}). The review takes one of the built state at ${state.viewport ?? "the design's viewport"} and records it: code-kit designs evidence ${story} ${entry.file} ${state.name} <screenshot.png>.`,
+          );
+      }
     }
   }
 
@@ -368,5 +397,5 @@ export function verifyBranch({
       unfinished = Boolean(failure.timedOut);
     }
   }
-  return { changed, found, skipped, unfinished };
+  return { changed, found, skipped, unfinished, evidenceUnchecked };
 }
