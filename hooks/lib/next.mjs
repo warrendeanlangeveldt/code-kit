@@ -9,7 +9,7 @@ import { buildStatus, readStories, DESIGN, LEAD } from './plan.mjs';
 import { pendingSetup } from './adapters/index.mjs';
 import { CONFIG_FILE, SETUP_VERSION } from './config.mjs';
 import { mergingNow, nextToMerge, readQueue, waiting } from './queue.mjs';
-import { handedOver, readRegister, toolOf } from './designs.mjs';
+import { designsFor, handedOver, readRegister, toolOf } from './designs.mjs';
 import { decidedBy, laneOf, openRequests } from './rules.mjs';
 import { instructionsState } from './instructions.mjs';
 import { SECURITY_AGENT_FILE } from './security.mjs';
@@ -415,6 +415,29 @@ export function nextStep(root, base) {
       `${mergeHead.branch} passed review and is next in the merge queue${queued.length > 1 ? ` (then ${queued.filter((b) => b !== mergeHead.branch).join(', ')})` : ''}.`,
       { args: mergeHead.branch },
     );
+  // HAND-6: a screen story whose screens' approved designs are only in a design tool can't be built:
+  // the gate refuses each screen until the lead hands its design over. It waits, and the hand-over is
+  // the step, rather than a lane dispatched to be refused.
+  const { entries: registered } = readRegister(root, config);
+  const toHandOver = new Map();
+  for (const list of [fixes, ready]) {
+    const kept = list.filter((id) => {
+      const s = status.stories.find((x) => x.id === id);
+      const toolOnly = designsFor(registered, id, status.stories).filter(
+        (e) => !handedOver(e) && laneOf(e.file, config) === s?.lane,
+      );
+      if (toolOnly.length) toHandOver.set(id, toolOnly);
+      return !toolOnly.length;
+    });
+    list.splice(0, list.length, ...kept);
+  }
+  const onlyInTool = [...toHandOver.values()].flat();
+  const distinct = (pick) => [...new Set(onlyInTool.map(pick))];
+  const handOver = distinct((e) => e.story).sort((a, b) => a.slice(3) - b.slice(3));
+  const one = toHandOver.size === 1;
+  const handOverWhy = toHandOver.size
+    ? `${[...toHandOver.keys()].join(', ')} ${one ? 'builds' : 'build'} screens whose approved designs (${distinct((e) => e.screen ?? e.file).join(', ')}) are only in ${distinct((e) => toolOf(e)).join(', ')}, not as files a lane can build from: hand ${handOver.join(', ')} over with /code-kit:design --hand-over ${handOver.join(' ')} before ${one ? 'it is' : 'they are'} dispatched.`
+    : '';
   // SCHED-1, SCHED-2: one story for each free lane, across every session; the open slice's first.
   const busy = new Set([
     ...laneClaims(root)
@@ -439,7 +462,7 @@ export function nextStep(root, base) {
       `${sched.waiting.join(', ')} ${sched.waiting.length === 1 ? 'waits' : 'wait'} for ${sched.waiting.length === 1 ? 'its lane' : 'their lanes'}: a lane runs one story at a time.`,
     );
   // HAND-5: approved designs still only in a design tool, which no lane can read, are handed over once.
-  const toolOnly = readRegister(root, config).entries.filter((e) => !handedOver(e));
+  const toolOnly = registered.filter((e) => !handedOver(e));
   if (toolOnly.length)
     attention.push(
       `${toolOnly.length} approved screen${toolOnly.length === 1 ? ' is' : 's are'} only in ${[...new Set(toolOnly.map(toolOf))].join(', ')}, not as files a lane can build from: hand ${toolOnly.length === 1 ? 'it' : 'them'} over with /code-kit:design --hand-over.`,
@@ -454,6 +477,8 @@ export function nextStep(root, base) {
   );
   models = toDispatch.filter((id) => chosen[id]).map((id) => ({ story: id, ...chosen[id] }));
   if (review.length && forDesign.length) then.push({ step: 'design', args: forDesign.join(' ') });
+  const handOverStep = { step: 'design', args: handOver.join(' '), handOver: true };
+  if (review.length && handOver.length) then.push(handOverStep);
   if (review.length && toDispatch.length)
     then.push({ step: 'dispatch', args: toDispatch.join(' ') });
   if (forLead.length) then.push({ step: 'lead', args: forLead.join(' ') });
@@ -469,11 +494,21 @@ export function nextStep(root, base) {
       {
         args: forDesign.join(' '),
         then: [
+          ...(handOver.length ? [handOverStep] : []),
           ...(toDispatch.length ? [{ step: 'dispatch', args: toDispatch.join(' ') }] : []),
           ...(forLead.length ? [{ step: 'lead', args: forLead.join(' ') }] : []),
         ],
       },
     );
+  if (handOver.length)
+    return result('design', handOverWhy, {
+      args: handOver.join(' '),
+      handOver: true,
+      then: [
+        ...(toDispatch.length ? [{ step: 'dispatch', args: toDispatch.join(' ') }] : []),
+        ...(forLead.length ? [{ step: 'lead', args: forLead.join(' ') }] : []),
+      ],
+    });
   if (fixes.length)
     return result(
       'dispatch',

@@ -3987,3 +3987,125 @@ test('HUBR-2 the security reviewer’s findings counted, and usage kept by model
     ],
   );
 });
+
+test('HAND-9 a screen name resolves only to the spec screen of exactly that name', async () => {
+  const { readScreens } = await import('../hooks/lib/plan.mjs');
+  const { entryProblems, screenStates } = await import('../hooks/lib/designs.mjs');
+  const dir = mkdtempSync(join(tmpdir(), 'code-kit-screens-'));
+  try {
+    mkdirSync(join(dir, 'specs'));
+    writeFileSync(
+      join(dir, 'specs/01-home.md'),
+      [
+        '# 01. Home',
+        '',
+        '## Screens',
+        '',
+        '- **Today** (home): what is due today, and a link to each Day.',
+        '  **States:** default, empty',
+        '- **Fix** (a form): change one entry. Other screens fix nothing.',
+        '',
+        '### Day',
+        '',
+        'One day of entries.',
+        '**States:** default, loading, error',
+        '',
+        '| Screen | What it shows | States |',
+        '| ------ | ------------- | ------ |',
+        '| **Week** | seven days | default, empty, error |',
+        '| Settings | the account | default |',
+        '',
+        '## Requirements',
+        '',
+        '### HOME-1 Days',
+      ].join('\n'),
+    );
+    writeFileSync(
+      join(dir, 'specs/02-account.md'),
+      '# 02. Account\n\n## Screens\n\n### Settings (account)\n\nThe account, empty when new.\n',
+    );
+    const names = readScreens(dir, 'specs').map((s) => s.name);
+    assert.deepEqual(names, ['today', 'fix', 'day', 'week', 'settings', 'settings']);
+    // "Day" is the Day heading's, not the Today bullet that mentions it.
+    assert.deepEqual(screenStates(dir, 'specs', 'Day'), ['default', 'loading', 'error']);
+    assert.deepEqual(screenStates(dir, 'specs', 'Today'), ['default', 'empty']);
+    // "Fix" is the Fix bullet, not another screen's text that has the word.
+    assert.deepEqual(screenStates(dir, 'specs', 'Fix'), ['default']);
+    // A table's rows are screens, and its States column their states.
+    assert.deepEqual(screenStates(dir, 'specs', 'Week'), ['default', 'empty', 'error']);
+    assert.equal(screenStates(dir, 'specs', 'Days'), null);
+    // Two screens of one name: ambiguous, so neither one's states.
+    assert.equal(screenStates(dir, 'specs', 'Settings'), null);
+    const entry = {
+      file: 'app/settings.tsx',
+      screen: 'Settings',
+      story: 'ST-1',
+      approved: '2026-11-01',
+      source: { tool: 'html', ref: 'x' },
+      states: [{ name: 'default', image: 'none.png', why: 'image only', viewport: '390x844' }],
+    };
+    assert.ok(
+      entryProblems(dir, entry, 'specs').some((p) =>
+        p.includes(
+          'Settings: more than one screen in the specs has this name ("Settings" in specs/01-home.md, "Settings" in specs/02-account.md)',
+        ),
+      ),
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('HAND-7 and HAND-11 evidence, viewports and the entries a branch answers for', async () => {
+  const { atViewport, freshEntries, pngSize, statesWithoutEvidence } =
+    await import('../hooks/lib/designs.mjs');
+  const png = (w, h) => {
+    const b = Buffer.alloc(24);
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).copy(b);
+    b.write('IHDR', 12, 'latin1');
+    b.writeUInt32BE(w, 16);
+    b.writeUInt32BE(h, 20);
+    return b;
+  };
+  assert.deepEqual(pngSize(png(780, 1688)), { width: 780, height: 1688 });
+  assert.equal(pngSize(Buffer.from('not a png at all, just some text')), null);
+  assert.ok(atViewport({ width: 780, height: 1688 }, '390x844'));
+  assert.ok(atViewport({ width: 390, height: 2000 }, '390x844'), 'a full page is taller');
+  assert.ok(!atViewport({ width: 1440, height: 900 }, '390x844'));
+  const a = { file: 'a.tsx', screen: 'A', states: [{ name: 'default' }, { name: 'empty' }] };
+  const b = { file: 'b.tsx', design: 'paper:1 — B' };
+  // The same entry with its keys in another order is the same entry.
+  assert.deepEqual(freshEntries([a, b], [{ design: 'paper:1 — B', file: 'b.tsx' }]), [a]);
+  assert.deepEqual(freshEntries([a, b], [], [a]), [b]);
+  const missing = statesWithoutEvidence(
+    [a, b],
+    ['a.tsx', 'b.tsx'],
+    [{ file: 'a.tsx', state: 'default' }],
+  );
+  assert.deepEqual(
+    missing.map((m) => `${m.entry.file}:${m.state.name}`),
+    ['a.tsx:empty'],
+  );
+  assert.deepEqual(statesWithoutEvidence([a], ['other.tsx'], []), []);
+  assert.equal(
+    statesWithoutEvidence([a], ['a.tsx'], [{ file: 'a.tsx', state: 'default' }], () => false)
+      .length,
+    2,
+  );
+});
+
+test('HAND-6 the loop hands over designs only in the design tool', async () => {
+  const { stepKey, stepLabel } = await import('../hooks/mod/loop.mjs');
+  const step = {
+    step: 'design',
+    args: 'ST-1',
+    handOver: true,
+    why: 'ST-2 builds screens whose approved designs are only in paper.',
+  };
+  assert.equal(
+    leadPrompt(step),
+    'ST-2 builds screens whose approved designs are only in paper. Run /code-kit:design --hand-over ST-1: the person confirms each is still the design they approved, and you export it.',
+  );
+  assert.equal(stepLabel(step), 'Hand over ST-1');
+  assert.notEqual(stepKey(step), stepKey({ step: 'design', args: 'ST-1' }));
+});

@@ -412,7 +412,19 @@ try {
     0,
   );
   put('design/approved-screens.json', JSON.stringify({ screens: [{ file: screen }] }));
+  expect(
+    'HAND-6 a screen whose approved design is only in the design tool is refused, until the lead hands it over',
+    write(screen, 'mobile-engineer'),
+    2,
+    'The lead hands it over first with /code-kit:design --hand-over',
+  );
+  put(
+    'design/approved-screens.json',
+    JSON.stringify({ screens: [approvedDesign(repo, screen, 'Jobs today')] }),
+  );
   expect('an approved screen can be built', write(screen, 'mobile-engineer'), 0);
+  rmSync(join(repo, 'design/jobs-today'), { recursive: true });
+  put('design/approved-screens.json', JSON.stringify({ screens: [{ file: screen }] }));
 
   // --- shell -------------------------------------------------------------------------------------
   expect('bare install allowed', bash('pnpm install && pnpm test'), 0);
@@ -4502,6 +4514,250 @@ else process.exit(2);
       truth(
         older.attention.some((a) => a.includes('1 approved screen is only in paper')),
         JSON.stringify(older.attention),
+      ),
+      0,
+    );
+  }
+
+  // --- spec 24: a design story in progress, designs handed over first, builds compared, per branch ----
+  {
+    const e = newRepo();
+    cleanups.push(e.dir);
+    const eKit = (...args) =>
+      spawnSync('node', [kitCli, ...args], { cwd: e.dir, encoding: 'utf8' });
+    const eJson = (...args) => JSON.parse(eKit(...args, '--json').stdout);
+    const eHook = (command, agent) =>
+      spawnSync('node', [join(hooks, 'guard-bash.mjs')], {
+        input: JSON.stringify({
+          cwd: e.dir,
+          tool_input: { command },
+          ...(agent ? { agent_type: agent } : {}),
+        }),
+        env: { ...process.env, CLAUDE_PROJECT_DIR: e.dir },
+        encoding: 'utf8',
+      });
+    const ePut = (rel, body) => {
+      mkdirSync(dirname(join(e.dir, rel)), { recursive: true });
+      writeFileSync(join(e.dir, rel), body);
+    };
+    const eRegister = (entries) =>
+      ePut('design/approved-screens.json', `${JSON.stringify({ screens: entries }, null, 2)}\n`);
+    const plan = (st1, extra = '') =>
+      ePut(
+        'docs/spec/plan.md',
+        `# Plan\n\n## M1\n\n### ST-1 Design: bookings\n\n**Lane:** design\n**Requirements:** BOOK-1\n**Status:** ${st1}\n\n### ST-2 Bookings list\n\n**Lane:** web\n**Requirements:** BOOK-1\n**Depends on:** ST-1\n**Status:** todo\n${extra}`,
+      );
+    // HAND-9: the spec lists its screens in a table, with their states.
+    ePut(
+      'docs/spec/01-bookings.md',
+      '# 01. Bookings\n\n### BOOK-1 List bookings\n\nx\n\n## Screens\n\n| Screen | What it shows | States |\n| ------ | ------------- | ------ |\n| Bookings list | each booking | default, empty |\n| Booking detail | one booking | default |\n',
+    );
+    plan('todo');
+    eRegister([]);
+    e.git('add', '-A');
+    e.git('commit', '-q', '-m', 'specs');
+
+    // HAND-10: the lead commits each screen as the person approves it, on the design story's branch.
+    e.git('checkout', '-q', '-b', 'design/st-1');
+    const list = approvedDesign(e.dir, 'apps/office/app/bookings/page.tsx', 'Bookings list', [
+      'default',
+      'empty',
+    ]);
+    eRegister([list]);
+    e.git('add', '-A');
+    e.git('commit', '-q', '-m', 'ST-1 the bookings list, approved');
+    e.git('checkout', '-q', 'main');
+    const stateOf = (id) => eJson('status').stories.find((s) => s.id === id)?.state;
+    const halfway = eJson('next');
+    expect(
+      'HAND-10 a design story with screens still to design reads as in progress after its first commit, not finished',
+      truth(
+        stateOf('ST-1') === 'in progress' && halfway.step !== 'review',
+        JSON.stringify({ state: stateOf('ST-1'), step: halfway.step, why: halfway.why }),
+      ),
+      0,
+    );
+    plan('review');
+    expect(
+      'HAND-10 the plan saying review is the lead saying it is done',
+      truth(stateOf('ST-1') === 'review', stateOf('ST-1')),
+      0,
+    );
+    plan('todo');
+    e.git('checkout', '-q', 'design/st-1');
+    const detail = approvedDesign(
+      e.dir,
+      'apps/office/app/bookings/[id]/page.tsx',
+      'Booking detail',
+    );
+    eRegister([list, detail]);
+    e.git('add', '-A');
+    e.git('commit', '-q', '-m', 'ST-1 the booking detail, approved');
+    e.git('checkout', '-q', 'main');
+    const finished = eJson('next');
+    expect(
+      'HAND-10 once every screen it lists is in its register, the design story waits for review',
+      truth(
+        finished.step === 'review' && finished.args === 'ST-1',
+        JSON.stringify({ step: finished.step, args: finished.args }),
+      ),
+      0,
+    );
+
+    // HAND-6: an approved design that is only in the design tool holds the screen story that builds it.
+    plan('done');
+    eRegister([
+      {
+        file: 'apps/office/app/bookings/page.tsx',
+        screen: 'Bookings list',
+        design: 'paper:abc — Bookings list',
+        story: 'ST-1',
+      },
+    ]);
+    e.git('add', '-A');
+    e.git('commit', '-q', '-m', 'an approved design, only in the design tool');
+    const held = eJson('next');
+    expect(
+      'HAND-6 next holds a screen story whose design is only in the tool, and the hand-over is the step',
+      truth(
+        held.step === 'design' &&
+          held.handOver === true &&
+          held.args === 'ST-1' &&
+          held.why.includes('ST-2 builds screens whose approved designs (Bookings list)') &&
+          held.why.includes('/code-kit:design --hand-over ST-1') &&
+          !held.then.some((t) => t.step === 'dispatch' && t.args.includes('ST-2')),
+        JSON.stringify({ step: held.step, args: held.args, why: held.why, then: held.then }),
+      ),
+      0,
+    );
+
+    // HAND-11: a lane merging the base into its branch isn't held to the base's register entries.
+    e.git('checkout', '-q', '-b', 'web/st-2', 'main~1');
+    ePut('apps/office/lib/format.ts', 'export const on = "branch";\n');
+    e.git('add', '-A');
+    e.git('commit', '-q', '-m', 'ST-2 the branch side');
+    e.git('checkout', '-q', 'main');
+    ePut('apps/office/lib/format.ts', 'export const on = "main";\n');
+    e.git('add', '-A');
+    e.git('commit', '-q', '-m', 'the main side');
+    e.git('checkout', '-q', 'web/st-2');
+    spawnSync('git', ['-C', e.dir, 'merge', '-q', 'main'], { encoding: 'utf8' });
+    ePut('apps/office/lib/format.ts', 'export const on = "both";\n');
+    e.git('add', 'apps/office/lib/format.ts');
+    expect(
+      "HAND-11 concluding a merge of the base doesn't hold the lane to the base's designs only in the tool",
+      eHook('git commit --no-edit', 'web-engineer'),
+      0,
+    );
+    e.git('commit', '-q', '--no-edit');
+    // The base's entry, written with its keys in another order, and verified against an older base.
+    const [toolOnly] = JSON.parse(
+      readFileSync(join(e.dir, 'design/approved-screens.json'), 'utf8'),
+    ).screens;
+    eRegister([Object.fromEntries(Object.entries(toolOnly).reverse())]);
+    e.git('commit', '-q', '-am', 'the register as a formatter wrote it');
+    e.git('branch', 'older', 'main~2');
+    const merged = eJson('verify', '--base', 'older', '--no-checks');
+    expect(
+      'HAND-11 verify holds a branch only to the register entries it adds or changes, not those the base has',
+      truth(
+        !merged.found.design.some((p) => p.includes('only in paper')),
+        JSON.stringify(merged.found.design),
+      ),
+      0,
+    );
+
+    // HAND-7: the review's screenshot of each approved state of the screens a branch builds.
+    e.git('checkout', '-q', 'main');
+    plan(
+      'done',
+      '\n### ST-3 Bookings list, built\n\n**Lane:** web\n**Requirements:** BOOK-1\n**Depends on:** ST-1\n**Status:** todo\n',
+    );
+    eRegister([list, detail]);
+    approvedDesign(e.dir, list.file, 'Bookings list', ['default', 'empty']);
+    approvedDesign(e.dir, detail.file, 'Booking detail');
+    e.git('add', '-A');
+    e.git('commit', '-q', '-m', 'ST-1 merged');
+    e.git('checkout', '-q', '-b', 'web/st-3');
+    ePut(list.file, 'export default function Bookings() { return null; }\n');
+    e.git('add', '-A');
+    e.git('commit', '-q', '-m', 'ST-3 the bookings list');
+    mkdirSync(join(e.dir, '.claude/state'), { recursive: true });
+    const unseen = eJson('verify', '--base', 'main', '--no-checks');
+    expect(
+      'HAND-7 verify reports each approved state of a built screen with no screenshot from the review',
+      truth(
+        unseen.found.evidence.length === 2 &&
+          unseen.found.evidence[0].includes(
+            "Bookings list's default state (apps/office/app/bookings/page.tsx) has no screenshot from the review beside its design (design/bookings-list/default.png)",
+          ) &&
+          unseen.found.evidence[1].includes(
+            'code-kit designs evidence ST-3 apps/office/app/bookings/page.tsx empty <screenshot.png>',
+          ),
+        JSON.stringify(unseen.found.evidence),
+      ),
+      0,
+    );
+    const png = (w, h) => {
+      const b = Buffer.alloc(32);
+      Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).copy(b);
+      b.write('IHDR', 12, 'latin1');
+      b.writeUInt32BE(w, 16);
+      b.writeUInt32BE(h, 20);
+      return b;
+    };
+    const shot = join(e.dir, '.claude/state/shot.png');
+    writeFileSync(shot, png(1440, 900));
+    const wrongSize = eKit('designs', 'evidence', 'ST-3', list.file, 'default', shot);
+    expect(
+      "HAND-7 a screenshot not taken at the design's viewport isn't recorded",
+      wrongSize,
+      1,
+      "is 1440x900, not taken at the design's viewport (390x844",
+    );
+    writeFileSync(shot, png(780, 1688));
+    expect(
+      'HAND-7 the review records its screenshot of a built state, by file',
+      eKit('designs', 'evidence', 'ST-3', list.file, 'default', shot),
+      0,
+    );
+    expect(
+      'HAND-7 or by the screen as the spec names it',
+      eKit('designs', 'evidence', 'ST-3', 'Bookings list', 'empty', shot),
+      0,
+    );
+    const seen = eJson('verify', '--base', 'main', '--no-checks');
+    expect(
+      'HAND-7 with every approved state compared, verify reports none',
+      truth(
+        seen.found.evidence.length === 0 &&
+          existsSync(join(e.dir, '.claude/state/reviews/web_st-3')),
+        JSON.stringify(seen.found.evidence),
+      ),
+      0,
+    );
+    ePut(list.file, 'export default function Bookings() { return "changed"; }\n');
+    e.git('commit', '-q', '-am', 'ST-3 changed after the review');
+    expect(
+      'HAND-7 a screen changed since its screenshot is compared again',
+      truth(eJson('verify', '--base', 'main', '--no-checks').found.evidence.length === 2),
+      0,
+    );
+    // CI: the review's records are the lead's, so a clone without them says it didn't check.
+    const ci = mkdtempSync(join(tmpdir(), 'code-kit-ci-'));
+    cleanups.push(ci);
+    execFileSync('git', ['clone', '-q', '--branch', 'web/st-3', e.dir, ci]);
+    execFileSync('git', ['-C', ci, 'branch', 'main', 'origin/main']);
+    const inCi = spawnSync('node', [kitCli, 'verify', '--base', 'main', '--no-checks'], {
+      cwd: ci,
+      encoding: 'utf8',
+    });
+    expect(
+      "HAND-7 where the review's records aren't kept, verify says it didn't check them",
+      truth(
+        inCi.status === 0 &&
+          inCi.stdout.includes('Not checked: whether the review compared each built screen'),
+        inCi.stdout + inCi.stderr,
       ),
       0,
     );

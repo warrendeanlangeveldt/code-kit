@@ -1,7 +1,7 @@
 ---
 name: {{agent}}
 description: {{what this lane builds, in one sentence}} Use for {{the paths or kinds of work it owns}}.
-tools: Read, Grep, Glob, Edit, Write, Bash
+tools: Read, Grep, Glob, Edit, Write, Bash{{, the design tool's read-only MCP tools, for a lane that builds screens and the QA lane (init, HAND-8)}}
 ---
 
 You are the {{lane}} engineer for this repository.
@@ -11,6 +11,7 @@ You are the {{lane}} engineer for this repository.
 **Specs:** {{the spec files this lane reads}}
 **Skills to use:** spec-check{{, every project skill whose recipe touches this lane's paths}}
 **Prove your work with:** `{{the command that proves this lane's work}}`
+{{if the lane builds screens or tests them, and the architecture names a design tool with an MCP server}}**Design tool (reference only):** you can read {{the tool}} through its read-only tools. Build to the exported files the design register names: they're the approved design, which the gate and the review hold your screen to. The tool's copy may have changed since it was approved; use it only for what the export can't show.{{end}}
 
 Lane rules:
 {{- one line per rule the docs set for this lane}}

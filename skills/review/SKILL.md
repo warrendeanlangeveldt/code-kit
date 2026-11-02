@@ -28,13 +28,14 @@ node "${CLAUDE_PLUGIN_ROOT}/bin/code-kit.mjs" verify --base <base>
 
 - that every protected change is in the approval log, which is append-only;
 - new layer violations, and a baseline that grew;
-- screens without an approved design;
+- screens without an approved design, or with one only in the design tool;
+- for a lane's branch that builds screens, each approved state the review hasn't yet compared and recorded ("Builds compared with their designs"): it lists the comparisons step 3 still owes, and clears as you record each screenshot, so it isn't a reason on its own to send the branch back;
 - committed secrets;
 - tests weakened (deleted, skipped or focused, cut down, or a snapshot rewritten) without the person's `tests` approval in the log;
 - for a fix (its story has `**Fixes:**`, or the branch is `<lane>/fix-…`), that its tests fail without the fix, as the bug, and pass with it;
 - the project's checks for the changed files.
 
-Any problem it reports means the branch goes back. Don't fix a lane's code yourself; the lead doesn't write lane paths.
+Any other problem it reports means the branch goes back. Don't fix a lane's code yourself; the lead doesn't write lane paths.
 
 ## 3. Check the work against the story
 
@@ -48,7 +49,14 @@ Read the story and every requirement it cites. Then start from what's already be
 - **Its journeys still pass end to end:** where the project has a QA lane, run the end-to-end suites that cover this story's requirements (the qa lane's command, filtered to them) against the branch. A journey that broke fails the review, even when the story's own tests pass. A story the QA lane delivered is reviewed the same way: each journey's test proves the requirements it cites, through the real screens and services, with no mocked responses.
 - **The spec-check report matches:** its table has no row still `missing` or `conflicts` without an answer, and its questions were answered, not guessed.
 - **Only the story:** changes beyond the story (refactors elsewhere, other stories' requirements) are sent back, or split into their own story. A new dependency is yours to judge, as in `/code-kit:decide`: the story's requirements need it, nothing the project has does the job, and it fits the principles and the layer. Only what crosses a guardrail (the spec, a contract, the architecture) is the person's call.
-- **Built to its design:** for a story that builds screens, `code-kit designs ST-<n>` lists each screen's approved states. Take a screenshot of each built state at the design's viewport (the project's end-to-end runner, or a headless browser) and set it beside the state's PNG. A missing state or a different layout is a blocker, naming the state and its design file; different copy or components fail it too; spacing within the design system's scale is a nit. A state the build can't serve yet (the contract has no field for what the design shows) goes in the report with what's missing, and you add the story that provides it, rather than leaving a gap nobody sees.
+- **Built to its design:** for a story that builds screens, `code-kit designs ST-<n>` lists each screen's approved states. Take a screenshot of each built state at the design's viewport (the project's end-to-end runner, or a headless browser) as a PNG, and set it beside the state's PNG. A missing state or a different layout is a blocker, naming the state and its design file; different copy or components fail it too; spacing within the design system's scale is a nit. Record each screenshot you compared, whatever the verdict:
+
+  ```bash
+  node "${CLAUDE_PLUGIN_ROOT}/bin/code-kit.mjs" designs evidence ST-<n> <screen file> <state> <screenshot.png>
+  ```
+
+  It's refused when the screenshot isn't a PNG at the design's viewport (1x to 4x); take it again at that size. `verify`, and the merge queue, report every approved state of the branch's screens with no screenshot recorded since the screen last changed, so a branch that moves after your review is compared again. A state the build can't serve yet (the contract has no field for what the design shows) goes in the report with what's missing, and you add the story that provides it, rather than leaving a gap nobody sees.
+
 - **Contracts respected:** the code uses the contracts as written. A lane that needed a contract change should have asked, not worked around it.
 - **Standards kept:** `code-kit standards --for <changed files>` lists the project's standards for those files' layers. Check each changed file against the ones marked `checked` (the hooks already refuse what an `enforced` one names). A broken required standard sends the branch back, naming the standard's id and where; a broken recommended one is a concern; advice is at most a nit.
 
