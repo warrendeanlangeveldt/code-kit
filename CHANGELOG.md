@@ -2,6 +2,10 @@
 
 What changed in each release of code-kit, newest first. Versions follow the plugin manifest and the npm package `@warren-dean/code-kit`. Each release is also on [GitHub Releases](https://github.com/warrendeanlangeveldt/code-kit/releases).
 
+## Unreleased
+
+- **Setting a shell variable before a commit.** A commit in the same command after `f=docs/x.md` or `export MSG="…"` is no longer refused: setting a variable writes no file. A value that runs a command (`$(…)` or backticks) is still refused, and a `git add "$f"` still counts as staging every changed file, since what it names can't be read in advance.
+
 ## 0.30.1 (2026-11-02)
 
 More fixes from how code-kit is used: reads no longer stop a commit or trip a blocked command, a test-only fix may carry a tool's records, and file paths reach git literally.

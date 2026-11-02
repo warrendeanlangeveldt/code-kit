@@ -824,6 +824,11 @@ try {
     0,
   );
   expect(
+    'and after setting a shell variable, which writes no file',
+    bash('f=notes.txt; export MSG="a message" && git add notes.txt && git commit -m "$MSG"'),
+    0,
+  );
+  expect(
     'and after staging with its errors sent away',
     bash('git add -A notes.txt 2>/dev/null; git add notes.txt 2>&1 && git commit -m x'),
     0,
@@ -836,6 +841,8 @@ try {
     ['staging into a file', 'git add notes.txt > out.txt && git commit -m x'],
     ['a branch it creates', 'git branch next && git commit -m x'],
     ['a diff written to a file', 'git diff --output=patch.txt && git commit -m x'],
+    ['a variable set from a command', 'f=$(node -e "1") && git commit -m x'],
+    ['a variable set from a backtick command', 'f=`node -e 1`; git commit -m x'],
   ])
     expect(
       `but a commit after ${what} is still refused`,
