@@ -119,6 +119,13 @@ const READERS = [
   /^(?!.*\s(?:-[a-zA-Z]*o|--output\b|--compress-program\b))sort(?:\s|$)/,
 ];
 
+// code-kit's own commands that only read and print: what the config says, who owns a path, the
+// imports, a requirement's trail, the build's state, the next step and the approved designs (not their
+// `evidence`, which records a screenshot), with nothing written but code-kit's own state.
+const CODE_KIT_READS = new RegExp(
+  String.raw`^(?!.*\s--write\b)${CODE_KIT}\s+(?:check|who|unowned|diff|graph|trace|adapters|status|next|designs(?!\s+evidence\b))(?:\s|$)`,
+);
+
 /** A command's words, quotes taken off. */
 const wordsOf = (text) =>
   (text.match(/'[^']*'|"(?:\\.|[^"\\])*"|\S+/g) ?? []).map((w) =>
@@ -189,6 +196,7 @@ export function readsOnly(cmd) {
     parts.length > 0 &&
     parts.every(({ text, code: c }) => {
       if (READERS.some((re) => re.test(c))) return true;
+      if (CODE_KIT_READS.test(text)) return true;
       if (/^sed(?:\s|$)/.test(c)) return sedPrints(text);
       if (/^awk(?:\s|$)/.test(c)) return awkPrints(text);
       if (/^uniq(?:\s|$)/.test(c)) return uniqPrints(text);
