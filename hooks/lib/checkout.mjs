@@ -140,6 +140,7 @@ const JS = [
   'npm-shrinkwrap.json',
   'yarn.lock',
 ];
+const shellQuote = (s) => `'${s.replace(/'/g, `'\\''`)}'`;
 const INSTALLERS = [
   ['pnpm-lock.yaml', 'pnpm install --frozen-lockfile --prefer-offline', JS],
   ['package-lock.json', 'npm ci --prefer-offline --no-audit --no-fund', JS],
@@ -163,10 +164,25 @@ const INSTALLERS = [
 export function matchInstalls(dir, from, { prepare = null, timeout = 900000 } = {}) {
   const differ = dependencyDifferences(from, dir);
   const copied = installsOf(dir).length > 0;
-  const present = INSTALLERS.filter(([lock]) => existsSync(join(dir, lock)));
-  const known = present.find(([, , files]) => differ.some((f) => files.includes(basename(f))));
-  const command = differ.length ? (prepare ?? known?.[1] ?? null) : null;
-  const facts = { differ, copied, lockfile: present.length > 0 };
+  // Each file that differs is installed by the nearest lockfile of its ecosystem at or above its folder
+  // (a service in a subfolder with its own lockfile, a workspace package under the top one's), run there.
+  const installs = [];
+  for (const f of differ) {
+    for (let folder = dirname(f); ; folder = dirname(folder)) {
+      const found = INSTALLERS.find(
+        ([lock, , files]) => files.includes(basename(f)) && existsSync(join(dir, folder, lock)),
+      );
+      if (found) {
+        const run = folder === '.' ? found[1] : `(cd ${shellQuote(folder)} && ${found[1]})`;
+        if (!installs.includes(run)) installs.push(run);
+        break;
+      }
+      if (folder === '.') break;
+    }
+  }
+  const present = INSTALLERS.some(([lock]) => existsSync(join(dir, lock))) || installs.length > 0;
+  const command = differ.length ? (prepare ?? (installs.join(' && ') || null)) : null;
+  const facts = { differ, copied, lockfile: present };
   if (!command) return { ...facts, command: null, failed: null };
   const res = spawnSync(command, { cwd: dir, shell: true, encoding: 'utf8', timeout });
   if (res.status === 0) return { ...facts, command, failed: null };

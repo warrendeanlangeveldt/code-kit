@@ -4,7 +4,7 @@
 // WHO-2), the person's otherwise and always on the lead's own. The commit hook
 // refuses a weakening commit; verify finds what a branch weakened, from git.
 import { execFileSync, spawnSync } from 'node:child_process';
-import { existsSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { freshCheckout } from './checkout.mjs';
 import { runChecks } from './checks.mjs';
@@ -227,6 +227,9 @@ const UNREACHABLE =
 const ASSERTED =
   /AssertionError|AssertionFailedError|Expected:|Received:|expected .+ to |toBe|toEqual|assert\w* failed|^\s*--- FAIL|Error: expect\(/m;
 
+// What a test file holds to break it: unbalanced, so no language's parser takes it.
+const UNPARSEABLE = 'broken on purpose by code-kit, to see whether a check runs this test (\n';
+
 /** The names a failure says can't be reached: quoted ones on its unreachable lines. */
 function missingNames(output) {
   const names = new Set();
@@ -324,6 +327,16 @@ export function proveFix({ root, from, base, changed, config, fix }) {
       if (unloaded)
         return [
           `${what}, but its tests (${tests.join(', ')}) pass without the fix's other changes, and fail without it only because they load test code the fix adds (${added.join(', ')}), which the base never had. A test that goes through the code the fix changed fails on an assertion when the bug is there: write that one. If the fix is only in the tests and their helpers, keep the branch to test files.`,
+        ];
+    }
+    if (!without) {
+      // A check can pass without running a test at all (its runner's config leaves the file out). Broken
+      // on purpose, a test it runs fails: one that still passes was never run, so it shows nothing.
+      for (const f of tests) writeFileSync(join(dir, f), UNPARSEABLE);
+      const { failure: broken } = runChecks(strict, tests, dir, actor);
+      if (!broken)
+        return [
+          `${what}, but the checks covering its tests (${covering.map((c) => c.name).join(', ')}) pass even with them broken, so they don't run them (${tests.join(', ')}), and code-kit can't tell whether they fail without the fix. Give the tests a check that runs them: where the test runner's default config leaves them out, a check that runs them with the config that includes them.`,
         ];
     }
     if (!without)

@@ -768,12 +768,21 @@ ${approvalHowTo(TESTS_APPROVAL, actor, root, 'weakening tests in one commit', pe
 const BEFORE_COMMIT = new RegExp(
   String.raw`^(?:cd\s|${GIT}(?:add|rm|mv|restore\s+--staged|reset\s+--soft)(?![\w-]))`,
 );
+// Setting shell variables (`f=docs/x.md`, `export MSG="…"`) writes no file, unless a value runs a
+// command. What a later `git add "$f"` stages can't be read, so it counts as every changed file.
+const ASSIGNS_ONLY = /^(?:export\s+)?[A-Za-z_]\w*=\S*(?:\s+[A-Za-z_]\w*=\S*)*$/;
+const assignsOnly = (c) => ASSIGNS_ONLY.test(c.code) && !/`|\$\(|<\(/.test(c.text);
 function writesBeforeCommit() {
   const pieces = commandsOf(withoutHarmlessRedirects(cmd));
   const at = pieces.findIndex((c) => new RegExp(String.raw`^${GIT}commit(?![\w-])`).test(c.text));
   return pieces
     .slice(0, Math.max(at, 0))
-    .find((c) => (!BEFORE_COMMIT.test(c.text) || /[<>]/.test(c.code)) && !readsOnly(c.whole));
+    .find(
+      (c) =>
+        (!BEFORE_COMMIT.test(c.text) || /[<>]/.test(c.code)) &&
+        !readsOnly(c.whole) &&
+        !assignsOnly(c),
+    );
 }
 
 if (commits) {

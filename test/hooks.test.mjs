@@ -824,6 +824,11 @@ try {
     0,
   );
   expect(
+    'and after setting a shell variable, which writes no file',
+    bash('f=notes.txt; export MSG="a message" && git add notes.txt && git commit -m "$MSG"'),
+    0,
+  );
+  expect(
     'and after staging with its errors sent away',
     bash('git add -A notes.txt 2>/dev/null; git add notes.txt 2>&1 && git commit -m x'),
     0,
@@ -836,6 +841,8 @@ try {
     ['staging into a file', 'git add notes.txt > out.txt && git commit -m x'],
     ['a branch it creates', 'git branch next && git commit -m x'],
     ['a diff written to a file', 'git diff --output=patch.txt && git commit -m x'],
+    ['a variable set from a command', 'f=$(node -e "1") && git commit -m x'],
+    ['a variable set from a backtick command', 'f=`node -e 1`; git commit -m x'],
   ])
     expect(
       `but a commit after ${what} is still refused`,
@@ -5558,6 +5565,61 @@ else process.exit(2);
       ),
       0,
     );
+    mKit(m.dir, 'queue', 'drop', 'web/st-34');
+    // A service in a subfolder with its own lockfile: its install runs in that folder. A stand-in uv
+    // records what it synced, where.
+    const bin = join(m.dir, '.claude/state/bin');
+    mkdirSync(bin, { recursive: true });
+    writeFileSync(
+      join(bin, 'uv'),
+      '#!/bin/sh\n[ "$1 $2" = "sync --frozen" ] && mkdir -p .venv && touch ".venv/synced-$(cat uv.lock)"\n',
+    );
+    chmodSync(join(bin, 'uv'), 0o755);
+    mkdirSync(join(m.dir, 'workers/py'), { recursive: true });
+    writeFileSync(join(m.dir, 'workers/py/pyproject.toml'), '[project]\nname = "py"\n');
+    writeFileSync(join(m.dir, 'workers/py/uv.lock'), 'u1\n');
+    writeFileSync(
+      join(m.dir, '.gitignore'),
+      `${readFileSync(join(m.dir, '.gitignore'), 'utf8')}.venv/\n`,
+    );
+    writeFileSync(
+      join(m.dir, '.claude/code-kit.json'),
+      JSON.stringify(
+        mConfig({
+          anyActor: ['workers/py/uv.lock'],
+          checks: [
+            {
+              name: 'service tests',
+              files: ['workers/py/**'],
+              run: ['test -f "workers/py/.venv/synced-$(cat workers/py/uv.lock)"'],
+            },
+          ],
+        }),
+      ),
+    );
+    m.git('add', '-A');
+    m.git('commit', '-q', '-m', 'a python service');
+    laneTree('backend/st-35', {
+      'workers/py/app.py': 'import added\n',
+      'workers/py/uv.lock': 'u2\n',
+    });
+    mKit(m.dir, 'queue', 'add', 'backend/st-35');
+    const nested = spawnSync('node', [kitCli, 'queue', 'merge', '--delegated'], {
+      cwd: m.dir,
+      encoding: 'utf8',
+      env: { ...process.env, PATH: `${bin}:${process.env.PATH}` },
+    });
+    expect(
+      'MQ-1 a lockfile in a subfolder that differs gets its own install, run in that folder',
+      truth(
+        nested.status === 0 &&
+          nested.stdout.includes("installed with `(cd 'workers/py' && uv sync --frozen)`") &&
+          stateOf('backend/st-35') === 'merged' &&
+          !existsSync(join(m.dir, 'workers/py/.venv')),
+        nested.stdout + nested.stderr,
+      ),
+      0,
+    );
     writeFileSync(join(m.dir, '.claude/code-kit.json'), JSON.stringify(mConfig()));
     m.git('commit', '-q', '-am', 'no checks');
 
@@ -8618,6 +8680,30 @@ else process.exit(1);
       0,
     );
 
+    // REG-1: a test the check's runner leaves out passes everywhere, having never run.
+    g.git('checkout', '-q', 'main');
+    g.git('checkout', '-q', '-b', 'web/fix-taken-slots');
+    gPut(
+      'apps/office/booking.mjs',
+      'export const free = (slots) => slots.filter((s) => !s.taken);\n',
+    );
+    gPut(
+      'apps/office/slow/booking.test.mjs',
+      `import { test } from 'node:test';\nimport assert from 'node:assert';\nimport { free } from '../booking.mjs';\ntest('a taken slot is not free', () => { assert.deepEqual(free([{ taken: true }]), []); });\n`,
+    );
+    gCommit('fix taken slots');
+    res = gVerify();
+    expect(
+      'REG-1 a fix whose test the check never runs fails verify, saying so, not that it passes without the fix',
+      truth(
+        res.status === 1 &&
+          said(res).includes("so they don't run them (apps/office/slow/booking.test.mjs)") &&
+          !said(res).includes('also pass without the fix'),
+        said(res),
+      ),
+      0,
+    );
+
     // REG-1: a test that fails without the fix only because it calls what the fix adds.
     g.git('checkout', '-q', 'main');
     g.git('checkout', '-q', '-b', 'web/fix-cancel');
@@ -9394,9 +9480,20 @@ else process.exit(1);
       1,
       'still at work on web/st-2',
     );
+    // The lead's reviewer, still polling for verify on the story, isn't the lane's agent at work.
+    const helper = JSON.stringify({
+      at: new Date(Date.now() - 10_000).toISOString(),
+      story: 'ST-2',
+      actor: 'code-kit:reviewer',
+      agent: 'r1',
+      session: 's1',
+      kind: 'run',
+      phase: 'start',
+      branch: 'web/st-2',
+    });
     writeFileSync(
       join(events, 'ST-2.jsonl'),
-      `${act('edit', 'end', 60_000)}\n${act('handback', 'note', 30_000)}\n`,
+      `${act('edit', 'end', 60_000)}\n${act('handback', 'note', 30_000)}\n${helper}\n`,
     );
     expect(
       'released for a fresh agent: the worktree goes, the branch and its report stay',
