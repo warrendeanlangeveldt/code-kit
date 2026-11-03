@@ -772,6 +772,10 @@ const BEFORE_COMMIT = new RegExp(
 // command. What a later `git add "$f"` stages can't be read, so it counts as every changed file.
 const ASSIGNS_ONLY = /^(?:export\s+)?[A-Za-z_]\w*=\S*(?:\s+[A-Za-z_]\w*=\S*)*$/;
 const assignsOnly = (c) => ASSIGNS_ONLY.test(c.code) && !/`|\$\(|<\(/.test(c.text);
+// A tool's command that writes only the tool's own records (an adapter's `shell.records`), which any
+// actor may write and no check covers, with no redirect of its own.
+const recordsOnly = (c) =>
+  !/[<>]/.test(c.code) && (config.shell.records ?? []).some((re) => new RegExp(re).test(c.text));
 function writesBeforeCommit() {
   const pieces = commandsOf(withoutHarmlessRedirects(cmd));
   const at = pieces.findIndex((c) => new RegExp(String.raw`^${GIT}commit(?![\w-])`).test(c.text));
@@ -781,7 +785,8 @@ function writesBeforeCommit() {
       (c) =>
         (!BEFORE_COMMIT.test(c.text) || /[<>]/.test(c.code)) &&
         !readsOnly(c.whole) &&
-        !assignsOnly(c),
+        !assignsOnly(c) &&
+        !recordsOnly(c),
     );
 }
 

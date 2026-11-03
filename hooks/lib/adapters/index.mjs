@@ -99,6 +99,7 @@ export function applyAdapters(config, raw, root) {
     merged.protected.push(...(c.protected ?? []));
     merged.shell.block.push(...(a.shell?.block ?? []));
     merged.shell.restricted.push(...(a.shell?.restricted ?? []));
+    (merged.shell.records ??= []).push(...(a.shell?.records ?? []));
   }
   merged.adapters = active.map((a) => a.name);
   return merged;

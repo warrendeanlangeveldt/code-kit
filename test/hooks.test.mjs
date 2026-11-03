@@ -6977,6 +6977,26 @@ else process.exit(2);
     "a person's act",
   );
   expect('other commits are untouched', cBash('git commit -m "ST-9 cancel"'), 0);
+  // Recording a decision or a card writes only ctx's own records, so a commit may follow it.
+  expect(
+    'a commit after ctx records a decision or writes a card, in the same command, is allowed',
+    cBash(
+      'ctx record --node src --text "Kept small." && ctx card src/a.ts --text "A card." && git add .ctx && git commit -m "ST-9 notes"',
+    ),
+    0,
+  );
+  expect(
+    'but not after one whose output goes into a file',
+    cBash('ctx card src/a.ts --text "A card." > src/a.ts && git commit -m "ST-9"'),
+    2,
+    'may write files',
+  );
+  expect(
+    'nor after another ctx command',
+    cBash('ctx rebuild && git commit -m "ST-9"'),
+    2,
+    'may write files',
+  );
   for (const act of [
     'ctx ratify C:events --commit',
     'cd src && ' + 'ctx drop src.small --reason no',
