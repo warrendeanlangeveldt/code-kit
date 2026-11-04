@@ -970,7 +970,8 @@ function mergeOne(branch, config, byPerson, commit = null, partners = []) {
     // it) isn't held to the partner's files. A partner built on this member already holds the member's
     // commits, so it's left out of the member's base, which would otherwise show no change at all.
     for (const b of members.length ? [{ branch, tip }, ...members] : []) {
-      const own = freshCheckout(root, into, { prefix: 'code-kit-merge-' });
+      // Only the lane paths are checked here, so it needs no installs.
+      const own = freshCheckout(root, into, { prefix: 'code-kit-merge-', installsFrom: null });
       temporary.push(own);
       const others = [{ branch, tip }, ...members].filter(
         (x) => x.branch !== b.branch && !contains(x.tip, b.tip),

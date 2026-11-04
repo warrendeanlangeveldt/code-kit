@@ -196,7 +196,9 @@ export function nextStep(root, base) {
     attention.push(
       `${leftovers} worktree${leftovers === 1 ? ' is' : 's are'} done with; \`code-kit worktrees prune\` removes them, keeping their reports.`,
     );
-  const holding = trees.filter((w) => w.kind === 'agent' && w.merged && !w.clean && !w.agentAtWork);
+  const holding = trees.filter(
+    (w) => w.kind === 'agent' && w.merged && w.changes > 0 && !w.agentAtWork,
+  );
   holdingTrees = holding.map((w) => ({
     branch: w.branch,
     story: w.story,
