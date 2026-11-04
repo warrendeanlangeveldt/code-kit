@@ -113,7 +113,10 @@ export function worktrees(root, config, now = Date.now(), cwd = cwdNow()) {
       const where = real(path);
       const here = Boolean(cwd && (cwd === where || cwd.startsWith(`${where}/`)));
       const kind = where.startsWith(`${agents}/`)
-        ? 'agent'
+        ? // LEAN-10: a lane's own worktree, reused by each of its stories (lanetrees.mjs).
+          /^lane-/.test(basename(path))
+          ? 'lane'
+          : 'agent'
         : // MQ-9: code-kit's kept checkout, reused by each merge with its installs.
           where.startsWith(`${real(CHECKOUTS_DIR)}/`) && !TEMP_CHECKOUT.test(basename(path))
           ? 'kept'
@@ -202,6 +205,8 @@ export function cleanOf(w) {
 export function keptBecause(w) {
   if (w.missing) return null;
   if (w.kind === 'merge') return w.age < TEMP_MERGE_MS ? 'a merge may be using it now' : null;
+  if (w.kind === 'lane')
+    return `it's the ${basename(w.path).slice(5)} lane's worktree, kept with its installs for the lane's next story`;
   if (w.kind === 'kept')
     return "it's code-kit's own checkout for merges and fix checks, kept with its installs so each one doesn't copy them again";
   if (w.kind === 'other') return "it isn't one code-kit made; release it by name if it's done";
@@ -255,6 +260,12 @@ function keepReport(root, w) {
  */
 export function removeWorktree(root, w, { force = false } = {}) {
   if (w.missing) return { ok: true };
+  // LEAN-10: a lane's worktree stays for its next story: it only lets go of the branch.
+  if (w.kind === 'lane') {
+    keepReport(root, w);
+    const freed = git(w.path, 'switch', '--quiet', '--detach');
+    return freed.status === 0 ? { ok: true } : { ok: false, why: freed.stderr.trim() };
+  }
   keepReport(root, w);
   const locked = Boolean(w.locked);
   const args = [
@@ -279,6 +290,16 @@ export function pruneWorktrees(root, config, now = Date.now()) {
   for (const w of list) {
     const label = w.branch ?? w.path;
     const why = keptBecause(w);
+    // LEAN-10: a lane's worktree stays; once its story is merged and it holds nothing, it lets go of the
+    // branch, so the branch can be checked out elsewhere and the lane's next agent starts clean.
+    if (w.kind === 'lane' && w.branch && w.merged && w.changes === 0 && !w.agentAtWork && !w.here) {
+      if (w.records > 0) {
+        keepAsPatch(root, w, now);
+        git(w.path, 'reset', '--hard', '--quiet');
+      }
+      keepReport(root, w);
+      git(w.path, 'switch', '--quiet', '--detach');
+    }
     if (why) {
       kept.push({
         label,
@@ -322,7 +343,7 @@ export function pruneWorktrees(root, config, now = Date.now()) {
 }
 
 /** What a worktree holds uncommitted, kept as a patch under .claude/state/discarded: its path there. */
-function keepAsPatch(root, w, now) {
+export function keepAsPatch(root, w, now) {
   git(w.path, 'add', '-A');
   const diff = spawnSync('git', ['-C', w.path, 'diff', '--cached', '--binary', 'HEAD'], {
     encoding: 'utf8',
