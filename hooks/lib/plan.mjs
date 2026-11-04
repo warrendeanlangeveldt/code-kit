@@ -93,12 +93,18 @@ export const screenKey = (name) =>
     .toLowerCase();
 
 /** The states a `**States:**` line or a States cell lists, in lower case. */
-const statesOf = (text) =>
-  String(text)
-    .replace(/<br\s*\/?>/gi, ',')
-    .split(/[,;/]/)
-    .map((s) => screenKey(s).replace(/\.$/, ''))
-    .filter(Boolean);
+// A state's own brackets keep their commas: `error (wrong code, expired)` is one state.
+const statesOf = (text) => {
+  const states = [''];
+  let depth = 0;
+  for (const ch of String(text).replace(/<br\s*\/?>/gi, ',')) {
+    if ('([{'.includes(ch)) depth++;
+    else if (')]}'.includes(ch)) depth = Math.max(0, depth - 1);
+    if (depth === 0 && ',;/'.includes(ch)) states.push('');
+    else states[states.length - 1] += ch;
+  }
+  return states.map((s) => screenKey(s).replace(/\.$/, '')).filter(Boolean);
+};
 
 /** A `- **Name** …` bullet that lists a screen: { indent, title }, or null (a field such as `**States:**`). */
 function screenBullet(line) {

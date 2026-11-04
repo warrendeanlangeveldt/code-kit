@@ -2751,6 +2751,83 @@ if (a[0] === 'pr' && a[1] === 'merge') {
     );
   }
 
+  // --- SETUP-3: the setup the person approved holds protected files, which need no approval of their own
+  {
+    const u = newRepo(false);
+    cleanups.push(u.dir);
+    mkdirSync(join(u.dir, '.claude'), { recursive: true });
+    writeFileSync(
+      join(u.dir, '.claude/code-kit.json'),
+      JSON.stringify({ ...JSON.parse(fixture), approvals: { delegate: { merge: true } } }),
+    );
+    writeFileSync(join(u.dir, '.gitignore'), '.claude/approvals/\n.claude/state/\n');
+    mkdirSync(join(u.dir, 'docs/spec'), { recursive: true });
+    // A state's own brackets keep their commas: one state, not two.
+    writeFileSync(
+      join(u.dir, 'docs/spec/01-access.md'),
+      '# 01. Access\n\n### ACC-1 Sign in\n\nx\n\n## Screens\n\n### Sign in\n\n**States:** default, error (wrong code, not invited)\n',
+    );
+    writeFileSync(
+      join(u.dir, 'docs/spec/plan.md'),
+      '# Plan\n\n## M1\n\n### ST-1 Design: access\n\n**Lane:** design\n**Requirements:** ACC-1\n**Status:** done\n',
+    );
+    const signIn = approvedDesign(u.dir, 'apps/office/app/sign-in/page.tsx', 'Sign in', [
+      'default',
+      'error (wrong code, not invited)',
+    ]);
+    writeFileSync(
+      join(u.dir, 'design/approved-screens.json'),
+      `${JSON.stringify({ screens: [signIn] }, null, 2)}\n`,
+    );
+    const uRun = (name, extra) =>
+      spawnSync('node', [join(hooks, name)], {
+        input: JSON.stringify({ cwd: u.dir, ...extra }),
+        env: { ...process.env, CLAUDE_PROJECT_DIR: u.dir },
+        encoding: 'utf8',
+      });
+    expect(
+      "SETUP-3 before the setup is committed, the lead's protected files aren't changes to revert",
+      uRun('stop-check.mjs', {}),
+      0,
+    );
+    expect(
+      'SETUP-3 the setup commit holds them with no approval, and a state with commas in brackets is one state',
+      uRun('guard-bash.mjs', {
+        tool_input: { command: 'git add -A && git commit -m "Switch on code-kit"' },
+      }),
+      0,
+    );
+    expect(
+      'and the approval log records each as part of the setup',
+      truth(
+        readFileSync(join(u.dir, '.claude/approval-log.jsonl'), 'utf8').includes(
+          '"file":"design/approved-screens.json"',
+        ) &&
+          readFileSync(join(u.dir, '.claude/approval-log.jsonl'), 'utf8').includes('"setup":true'),
+      ),
+      0,
+    );
+    u.git('add', '-A');
+    u.git('commit', '-q', '-m', 'Switch on code-kit');
+    u.git('checkout', '-q', '-b', 'lead/st-2');
+    writeFileSync(join(u.dir, 'design/approved-screens.json'), '{ "screens": [] }\n');
+    expect(
+      'once the setup is committed, the register needs the approval again',
+      uRun('guard-bash.mjs', { tool_input: { command: 'git add -A && git commit -m x' } }),
+      2,
+      'approval in force',
+    );
+    u.git('rm', '-q', '--cached', '.claude/code-kit.json');
+    u.git('commit', '-q', '-m', 'drop the config');
+    u.git('add', '.claude/code-kit.json');
+    expect(
+      'and taking the config away and back is no new setup',
+      uRun('guard-bash.mjs', { tool_input: { command: 'git add -A && git commit -m x' } }),
+      2,
+      'approval in force',
+    );
+  }
+
   // --- SETUP-2: the base has no code-kit rules committed yet (set up before 0.8.0): the lead puts them there
   {
     const f = newRepo(false);

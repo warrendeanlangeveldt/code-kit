@@ -57,6 +57,7 @@ import {
   owns,
   protectedEntry,
   leadNeedsApproval,
+  beforeSetup,
   approvalEnded,
   recordRequest,
   sessionRoot,
@@ -634,6 +635,8 @@ function recordApprovals() {
       );
     }
   }
+  // The commit that switches code-kit on: the person approved the setup it holds as init showed it.
+  const setup = settingUp && files.includes(CONFIG_FILE) && beforeSetup(root);
   for (const file of files) {
     // Concluding a merge: what arrives as the other branch has it was logged there, with its approvals.
     if (arrivesWithMerge(root, file, { staged: true })) continue;
@@ -646,6 +649,14 @@ function recordApprovals() {
     const granted = entry && approval(root, entry.approval, actor);
     const byDependency = actor.kind === 'lane' && dependencyChange(actor, file, root, config);
     const leadFree = actor.kind === 'lead' && !leadNeedsApproval(entry?.approval, config);
+    if (entry && !granted && setup) {
+      record(file, {
+        approval: entry.approval,
+        reason: 'The setup that switches code-kit on, as the person approved it in init.',
+        setup: true,
+      });
+      continue;
+    }
     if (entry && !granted && !leadFree && !byDependency) {
       recordRequest(root, actor, entry.approval, file, entry.why);
       block(
