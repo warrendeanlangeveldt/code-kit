@@ -476,6 +476,17 @@ try {
     'Design it first',
   );
   expect(
+    'and the refusal says what to do when the file draws no screen: the gate is too wide',
+    write('apps/field/app/(app)/hook.tsx', 'mobile-engineer'),
+    2,
+    'hand the lead a change request to leave it out with the screen\'s "not"',
+  );
+  expect(
+    "a file router's special files are left out with not",
+    write('apps/field/app/+native-intent.tsx', 'mobile-engineer'),
+    0,
+  );
+  expect(
     'layouts are not screens',
     write('apps/field/app/(app)/_layout.tsx', 'mobile-engineer'),
     0,
@@ -2274,6 +2285,56 @@ try {
       0,
     );
     expect('and a story it depends on', mHook('git merge --no-edit web/st-1', 'web-engineer'), 0);
+    // A commit or merge is judged on the branch it lands on, in the command's order.
+    expect(
+      'switching to the protected branch after committing elsewhere writes nothing to it',
+      mHook('git commit -q --allow-empty -m x; git switch -q main'),
+      0,
+    );
+    m.git('checkout', '-q', 'main');
+    expect(
+      'a commit on a branch the command makes first is not on main',
+      mHook('git switch -q -c lead/sync && git commit -q --allow-empty -m x'),
+      0,
+    );
+    expect(
+      'but a branch made from another start point may change files before the commit',
+      mHook('git switch -q -c lead/sync2 web/st-1 && git commit -q --allow-empty -m x'),
+      2,
+      'this commit runs after',
+    );
+    expect(
+      'a rebase in a worktree the command adds is on that worktree’s branch',
+      mHook(
+        'git worktree add .claude/worktrees/st-1 web/st-1 && cd .claude/worktrees/st-1 && git rebase main',
+      ),
+      0,
+    );
+    expect(
+      'and so is one run there with git -C',
+      mHook(
+        'git worktree add .claude/worktrees/st-1 web/st-1; git -C .claude/worktrees/st-1 rebase main',
+      ),
+      0,
+    );
+    expect(
+      'a commit on main is still refused',
+      mHook('git commit -q --allow-empty -m x'),
+      2,
+      'never commit or merge on main',
+    );
+    expect(
+      'and one before the command switches away',
+      mHook('git commit -q --allow-empty -m x && git switch -q -c later'),
+      2,
+      'never commit or merge on main',
+    );
+    expect(
+      'and one after switching back to it',
+      mHook('git switch -q -c later; git switch -q main; git commit -q --allow-empty -m x'),
+      2,
+      'even by switching to it first',
+    );
   }
 
   // --- MQ-6: what's merged reaches the remote's base, pushed or through a pull request -----------
