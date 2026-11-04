@@ -2,7 +2,9 @@
 
 What changed in each release of code-kit, newest first. Versions follow the plugin manifest and the npm package `@warren-dean/code-kit`. Each release is also on [GitHub Releases](https://github.com/warrendeanlangeveldt/code-kit/releases).
 
-## Unreleased
+## 0.30.2 (2026-11-04)
+
+Fixes from how code-kit is used: fewer commits refused after commands that write nothing, the setup commit takes the person's approval of the setup, and the fix check and the merge queue see more of a project.
 
 - **A commit after a tool records its notes.** With Context Graph on, a commit in the same command after `ctx record` or `ctx card` is no longer refused as possibly writing files: they write only Context Graph's own records, which any actor may write. An adapter names such commands in its `shell.records`.
 - **Committing the setup.** Until code-kit's config has first been committed, the lead's protected files (the specs, the standards, the design register) need no approval of their own: the person approved them with the setup init showed. The commit that switches code-kit on no longer asks for an approval for each, and the stop check no longer asks the lead to revert the new specs; the approval log records each file as part of the setup. Once any commit has held the config, protected files need their approvals as before, even if a later commit takes the config away.
