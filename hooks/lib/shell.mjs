@@ -205,6 +205,38 @@ export function readsOnly(cmd) {
   );
 }
 
+// What could change what a later command in the line runs: a function or alias defined, a variable
+// set (PATH among them), a file sourced, a shell option.
+const REDEFINES =
+  /(?:^|[;&|\n(]\s*)(?:[\w.-]+\s*\(\s*\)|function\s|alias\s|unalias\s|source\s|\.\s|hash\s|enable\s|builtin\s|set\s|setopt\s|shopt\s|unset\s|export\s|typeset\s|declare\s|local\s|readonly\s|[A-Za-z_]\w*=)/;
+
+/**
+ * The parts of `cmd` that name `pattern`, each a pipeline (`a | b`) of its own, that don't only read
+ * (readsOnly): what a rule for a file only reads may hold. A line with a heredoc, or one that could
+ * change what its commands run (REDEFINES), is one part, judged whole.
+ */
+export function unreadNames(cmd, pattern) {
+  const read = withoutHarmlessRedirects(cmd);
+  const code = codeOf(read);
+  if (!pattern.test(cmd)) return [];
+  if (/<</.test(cmd) || REDEFINES.test(code)) return readsOnly(cmd) ? [] : [cmd];
+  const text = withoutHeredocs(read);
+  const parts = [];
+  let start = 0;
+  for (let i = 0; i <= code.length; i++) {
+    const two = code.slice(i, i + 2);
+    const end = i === code.length || code[i] === ';' || code[i] === '\n';
+    const andOr = two === '&&' || two === '||';
+    const background = code[i] === '&' && !andOr && code[i - 1] !== '&' && code[i - 1] !== '>';
+    if (end || andOr || background) {
+      parts.push(text.slice(start, i));
+      start = i + (andOr ? 2 : 1);
+      if (andOr) i++;
+    }
+  }
+  return parts.filter((p) => pattern.test(p) && !readsOnly(p));
+}
+
 // What may come before a command it runs: a package runner (`npx`, `pnpm exec`, `uv run`…) or a wrapper
 // (`xargs`, `nice`, `timeout 60`), so a rule naming the command finds it there too.
 const WRAPPER = String.raw`(?:(?:npx|bunx|pnpx)(?:\s+-\S+)*\s+|(?:pnpm|yarn|bun)\s+(?:(?:exec|dlx|x|run)\s+)?(?:-\S+\s+)*|npm\s+(?:exec|x|run)\s+(?:--\s+)?|(?:uv|poetry|pipenv)\s+run\s+|(?:xargs|nice|nohup|time|command|exec)(?:\s+-\S+)*\s+|timeout\s+(?:-\S+\s+)*\S+\s+)`;

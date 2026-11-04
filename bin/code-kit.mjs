@@ -1041,6 +1041,10 @@ function mergeOne(branch, config, byPerson, commit = null, partners = []) {
         );
       }
     }
+    // The branches are in the base now, so the queue says so at once: releasing the claims and taking
+    // away the worktrees below can take minutes (a team provider that's slow to answer, big installs),
+    // and a run stopped meanwhile would leave merged branches waiting.
+    for (const b of [{ branch }, ...members]) settle(root, b.branch, 'merged');
     // TEAM-1: a merged story's claim ends, whoever merged it, and so does any an earlier merge left.
     const team = teamOf(config);
     const stories = [branch, ...members.map((m) => m.branch)].map(storyOfBranch).filter(Boolean);

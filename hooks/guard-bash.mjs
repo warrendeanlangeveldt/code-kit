@@ -20,6 +20,7 @@ import {
   codeOf,
   commandsOf,
   readsOnly,
+  unreadNames,
   ruleMatches,
   runs,
   withoutHarmlessRedirects,
@@ -97,8 +98,8 @@ const ALWAYS = [
   ],
   [
     /approval-log\.jsonl/,
-    "The approval audit log is appended only by the commit hook; nobody edits it. A shell command may name it only to read it: git diff, log, show or blame, or cat, head, tail, grep, wc, jq, cut, sort, uniq, awk or sed -n printing lines, after a `cd` and piped or chained only into each other, with no redirect but 2>&1 or into /dev/null, no command's output in its arguments ($(…) or backticks) and no variable set before a command. Run the read in that form, or read the file with the Read tool, which can't write.",
-    readsOnly(cmd) ? '' : cmd,
+    "The approval audit log is appended only by the commit hook; nobody edits it. A shell command may name it only to read it: git diff, log, show or blame, or cat, head, tail, grep, wc, jq, cut, sort, uniq, awk or sed -n printing lines, piped only into each other, with no redirect but 2>&1 or into /dev/null, no command's output in its arguments ($(…) or backticks) and no variable set before a command; other commands may come before or after it with ; or &&, if none defines a function or alias or sets a variable. Run the read in that form, or read the file with the Read tool, which can't write.",
+    unreadNames(cmd, /approval-log\.jsonl/).join('\n'),
   ],
 ];
 for (const [re, why, text] of ALWAYS) {
