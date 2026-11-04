@@ -407,7 +407,20 @@ if (writesHistory && config.branches.protected.includes(branch) && !settingUp) {
 // other branch (an integration branch such as lead/next), it looks unmerged to the queue, the trail and
 // worktree cleanup, and that branch becomes a second base. A lane merging another story into its own
 // story's branch, or its base into it (MQ-3), is still its own work.
-const elsewhere = storyMerges(cmd, branch).find(
+// A merge in another checkout the command moves to lands on that checkout's branch; one in another
+// repository, or on a detached HEAD (a throwaway merge to try the branches together), lands on none.
+const branchAt = (dir) => {
+  if (!existsSync(dir)) return undefined;
+  const there = sessionRoot({ cwd: dir }, project);
+  if (!there) return null;
+  try {
+    const b = currentBranch(there);
+    return b === 'HEAD' ? null : b;
+  } catch {
+    return null;
+  }
+};
+const elsewhere = storyMerges(cmd, branch, { cwd: input.cwd || project, branchAt }).find(
   ({ into }) => !storyOfBranch(into) && !config.branches.protected.includes(into),
 );
 if (elsewhere) {
