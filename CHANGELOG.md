@@ -2,7 +2,7 @@
 
 What changed in each release of code-kit, newest first. Versions follow the plugin manifest and the npm package `@warren-dean/code-kit`. Each release is also on [GitHub Releases](https://github.com/warrendeanlangeveldt/code-kit/releases).
 
-## Unreleased
+## 0.31.0 (2026-11-05)
 
 - **The project's own workspace packages are no new dependency.** `pnpm add @scope/pkg@workspace:*` (and `link:`, `file:` and `portal:` specs) adds one of the project's own packages, from no registry, but was refused as a new dependency that needs an approval. A registry package in the same command still needs its own.
 - **`queue add` takes every `--with`.** `code-kit queue add <branch> --with a --with b` kept only `a`, so the group could be offered for merge before `b` was queued. Each `--with` now joins the group, as `--with a,b` does.
