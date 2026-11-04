@@ -5,7 +5,8 @@
 // - any other subagent (research, planning, review) is read-only, but for the paths any actor may write
 //   (a card or a decision it records, code-kit's own state);
 // - the main session in a worktree with a .lane file acts as that lane (a person running a lane);
-// - the main session otherwise is the lead, who writes the lead's paths and delegates the rest.
+// - the main session otherwise is the lead, who writes the lead's paths and delegates the rest;
+// - a fork of the session (Claude Code's `fork` agent) is the session it was forked from.
 // Protected paths are recorded in the approval log whenever they are committed; only the lead may
 // write them without a person's approval.
 //
@@ -312,12 +313,21 @@ export function sessionRoot(input, project = projectDir()) {
 }
 
 /**
+ * Claude Code's fork: a copy of the session's own conversation, working on for it in the background. It
+ * isn't another agent, so it's the session it was forked from (the lead, or a person's lane), with the
+ * same rights.
+ */
+export const FORK_AGENT = 'fork';
+export const subagentOf = (input) =>
+  input.agent_type && input.agent_type !== FORK_AGENT ? input.agent_type : null;
+
+/**
  * The checkout whose changes are this actor's own. A subagent works where its cwd is (often its own
  * worktree). The main session owns the checkout it was opened in, even when its shell has wandered
  * into an agent's worktree, whose in-progress edits are that agent's, not the lead's.
  */
 export function actorRoot(input, project = projectDir()) {
-  if (input.agent_type) return sessionRoot(input, project);
+  if (subagentOf(input)) return sessionRoot(input, project);
   return worktreeRoot(project) ?? project;
 }
 
@@ -337,7 +347,7 @@ export function currentBranch(root) {
 export function actorFor(input, root, config) {
   // OWN-1: the session it acts in, whose decisions what it's refused become.
   const session = input.session_id ?? null;
-  const agent = input.agent_type;
+  const agent = subagentOf(input);
   if (agent) {
     const lane = Object.keys(config.lanes).find((l) => config.lanes[l].agent === agent);
     return lane

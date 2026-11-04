@@ -2,7 +2,7 @@
 // a time in the order they passed, each verified against the base as it is then. Kept in the main
 // checkout, beside the requests and reviews, so every worktree and a restarted session see the same.
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { projectWorktrees } from './rules.mjs';
 import { GIT, commandsOf } from './shell.mjs';
 import { storyOfBranch } from './teamfacts.mjs';
@@ -235,23 +235,70 @@ const local = (ref) => ref.replace(/^[\w.-]+\/(?=[^/]+\/[^/]+$)/, '');
 /**
  * MQ-5: the story branches `cmd` merges with git, each with the branch it lands on: the one a
  * `git switch` or `git checkout` earlier in the command moves to, else `branch`, the one checked out.
- * [{ story: 'web/st-4', into: 'lead/next' }].
+ * [{ story: 'web/st-4', into: 'lead/next' }]. With `at`, a `cd` in the command moves to another checkout:
+ * `at.branchAt(dir)` is the branch checked out there, null where a merge lands on no branch of this
+ * project (another repository, a detached HEAD), or undefined where there's no such folder; a worktree the command adds is on the branch it names,
+ * or none with --detach. A merge that lands on no branch is left out: nobody's branch takes the story.
  */
-export function storyMerges(cmd, branch) {
+export function storyMerges(cmd, branch, at = null) {
   const found = [];
   let on = branch;
+  let cwd = at?.cwd ?? null;
+  const vars = new Map();
+  const added = new Map();
   const switches = new RegExp(
-    String.raw`^${GIT}(?:switch|checkout)\s+((?:-\S+\s+)*)([^\s-]\S*)\s*$`,
+    String.raw`^${GIT}(?:switch|checkout)\s+((?:-(?!-\s)\S+\s+)*)([^\s-]\S*)\s*$`,
   );
+  const detaches = new RegExp(String.raw`^${GIT}(?:switch|checkout)\s+(?:-\S+\s+)*--detach\b`);
   const merges = new RegExp(String.raw`^${GIT}merge(?![\w-])(.*)$`);
+  const worktreeAdd = new RegExp(String.raw`^${GIT}worktree\s+add\s+(.*)$`);
+  const expand = (w) =>
+    w
+      .replace(/^["']|["']$/g, '')
+      .replace(/\$\{?(\w+)\}?/g, (m, n) => (vars.has(n) ? vars.get(n) : m));
   for (const { text, code } of commandsOf(cmd)) {
+    const assigned = text.match(/^\s*(\w+)=("[^"]*"|'[^']*'|[^\s;&|]+)\s*$/);
+    if (assigned) {
+      vars.set(assigned[1], expand(assigned[2]));
+      continue;
+    }
     const moved = code.match(switches);
+    if (code.match(detaches)) {
+      on = null;
+      continue;
+    }
     if (moved) {
       on = moved[2];
       continue;
     }
+    const add = at && text.match(worktreeAdd);
+    if (add) {
+      // git worktree add [-b <new>] [--detach] <path> [<commit-ish>]
+      const words = add[1].trim().split(/\s+/);
+      let made = null;
+      let detach = false;
+      const rest = [];
+      for (let i = 0; i < words.length; i++) {
+        if (words[i] === '-b' || words[i] === '-B') made = words[++i];
+        else if (words[i] === '--detach') detach = true;
+        else if (!words[i].startsWith('-')) rest.push(words[i]);
+      }
+      if (rest[0])
+        added.set(resolve(cwd, expand(rest[0])), detach ? null : (made ?? rest[1] ?? null));
+      continue;
+    }
+    const cd = at && text.match(/^\s*cd\s+("[^"]+"|'[^']+'|\S+)\s*$/);
+    if (cd) {
+      const dir = expand(cd[1]);
+      if (/\$/.test(dir)) continue; // a variable it can't read: the branch stays the one it knows
+      cwd = resolve(cwd, dir);
+      // A folder that isn't there leaves the shell where it was (`cd x; git merge …` merges here).
+      const there = added.has(cwd) ? added.get(cwd) : at.branchAt(cwd);
+      if (there !== undefined) on = there;
+      continue;
+    }
     const merged = code.match(merges);
-    if (!merged) continue;
+    if (!merged || on === null) continue;
     // Its words as written, found in the masked code, so quoted text (a message) never reads as a branch.
     const from = code.length - merged[1].length;
     for (const w of merged[1].matchAll(/\S+/g)) {

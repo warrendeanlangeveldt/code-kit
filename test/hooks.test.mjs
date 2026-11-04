@@ -307,6 +307,17 @@ try {
   expect('lead may not write an unowned path', write('random/x.ts'), 2);
   expect('an unmapped agent is read-only', write('docs/notes.md', 'Explore'), 2, 'read-only');
   expect(
+    "a fork of the lead's session writes what the lead writes",
+    write('docs/spec/02-api.md', 'fork'),
+    0,
+  );
+  expect(
+    'and is refused what the lead is refused, as the lead',
+    write('supabase/migrations/1_x.sql', 'fork'),
+    2,
+    'data lane / db-engineer',
+  );
+  expect(
     "REVW-2 code-kit's reviewer is read-only: it can't write",
     write('apps/web/x.ts', 'code-kit:reviewer'),
     2,
@@ -2209,6 +2220,44 @@ try {
         ].every((c) => mHook(c).status === 0),
       ),
       0,
+    );
+    // A throwaway merge, to try branches together, lands on no branch: a detached worktree the command
+    // adds, a detached HEAD, or another repository. One in a checkout that's on a branch is still refused.
+    const scratch = mkdtempSync(join(tmpdir(), 'code-kit-scratch-'));
+    cleanups.push(scratch);
+    execFileSync('git', ['clone', '-q', m.dir, scratch]);
+    expect(
+      'MQ-5 a story merged into a detached worktree the command adds, to try it, is no merge into a branch',
+      mHook(
+        'git worktree add -q --detach .claude/worktrees/try main && cd .claude/worktrees/try && git merge -q --no-edit web/st-1',
+      ),
+      0,
+    );
+    expect(
+      'nor in another repository the command moves to, named by a variable',
+      mHook(`S=${scratch} && cd $S && git checkout -q -- . && git merge -q --no-edit web/st-1`),
+      0,
+    );
+    expect('nor on a detached HEAD', mHook('git switch --detach HEAD && git merge web/st-1'), 0);
+    expect(
+      'but a worktree the command adds on a branch takes the merge, and is refused',
+      mHook(
+        'git worktree add .claude/worktrees/next2 -b lead/next2 main && cd .claude/worktrees/next2 && git merge web/st-1',
+      ),
+      2,
+      'Merged into lead/next2',
+    );
+    expect(
+      "and checking out paths doesn't move off the branch",
+      mHook('git checkout -q -- . && git merge web/st-1'),
+      2,
+      'Merged into lead/next',
+    );
+    expect(
+      "nor does a cd into a folder that isn't there",
+      mHook('cd nowhere; git merge web/st-1'),
+      2,
+      'Merged into lead/next',
     );
     m.git('checkout', '-q', 'main');
     expect('nor is reading them on the protected branch', mHook('git merge-base main web/st-1'), 0);
@@ -4817,6 +4866,21 @@ const op = process.argv[2]; let input = ''; process.stdin.on('data', (d) => (inp
       ),
       0,
     );
+    // An entry written by hand, with a state that has no name and no files, is listed as such.
+    register([
+      list,
+      { file: 'apps/office/app/x/page.tsx', story: 'ST-1', handedOver: true, states: [{}] },
+    ]);
+    const listed = dKit('designs').stdout;
+    expect(
+      'HAND-3 designs names a state with no name or files as such, never "undefined"',
+      truth(
+        listed.includes('(unnamed) (no viewport): no files') && !listed.includes('undefined'),
+        listed,
+      ),
+      0,
+    );
+    d.git('checkout', '--', 'design/approved-screens.json');
     writeFileSync(join(d.dir, 'design/bookings-list/default.html'), '<main>changed</main>\n');
     d.git('commit', '-q', '-am', 'tweak the design');
     const changedDesign = spawnSync('node', [kitCli, 'verify', '--base', 'main', '--no-checks'], {

@@ -17,6 +17,7 @@ import {
   projectWorktrees,
   relativeTo,
   worktreeRoot,
+  subagentOf,
   writeProblem,
 } from './lib/rules.mjs';
 
@@ -30,7 +31,7 @@ const rel = relativeTo(root, target);
 
 if (error) {
   // The rules can't be read, so nothing is allowed except the lead repairing them.
-  if (rel === CONFIG_FILE && !input.agent_type) process.exit(0);
+  if (rel === CONFIG_FILE && !subagentOf(input)) process.exit(0);
   block(
     `Blocked: ${error}\nThe lead fixes ${CONFIG_FILE} first; nothing else can be written until it is valid.`,
   );

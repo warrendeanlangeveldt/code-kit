@@ -3251,7 +3251,7 @@ function designsCommand() {
       out(`  only in ${toolOf(e)}: hand it over with /code-kit:design --hand-over`);
     for (const st of e.states ?? [])
       out(
-        `  ${st.name} (${st.viewport ?? 'no viewport'}): ${[st.image, st.code].filter(Boolean).join(', ')}${st.why ? ` (no code: ${st.why})` : ''}`,
+        `  ${st.name ?? '(unnamed)'} (${st.viewport ?? 'no viewport'}): ${[st.image, st.code].filter(Boolean).join(', ') || 'no files'}${st.why ? ` (no code: ${st.why})` : ''}`,
       );
     if (e.tokens) out(`  tokens: ${e.tokens}`);
     for (const p of e.handedOver ? e.problems : []) out(`  ✗ ${p}`);
