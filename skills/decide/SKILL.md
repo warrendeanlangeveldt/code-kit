@@ -7,6 +7,8 @@ description: The lead decides what a lane asked for and couldn't do itself (a ne
 
 The person is the product owner and sets the guardrails: the specs, the screens' visual design, CI and the pipelines, the kit (the rules in `.claude/code-kit.json`), and product questions the spec doesn't answer, plus anything with production, cost or strategy implications. Everything technical is yours by default: contracts, migrations, packages, merges into the base, and a weakened test on a lane's branch once you've reviewed it (`code-kit approve tests --lane <lane> --delegated --story ST-n --reason "…"`); on your own branch a weakened test is the person's. Inside them, you run the team. A lane that needs something it can't do itself asks you, and you decide on the merits. Passing a request to the person because you could is not deciding: they'd approve it by default, and the check would be gone.
 
+**Under vibe** (`harness.autonomy` is `vibe`) the guardrails are yours too: every request is `by: "lead"`, the spec, the design, CI, the kit, the standards and weakened tests on any branch included, and a package beyond the registry's rules is your judgement (approving it records which rules it breaks). Decide each as the person would, against the brief and the principles, and say why in the reason. Nothing goes to the person but what only they can give: an account, a key, a payment, an act outside the repository (`code-kit ask … --needs …`).
+
 The CLI is `node "${CLAUDE_PLUGIN_ROOT}/bin/code-kit.mjs"`.
 
 ## 1. Find the requests

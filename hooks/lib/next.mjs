@@ -5,6 +5,7 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join, posix } from 'node:path';
 import { loadConfig, mergeDelegation } from './config.mjs';
+import { actsAlone } from './harness.mjs';
 import { buildStatus, readStories, DESIGN, LEAD } from './plan.mjs';
 import { pendingSetup } from './adapters/index.mjs';
 import { CONFIG_FILE, SETUP_VERSION } from './config.mjs';
@@ -131,9 +132,13 @@ export function nextStep(root, base) {
     );
   const brief = readBrief(root, config);
   if (brief?.openQuestions.length) {
-    attention.push(`${brief.openQuestions.length} open question(s) in ${brief.path}.`);
+    const vibe = config?.harness.autonomy === 'vibe';
+    attention.push(
+      `${brief.openQuestions.length} open question(s) in ${brief.path}.${vibe ? ' Under vibe they are yours to settle: decide each, and record it in the decision log.' : ''}`,
+    );
+    // VIBE-3: under vibe the brief's questions are the lead's, not the person's.
     // A question the brief gives to the lead alone (Owner: Lead) is the lead's to settle, not the person's.
-    briefQuestions = brief.open
+    briefQuestions = (vibe ? [] : brief.open)
       .filter(
         (q) =>
           !q.owner ||
@@ -415,7 +420,7 @@ export function nextStep(root, base) {
   // committed rules delegate merges, the lead merges the head first, so dependents see it; otherwise
   // the person does, and always the first merge, which brings code-kit's rules onto the base.
   const delegation = queued.length ? mergeDelegation(root, config) : { delegated: false };
-  const leadMerges = delegation.delegated && config.harness.autonomy === 'autonomous';
+  const leadMerges = delegation.delegated && actsAlone(config.harness.autonomy);
   // SETUP-2: a base with no rules committed (a project set up before setup committed them there): the
   // lead puts the approved rules onto it, and the queue merges under them from then on.
   if (queued.length && delegation.first && !queuePaused)
@@ -524,7 +529,7 @@ export function nextStep(root, base) {
   if (forDesign.length)
     return result(
       'design',
-      `${forDesign.join(', ')} ${forDesign.length === 1 ? 'designs' : 'design'} the screens before any code is written for them; the person approves each design.`,
+      `${forDesign.join(', ')} ${forDesign.length === 1 ? 'designs' : 'design'} the screens before any code is written for them; ${config.harness.autonomy === 'vibe' ? 'you approve each design yourself, under vibe' : 'the person approves each design'}.`,
       {
         args: forDesign.join(' '),
         then: [

@@ -78,6 +78,7 @@ import {
   approvalSettings,
   committedConfig,
   effectiveConfig,
+  loadConfig,
   mergeDelegation,
   validate,
   withApprovalSetting,
@@ -158,7 +159,14 @@ import {
   recordFinding,
   replay as replayEvents,
 } from '../hooks/lib/events.mjs';
-import { SETTINGS, parseSetting, settingOf, withSetting } from '../hooks/lib/harness.mjs';
+import {
+  SETTINGS,
+  VIBE,
+  VIBE_ASKS,
+  parseSetting,
+  settingOf,
+  withSetting,
+} from '../hooks/lib/harness.mjs';
 import { claimLead, readLoop, releaseLead, writeLoop } from '../hooks/lib/loop-state.mjs';
 import {
   claimChanges,
@@ -291,6 +299,7 @@ const ownersGiven = [];
 for (let o = option('--owner'); o !== undefined; o = option('--owner')) ownersGiven.push(o);
 const storyGiven = option('--story');
 const whyGiven = option('--why');
+const needsGiven = option('--needs');
 const whatGiven = option('--what');
 const withGiven = option('--with');
 const untilGiven = option('--until');
@@ -1835,7 +1844,7 @@ function ciCommand() {
       out(`  ${f.kind}: ${f.what}.\n    Fix: ${f.fix}.`);
     }
     out(
-      "\nChanging CI is the person's to approve (approval ci). A release then runs the full suite once: code-kit release <version>.",
+      `\nChanging CI is ${config.approvals.delegate?.protected?.includes('ci') ? "the lead's" : "the person's"} to approve (approval ci). A release then runs the full suite once: code-kit release <version>.`,
     );
     return;
   }
@@ -2370,7 +2379,12 @@ async function approve(given) {
       // WHO-2: a weakened test on a lane's branch, after the lead's review; on its own, the person's.
       if (name === TESTS_APPROVAL) {
         if (!rules.tests) outside.push(`${name}: weakened tests aren't delegated`);
-        else if (!laneName)
+        else if (!laneName && rules.own) {
+          // VIBE-2: under vibe the lead approves a weakened test on its own branch too.
+          if (!storyGiven)
+            outside.push(`${name}: name the story the weakened test is for, with --story ST-n`);
+          else marks[name] = delegatedMark(`tests, the lead's own, for ${story.id} (vibe)`);
+        } else if (!laneName)
           outside.push(
             `${name}: on your own branch a weakened test is the person's; you approve one only for a lane, with --lane`,
           );
@@ -2398,7 +2412,12 @@ async function approve(given) {
         const pypi = !npm && [...registries].some((r) => PYPI_MANAGERS.has(r));
         const facts = npm ? await npmFacts(pkg) : pypi ? await pypiFacts(pkg) : null;
         const problems = facts ? dependencyRuleProblems(facts, rules.dependencies) : [];
-        if (problems.length) outside.push(`${name}: ${problems.join('; ')}`);
+        // VIBE-2: under vibe, beyond the registry rules is the lead's judgement, recorded with them.
+        if (problems.length && rules.overRules)
+          marks[name] = delegatedMark(
+            `dependencies (${pkg}, judged by the lead over the registry rules: ${problems.join('; ')}) for ${story.id} (vibe)`,
+          );
+        else if (problems.length) outside.push(`${name}: ${problems.join('; ')}`);
         else
           marks[name] = delegatedMark(
             `dependencies (${pkg}${npm ? '' : pypi ? ', from PyPI' : `, from ${[...registries].join(', ')}, judged by the lead`}) for ${story.id}`,
@@ -2866,8 +2885,15 @@ function intendCommand() {
  * hooks refuse from agents; otherwise the lead recording what the person said in chat); `ask withdraw`
  * takes one back once it no longer needs the person.
  */
-const ASK_USAGE = `code-kit ask "<question>" [--story ST-n] [--blocks] [--why …] [--option "Label: what it does"]...
+const VIBE_ASK_WORDS = {
+  account: 'an account with a service provider, which only they can open',
+  key: 'an API key, token or secret from their account',
+  payment: 'a paid plan or anything that costs money',
+  outside: 'an act outside the repository that only they can do, such as DNS or an app store',
+};
+const ASK_USAGE = `code-kit ask "<question>" [--story ST-n] [--blocks] [--why …] [--option "Label: what it does"]... [--needs account|key|payment|outside]
   asks the person what the lead can't settle; it waits in their Decisions tab
+  (under vibe, only for what the lead can't give itself, named with --needs)
 code-kit ask [list] [--json]          the questions waiting, and those answered lately
 code-kit ask answer <id> "<answer>"
 code-kit ask withdraw <id> --reason "…"`;
@@ -2922,6 +2948,15 @@ function askCommand() {
       `"${question}" isn't a question for the person; nothing was asked. Ask it as a sentence they can answer.\n${ASK_USAGE}`,
     );
   if (flag('--blocks') && !storyGiven) die('--blocks holds a story: name it with --story ST-n.');
+  // VIBE-4: under vibe every decision is the lead's; the person is asked only for what nobody else can
+  // give: an account, a key or secret, a payment, or an act outside the repository.
+  const vibe = existsSync(resolve(file)) && loadConfig(root).config?.harness.autonomy === VIBE;
+  if (needsGiven !== undefined && !VIBE_ASKS.includes(needsGiven))
+    die(`--needs takes ${VIBE_ASKS.join(', ')}; nothing was asked.\n${ASK_USAGE}`);
+  if (vibe && needsGiven === undefined)
+    die(
+      `Nothing was asked. Under vibe this is yours to decide, as the lead: choose what the spec, the principles and the architecture point to, record it in the brief's decision log with why, and carry on. Ask the person only for what you can't give yourself, naming it with --needs: ${VIBE_ASKS.map((k) => `${k} (${VIBE_ASK_WORDS[k]})`).join('; ')}.`,
+    );
   const r = askQuestion(root, {
     by: 'lead',
     session: callerSession,

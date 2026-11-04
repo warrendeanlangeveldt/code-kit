@@ -30,6 +30,8 @@ Use the spec's own content: the real labels, fields, messages and limits from it
 
 ## 3. Show it and iterate
 
+**Under vibe** (`harness.autonomy` is `vibe`), you approve each screen yourself: check every state against the spec's Screens section, the principles and the project's tokens, fix what falls short, and approve it with `code-kit approve design --delegated --story ST-n --reason "…"` when the register is written. Skip the showing below; the person isn't asked.
+
 Show the person each screen (a screenshot, or the file to open) with one line on what it does and which requirements it serves. Ask what to change. Make the changes and show them again until they say a screen is approved. A screen they want rethought goes back to step 2; one that needs the spec changed goes to `/code-kit:spec-design` first.
 
 ## 4. Export what's approved

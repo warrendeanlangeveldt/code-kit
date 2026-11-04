@@ -30,6 +30,8 @@ Say which one applies before you start.
 
 ## How to ask
 
+**Under vibe** (`harness.autonomy` is `vibe` in `.claude/code-kit.json`, set once the first spec was done), you shape later milestones without the person. Ask each question below of yourself instead: answer it from the brief, the specs, the principles and what's built, take your recommended option, and write it in the brief's decision log as the lead's, with why. Ask the person only for what nobody else can give (`code-kit ask … --needs account|key|payment|outside`), and leave nothing open that you can decide.
+
 The questions are the skill. Ask well:
 
 - **Only what the person can answer.** Look up anything the repository, the docs or a quick search can tell you, and state what you found instead of asking.

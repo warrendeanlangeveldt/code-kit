@@ -486,7 +486,7 @@ export function bandLines({
       deferred,
       actions: [],
     });
-  const autonomous = (check?.harness?.autonomy ?? 'autonomous') === 'autonomous';
+  const autonomous = ['autonomous', 'vibe'].includes(check?.harness?.autonomy ?? 'autonomous');
   // SETUP-2: with no rules on the base yet, the lead puts them there first and then merges.
   const leadMerges = autonomous && (check?.delegatesMerge || check?.firstMerge);
   if (next && !leadMerges && !working)
@@ -996,7 +996,7 @@ export function approvalsText(requests) {
 
 export const SETTINGS_ID = 'code-kit-settings';
 const CHOICES = {
-  autonomy: ['autonomous', 'propose', 'off'],
+  autonomy: ['autonomous', 'propose', 'off', 'vibe'],
   'agents.reviewer.model': ['', 'haiku', 'sonnet', 'opus'],
   'agents.lanes.model': ['', 'story', 'haiku', 'sonnet', 'opus'],
   'compact.milestone': ['ask', 'auto', 'off'],
