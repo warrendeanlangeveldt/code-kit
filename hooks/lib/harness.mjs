@@ -2,7 +2,17 @@
 // what the mod's loop, hold, reviewer and usage read. Defaults fill what the section leaves out; a value
 // out of range is a config problem like any other.
 
-export const AUTONOMY = ['autonomous', 'propose', 'off'];
+export const AUTONOMY = ['autonomous', 'propose', 'off', 'vibe'];
+/**
+ * VIBE-1: vibe is autonomous, and more: the lead decides everything the person would (the specs, the
+ * designs, CI, the kit, the standards, every test, merges and pushes), and the person is asked only for
+ * what nobody else can give: an account, a key, a payment, an act outside the repository.
+ */
+export const VIBE = 'vibe';
+/** Whether the loop acts on its own: autonomous, or vibe. */
+export const actsAlone = (autonomy) => autonomy === 'autonomous' || autonomy === VIBE;
+/** VIBE-4: what a question for the person under vibe may be for: only what the lead can't give itself. */
+export const VIBE_ASKS = ['account', 'key', 'payment', 'outside'];
 export const MODELS = ['haiku', 'sonnet', 'opus'];
 
 /** Each setting by its dotted key: its default, and why a value is wrong (or null when it's right). */
@@ -15,7 +25,8 @@ export const SETTINGS = {
   autonomy: {
     default: 'autonomous',
     problem: (v) => (AUTONOMY.includes(v) ? null : `must be one of ${AUTONOMY.join(', ')}`),
-    about: 'How the lead loop acts: on its own, by proposing each step, or not at all',
+    about:
+      "How the lead loop acts: on its own, by proposing each step, or not at all; vibe is on its own with every decision the lead's, and you only asked for accounts, keys and payments",
   },
   'hold.minutes': {
     default: 2,

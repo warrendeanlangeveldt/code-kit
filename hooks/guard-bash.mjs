@@ -624,7 +624,8 @@ function recordApprovals() {
       }),
     );
   // STD-5: removing a standard, or weakening a required one, is the person's own call, never the lead's,
-  // delegated or not. The commit waits for their `standards` approval, which records what it weakened.
+  // delegated or not (VIBE-2: under vibe, the lead's). The commit waits for their `standards` approval,
+  // which records what it weakened.
   const stdFile = standardsFile(config);
   const stdWeak =
     files.includes(stdFile) && !arrivesWithMerge(root, stdFile, { staged: true })
@@ -635,7 +636,8 @@ function recordApprovals() {
       : [];
   if (stdWeak.length) {
     const granted = approval(root, STANDARDS_APPROVAL, actor);
-    if (!granted || granted.reason.includes(delegatedMark('').slice(0, -1))) {
+    const vibe = config.approvals.delegate?.vibe === true;
+    if (!granted || (!vibe && granted.reason.includes(delegatedMark('').slice(0, -1)))) {
       recordRequest(
         root,
         actor,
@@ -644,6 +646,10 @@ function recordApprovals() {
         `Standards weakened: ${stdWeak.join('; ')}.`,
       );
       const personOnly = { ...config, approvals: { ...config.approvals, delegate: null } };
+      if (vibe)
+        block(
+          `Blocked: this commit weakens the project's standards in ${stdFile}: ${stdWeak.join('; ')}. Under vibe the standards are yours to change, as the lead: weaken one only when what it costs the project outweighs what it guards, and record why. ${askHowTo(STANDARDS_APPROVAL, actor, root, config, { allows: 'weakening the standards in one commit', need: 'the standard, what it costs the story, and why weakening it is right' })}`,
+        );
       block(
         `Blocked: this commit weakens the project's standards in ${stdFile}: ${stdWeak.join('; ')}. Removing a standard, or weakening a required one, is the person's call, never the lead's. Ask them, with what the standard costs the project and your recommendation; they approve it with\n${approvalHowTo(STANDARDS_APPROVAL, actor, root, 'weakening the standards in one commit', personOnly)}`,
       );

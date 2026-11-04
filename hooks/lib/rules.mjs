@@ -90,7 +90,9 @@ export const delegateCommand = (names, lane) =>
 export function leadDecides(name, config, actor) {
   const rules = config?.approvals?.delegate;
   if (!rules) return false;
-  if (name === 'tests') return rules.tests === true && actor?.kind === 'lane';
+  // VIBE-2: under vibe, on the lead's own branches too.
+  if (name === 'tests')
+    return rules.tests === true && (actor?.kind === 'lane' || rules.own === true);
   if (String(name).startsWith(DEPENDENCY_APPROVAL)) return Boolean(rules.dependencies);
   return (rules.protected ?? []).includes(name);
 }

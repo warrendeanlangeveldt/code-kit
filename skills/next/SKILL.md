@@ -60,6 +60,8 @@ After a step finishes, run `next --json` again and carry on with the new step, w
 - the step is `wait` or `done`;
 - the same step comes back twice in a row with nothing changed. Report what's stuck instead of looping.
 
+**Under vibe** (`harness.autonomy` is `vibe`), you're the product owner too, and only the last two stop you. Answer spec-design's, spec-check's and review's questions yourself, from the brief, the specs and the principles, and record each in the brief's decision log with why. Every approval is yours (`by: "lead"`, with `--delegated`); merge and push as the queue says. What only the person can give (an account with a service provider, an API key or secret, a payment, an act outside the repository) you ask with `code-kit ask "…" --needs account|key|payment|outside`, and you build everything else meanwhile: behind the setting the key will fill, against a local or test stand-in, with the step to switch it on in the story's notes.
+
 **Ask the person through code-kit, not only in chat.** Anything you can't settle yourself and the person has to decide or do (a product choice, an account or key only they can create, wording or a design only they can sign off, whether to keep something private) goes to their band and the pane's Needs you, where it waits until they answer instead of scrolling away:
 
 ```

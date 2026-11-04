@@ -2,7 +2,7 @@
 // was opened in; a project without one is not governed by the kit, and an invalid one fails closed.
 import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
-import { harnessProblems, harnessSettings } from './harness.mjs';
+import { VIBE, harnessProblems, harnessSettings } from './harness.mjs';
 import { teamProblems } from './team.mjs';
 import { join } from 'node:path';
 import { ADAPTERS, applyAdapters } from './adapters/index.mjs';
@@ -102,7 +102,10 @@ export function withDefaults(c) {
     },
     approvals: {
       lead: c.approvals?.lead === true,
-      delegate: delegateRules(c.approvals?.delegate, c.protected ?? []),
+      delegate:
+        c.harness?.autonomy === VIBE
+          ? vibeRules(c.approvals?.delegate, c.protected ?? [])
+          : delegateRules(c.approvals?.delegate, c.protected ?? []),
     },
     harness: harnessSettings(c.harness),
   };
@@ -166,6 +169,37 @@ const isRegExp = (v) => {
     return false;
   }
 };
+
+/**
+ * VIBE-2: under vibe the lead decides everything: every protected approval (the kit and the standards
+ * among them), merges, pushes, weakened tests on its own branches too (`own`), and packages, within the
+ * dependency rules the config gives (or the defaults), and beyond them on its judgement (`overRules`).
+ * Whatever `approvals.delegate` says is set aside.
+ */
+function vibeRules(given, protectedPaths = []) {
+  const deps = given && typeof given === 'object' ? given.dependencies : undefined;
+  return {
+    ...delegateRules(
+      {
+        protected: [
+          ...new Set([
+            'kit',
+            'standards',
+            ...protectedPaths.map((p) => p.approval).filter(Boolean),
+          ]),
+        ],
+        merge: true,
+        push: true,
+        tests: true,
+        dependencies: deps && typeof deps === 'object' ? deps : {},
+      },
+      protectedPaths,
+    ),
+    own: true,
+    overRules: true,
+    vibe: true,
+  };
+}
 
 /**
  * ONB-5: the version of init's setup. 2 adds project skills with the lane agents, the design gate for

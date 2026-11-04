@@ -59,6 +59,9 @@ function factsOf(root, config, lane = null) {
       ? kept.map((p) => `\`${p.approval}\` (${p.why})`).join(', ')
       : 'changes to the rules themselves',
     'approvals.lead': Boolean(config.approvals?.lead),
+    // VIBE-1: under vibe the lead is the product owner too.
+    vibe: config.harness?.autonomy === 'vibe',
+    notVibe: config.harness?.autonomy !== 'vibe',
     'harness.report.on': Boolean(config.harness?.report?.on),
     ci: existsSync(join(root, CI_WORKFLOW)),
     'docs.specs': config.docs?.specs ?? 'the specs',

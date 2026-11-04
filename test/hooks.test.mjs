@@ -812,6 +812,14 @@ try {
     expect('#63 never by force', pushHook('git push --force-with-lease origin main'), 2);
     expect('#63 nor deletes it', pushHook('git push origin :main'), 2);
     expect('#63 and a lane still may not', pushHook('git push origin main', 'web-engineer'), 2);
+    writeFileSync(
+      join(p.dir, '.claude/code-kit.json'),
+      JSON.stringify({ ...JSON.parse(fixture), harness: { autonomy: 'vibe' } }, null, 2),
+    );
+    p.git('add', '-A');
+    p.git('commit', '-q', '-m', 'vibe');
+    expect('VIBE-2 under vibe the lead pushes main', pushHook('git push origin main'), 0);
+    expect('never by force', pushHook('git push --force origin main'), 2);
   }
   expect(
     'switching to a protected branch and merging in one command is blocked',
@@ -2131,6 +2139,81 @@ try {
       1,
       'name the story',
     );
+    // VIBE-2: under vibe every decision is the lead's, whatever approvals.delegate says (here: false).
+    put(
+      '.claude/code-kit.json',
+      JSON.stringify({ ...JSON.parse(fixture), harness: { autonomy: 'vibe' } }),
+    );
+    rmSync(join(repo, '.claude/approvals'), { recursive: true, force: true });
+    expect(
+      "VIBE-2 a lane's change to the designs is the lead's to decide",
+      write('design/approved-screens.json', 'web-engineer'),
+      2,
+      'The lead decides this, not the person',
+    );
+    expect(
+      'VIBE-2 the lead approves the designs, the kit and the specs itself',
+      truth(
+        ['design', 'kit', 'spec'].every(
+          (n) => delegate(n, '--story', 'ST-4', '--reason', 'x').status === 0,
+        ),
+      ),
+      0,
+    );
+    expect(
+      'VIBE-2 and a weakened test on its own branch',
+      delegate('tests', '--story', 'ST-4', '--reason', 'the case tested removed behaviour'),
+      0,
+    );
+    const overRules = delegate('gpl-pkg', '--lane', 'web', '--reason', 'x', '--story', 'ST-4');
+    expect(
+      "VIBE-2 a package beyond the registry's rules is the lead's judgement, recorded with the rule it breaks",
+      truth(
+        overRules.status === 0 &&
+          readFileSync(join(repo, '.claude/approvals/web/dep-gpl-pkg'), 'utf8').includes(
+            'over the registry rules: its licence (GPL-3.0)',
+          ),
+        overRules.stderr + overRules.stdout,
+      ),
+      0,
+    );
+    expect(
+      'VIBE-4 a product question is not put to the person',
+      kit('ask', 'Should the list show the oldest bookings first?'),
+      1,
+      'Under vibe this is yours to decide',
+    );
+    expect(
+      'VIBE-4 what only the person can give is',
+      truth(
+        kit(
+          'ask',
+          'Please create a payments account and share its test key',
+          '--needs',
+          'key',
+        ).stdout.startsWith('Asked Q-'),
+      ),
+      0,
+    );
+    expect(
+      'VIBE-4 and --needs names what it is',
+      kit('ask', 'Something else entirely?', '--needs', 'opinion'),
+      1,
+      '--needs takes account, key, payment, outside',
+    );
+    expect(
+      "VIBE-1 the lead's instructions say every decision is its own",
+      truth(
+        kit('instructions', 'show', 'lead').stdout.includes('The person chose vibe') &&
+          !kit('instructions', 'show', 'lead').stdout.includes(
+            "A screen's visual design is theirs",
+          ),
+      ),
+      0,
+    );
+    rmSync(join(repo, '.claude/approvals'), { recursive: true, force: true });
+    rmSync(join(repo, '.claude/state/questions.jsonl'), { force: true });
+    rmSync(join(repo, '.claude/state/requests.jsonl'), { force: true });
   } finally {
     registry.kill();
     rmSync(join(repo, 'docs/spec/plan.md'), { force: true });
