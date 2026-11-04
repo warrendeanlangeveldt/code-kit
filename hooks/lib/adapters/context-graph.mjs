@@ -68,6 +68,9 @@ export default {
         why: "Ratifying a Context Graph proposal with --commit, dropping one, and changing Context Graph's harness settings are the person's own acts: they run them themselves, with a `!` command, or from the Context Graph pane.",
       },
     ],
+    // Recording a decision or writing a card writes only ctx's own records (anyActor above), so a commit
+    // may follow it in the same command.
+    records: [String.raw`^${CTX}\s+(?:record|card)\b`],
     restricted: [
       {
         pattern: 'Ctx-Ratified-By\\s*[:=][^\\n"\']*\\(delegated\\)',

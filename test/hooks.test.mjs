@@ -824,6 +824,13 @@ try {
     0,
   );
   expect(
+    "and after code-kit's own commands that only read, run however it's installed",
+    bash(
+      `node "/opt/my tools/code-kit.mjs" designs | grep -i problem | head; code-kit status --json && npx @warren-dean/code-kit check && git add notes.txt && git commit -m x`,
+    ),
+    0,
+  );
+  expect(
     'and after setting a shell variable, which writes no file',
     bash('f=notes.txt; export MSG="a message" && git add notes.txt && git commit -m "$MSG"'),
     0,
@@ -843,6 +850,15 @@ try {
     ['a diff written to a file', 'git diff --output=patch.txt && git commit -m x'],
     ['a variable set from a command', 'f=$(node -e "1") && git commit -m x'],
     ['a variable set from a backtick command', 'f=`node -e 1`; git commit -m x'],
+    [
+      "code-kit's command that records a screenshot",
+      'code-kit designs evidence ST-1 a b c.png && git commit -m x',
+    ],
+    [
+      "code-kit's command that writes its instructions",
+      'code-kit baseline --write && git commit -m x',
+    ],
+    ['a code-kit read with --write', 'code-kit check --write && git commit -m x'],
   ])
     expect(
       `but a commit after ${what} is still refused`,
@@ -2732,6 +2748,83 @@ if (a[0] === 'pr' && a[1] === 'merge') {
       uHook('git commit -m "more"'),
       2,
       'the lead merges it after review',
+    );
+  }
+
+  // --- SETUP-3: the setup the person approved holds protected files, which need no approval of their own
+  {
+    const u = newRepo(false);
+    cleanups.push(u.dir);
+    mkdirSync(join(u.dir, '.claude'), { recursive: true });
+    writeFileSync(
+      join(u.dir, '.claude/code-kit.json'),
+      JSON.stringify({ ...JSON.parse(fixture), approvals: { delegate: { merge: true } } }),
+    );
+    writeFileSync(join(u.dir, '.gitignore'), '.claude/approvals/\n.claude/state/\n');
+    mkdirSync(join(u.dir, 'docs/spec'), { recursive: true });
+    // A state's own brackets keep their commas: one state, not two.
+    writeFileSync(
+      join(u.dir, 'docs/spec/01-access.md'),
+      '# 01. Access\n\n### ACC-1 Sign in\n\nx\n\n## Screens\n\n### Sign in\n\n**States:** default, error (timed out, offline)\n',
+    );
+    writeFileSync(
+      join(u.dir, 'docs/spec/plan.md'),
+      '# Plan\n\n## M1\n\n### ST-1 Design: access\n\n**Lane:** design\n**Requirements:** ACC-1\n**Status:** done\n',
+    );
+    const signIn = approvedDesign(u.dir, 'apps/office/app/sign-in/page.tsx', 'Sign in', [
+      'default',
+      'error (timed out, offline)',
+    ]);
+    writeFileSync(
+      join(u.dir, 'design/approved-screens.json'),
+      `${JSON.stringify({ screens: [signIn] }, null, 2)}\n`,
+    );
+    const uRun = (name, extra) =>
+      spawnSync('node', [join(hooks, name)], {
+        input: JSON.stringify({ cwd: u.dir, ...extra }),
+        env: { ...process.env, CLAUDE_PROJECT_DIR: u.dir },
+        encoding: 'utf8',
+      });
+    expect(
+      "SETUP-3 before the setup is committed, the lead's protected files aren't changes to revert",
+      uRun('stop-check.mjs', {}),
+      0,
+    );
+    expect(
+      'SETUP-3 the setup commit holds them with no approval, and a state with commas in brackets is one state',
+      uRun('guard-bash.mjs', {
+        tool_input: { command: 'git add -A && git commit -m "Switch on code-kit"' },
+      }),
+      0,
+    );
+    expect(
+      'and the approval log records each as part of the setup',
+      truth(
+        readFileSync(join(u.dir, '.claude/approval-log.jsonl'), 'utf8').includes(
+          '"file":"design/approved-screens.json"',
+        ) &&
+          readFileSync(join(u.dir, '.claude/approval-log.jsonl'), 'utf8').includes('"setup":true'),
+      ),
+      0,
+    );
+    u.git('add', '-A');
+    u.git('commit', '-q', '-m', 'Switch on code-kit');
+    u.git('checkout', '-q', '-b', 'lead/st-2');
+    writeFileSync(join(u.dir, 'design/approved-screens.json'), '{ "screens": [] }\n');
+    expect(
+      'once the setup is committed, the register needs the approval again',
+      uRun('guard-bash.mjs', { tool_input: { command: 'git add -A && git commit -m x' } }),
+      2,
+      'approval in force',
+    );
+    u.git('rm', '-q', '--cached', '.claude/code-kit.json');
+    u.git('commit', '-q', '-m', 'drop the config');
+    u.git('add', '.claude/code-kit.json');
+    expect(
+      'and taking the config away and back is no new setup',
+      uRun('guard-bash.mjs', { tool_input: { command: 'git add -A && git commit -m x' } }),
+      2,
+      'approval in force',
     );
   }
 
@@ -6977,6 +7070,26 @@ else process.exit(2);
     "a person's act",
   );
   expect('other commits are untouched', cBash('git commit -m "ST-9 cancel"'), 0);
+  // Recording a decision or a card writes only ctx's own records, so a commit may follow it.
+  expect(
+    'a commit after ctx records a decision or writes a card, in the same command, is allowed',
+    cBash(
+      'ctx record --node src --text "Kept small." && ctx card src/a.ts --text "A card." && git add .ctx && git commit -m "ST-9 notes"',
+    ),
+    0,
+  );
+  expect(
+    'but not after one whose output goes into a file',
+    cBash('ctx card src/a.ts --text "A card." > src/a.ts && git commit -m "ST-9"'),
+    2,
+    'may write files',
+  );
+  expect(
+    'nor after another ctx command',
+    cBash('ctx rebuild && git commit -m "ST-9"'),
+    2,
+    'may write files',
+  );
   for (const act of [
     'ctx ratify C:events --commit',
     'cd src && ' + 'ctx drop src.small --reason no',

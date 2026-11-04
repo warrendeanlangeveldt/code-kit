@@ -31,6 +31,7 @@ import { basename, dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DEPENDENCY_APPROVAL, isDependencyFile } from './dependencies.mjs';
 import { globToRegExp, literalPath, matchesAny } from './glob.mjs';
+import { CONFIG_FILE } from './config.mjs';
 import { noteFor } from './standards.mjs';
 
 export const APPROVAL_LOG = '.claude/approval-log.jsonl';
@@ -104,6 +105,29 @@ export const leadNeedsApproval = (name, config) =>
   name !== 'kit' &&
   Boolean(config?.approvals?.delegate?.merge) &&
   !leadDecides(name, config, { kind: 'lead' });
+
+/**
+ * Whether code-kit is being set up in `root`: its config is in the checkout, not ignored, and no commit
+ * the repository has ever held it. The person approves the setup as init shows it, the specs, standards
+ * and design register it protects included, so until the commit that switches code-kit on the lead
+ * writes and commits them with no approval of their own. Once any commit has held the config it never
+ * is again, even after a commit takes the config away.
+ */
+export function beforeSetup(root) {
+  const git = (...args) => {
+    try {
+      return execFileSync('git', ['-C', root, ...args], {
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'ignore'],
+      });
+    } catch {
+      return null;
+    }
+  };
+  if (!existsSync(join(root, CONFIG_FILE))) return false;
+  if (git('check-ignore', '-q', CONFIG_FILE) !== null) return false;
+  return git('log', '--all', '--format=%H', '-1', '--', CONFIG_FILE) === '';
+}
 
 /** HELM-2: whose decision approvals `names` are: the lead's when it may grant every one, else the person's. */
 export const decidedBy = (names, config, actor) =>
@@ -810,7 +834,9 @@ export function writeProblem(actor, rel, root, config) {
   // The lead writes protected files without an approval where the person merges: they review them in
   // the pull request, and every committed change is in the audit log. Where the lead merges, what the
   // person keeps needs their approval (WHO-1). Anyone else needs an approval as well.
-  const leadFree = actor.kind === 'lead' && !leadNeedsApproval(guarded?.approval, config);
+  const leadFree =
+    actor.kind === 'lead' &&
+    (!leadNeedsApproval(guarded?.approval, config) || (guarded && beforeSetup(root)));
   if (guarded && !leadFree && !approval(root, guarded.approval, actor)) {
     recordRequest(root, actor, guarded.approval, rel, guarded.why);
     const who =
