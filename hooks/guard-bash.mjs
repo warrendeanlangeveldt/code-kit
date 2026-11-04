@@ -794,9 +794,9 @@ ${approvalHowTo(TESTS_APPROVAL, actor, root, 'weakening tests in one commit', pe
 // The commit hook judges what the commit holds before the command runs, so a file a command earlier in
 // the chain writes (a formatter, a script, a heredoc) can't be seen, and would go in unjudged and
 // unlogged. Before the commit, a chain may only move into the checkout, make a branch where it stands
-// (no start point, so no file changes), stage, and run commands that only read (lib/shell.mjs
-// readsOnly: git's status, diff, log and show among them, with no output file). Errors sent into the
-// output or /dev/null write no file.
+// (no start point, so no file changes), stage or unstage, make folders, take away a worktree (keepsFiles)
+// and run commands that only read (lib/shell.mjs readsOnly: git's status, diff, log and show among them,
+// with no output file). Errors sent into the output or /dev/null write no file.
 const BEFORE_COMMIT = new RegExp(
   String.raw`^(?:cd\s|${GIT}(?:add|rm|mv|restore\s+--staged|reset\s+--soft)(?![\w-])|${GIT}(?:switch\s+(?:-q\s+|--quiet\s+)*(?:-c|--create)|checkout\s+(?:-q\s+|--quiet\s+)*-b)\s+[^\s-]\S*\s*$)`,
 );
@@ -808,6 +808,26 @@ const assignsOnly = (c) => ASSIGNS_ONLY.test(c.code) && !/`|\$\(|<\(/.test(c.tex
 // actor may write and no check covers, with no redirect of its own.
 const recordsOnly = (c) =>
   !/[<>]/.test(c.code) && (config.shell.records ?? []).some((re) => new RegExp(re).test(c.text));
+// What changes no file a commit could take: making folders (git keeps no empty folder), taking away a
+// worktree, which is a checkout of its own, and unstaging (`git reset [HEAD] [--] [<paths>]`, which
+// leaves the files as they are). A reset to another commit with no paths moves HEAD, so it counts.
+const KEEPS_FILES = new RegExp(String.raw`^(?:mkdir\s|${GIT}worktree\s+(?:remove|prune)(?![\w-]))`);
+const RESETS = new RegExp(String.raw`^${GIT}reset((?:\s+\S+)*)\s*$`);
+const isCommit = (w) =>
+  spawnSync('git', ['-C', root, 'rev-parse', '--verify', '--quiet', `${w}^{commit}`]).status === 0;
+function keepsFiles(c) {
+  if (/[<>]/.test(c.code)) return false;
+  if (KEEPS_FILES.test(c.text)) return true;
+  const reset = c.text.match(RESETS);
+  if (!reset) return false;
+  const words = reset[1].trim().split(/\s+/).filter(Boolean);
+  const paths = words.indexOf('--');
+  const before = paths >= 0 ? words.slice(0, paths) : words;
+  const flags = before.filter((w) => w.startsWith('-'));
+  if (flags.some((f) => f !== '-q' && f !== '--quiet')) return false;
+  const named = before.filter((w) => !w.startsWith('-'));
+  return !(paths < 0 && named.length === 1 && named[0] !== 'HEAD' && isCommit(named[0]));
+}
 function writesBeforeCommit() {
   const pieces = commandsOf(withoutHarmlessRedirects(cmd));
   const at = pieces.findIndex((c) => new RegExp(String.raw`^${GIT}commit(?![\w-])`).test(c.text));
@@ -818,7 +838,8 @@ function writesBeforeCommit() {
         (!BEFORE_COMMIT.test(c.text) || /[<>]/.test(c.code)) &&
         !readsOnly(c.whole) &&
         !assignsOnly(c) &&
-        !recordsOnly(c),
+        !recordsOnly(c) &&
+        !keepsFiles(c),
     );
 }
 

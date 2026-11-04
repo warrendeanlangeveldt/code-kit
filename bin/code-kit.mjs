@@ -301,7 +301,9 @@ const storyGiven = option('--story');
 const whyGiven = option('--why');
 const needsGiven = option('--needs');
 const whatGiven = option('--what');
-const withGiven = option('--with');
+// `--with a --with b` and `--with a,b` alike.
+const withsGiven = [];
+for (let o = option('--with'); o !== undefined; o = option('--with')) withsGiven.push(o);
 const untilGiven = option('--until');
 const expectedGiven = option('--expected');
 const commandGiven = option('--command');
@@ -1165,8 +1167,8 @@ function queue() {
     // The commit the review passed: the queue merges exactly it, and a branch that moves is reviewed again.
     const added = enqueue(root, branch, commit);
     // MQ-7: branches that only land together.
-    const partnersGiven = (withGiven ?? '')
-      .split(/[\s,]+/)
+    const partnersGiven = withsGiven
+      .flatMap((w) => w.split(/[\s,]+/))
       .filter(Boolean)
       .filter((b) => b !== branch);
     if (partnersGiven.length) setPartners(root, branch, partnersGiven);
