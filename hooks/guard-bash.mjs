@@ -31,7 +31,7 @@ import { laneOfBranch, storyOfBranch, teamOf, teamProvider, whoami } from './lib
 import { entryProblems, freshEntries, readRegister } from './lib/designs.mjs';
 import { globToRegExp, matchesAny } from './lib/glob.mjs';
 import { noteBefore } from './lane-audit.mjs';
-import { storyMerges } from './lib/queue.mjs';
+import { historyWrites, storyMerges } from './lib/queue.mjs';
 import { approverOf } from './lib/journal.mjs';
 import { loginHere } from './lib/sessions.mjs';
 import { TESTS_APPROVAL, commitWeakenings } from './lib/regression.mjs';
@@ -129,9 +129,6 @@ if (error) {
 const branches = config.branches.protected
   .map((b) => b.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
   .join('|');
-// The branch is read before the command runs, so a command that switches to a protected branch and then
-// commits or merges in the same breath is judged by what it does, not by where it starts. Moving a
-// protected branch directly (branch -f, update-ref) is a commit on it by another name.
 /** Whether `file` is committed at HEAD in the repository at `root`. */
 function committedOnHead(root, file) {
   return (
@@ -140,16 +137,7 @@ function committedOnHead(root, file) {
   );
 }
 
-const writesHistory = runs(
-  cmd,
-  new RegExp(String.raw`^${GIT}(commit|merge|cherry-pick|rebase|revert|am)(?![\w-])`),
-);
-const switchesToProtected = runs(
-  cmd,
-  new RegExp(
-    String.raw`^${GIT}(?:switch|checkout)\s+(?:-[^\s]+\s+)*(${branches})(?![\w./-])(?!\s+--)`,
-  ),
-);
+// Moving a protected branch directly (branch -f, update-ref) is a commit on it by another name.
 const movesProtected =
   runs(
     cmd,
@@ -163,7 +151,7 @@ const movesProtected =
       String.raw`^${GIT}update-ref\s+(?:-\S+\s+)*(?:refs/heads/)?(${branches})(?![\w./-])`,
     ),
   );
-if ((switchesToProtected && writesHistory) || movesProtected) {
+if (movesProtected) {
   block(
     `Blocked: never commit to, merge into or move ${config.branches.protected.join(' or ')}, even by switching to it first. Work on a branch; a person merges after review${config.approvals.delegate?.merge ? ', or the lead merges a verified branch with `code-kit merge <branch> --delegated`' : ''}.\nCommand: ${cmd}`,
   );
@@ -398,15 +386,6 @@ const settingUp =
   runs(cmd, new RegExp(String.raw`^${GIT}commit(?![\w-])`)) &&
   !runs(cmd, new RegExp(String.raw`^${GIT}(merge|cherry-pick|rebase|revert|am)(?![\w-])`)) &&
   !committedOnHead(root, CONFIG_FILE);
-if (writesHistory && config.branches.protected.includes(branch) && !settingUp) {
-  block(
-    `Blocked: never commit or merge on ${branch}. Work on a branch; the lead merges it after review (or the person, where merges aren't delegated).`,
-  );
-}
-// MQ-5: a story's branch merges only into the base, through the merge queue. Merged with git into any
-// other branch (an integration branch such as lead/next), it looks unmerged to the queue, the trail and
-// worktree cleanup, and that branch becomes a second base. A lane merging another story into its own
-// story's branch, or its base into it (MQ-3), is still its own work.
 // A merge in another checkout the command moves to lands on that checkout's branch; one in another
 // repository, or on a detached HEAD (a throwaway merge to try the branches together), lands on none.
 const branchAt = (dir) => {
@@ -420,7 +399,28 @@ const branchAt = (dir) => {
     return null;
   }
 };
-const elsewhere = storyMerges(cmd, branch, { cwd: input.cwd || project, branchAt }).find(
+const at = { cwd: input.cwd || project, branchAt };
+// Each commit or merge is judged on the branch it lands on, following the command's switches, `cd`s and
+// `git -C`s in order: switching to a protected branch after committing elsewhere writes nothing to it.
+const startsOn = branchAt(input.cwd || project) ?? (gitDir ? null : branch || null);
+const onProtected = historyWrites(cmd, startsOn, at).find(
+  (w) => config.branches.protected.includes(w.on) && !(settingUp && w.on === branch && !w.moved),
+);
+if (onProtected?.moved) {
+  block(
+    `Blocked: never commit to, merge into or move ${onProtected.on}, even by switching to it first. Work on a branch; a person merges after review${config.approvals.delegate?.merge ? ', or the lead merges a verified branch with `code-kit merge <branch> --delegated`' : ''}.\nCommand: ${cmd}`,
+  );
+}
+if (onProtected) {
+  block(
+    `Blocked: never commit or merge on ${onProtected.on}. Work on a branch; the lead merges it after review (or the person, where merges aren't delegated).`,
+  );
+}
+// MQ-5: a story's branch merges only into the base, through the merge queue. Merged with git into any
+// other branch (an integration branch such as lead/next), it looks unmerged to the queue, the trail and
+// worktree cleanup, and that branch becomes a second base. A lane merging another story into its own
+// story's branch, or its base into it (MQ-3), is still its own work.
+const elsewhere = storyMerges(cmd, startsOn, at).find(
   ({ into }) => !storyOfBranch(into) && !config.branches.protected.includes(into),
 );
 if (elsewhere) {
@@ -787,11 +787,12 @@ ${approvalHowTo(TESTS_APPROVAL, actor, root, 'weakening tests in one commit', pe
 
 // The commit hook judges what the commit holds before the command runs, so a file a command earlier in
 // the chain writes (a formatter, a script, a heredoc) can't be seen, and would go in unjudged and
-// unlogged. Before the commit, a chain may only move into the checkout, stage, and run commands that
-// only read (lib/shell.mjs readsOnly: git's status, diff, log and show among them, with no output
-// file). Errors sent into the output or /dev/null write no file.
+// unlogged. Before the commit, a chain may only move into the checkout, make a branch where it stands
+// (no start point, so no file changes), stage, and run commands that only read (lib/shell.mjs
+// readsOnly: git's status, diff, log and show among them, with no output file). Errors sent into the
+// output or /dev/null write no file.
 const BEFORE_COMMIT = new RegExp(
-  String.raw`^(?:cd\s|${GIT}(?:add|rm|mv|restore\s+--staged|reset\s+--soft)(?![\w-]))`,
+  String.raw`^(?:cd\s|${GIT}(?:add|rm|mv|restore\s+--staged|reset\s+--soft)(?![\w-])|${GIT}(?:switch\s+(?:-q\s+|--quiet\s+)*(?:-c|--create)|checkout\s+(?:-q\s+|--quiet\s+)*-b)\s+[^\s-]\S*\s*$)`,
 );
 // Setting shell variables (`f=docs/x.md`, `export MSG="…"`) writes no file, unless a value runs a
 // command. What a later `git add "$f"` stages can't be read, so it counts as every changed file.
