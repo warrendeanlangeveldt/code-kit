@@ -2,6 +2,11 @@
 
 What changed in each release of code-kit, newest first. Versions follow the plugin manifest and the npm package `@warren-dean/code-kit`. Each release is also on [GitHub Releases](https://github.com/warrendeanlangeveldt/code-kit/releases).
 
+## Unreleased
+
+- **The queue records a merge as soon as it lands.** `code-kit queue merge` now marks the branches merged the moment they're in the base, before it releases the stories' claims with the team provider and takes away the worktrees that are done with. Both can take minutes (a provider that's slow to answer, worktrees with big installs), and until now the queue showed the merged branches as still waiting all that time, or for good if the run was stopped meanwhile.
+- **Reading the approval log beside other commands.** A shell read of `.claude/approval-log.jsonl` (`tail`, `grep`, `git log` and the rest) is no longer refused because something else runs in the same line, such as `git status` or a code-kit command after a `;` or `&&`. Each command that names the log must still only read it, and a line that defines a function or alias, sets a variable or has a heredoc is still judged whole.
+
 ## 0.30.2 (2026-11-04)
 
 Fixes from how code-kit is used: fewer commits refused after commands that write nothing, the setup commit takes the person's approval of the setup, and the fix check and the merge queue see more of a project.

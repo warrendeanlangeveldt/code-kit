@@ -567,6 +567,9 @@ try {
     'git show HEAD:.claude/approval-log.jsonl 2>/dev/null | jq -c .file',
     "git diff main...HEAD -- .claude/approval-log.jsonl | sed -n '1,20p'",
     "awk -F, '{ print $1 }' .claude/approval-log.jsonl",
+    // Other commands in the line don't stop a read that only reads.
+    'grep -c spec .claude/approval-log.jsonl 2>/dev/null; node "/opt/my tools/code-kit.mjs" reconcile ST-1',
+    'python3 -c "print(1)"; tail -3 .claude/approval-log.jsonl && git status --short',
   ])
     expect(`the log may be read through the shell: ${read}`, bash(read, 'web-engineer'), 0);
   for (const write of [
@@ -581,6 +584,12 @@ try {
     'git -c core.pager=tee log -- .claude/approval-log.jsonl',
     'git diff --output=.claude/approval-log.jsonl',
     `cd ${repo} && cat .claude/approval-log.jsonl 2>&1 > /tmp/copy`,
+    'tail -3 .claude/approval-log.jsonl && echo x >> .claude/approval-log.jsonl',
+    'git status; tail .claude/approval-log.jsonl | tee x',
+    'tail(){ tee "$@"; }; tail .claude/approval-log.jsonl',
+    'export PATH=/tmp/x:$PATH; tail .claude/approval-log.jsonl',
+    'alias tail=tee; tail .claude/approval-log.jsonl',
+    "ls; python3 - <<'EOF'\nopen('.claude/approval-log.jsonl', 'a')\nEOF",
   ])
     expect(`but nothing that could write it: ${write}`, bash(write, 'web-engineer'), 2);
   expect(
@@ -4671,6 +4680,67 @@ else process.exit(2);
       truth(
         existsSync(join(z.dir, 'node_modules/dep/index.js')) &&
           !z.git('worktree', 'list').includes('code-kit-merge-'),
+      ),
+      0,
+    );
+  }
+
+  // --- MQ-1: a merge that has landed is in the queue as merged at once, before the claims are released
+  {
+    const q = newRepo(false);
+    cleanups.push(q.dir);
+    const provider = join(q.dir, '..', `${q.dir.split('/').pop()}-provider.mjs`);
+    cleanups.push(provider);
+    const released = `${provider}.released`;
+    cleanups.push(released);
+    // A team provider that answers the state at once but takes its time over releasing a claim.
+    writeFileSync(
+      provider,
+      `import { writeFileSync } from 'node:fs';
+const op = process.argv[2]; let input = ''; process.stdin.on('data', (d) => (input += d)).on('end', () => {
+  const { team } = JSON.parse(input);
+  if (op === 'release') { writeFileSync(${JSON.stringify(released)}, 'x'); setTimeout(() => console.log('{"ok":true}'), 20000); }
+  else if (op === 'state') console.log(JSON.stringify({ at: new Date().toISOString(), reachable: true, me: 'alex', techLead: team.techLead, claims: [], intents: [], pulls: [] }));
+  else console.log('{"ok":true}');
+});`,
+    );
+    mkdirSync(join(q.dir, '.claude'), { recursive: true });
+    writeFileSync(
+      join(q.dir, '.claude/code-kit.json'),
+      JSON.stringify({
+        ...JSON.parse(fixture),
+        checks: [],
+        approvals: { delegate: { merge: true } },
+        team: { techLead: 'alex', provider: { command: `node "${provider}"` } },
+      }),
+    );
+    writeFileSync(join(q.dir, '.gitignore'), '.claude/approvals/\n.claude/state/\n');
+    q.git('add', '-A');
+    q.git('commit', '-q', '-m', 'switch on code-kit');
+    q.git('checkout', '-q', '-b', 'lead/st-1');
+    mkdirSync(join(q.dir, 'docs'), { recursive: true });
+    writeFileSync(join(q.dir, 'docs/notes.md'), 'notes\n');
+    q.git('add', '-A');
+    q.git('commit', '-q', '-m', 'ST-1 notes');
+    q.git('checkout', '-q', 'main');
+    const qKit = (...args) =>
+      spawnSync('node', [kitCli, ...args], { cwd: q.dir, encoding: 'utf8' });
+    qKit('queue', 'add', 'lead/st-1');
+    const run = spawn('node', [kitCli, 'queue', 'merge', '--delegated'], {
+      cwd: q.dir,
+      stdio: 'ignore',
+    });
+    for (let i = 0; i < 300 && !existsSync(released); i++)
+      await new Promise((r) => setTimeout(r, 100));
+    const queued = JSON.parse(qKit('queue', '--json').stdout || '[]');
+    run.kill('SIGKILL');
+    expect(
+      'MQ-1 a branch that has landed is in the queue as merged while the run still releases its claim',
+      truth(
+        existsSync(released) &&
+          q.git('branch', '--merged', 'main').includes('lead/st-1') &&
+          queued.find((e) => e.branch === 'lead/st-1')?.state === 'merged',
+        JSON.stringify(queued),
       ),
       0,
     );
