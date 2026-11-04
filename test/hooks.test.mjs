@@ -2765,7 +2765,7 @@ if (a[0] === 'pr' && a[1] === 'merge') {
     // A state's own brackets keep their commas: one state, not two.
     writeFileSync(
       join(u.dir, 'docs/spec/01-access.md'),
-      '# 01. Access\n\n### ACC-1 Sign in\n\nx\n\n## Screens\n\n### Sign in\n\n**States:** default, error (wrong code, not invited)\n',
+      '# 01. Access\n\n### ACC-1 Sign in\n\nx\n\n## Screens\n\n### Sign in\n\n**States:** default, error (timed out, offline)\n',
     );
     writeFileSync(
       join(u.dir, 'docs/spec/plan.md'),
@@ -2773,7 +2773,7 @@ if (a[0] === 'pr' && a[1] === 'merge') {
     );
     const signIn = approvedDesign(u.dir, 'apps/office/app/sign-in/page.tsx', 'Sign in', [
       'default',
-      'error (wrong code, not invited)',
+      'error (timed out, offline)',
     ]);
     writeFileSync(
       join(u.dir, 'design/approved-screens.json'),

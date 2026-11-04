@@ -93,7 +93,7 @@ export const screenKey = (name) =>
     .toLowerCase();
 
 /** The states a `**States:**` line or a States cell lists, in lower case. */
-// A state's own brackets keep their commas: `error (wrong code, expired)` is one state.
+// A state's own brackets keep their commas: `error (timed out, offline)` is one state.
 const statesOf = (text) => {
   const states = [''];
   let depth = 0;
