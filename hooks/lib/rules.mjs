@@ -994,5 +994,5 @@ export function screenProblem(rel, root, config) {
       s.source?.tool ?? String(s.design ?? '').match(/^([a-z][\w-]*):/i)?.[1] ?? 'the design tool';
     return `${rel} is a screen, and its approved design${s.screen ? ` (${s.screen})` : ''} is only in ${tool}, not as files a lane can build from, so it can't be built yet.\nThe lead hands it over first with /code-kit:design --hand-over, which exports every state into design/ and rewrites its entry in ${gate.register}; then build it from those files. Until then, write a change request for the lead and work on what doesn't need the screen.`;
   }
-  return `${rel} is a screen, and its design is not approved yet.\n${gate.howTo}\nOnce a person approves it, the lead adds { "file": "${rel}", ... } to ${gate.register}.`;
+  return `${rel} is a screen, and its design is not approved yet.\n${gate.howTo}\nOnce a person approves it, the lead adds { "file": "${rel}", ... } to ${gate.register}.\nIf this file draws no screen (a file router's hook, API route or middleware), the design gate's screens are too wide: hand the lead a change request to leave it out with the screen's "not" in designGate.screens, and work on what doesn't need it meanwhile.`;
 }

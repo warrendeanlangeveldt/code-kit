@@ -476,6 +476,17 @@ try {
     'Design it first',
   );
   expect(
+    'and the refusal says what to do when the file draws no screen: the gate is too wide',
+    write('apps/field/app/(app)/hook.tsx', 'mobile-engineer'),
+    2,
+    'hand the lead a change request to leave it out with the screen\'s "not"',
+  );
+  expect(
+    "a file router's special files are left out with not",
+    write('apps/field/app/+native-intent.tsx', 'mobile-engineer'),
+    0,
+  );
+  expect(
     'layouts are not screens',
     write('apps/field/app/(app)/_layout.tsx', 'mobile-engineer'),
     0,
