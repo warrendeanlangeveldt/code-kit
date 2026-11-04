@@ -5280,6 +5280,35 @@ const op = process.argv[2]; let input = ''; process.stdin.on('data', (d) => (inp
       truth(eJson('verify', '--base', 'main', '--no-checks').found.evidence.length === 2),
       0,
     );
+    // HAND-12: a story changing a registered screen whose design story it doesn't depend on: verify
+    // asks for the review's screenshot, and designs evidence takes it for that story.
+    e.git('checkout', '-q', 'main');
+    plan(
+      'done',
+      '\n### ST-3 Bookings list, built\n\n**Lane:** web\n**Requirements:** BOOK-1\n**Depends on:** ST-1\n**Status:** todo\n\n### ST-4 Booking detail, fixed\n\n**Lane:** web\n**Requirements:** BOOK-1\n**Status:** todo\n',
+    );
+    e.git('add', '-A');
+    e.git('commit', '-q', '-m', 'ST-4 planned');
+    e.git('checkout', '-q', '-b', 'web/st-4');
+    ePut(detail.file, 'export default function Detail() { return null; }\n');
+    e.git('add', '-A');
+    e.git('commit', '-q', '-m', 'ST-4 the detail');
+    const asked = eJson('verify', '--base', 'main', '--no-checks').found.evidence;
+    expect(
+      "HAND-12 designs <story> lists a registered screen the story's branch changes",
+      truth(
+        asked.some((p) => p.includes(`code-kit designs evidence ST-4 ${detail.file} default`)) &&
+          eKit('designs', 'ST-4').stdout.includes(detail.file),
+        JSON.stringify(asked),
+      ),
+      0,
+    );
+    expect(
+      'HAND-12 and designs evidence records the screenshot verify asks for',
+      eKit('designs', 'evidence', 'ST-4', detail.file, 'default', shot),
+      0,
+    );
+    e.git('checkout', '-q', 'web/st-3');
     // CI: the review's records are the lead's, so a clone without them says it didn't check.
     const ci = mkdtempSync(join(tmpdir(), 'code-kit-ci-'));
     cleanups.push(ci);
