@@ -334,6 +334,13 @@ try {
     write('.claude/state/spec-check/lane_work.md', 'db-engineer'),
     0,
   );
+  put('.claude/state/spec-check/lane_work.md', '| Req | Status |\n');
+  expect(
+    'a report without the requirement table says which header the gate looks for',
+    write('supabase/migrations/1_x.sql', 'db-engineer'),
+    2,
+    "has no requirement table: the gate looks for the table's header row, which starts `| Requirement |`",
+  );
   put('.claude/state/spec-check/lane_work.md', '| Requirement | Status |\n');
   expect(
     'lane writes its paths after spec-check',
@@ -556,6 +563,17 @@ try {
     'Skipping git hooks',
   );
   expect('new JS dependency blocked', bash('pnpm --filter office add lodash'), 2);
+  expect(
+    "the project's own workspace packages are no new dependency",
+    bash("pnpm --filter office add '@acme/ui@workspace:*' @acme/core@workspace:^ 2>&1 | tail -3"),
+    0,
+  );
+  expect(
+    'beside a registry package, which still needs its approval',
+    bash("pnpm --filter office add '@acme/ui@workspace:*' lodash@4"),
+    2,
+    'a new dependency (lodash)',
+  );
   expect('new Python dependency blocked', bash('pip install requests'), 2);
   expect(
     'installing from a requirements file is not new',
@@ -875,6 +893,13 @@ try {
     0,
   );
   expect(
+    'and after making folders, taking away a worktree and unstaging paths, which change no file it takes',
+    bash(
+      'mkdir -p .claude/state/reports && git worktree remove --force /tmp/elsewhere; git worktree prune; git reset -q notes.txt && git reset HEAD -- other.txt; git reset -q && git add notes.txt && git commit -m x',
+    ),
+    0,
+  );
+  expect(
     'and after staging with its errors sent away',
     bash('git add -A notes.txt 2>/dev/null; git add notes.txt 2>&1 && git commit -m x'),
     0,
@@ -886,6 +911,9 @@ try {
     ['an interpreter', 'node -e "1" && git commit -m x'],
     ['staging into a file', 'git add notes.txt > out.txt && git commit -m x'],
     ['a branch it creates', 'git branch next && git commit -m x'],
+    ['a reset that moves HEAD', 'git reset -q main && git commit -m x'],
+    ['a reset of the working tree', 'git reset --hard && git commit -m x'],
+    ['a folder made with a file in it', 'mkdir -p d > d/x && git commit -m x'],
     ['a diff written to a file', 'git diff --output=patch.txt && git commit -m x'],
     ['a variable set from a command', 'f=$(node -e "1") && git commit -m x'],
     ['a variable set from a backtick command', 'f=`node -e 1`; git commit -m x'],
@@ -5280,6 +5308,35 @@ const op = process.argv[2]; let input = ''; process.stdin.on('data', (d) => (inp
       truth(eJson('verify', '--base', 'main', '--no-checks').found.evidence.length === 2),
       0,
     );
+    // HAND-12: a story changing a registered screen whose design story it doesn't depend on: verify
+    // asks for the review's screenshot, and designs evidence takes it for that story.
+    e.git('checkout', '-q', 'main');
+    plan(
+      'done',
+      '\n### ST-3 Bookings list, built\n\n**Lane:** web\n**Requirements:** BOOK-1\n**Depends on:** ST-1\n**Status:** todo\n\n### ST-4 Booking detail, fixed\n\n**Lane:** web\n**Requirements:** BOOK-1\n**Status:** todo\n',
+    );
+    e.git('add', '-A');
+    e.git('commit', '-q', '-m', 'ST-4 planned');
+    e.git('checkout', '-q', '-b', 'web/st-4');
+    ePut(detail.file, 'export default function Detail() { return null; }\n');
+    e.git('add', '-A');
+    e.git('commit', '-q', '-m', 'ST-4 the detail');
+    const asked = eJson('verify', '--base', 'main', '--no-checks').found.evidence;
+    expect(
+      "HAND-12 designs <story> lists a registered screen the story's branch changes",
+      truth(
+        asked.some((p) => p.includes(`code-kit designs evidence ST-4 ${detail.file} default`)) &&
+          eKit('designs', 'ST-4').stdout.includes(detail.file),
+        JSON.stringify(asked),
+      ),
+      0,
+    );
+    expect(
+      'HAND-12 and designs evidence records the screenshot verify asks for',
+      eKit('designs', 'evidence', 'ST-4', detail.file, 'default', shot),
+      0,
+    );
+    e.git('checkout', '-q', 'web/st-3');
     // CI: the review's records are the lead's, so a clone without them says it didn't check.
     const ci = mkdtempSync(join(tmpdir(), 'code-kit-ci-'));
     cleanups.push(ci);
@@ -5366,6 +5423,23 @@ const op = process.argv[2]; let input = ''; process.stdin.on('data', (d) => (inp
           existsSync(join(z.dir, 'apps/office/callers-updated')) &&
           JSON.parse(zKit('queue', '--json').stdout).every((e) => e.state === 'merged'),
         together.stdout + together.stderr,
+      ),
+      0,
+    );
+    for (const b of ['web/st-23', 'web/st-24', 'web/st-25']) {
+      z.git('checkout', '-q', '-b', b, 'main');
+      writeFileSync(join(z.dir, `apps/office/${b.slice(4)}`), 'x\n');
+      z.git('add', '-A');
+      z.git('commit', '-q', '-m', b);
+    }
+    z.git('checkout', '-q', 'main');
+    const several = zKit('queue', 'add', 'web/st-23', '--with', 'web/st-24', '--with', 'web/st-25');
+    expect(
+      'MQ-7 every --with given joins the group, not only the first',
+      truth(
+        several.stdout.includes('merges together with web/st-24, web/st-25') &&
+          JSON.parse(zKit('queue', '--json').stdout).length === 3,
+        several.stdout + several.stderr,
       ),
       0,
     );

@@ -964,11 +964,18 @@ function specCheckProblem(rel, root) {
   }
   if (rel === report) return null;
   // In the worktree, or in the main checkout, where it's kept when a worktree goes (#55).
+  // A report without the table is named as such: the lane wrote one, and only its table is missing.
+  let untabled = false;
   const read = (dir) => {
     const file = join(dir, report);
-    return existsSync(file) && /\|\s*Requirement\s*\|/i.test(readFileSync(file, 'utf8'));
+    if (!existsSync(file)) return false;
+    if (/\|\s*Requirement\s*\|/i.test(readFileSync(file, 'utf8'))) return true;
+    untabled = true;
+    return false;
   };
   if (read(root) || read(projectWorktrees(root)[0] ?? root)) return null;
+  if (untabled)
+    return `${report} has no requirement table: the gate looks for the table's header row, which starts \`| Requirement |\` (that word, not an abbreviation), as the spec-check skill writes it. Rewrite the table with that header, one row per requirement, then continue.`;
   return `Run the spec-check skill before writing code on this branch. Save its report (the requirement table, questions and recommendation) to ${report}, then continue.`;
 }
 

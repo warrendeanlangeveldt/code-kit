@@ -301,7 +301,9 @@ const storyGiven = option('--story');
 const whyGiven = option('--why');
 const needsGiven = option('--needs');
 const whatGiven = option('--what');
-const withGiven = option('--with');
+// `--with a --with b` and `--with a,b` alike.
+const withsGiven = [];
+for (let o = option('--with'); o !== undefined; o = option('--with')) withsGiven.push(o);
 const untilGiven = option('--until');
 const expectedGiven = option('--expected');
 const commandGiven = option('--command');
@@ -1165,8 +1167,8 @@ function queue() {
     // The commit the review passed: the queue merges exactly it, and a branch that moves is reviewed again.
     const added = enqueue(root, branch, commit);
     // MQ-7: branches that only land together.
-    const partnersGiven = (withGiven ?? '')
-      .split(/[\s,]+/)
+    const partnersGiven = withsGiven
+      .flatMap((w) => w.split(/[\s,]+/))
       .filter(Boolean)
       .filter((b) => b !== branch);
     if (partnersGiven.length) setPartners(root, branch, partnersGiven);
@@ -3255,6 +3257,23 @@ function standardsCommand() {
 }
 
 /**
+ * HAND-12: the approved designs a story's screens are built from: its own entries and its design
+ * stories' (designsFor), and every registered screen its branch changes, which verify and the merge
+ * queue ask the review's evidence for whichever design story the entry names.
+ */
+function storyDesigns(root, config, entries, storyId, stories) {
+  const own = designsFor(entries, storyId, stories);
+  const story = stories.find((s) => s.id.toLowerCase() === String(storyId).toLowerCase());
+  const branch = story ? `${story.lane}/${story.id.toLowerCase()}` : storyId;
+  const base = config.branches.protected[0];
+  const diff = spawnSync('git', ['-C', root, 'diff', '--name-only', `${base}...${branch}`], {
+    encoding: 'utf8',
+  });
+  const changed = new Set(diff.status === 0 ? diff.stdout.split('\n').filter(Boolean) : []);
+  return [...own, ...entries.filter((e) => changed.has(e.file) && !own.includes(e))];
+}
+
+/**
  * HAND-3, HAND-5: the approved designs, from the design register. `designs <story>` gives the designs a
  * story's screens are built from (its own entries and its design stories'), each state's files and
  * viewport, for the lane's brief; `designs` lists every entry and what's wrong with it.
@@ -3268,11 +3287,13 @@ function designsCommand() {
   if (rest[0] === 'evidence') return designEvidence(root, config, entries);
   const story = rest[0];
   const stories = config.docs?.plan ? readStories(root, config.docs.plan) : [];
-  const shown = (story ? designsFor(entries, story, stories) : entries).map((e) => ({
-    ...e,
-    handedOver: handedOver(e),
-    problems: entryProblems(root, e, config.docs?.specs),
-  }));
+  const shown = (story ? storyDesigns(root, config, entries, story, stories) : entries).map(
+    (e) => ({
+      ...e,
+      handedOver: handedOver(e),
+      problems: entryProblems(root, e, config.docs?.specs),
+    }),
+  );
   if (flag('--json')) return out(JSON.stringify(shown, null, 2));
   if (!shown.length)
     return out(
@@ -3316,7 +3337,9 @@ function designEvidence(root, config, entries) {
     die(
       `${storyArg} has no branch here (${branch}): name the story whose branch you reviewed, or its branch.`,
     );
-  const designs = (story ? designsFor(entries, story.id, stories) : entries).filter(handedOver);
+  const designs = (story ? storyDesigns(root, config, entries, story.id, stories) : entries).filter(
+    handedOver,
+  );
   const key = (v) =>
     String(v ?? '')
       .trim()
