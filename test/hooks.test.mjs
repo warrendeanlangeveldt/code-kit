@@ -12,6 +12,7 @@ import {
   readFileSync,
   realpathSync,
   rmSync,
+  symlinkSync,
   utimesSync,
   writeFileSync,
 } from 'node:fs';
@@ -904,7 +905,34 @@ try {
     bash('git add -A notes.txt 2>/dev/null; git add notes.txt 2>&1 && git commit -m x'),
     0,
   );
+  // A commit message drafted outside the checkout (a session's scratchpad) can't go into the commit.
+  const scratch = mkdtempSync(join(tmpdir(), 'code-kit-scratch-'));
+  cleanups.push(scratch);
+  const msg = join(scratch, 'msg.txt');
+  symlinkSync(repo, join(scratch, 'back'));
+  expect(
+    'and after writing and editing files outside the checkout',
+    bash(
+      `git log -1 --format=%B > ${msg} && sed -i '' 's/a \\/ b/c/g; s|x|y|' "${msg}" && cat > ${scratch}/new/n.txt <<'EOF'\nnote\nEOF\ngit commit -q --amend -F ${msg}`,
+    ),
+    0,
+  );
   for (const [what, command] of [
+    [
+      'a redirect into the checkout by its full path',
+      `echo x > ${repo}/notes.txt && git commit -m x`,
+    ],
+    [
+      'a redirect through a link into the checkout',
+      `echo x > ${scratch}/back/n.txt && git commit -m x`,
+    ],
+    [
+      'an in-place sed on a file outside and one inside',
+      `sed -i '' 's/a/b/' ${msg} notes.txt && git commit -m x`,
+    ],
+    ['a sed outside that writes a file', `sed -i '' 's/a/b/w notes.txt' ${msg} && git commit -m x`],
+    ['a redirect outside from a command that writes', `node -e 1 > ${msg} && git commit -m x`],
+    ['a redirect to a path from a variable', 'echo x > "$OUT/m.txt" && git commit -m x'],
     ['an in-place sed', `sed -i '' 's/a/b/' notes.txt && git commit -m x`],
     ['a redirect into a file', 'cat notes.txt >> other.txt && git commit -m x'],
     ['a heredoc into a file', "cat > notes.txt <<'EOF'\nnew\nEOF\ngit add -A && git commit -m x"],
