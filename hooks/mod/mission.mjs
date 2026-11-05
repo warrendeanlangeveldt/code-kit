@@ -23,6 +23,7 @@ export function nextText(step) {
   if (!step) return null;
   if (step.step === 'done') return 'nothing: every story is done';
   if (step.step === 'wait') return `waiting: ${step.why}`;
+  if (step.step === 'working') return `the lead's: ${step.lead?.step ?? 'its next step'}`;
   const then = (step.then ?? []).map((t) => stepLabel(t));
   const label = ['spec-design', 'init', 'check'].includes(step.step)
     ? `${step.step} (yours to run)`

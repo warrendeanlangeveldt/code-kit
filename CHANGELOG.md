@@ -2,6 +2,10 @@
 
 What changed in each release of code-kit, newest first. Versions follow the plugin manifest and the npm package `@warren-dean/code-kit`. Each release is also on [GitHub Releases](https://github.com/warrendeanlangeveldt/code-kit/releases).
 
+## Unreleased
+
+- **`next` in a working session says whose step it is.** When another session leads the project, `code-kit next` and `/code-kit:next` handed a working session the lead's step, such as a dispatch. The session went on to write the lead's contracts and was refused at every edit. It now gets the step `working`: which session leads and what its next step is, and what this session does instead (a task of its own, recorded with `code-kit task`, in a worktree of its own).
+
 ## 0.31.0 (2026-11-05)
 
 - **The project's own workspace packages are no new dependency.** `pnpm add @scope/pkg@workspace:*` (and `link:`, `file:` and `portal:` specs) adds one of the project's own packages, from no registry, but was refused as a new dependency that needs an approval. A registry package in the same command still needs its own.
