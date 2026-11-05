@@ -9994,6 +9994,42 @@ else process.exit(1);
       1,
       'still at work on web/st-2',
     );
+    // An act its agent is in the middle of, in a live session, holds the worktree too.
+    const { startSession: liveSession } = await import('../hooks/lib/sessions.mjs');
+    liveSession(t.dir, 's1');
+    const open = (ago) => JSON.stringify({ ...JSON.parse(act('run', 'start', ago)), act: 't1' });
+    writeFileSync(join(events, 'ST-2.jsonl'), `${open(60_000)}\n`);
+    expect(
+      'a worktree whose lane agent is in the middle of an act is never released',
+      tCli('worktrees', 'release', 'web/st-2'),
+      1,
+      'still at work on web/st-2',
+    );
+    // But an act left open by an agent that was stopped mid-call doesn't hold it for good: once code-kit
+    // has reconciled the act, or the act is older than the stall restart, the agent isn't at work.
+    const reconciled = JSON.stringify({
+      at: new Date().toISOString(),
+      story: 'ST-2',
+      actor: 'code-kit',
+      kind: 'reconciled',
+      target: 't1',
+      phase: 'note',
+      branch: 'web/st-2',
+    });
+    for (const [what, log] of [
+      ['once code-kit has reconciled it', `${open(60_000)}\n${reconciled}\n`],
+      ['once it is older than the stall restart', `${open(30 * 60_000)}\n`],
+    ]) {
+      writeFileSync(join(events, 'ST-2.jsonl'), log);
+      expect(
+        `an act left open by a stopped agent stops holding its worktree ${what}`,
+        truth(
+          tCli('worktrees', 'release', 'web/st-2').status === 0 && !existsSync(tree('web/st-2')),
+        ),
+        0,
+      );
+      t.git('worktree', 'add', '-q', tree('web/st-2'), 'web/st-2');
+    }
     // The lead's reviewer, still polling for verify on the story, isn't the lane's agent at work.
     const helper = JSON.stringify({
       at: new Date(Date.now() - 10_000).toISOString(),
