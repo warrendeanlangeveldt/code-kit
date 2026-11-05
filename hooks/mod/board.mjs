@@ -719,13 +719,9 @@ export function board(view, els, on) {
     ],
   });
 
-  // --- Needs you (UI-3) ---
-  const openAt = Math.min(
-    Math.max(0, sel?.kind === 'need' ? Number(sel.id) : (ui.need ?? 0)),
-    Math.max(0, needs.length - 1),
-  );
-  const buttonsOf = (line) =>
-    line.actions.map((a) =>
+  // A need's own buttons, and a decision's Decide…, where a line has room for them (the inline layout).
+  const buttonsOf = (line) => [
+    ...line.actions.map((a) =>
       Button({
         key: `need-${a.id}`,
         label: a.hotkey ? `${a.hotkey} ${a.label}` : a.label,
@@ -733,7 +729,23 @@ export function board(view, els, on) {
         variant: isNote(line) ? undefined : 'primary',
         onPress: () => on.onNeed(a.id, line),
       }),
-    );
+    ),
+    ...(isNote(line)
+      ? []
+      : [
+          Button({
+            key: 'need-decide',
+            label: 'Decide…',
+            hotkey: 'd',
+            plain: true,
+            onPress: () => on.onDecide(0, line),
+          }),
+        ]),
+  ];
+
+  // --- Needs you (UI-3, DECIDE-5) ---
+  // One line each, the same height whichever is chosen, so the list never jumps: a decision opens in the
+  // Decide pane, all of it; a note keeps its own buttons on its line.
   const needsPanel = needs.length
     ? Box({
         key: 'panel-needs',
@@ -748,54 +760,7 @@ export function board(view, els, on) {
           ),
           ...needs.map((line, i) => {
             const chosen = sel?.kind === 'need' && Number(sel.id) === i;
-            if (i === openAt)
-              return Box({
-                key: `need-open`,
-                flexDirection: 'column',
-                borderStyle: 'round',
-                borderColor: isNote(line) ? 'gray' : 'yellow',
-                paddingX: 1,
-                children: [
-                  Box({
-                    flexDirection: 'row',
-                    columnGap: 1,
-                    children: [
-                      text(needWord(line), {
-                        color: isNote(line) ? undefined : 'yellow',
-                        dimColor: isNote(line),
-                      }),
-                      Box({
-                        flexShrink: 1,
-                        children: [text(line.text, { bold: true, wrap: 'wrap' })],
-                      }),
-                    ],
-                  }),
-                  ...(line.context
-                    ? [text(line.context, { dimColor: true, wrap: 'truncate-end' })]
-                    : []),
-                  Box({
-                    key: 'need-buttons',
-                    flexDirection: 'row',
-                    columnGap: 1,
-                    flexWrap: 'wrap',
-                    children: [
-                      ...buttonsOf(line),
-                      ...(isNote(line)
-                        ? []
-                        : [
-                            Button({
-                              key: 'need-why',
-                              label: 'Why…',
-                              plain: true,
-                              ...(chosen ? { autoFocus: true } : {}),
-                              onPress: () => on.onDecide(i, line),
-                            }),
-                          ]),
-                    ],
-                  }),
-                ],
-              });
-            // One line each: what it is (pressed to open it in its place), then its words, cut to fit.
+            const note = isNote(line);
             return Box({
               key: `need-row-${i}`,
               flexDirection: 'row',
@@ -805,18 +770,29 @@ export function board(view, els, on) {
                   key: `need-line-${i}`,
                   label: `${chosen ? '›' : ' '} ${needWord(line)}`,
                   plain: true,
-                  ...(isNote(line) ? { dimColor: true } : {}),
-                  onPress: () => on.onSelect({ kind: 'need', id: String(i) }),
+                  ...(note ? { dimColor: true } : { color: 'yellow' }),
+                  onPress: () =>
+                    note ? on.onSelect({ kind: 'need', id: String(i) }) : on.onDecide(i, line),
                 }),
                 Box({
                   flexShrink: 1,
                   children: [
                     text(line.text, {
                       wrap: 'truncate-end',
-                      ...(isNote(line) ? { dimColor: true } : {}),
+                      ...(note ? { dimColor: true } : chosen ? { bold: true } : {}),
                     }),
                   ],
                 }),
+                ...(note
+                  ? line.actions.map((a) =>
+                      Button({
+                        key: `need-${i}-${a.id}`,
+                        label: a.label,
+                        plain: true,
+                        onPress: () => on.onNeed(a.id, line),
+                      }),
+                    )
+                  : []),
               ],
             });
           }),
@@ -1137,7 +1113,7 @@ export function board(view, els, on) {
   // The rows the cards have: the pane's, less what the other panels and the keys take, and the
   // gaps between them; in the wide layout, the Lanes column's, under Build.
   const buildRows = (progress ? 4 : 3) + (state.planGaps ? 1 : 0);
-  const needsRows = needs.length ? 1 + 4 + (needs[openAt]?.context ? 1 : 0) + needs.length - 1 : 0;
+  const needsRows = needs.length ? 1 + needs.length : 0;
   const queueRows = open.length ? 1 + open.length + settled.length : 0;
   const logRows = 1 + log.length;
   const panels = 3 + (needs.length ? 1 : 0) + (open.length ? 1 : 0);
@@ -1434,6 +1410,7 @@ export function board(view, els, on) {
                 key: 'inline-need',
                 flexDirection: 'row',
                 columnGap: 1,
+                flexWrap: 'wrap',
                 children: [
                   Box({
                     flexShrink: 1,
@@ -1561,7 +1538,7 @@ export function bandOf(view, els, onAction) {
               : [
                   Button({
                     key: 'band-decide',
-                    label: columns < 60 ? 'Why…' : 'Why, and what each choice does',
+                    label: 'Decide…',
                     hotkey: 'd',
                     plain: true,
                     onPress: () => onAction('decide', first),

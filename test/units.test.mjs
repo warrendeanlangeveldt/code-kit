@@ -679,6 +679,16 @@ test('NOTIFY-1 only decisions new since the last look are notified, headed by wh
   assert.deepEqual(newDecisions(cards, new Set(cards.map(decisionKey))), []);
 });
 
+test('DECIDE-5 a card keeps its key across refreshes, and the Decide pane shows the one in its place', async () => {
+  const { cardToDecide } = await import('../hooks/mod/panes.mjs');
+  const cards = [{ key: 'question|A?' }, { key: 'question|B?' }, { key: 'brief|C?' }];
+  assert.equal(cardToDecide(cards, { key: 'question|B?', at: 0 }), 1);
+  // Answered, it goes: the one now where it was is shown, or the last.
+  assert.equal(cardToDecide([cards[0], cards[2]], { key: 'question|B?', at: 1 }), 1);
+  assert.equal(cardToDecide([cards[0]], { key: 'brief|C?', at: 2 }), 0);
+  assert.equal(cardToDecide([], { key: 'brief|C?' }), null);
+});
+
 test("LEAN-3 a milestone done is one whose every story is done, and the summary keeps what's in flight", () => {
   const stories = [
     { id: 'ST-1', milestone: 'M0', state: 'done' },
@@ -830,25 +840,6 @@ test("LOOP-8 and WHO-4 a step the lead didn't take is a note in the band, not a 
   assert.ok(
     notes.some((l) => l.text === 'web stalled 3 times on ST-4: the lead decides how it goes on'),
   );
-  const { nativeChoice } = await import('../hooks/mod/decisions.mjs');
-  // What the person stopped, or a reply with no question in it, isn't asked over their typing.
-  for (const waiting of [{ kind: 'stopped' }, { kind: 'person', reason: 'r' }]) {
-    const [c] = decisionCards(
-      bandLines({ state, requests: { open: [] }, stops: [], loop: { state: 'running', waiting } }),
-      { state },
-    );
-    assert.equal(nativeChoice(c), null);
-  }
-  // An approval needs a reason typed in its pane: never the dialog.
-  const [approval] = decisionCards(
-    bandLines({
-      state,
-      requests: { open: [{ lane: 'web', names: ['dep-x'], what: 'npm install x' }] },
-      stops: [],
-    }),
-    { state },
-  );
-  assert.equal(nativeChoice(approval), null);
 });
 
 test('the mod: BAND-2 and BAND-4, the band lines and their hotkeys, and ACT-1 the prefilled reason', () => {
@@ -3493,7 +3484,7 @@ test('UI-13 nothing in the pane spills past its box, docked, inline or on Deskto
 
 test('UI-13 nothing in the full views spills past its box at every width from 24 to 120', async () => {
   const { sheetView, viewFrame } = await import('../hooks/mod/board.mjs');
-  const { journalTab, decisionsTab, mapTab, codeTab, storyPane } =
+  const { journalTab, decidePane, mapTab, codeTab, storyPane } =
     await import('../hooks/mod/panes.mjs');
   const { decisionCards } = await import('../hooks/mod/decisions.mjs');
   const { state, needs } = await busyProject();
@@ -3557,7 +3548,7 @@ test('UI-13 nothing in the full views spills past its box at every width from 24
         drawing,
         0,
       ),
-    decision: () => decisionsTab(cards, { decision: 0 }, drawing, {}),
+    decision: () => decidePane(cards, { key: cards[0]?.key }, drawing, {}),
     trail: (columns) =>
       mapTab({ requirements }, 'BOOK-3', drawing, {}, trail, { surface: 'terminal', columns }),
     code: (columns) =>

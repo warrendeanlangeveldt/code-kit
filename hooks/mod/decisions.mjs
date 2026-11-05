@@ -291,6 +291,26 @@ function storyOf(line, state) {
 }
 
 /**
+ * DECIDE-5: what an answer typed in the person's own words answers, for the cards that take one: the
+ * lead's question, one open in the brief, or what the lead's last reply waits on. Null for the rest.
+ */
+function typedOf(line, story) {
+  if (line.kind === 'question')
+    return { kind: 'question', ...line.question, story: line.question.story ?? story?.id ?? null };
+  if (line.kind === 'brief') return { kind: 'brief', ...line.brief };
+  if (line.kind === 'waiting' && line.waiting?.kind === 'person' && line.waiting.question)
+    return {
+      kind: 'lead',
+      question: line.waiting.question,
+      options: line.waiting.options ?? [],
+    };
+  return null;
+}
+
+/** DECIDE-5: the options a typed answer stands in for: Answer… and Something else…, which open no box now. */
+export const TYPED_OPTIONS = new Set(['answer', 'answerBrief', 'answerLeadText']);
+
+/**
  * DECIDE-2: a card for each line that needs the person, in the band's order: { id, kind, title, asked,
  * story, requirements, doing, settled, why, options }. `context`: { state, status (for requirement
  * titles), check, goal (the milestone), request (what the person asked for), journal (events),
@@ -320,9 +340,14 @@ export function decisionCards(lines, context = {}) {
       const { headline, sub } = headlineOf(line, story);
       return {
         id: `${line.kind}-${i}`,
+        // DECIDE-5: what the card is about, the same across refreshes, so the one in view stays in view.
+        key: `${line.kind}|${String(headline).replace(/\s+/g, ' ').trim()}`,
         kind: line.kind,
         tag: TAG[line.kind] ?? 'decision',
         headline: clip(headline, 100),
+        // DECIDE-5: the whole of it, never cut, for the Decide pane.
+        full: String(headline).replace(/\s+/g, ' ').trim(),
+        typed: typedOf(line, story),
         sub,
         line,
         // The band line it came from: one line can stand for several decisions (CARD-8).
@@ -391,56 +416,8 @@ export function contextOf(card) {
   return `for ${card.story.id} ${card.story.title}${reqs ? ` (${reqs})` : ''}`;
 }
 
-/** DECIDE-4: the kinds of decision settled with a choice, asked in Claude Code's own question dialog. */
-export const NATIVE_KINDS = new Set(['proposal', 'teamStale', 'question', 'waiting']);
-
-/** One sentence ended as a question asks. */
-const asked = (text, question) => `${String(text).replace(/[.\s]+$/, '')}. ${question}`;
-
-/**
- * DECIDE-4: a decision card as Claude Code's question dialog asks it: { key, question, header, options:
- * [{ label, act, line }], typed }, or null for one that needs the pane (a reason to give, an answer to
- * type with no choices offered). An option without `act` leaves the decision where it is; `typed` names
- * the act that takes the person's own words, typed under the dialog's Other.
- */
-export function nativeChoice(card) {
-  if (!NATIVE_KINDS.has(card.kind)) return null;
-  const line = card.line;
-  const w = line.waiting;
-  // What the person stopped, or a reply waiting on them with no question in it, is theirs to pick up
-  // in the chat: no dialog over what they're about to type.
-  if (card.kind === 'waiting' && !(w?.kind === 'person' && w.question) && w?.kind !== 'blocked')
-    return null;
-  const options = card.options
-    .filter((o) => !o.label.endsWith('…'))
-    .slice(0, 4)
-    .map((o) => ({ label: o.label, act: o.act ?? o.id, line: o.line ?? line }));
-  if (!options.length) return null;
-  if (options.length === 1) options.push({ label: 'Not now', act: null, line });
-  const question =
-    card.kind === 'proposal' && line.proposal?.first
-      ? asked(line.text, 'How much should it do on its own?')
-      : card.kind === 'proposal' && line.proposal?.repeated
-        ? `${card.why} ${line.text}`
-        : card.kind === 'stalled'
-          ? asked(`${line.text}. ${card.why}`, 'Restart it?')
-          : card.kind === 'teamStale'
-            ? asked(line.text, 'Keep your claim?')
-            : card.kind === 'waiting' && w.kind === 'blocked'
-              ? asked(line.text, 'Ask the lead again?')
-              : card.headline;
-  return {
-    key: `${card.kind}:${card.headline}:${options.map((o) => o.label).join('|')}`,
-    question: /\?$/.test(question) ? question : `${question}?`,
-    header: card.tag.slice(0, 12),
-    options,
-    typed:
-      card.kind === 'question' ? 'answerTyped' : card.kind === 'waiting' ? 'answerLeadTyped' : null,
-  };
-}
-
 /** NOTIFY-1: a decision's identity across refreshes: its kind and what it asks. */
-export const decisionKey = (card) => `${card.kind}|${card.headline}`;
+export const decisionKey = (card) => card.key ?? `${card.kind}|${card.headline}`;
 
 /**
  * NOTIFY-1: the decisions that weren't waiting at the last look, each as a system notification: what it

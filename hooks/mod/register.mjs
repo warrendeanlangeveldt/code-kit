@@ -8,7 +8,7 @@
 // the lead to review, and merging (`merge --person`). No agent reaches those: they are the mod's own
 // buttons, and the hooks refuse both commands from every agent.
 import {
-  ANSWER_ID,
+  DECIDE_ID,
   APPROVE_ID,
   NOT_CODE_KIT,
   PANE_ID,
@@ -19,7 +19,6 @@ import {
   agentsAtWork,
   shownState,
   attribution,
-  answerPane,
   approvalAsidePrompt,
   approvePane,
   questionAsidePrompt,
@@ -46,7 +45,8 @@ import { axisStart, barCells } from './art.mjs';
 import {
   SENDBACK_ID,
   codeTab,
-  decisionsTab,
+  cardToDecide,
+  decidePane,
   journalTab,
   laneActions,
   liveLevel,
@@ -100,7 +100,7 @@ import {
   withoutInFlight,
 } from './loop.mjs';
 import { goalOf, nextText } from './mission.mjs';
-import { contextOf, decisionCards, decisionKey, nativeChoice, newDecisions } from './decisions.mjs';
+import { contextOf, decisionCards, decisionKey, newDecisions } from './decisions.mjs';
 import { DEFAULT_TEAM_UI, TEAM_ID, teamFrame } from './teamview.mjs';
 import { glowOf, mapStoryOf, touchOf } from './codemap.mjs';
 import { harnessSettings } from '../lib/harness.mjs';
@@ -139,7 +139,10 @@ const held = new Map(); // tool_use_id → a call held for the person (HOLD-2)
 const denied = new Map(); // tool_use_id → a call Claude Code's own permission check refused (PERM-1)
 const briefLater = new Set(); // the brief's questions the person put off this session (ASK-4)
 const worktreesKept = new Set(); // merged worktrees the person chose to keep this session (LEAN-8)
-let answering = null; // the open Answer… box: { kind: 'question' | 'brief', question, id?, path?, text, error }
+// DECIDE-5: the Decide pane's decision, by its card's key, and the person's own words there:
+// { key, at, typing: { text, error, aside } }; null while it's closed.
+let deciding = null;
+const freshTyping = () => ({ text: '', error: null, aside: { thread: [], draft: '' } });
 let where = null; // { cli, cwd, interactive }, from session start
 // The lead loop (spec 05): what it did, and what it waits on.
 const loop = {
@@ -182,8 +185,7 @@ const LEASE_RENEW_MS = 30000;
 // LOOP-11: the lead's last reply, read once before the loop next prompts it: { turnId, text, aborted, sent, read }
 let lastReply = null;
 let turnQuestions = []; // the open questions as the lead's running turn started
-// DECIDE-4: decisions asked in Claude Code's own question dialog this session, and whether one is open.
-const offered = new Set();
+// LEAN-3: whether Claude Code's question dialog is open on the milestone's compaction.
 let offering = false;
 // NOTIFY-1: the decisions waiting at the last look, by key; null until the first look.
 let notified = null;
@@ -519,11 +521,11 @@ export function register(on) {
         if (teamUi.tab === 'activity' && model.check?.team && !teamSince)
           teamSince = (await json('team', 'since')) ?? { people: {} };
         // JOURNAL-1, DECIDE-2: the lineage, for the Journal tab and the decisions' cards.
-        const deciding = held.size > 0 || (model.requests?.open ?? []).length > 0;
-        // UI-5: the Log reads it whenever the pane is open.
+        const asking = held.size > 0 || (model.requests?.open ?? []).length > 0;
+        // UI-5: the Log reads it whenever the pane is open; DECIDE-5: and the Decide pane's lineage.
         if (
           model.check?.docs?.plan &&
-          (paneOpen || ['journal', 'decision'].includes(paneUi.view) || deciding)
+          (paneOpen || paneUi.view === 'journal' || asking || deciding)
         )
           journalData = (await json('journal')) ?? journalData;
       },
@@ -683,9 +685,16 @@ export function register(on) {
           usage: 'usage',
           characters: 'characters',
         };
+        // DECIDE-5: /lanes decide opens the Decide pane on the first decision waiting.
+        if (asked === 'decide') {
+          const [first] = cardsNow(await $.clock.now());
+          if (!first) return { text: 'Nothing needs you now.' };
+          await act.decide(first.line);
+          return {};
+        }
         if (asked && !views[asked])
           return {
-            text: `/lanes ${asked} isn't a view: try /lanes, or /lanes trail, map, journal, usage or characters.`,
+            text: `/lanes ${asked} isn't a view: try /lanes, or /lanes decide, trail, map, journal, usage or characters.`,
           };
         // Asked, not remembered: the person may have closed it with Escape.
         const isOpen = (await $.ui.panes()).some((p) => p.id === PANE_ID);
@@ -722,24 +731,89 @@ export function register(on) {
         return {};
       },
       // DECIDE-3: the Decisions tab, on the decision the person asked about.
+      // DECIDE-5: the Decide pane, on the card of the very line chosen (one of several a band line stands
+      // for, or the band line itself), else the first of its kind.
       decide: async (line) => {
         const cards = cardsNow(await $.clock.now());
-        // UI-3: the card of the very line chosen, else the first of its kind.
         const exact = cards.findIndex(
-          (c) => c.source?.kind === line?.kind && c.source?.text === line?.text,
+          (c) =>
+            (c.line?.kind === line?.kind && c.line?.text === line?.text) ||
+            (c.source?.kind === line?.kind && c.source?.text === line?.text),
         );
         const at = Math.max(
           0,
           exact >= 0 ? exact : cards.findIndex((c) => c.line.kind === line?.kind),
         );
-        paneUi = { ...paneUi, view: 'decision', decision: at };
-        storyOpen = null;
-        if (!(await $.ui.panes()).some((p) => p.id === PANE_ID))
-          await $.ui.open({ id: PANE_ID, title: 'Lanes', focus: true, closeOnEscape: true });
+        deciding = { key: cards[at]?.key ?? null, at, typing: freshTyping() };
+        await $.ui.open({ id: DECIDE_ID, title: 'Decide', focus: true, closeOnEscape: true });
         $.ui.invalidate('ui.render');
-        await act.readMaps();
+        // DECIDE-2: the lineage (what the person asked for, what's settled) is read with the pane open.
+        await act.reload();
         $.ui.invalidate('ui.render');
         return {};
+      },
+      // DECIDE-5: n and p, to the next decision and the one before.
+      decideMove: (key, at) => {
+        deciding = { key, at, typing: freshTyping() };
+        $.ui.invalidate('ui.render');
+      },
+      // DECIDE-5: an option pressed in the Decide pane. Once it's settled the pane shows the decision now in
+      // its place; one that opens a box of its own (Approve…) leaves the pane where it is behind it.
+      decideOption: async (option, card) => {
+        await act[option.act ?? option.id]?.(option.line ?? card.line);
+        if (deciding) deciding = { ...deciding, typing: freshTyping() };
+        $.ui.invalidate('ui.render');
+      },
+      // DECIDE-5: the person's own words, as the answer to the card's question.
+      decideTyped: async (card, text) => {
+        if (!deciding || !card.typed) return;
+        if (!text.trim()) {
+          deciding = {
+            ...deciding,
+            typing: { ...deciding.typing, error: 'Type your answer: the lead builds on it.' },
+          };
+          $.ui.invalidate('ui.render');
+          return;
+        }
+        const done = await act.sendAnswer(card.typed, text.trim());
+        if (!deciding) return;
+        deciding = {
+          ...deciding,
+          typing: done ? freshTyping() : { ...deciding.typing, error: notice },
+        };
+        $.ui.invalidate('ui.render');
+      },
+      // ASK-5: a question about the decision, answered in the pane by a side call, before answering it.
+      decideAsk: async (card, question) => {
+        const q = question.trim();
+        if (!deciding || !q || !card.typed) return;
+        const key = deciding.key;
+        const turn = { question: q, pending: true };
+        const thread = deciding.typing.aside.thread;
+        deciding = {
+          ...deciding,
+          typing: { ...deciding.typing, aside: { thread: [...thread, turn], draft: '' } },
+        };
+        $.ui.invalidate('ui.render');
+        const reply = await act.sideCall(
+          questionAsidePrompt({ q: card.typed, thread, question: q }),
+        );
+        if (!deciding || deciding.key !== key) return;
+        const done = reply.isAnswered
+          ? { question: q, answer: reply.text }
+          : {
+              question: q,
+              error: `No answer: ${reply.reason}${reply.status ? ` (${reply.status})` : ''}`,
+            };
+        const aside = deciding.typing.aside;
+        deciding = {
+          ...deciding,
+          typing: {
+            ...deciding.typing,
+            aside: { ...aside, thread: aside.thread.map((t) => (t === turn ? done : t)) },
+          },
+        };
+        $.ui.invalidate('ui.render');
       },
       // ASK-2, ASK-4, REPORT-3: a question's Answer… or a report's Read it opens its card.
       openDecision: (line) => act.decide(line),
@@ -809,29 +883,9 @@ export function register(on) {
       },
       // ASK-2: the lead's option, pressed: the answer is recorded and sent to the lead.
       answerWith: (line) => act.sendAnswer({ kind: 'question', ...line.question }, line.choice),
-      // ASK-2, ASK-4: Answer… opens a box for the person's own words.
-      answer: async (line) => {
-        answering = {
-          kind: 'question',
-          ...line.question,
-          text: '',
-          error: null,
-          aside: { thread: [], draft: '' },
-        };
-        await $.ui.open({ id: ANSWER_ID, title: 'Answer', focus: true, closeOnEscape: true });
-        $.ui.invalidate('ui.render');
-      },
-      answerBrief: async (line) => {
-        answering = {
-          kind: 'brief',
-          ...line.brief,
-          text: '',
-          error: null,
-          aside: { thread: [], draft: '' },
-        };
-        await $.ui.open({ id: ANSWER_ID, title: 'Answer', focus: true, closeOnEscape: true });
-        $.ui.invalidate('ui.render');
-      },
+      // ASK-2, ASK-4, DECIDE-5: Answer… opens the decision in the Decide pane, for the person's own words.
+      answer: (line) => act.decide(line),
+      answerBrief: (line) => act.decide(line),
       laterBrief: (line) => {
         briefLater.add(line.brief.question);
         model = {
@@ -839,23 +893,6 @@ export function register(on) {
           brief: (model.brief ?? []).filter((b) => b.question !== line.brief.question),
         };
         $.ui.invalidate('ui.render');
-      },
-      confirmAnswer: async (text) => {
-        if (!answering) return;
-        if (!text.trim()) {
-          answering = { ...answering, error: 'Type your answer: the lead builds on it.' };
-          $.ui.invalidate('ui.render');
-          return;
-        }
-        const done = await act.sendAnswer(answering, text.trim());
-        if (done) {
-          answering = null;
-          await $.ui.close({ id: ANSWER_ID });
-        }
-      },
-      cancelAnswer: async () => {
-        answering = null;
-        await $.ui.close({ id: ANSWER_ID });
       },
       // The answer recorded (a question's, in code-kit) and told to the lead, which carries on with it.
       sendAnswer: async (q, text) => {
@@ -866,7 +903,6 @@ export function register(on) {
           );
           if (ran.exitCode !== 0) {
             notice = `Your answer wasn't recorded: ${firstLine(ran)}`;
-            if (answering) answering = { ...answering, error: notice };
             $.ui.invalidate('ui.render');
             return false;
           }
@@ -976,32 +1012,6 @@ export function register(on) {
         const reply = await $.model.fork({ prompt }).catch(failed);
         if (reply.isAnswered || reply.reason !== 'nothing-to-fork') return reply;
         return $.model.complete({ model: 'sonnet', prompt, maxTokens: 800 }).catch(failed);
-      },
-      // ASK-5: a question about a question, asked in the answer box before answering.
-      askAnswer: async (question) => {
-        const q = question.trim();
-        if (!answering || !q) return;
-        const asked = answering;
-        const turn = { question: q, pending: true };
-        const thread = asked.aside.thread;
-        answering = { ...asked, aside: { thread: [...thread, turn], draft: '' } };
-        $.ui.invalidate('ui.render');
-        const reply = await act.sideCall(questionAsidePrompt({ q: asked, thread, question: q }));
-        if (!answering || answering.question !== asked.question) return;
-        const done = reply.isAnswered
-          ? { question: q, answer: reply.text }
-          : {
-              question: q,
-              error: `No answer: ${reply.reason}${reply.status ? ` (${reply.status})` : ''}`,
-            };
-        answering = {
-          ...answering,
-          aside: {
-            ...answering.aside,
-            thread: answering.aside.thread.map((t) => (t === turn ? done : t)),
-          },
-        };
-        $.ui.invalidate('ui.render');
       },
       // ACT-5: a question about the approval, answered in its pane by a side call over the lead's own
       // conversation (it shares the prompt cache, and nothing is added to the conversation); before the
@@ -1564,20 +1574,7 @@ export function register(on) {
         act.sendAnswer({ kind: 'lead', question: line.waiting.question }, line.choice),
       answerLeadTyped: (line, text) =>
         act.sendAnswer({ kind: 'lead', question: line.waiting.question }, text),
-      answerLeadText: async (line) => {
-        answering = {
-          kind: 'lead',
-          question: line.waiting.question,
-          options: line.waiting.options ?? [],
-          text: '',
-          error: null,
-          aside: { thread: [], draft: '' },
-        };
-        await $.ui.open({ id: ANSWER_ID, title: 'Answer', focus: true, closeOnEscape: true });
-        $.ui.invalidate('ui.render');
-      },
-      // DECIDE-4: a question's answer typed in the dialog, as the person's own words.
-      answerTyped: (line, text) => act.sendAnswer({ kind: 'question', ...line.question }, text),
+      answerLeadText: (line) => act.decide(line),
       // LOOP-11, LOOP-12: the person asks the lead again for the step that held the loop.
       askAgain: async () => {
         const w = loop.waiting;
@@ -1596,9 +1593,8 @@ export function register(on) {
         $.ui.invalidate('ui.render');
         await act.step('resume');
       },
-      // DECIDE-4: the next decision the person settles with a choice, asked in Claude Code's own question
-      // dialog while the lead is idle. Each is asked once: dismissed, it stays in the band and the
-      // Decisions tab. Never in a session another one runs the loop for, nor over what the person types.
+      // DECIDE-5: nothing is asked in Claude Code's own dialog by itself: what needs the person waits in the
+      // band and Needs you, and the Decide pane opens when they ask for it.
       // NOTIFY-1: what newly needs the person, as a system notification, from the session that runs the
       // loop. What waited before this session looked isn't news. On a Claude Code without $.ui.notify,
       // the call fails and nothing is raised.
@@ -1622,32 +1618,6 @@ export function register(on) {
         await Promise.resolve()
           .then(() => $.ui.notify(one.text, { title: one.title }))
           .catch(() => {});
-      },
-      offer: async () => {
-        if (offering || leadTurn || loop.sent || !where.interactive) return;
-        if (standingBy() && role !== 'working') return;
-        const now = await $.clock.now();
-        const choice = cardsNow(now)
-          .map((card) => ({ card, choice: nativeChoice(card) }))
-          .find((c) => c.choice && !offered.has(c.choice.key));
-        if (!choice) return;
-        const box = await $.prompt.read().catch(() => null);
-        if (box?.text?.trim()) return;
-        offered.add(choice.choice.key);
-        offering = true;
-        const { question, header, options, typed } = choice.choice;
-        const answer = await $.ui
-          .ask(question, { options: options.map((o) => o.label), header })
-          .catch(() => null)
-          .finally(() => {
-            offering = false;
-          });
-        if (answer == null) return;
-        const picked = options.find((o) => o.label === answer);
-        if (picked?.act) await act[picked.act](picked.line);
-        else if (!picked && typed && answer.trim())
-          await act[typed](choice.card.line, answer.trim());
-        act.offer().catch(() => {});
       },
       // LOOP-1, LOOP-5, LOOP-7: with the lead idle and no draft, the step `next` reports.
       step: async (trigger) => {
@@ -2140,7 +2110,7 @@ export function register(on) {
       if (busy) return;
       busy = true;
       try {
-        // LOOP-10: the lead session renews its lease; DECIDE-4: with the lead idle, a decision waiting.
+        // LOOP-10: the lead session renews its lease.
         if (lease.mine) await act.lead();
         // LOOP-14: the limit has reset; the loop takes its step at once.
         if (loop.limited && !loop.limited.over && (await $.clock.now()) >= loop.limited.until) {
@@ -2148,7 +2118,6 @@ export function register(on) {
           $.ui.invalidate('ui.render');
           await act.step('resume');
         }
-        if (!leadTurn) act.offer().catch(() => {});
         await act.notifyNew().catch(() => {});
         await act.beat().catch(() => {});
         await act.stalls();
@@ -2547,8 +2516,6 @@ export function register(on) {
       // LEAN-3: a milestone just finished: its compaction comes before the next step.
       if (await act?.compactAtMilestone().catch(() => false)) return res;
       await act?.step('turn').catch(() => {});
-      // DECIDE-4: a decision waiting, asked in Claude Code's own dialog; not awaited, the person answers.
-      act?.offer().catch(() => {});
     }
     return res;
   });
@@ -2967,27 +2934,6 @@ export function register(on) {
         { onBack: back },
       );
     }
-    if (paneUi.view === 'decision') {
-      const cards = cardsNow(now);
-      if (cards.length)
-        return viewFrame(
-          'Decision',
-          decisionsTab(cards, paneUi, els, {
-            onDecision: (i) => {
-              paneUi = { ...paneUi, decision: i };
-              $.ui.invalidate('ui.render');
-            },
-            onNeed: (id, line) => act?.[id]?.(line),
-          }),
-          els,
-          { onBack: back },
-          [
-            { key: 'j/k', label: 'decision' },
-            { key: 'esc', label: 'back' },
-          ],
-        );
-      paneUi = { ...paneUi, view: null };
-    }
     if (paneUi.view === 'characters')
       return viewFrame(
         'Characters',
@@ -3095,6 +3041,7 @@ export function register(on) {
       return;
     }
     if (e.id === PANE_ID) paneOpen = false;
+    if (e.id === DECIDE_ID) deciding = null;
     return next(e);
   });
 
@@ -3158,21 +3105,35 @@ export function register(on) {
     });
   });
 
-  // ASK-2, ASK-4: the person's answer, in their own words.
-  on('ui.render', { component: 'Pane', requestId: ANSWER_ID }, async ($, e) => {
-    if (!answering) return resultPane(null, $.ui.resolve(e));
-    return answerPane(answering, $.ui.resolve(e), {
-      onInput: (value) => {
-        answering = { ...answering, text: value };
+  // DECIDE-5: the Decide pane: one decision at a time, all of it, beside the conversation.
+  on('ui.render', { component: 'Pane', requestId: DECIDE_ID }, async ($, e) => {
+    const cards = cardsNow(await $.clock.now());
+    const ui = deciding ?? { key: null, at: 0, typing: freshTyping() };
+    // What it shows now, as cards come and go: the one it was opened on, else the one in its place.
+    const at = cardToDecide(cards, ui);
+    if (deciding && at !== null && cards[at].key !== deciding.key)
+      deciding = { key: cards[at].key, at, typing: freshTyping() };
+    return decidePane(cards, deciding ?? ui, $.ui.resolve(e), {
+      onOption: (option, card) => act.decideOption(option, card),
+      onMove: (key, i) => act.decideMove(key, i),
+      onTypedInput: (value) => {
+        if (deciding) deciding = { ...deciding, typing: { ...deciding.typing, text: value } };
         $.ui.invalidate('ui.render');
       },
-      onSubmit: (value) => act.confirmAnswer(value),
-      onCancel: () => act.cancelAnswer(),
+      onTyped: (card, value) => act.decideTyped(card, value),
       onAskInput: (value) => {
-        answering = { ...answering, aside: { ...answering.aside, draft: value } };
+        if (deciding)
+          deciding = {
+            ...deciding,
+            typing: { ...deciding.typing, aside: { ...deciding.typing.aside, draft: value } },
+          };
         $.ui.invalidate('ui.render');
       },
-      onAsk: (value) => act.askAnswer(value),
+      onAsk: (card, value) => act.decideAsk(card, value),
+      onClose: async () => {
+        deciding = null;
+        await $.ui.close({ id: DECIDE_ID });
+      },
     });
   });
 

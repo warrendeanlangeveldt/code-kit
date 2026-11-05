@@ -651,7 +651,7 @@ export function approvePane(
  * ACT-5: an aside in a pane: each question asked and its answer (or that it's being asked, or why there
  * is none), then the box to ask the next.
  */
-function asideNodes(aside, { Text, Input, Markdown }, { onAskInput, onAsk }, placeholder) {
+export function asideNodes(aside, { Text, Input, Markdown }, { onAskInput, onAsk }, placeholder) {
   return [
     ...aside.thread.flatMap((turn, i) => [
       Text({ key: `aside-q-${i}`, color: 'cyan', children: [`You: ${turn.question}`] }),
@@ -685,7 +685,7 @@ function asideNodes(aside, { Text, Input, Markdown }, { onAskInput, onAsk }, pla
  */
 export function questionAsidePrompt({ q, thread = [], question }) {
   return [
-    "The person is deciding how to answer a question in code-kit's Decisions pane, and asks you about it first. Answer in a few short sentences, in plain words: what the question means, why it matters for the build, what the choices are and what each leads to, and what you'd recommend if you know enough to. Use what you know from this conversation, the project's docs you've read, and the facts below. If you don't know, say so; don't guess. This answer goes to that pane, not into the conversation: don't act on it.",
+    "The person is deciding how to answer a question in code-kit's Decide pane, and asks you about it first. Answer in a few short sentences, in plain words: what the question means, why it matters for the build, what the choices are and what each leads to, and what you'd recommend if you know enough to. Use what you know from this conversation, the project's docs you've read, and the facts below. If you don't know, say so; don't guess. This answer goes to that pane, not into the conversation: don't act on it.",
     '',
     q.kind === 'brief'
       ? `An open question in ${q.path}:`
@@ -745,74 +745,8 @@ export function approvalAsidePrompt({ request, story = null, thread = [], questi
   ].join('\n');
 }
 
-export const ANSWER_ID = 'code-kit-answer';
-
-/** ASK-2, ASK-4: the person's answer to the lead's question, or to one in their brief, typed. */
-export function answerPane(
-  answering,
-  { Box, Text, Input, Button, Markdown },
-  { onInput, onSubmit, onCancel, onAskInput, onAsk },
-) {
-  const { kind, question, text, error } = answering;
-  const aside = answering.aside ?? { thread: [], draft: '' };
-  return Box({
-    flexDirection: 'column',
-    rowGap: 1,
-    children: [
-      Text({ bold: true, children: [question] }),
-      Text({
-        dimColor: true,
-        children: [
-          kind === 'brief'
-            ? `An open question in ${answering.path}. The lead records your answer in the brief's decisions and builds on it.`
-            : kind === 'lead'
-              ? 'From the lead, which waits on it. Your answer is sent to the lead.'
-              : `${answering.id}, from the lead${answering.story ? `, for ${answering.story}` : ''}. Your answer is recorded and sent to the lead.`,
-        ],
-      }),
-      ...(kind === 'brief' && (answering.owner || answering.blocks)
-        ? [
-            Text({
-              dimColor: true,
-              children: [
-                [
-                  answering.owner && `Who decides: ${answering.owner}`,
-                  answering.blocks && `Holds up: ${answering.blocks}`,
-                ]
-                  .filter(Boolean)
-                  .join(' · '),
-              ],
-            }),
-          ]
-        : []),
-      // ASK-5: not sure what it means? Ask, here, before answering.
-      ...asideNodes(
-        aside,
-        { Text, Input, Markdown },
-        { onAskInput, onAsk },
-        'What does it mean, and what would you suggest?',
-      ),
-      Input({
-        key: 'answer-text',
-        label: 'Answer',
-        value: text,
-        submitLabel: 'Answer',
-        autoFocus: true,
-        onInput,
-        onSubmit,
-      }),
-      ...(error ? [Text({ color: 'red', children: [error] })] : []),
-      Box({
-        flexDirection: 'row',
-        columnGap: 2,
-        children: [
-          Button({ key: 'answer-confirm', label: 'Answer', onPress: () => onSubmit(text) }),
-          Button({ key: 'answer-cancel', label: 'Cancel', onPress: onCancel }),
-        ],
-      }),
-    ],
-  });
-}
+/** DECIDE-5: the Decide pane: one decision at a time, beside the conversation. */
+export const DECIDE_ID = 'code-kit-decide';
 
 /** What a merge (or another act run through the CLI) reported. */
 export function resultPane(result, { Box, Text }) {

@@ -13,7 +13,8 @@ import {
   mapSvg,
   neighboursOf,
 } from './codemap.mjs';
-import { ago, shownState, tokens } from './view.mjs';
+import { ago, asideNodes, shownState, tokens } from './view.mjs';
+import { TYPED_OPTIONS } from './decisions.mjs';
 
 /** A lane's stories in plan order. */
 export const laneStories = (lane, state) =>
@@ -942,192 +943,178 @@ export function codeTab(view, { Box, Text, Button, Svg }, on) {
   return [picker, drawing, legend, detail, keys];
 }
 
-/** CARD-9: how many decision cards the list shows at once, around the selected one. */
-const CARDS_SHOWN = 5;
+/** DECIDE-5: the card the Decide pane shows: the one it was opened on, else the one now in its place. */
+export function cardToDecide(cards, { key = null, at = 0 } = {}) {
+  if (!cards.length) return null;
+  const i = cards.findIndex((c) => c.key === key);
+  return i >= 0 ? i : Math.min(Math.max(0, at), cards.length - 1);
+}
 
 /**
- * DECIDE-3, CARD-9: the Decisions tab: how many decisions need the person, by kind; then each as a short
- * card (its kind, a one-line headline, and who or what it's for), a few at a time around the selected
- * one, with j and k to move; then the selected one in full, with its lineage (what they asked for, the
- * story and requirements, what was happening, what's settled, why it needs them) and its options, each
- * saying what it does. `on`: onDecision(i), onNeed(id, line).
+ * DECIDE-5: the Decide pane: one decision at a time, all of it: what it asks, never cut; why it's the
+ * person's; the story and requirements it's for, what was happening and what's settled; each option with
+ * what it does, on its number; the person's own words, where it takes them, and a question about it
+ * first (ASK-5); n and p to the next and previous. `ui`: { key, at, typing: { text, error, aside } }.
+ * `on`: onOption(option, card), onMove(key), onTypedInput, onTyped, onAskInput, onAsk, onClose.
  */
-export function decisionsTab(cards, ui, { Box, Text, Button }, on) {
-  const text = (value, style = {}) => Text({ ...style, children: [value] });
-  if (!cards.length) return [];
-  const at = Math.min(ui.decision ?? 0, cards.length - 1);
+export function decidePane(cards, ui, els, on) {
+  const { Box, Text, Button, Input, Markdown } = els;
+  const text = (value, style = {}) => Text({ ...style, children: [String(value)] });
+  const at = cardToDecide(cards, ui);
+  if (at === null)
+    return Box({
+      flexDirection: 'column',
+      rowGap: 1,
+      children: [
+        text('Nothing needs you now.', { bold: true }),
+        text("Everything else is the lead's.", { dimColor: true }),
+        Button({ key: 'decide-close', label: 'Close', onPress: () => on.onClose() }),
+      ],
+    });
   const card = cards[at];
   const row = (label, value, style = {}) =>
     Box({
-      key: `decision-${label}`,
+      key: `decide-${label}`,
       flexDirection: 'row',
       columnGap: 1,
       children: [
-        text(label.padEnd(15), { dimColor: true }),
-        text(value, { wrap: 'wrap', ...style }),
+        Box({ width: 10, flexShrink: 0, children: [text(label, { dimColor: true })] }),
+        Box({ flexShrink: 1, children: [text(value, { wrap: 'wrap', ...style })] }),
       ],
     });
-  const kinds = new Map();
-  for (const c of cards) kinds.set(c.tag, (kinds.get(c.tag) ?? 0) + 1);
-  const from = Math.max(0, Math.min(at - Math.floor(CARDS_SHOWN / 2), cards.length - CARDS_SHOWN));
-  const shown = cards.slice(from, from + CARDS_SHOWN);
-  const list = Box({
-    key: 'decision-list',
+  const story = card.story
+    ? `${card.story.id} ${card.story.title}`.trim() +
+      (card.requirements.length
+        ? ` (${card.requirements.map((r) => `${r.id}${r.title ? ` ${r.title}` : ''}`).join('; ')})`
+        : '')
+    : null;
+  const choices = card.options.filter((o) => !(card.typed && TYPED_OPTIONS.has(o.act ?? o.id)));
+  const typing = ui.typing ?? { text: '', error: null, aside: { thread: [], draft: '' } };
+  const move = (step) => {
+    const next = cards[(at + step + cards.length) % cards.length];
+    on.onMove(next.key, (at + step + cards.length) % cards.length);
+  };
+  return Box({
     flexDirection: 'column',
+    rowGap: 1,
     children: [
-      ...(from > 0 ? [text(`  ↑ ${from} more`, { key: 'decision-above', dimColor: true })] : []),
-      ...shown.map((c, n) => {
-        const i = from + n;
-        return Box({
-          key: `decision-item-${i}`,
-          flexDirection: 'column',
-          borderStyle: 'round',
-          borderColor: i === at ? 'yellow' : 'gray',
-          paddingX: 1,
-          children: [
-            // UI-7: its kind in sentence case, pressed to choose it; then the headline, cut to fit.
-            Box({
-              key: `decision-head-${i}`,
-              flexDirection: 'row',
-              columnGap: 1,
-              children: [
-                Button({
-                  key: `decision-pick-${i}`,
-                  label: c.tag,
-                  plain: true,
-                  ...(i === at ? {} : { dimColor: true }),
-                  onPress: () => on.onDecision(i),
-                }),
-                Box({
-                  flexShrink: 1,
-                  children: [text(c.headline, { bold: i === at, wrap: 'truncate-end' })],
-                }),
-              ],
-            }),
-            ...(c.sub ? [text(c.sub, { dimColor: true, wrap: 'truncate-end' })] : []),
-          ],
-        });
+      Box({
+        key: 'decide-head',
+        flexDirection: 'row',
+        columnGap: 1,
+        children: [
+          text(cards.length > 1 ? `${at + 1} of ${cards.length}` : 'Decision', { dimColor: true }),
+          text(card.tag, { color: 'yellow' }),
+          ...(card.story
+            ? [Box({ flexShrink: 1, children: [text(card.story.id, { dimColor: true })] })]
+            : []),
+        ],
       }),
-      ...(from + CARDS_SHOWN < cards.length
-        ? [
-            text(`  ↓ ${cards.length - from - CARDS_SHOWN} more`, {
-              key: 'decision-below',
-              dimColor: true,
-            }),
-          ]
-        : []),
-    ],
-  });
-  const keys = Box({
-    key: 'decision-keys',
-    flexDirection: 'row',
-    columnGap: 2,
-    children: [
-      Button({
-        key: 'decision-next',
-        label: 'Next',
-        hotkey: 'j',
-        plain: true,
-        onPress: () => on.onDecision(Math.min(at + 1, cards.length - 1)),
+      Box({
+        key: 'decide-question',
+        children: [text(card.full ?? card.headline, { bold: true, wrap: 'wrap' })],
       }),
-      Button({
-        key: 'decision-prev',
-        label: 'Previous',
-        hotkey: 'k',
-        plain: true,
-        onPress: () => on.onDecision(Math.max(at - 1, 0)),
+      Box({
+        key: 'decide-lineage',
+        flexDirection: 'column',
+        children: [
+          ...(card.why ? [row('Why yours', card.why)] : []),
+          ...(card.details ?? [])
+            .filter((d) => d.label !== 'Question')
+            .map((d) => row(d.label, d.value)),
+          ...(story ? [row('For', story)] : []),
+          ...(card.asked ? [row('You asked', card.asked, { dimColor: true })] : []),
+          ...(card.doing ? [row('Happening', card.doing, { dimColor: true })] : []),
+          ...(card.settled.length
+            ? [row('Settled', card.settled.join('\n'), { dimColor: true })]
+            : []),
+        ],
       }),
-      text(`${at + 1} of ${cards.length}`, { dimColor: true }),
-    ],
-  });
-  const detail = Box({
-    key: 'decision-card',
-    flexDirection: 'column',
-    borderStyle: 'double',
-    borderColor: 'yellow',
-    paddingX: 1,
-    rowGap: 0,
-    children: [
-      text(
-        card.kind === 'brief'
-          ? 'An open question in your brief'
-          : card.kind === 'question'
-            ? 'A question from the lead'
-            : card.headline,
-        { bold: true, wrap: 'wrap' },
-      ),
-      ...(card.details ?? []).map((d) =>
-        row(d.label, d.value, d.label === 'Question' ? { bold: true } : {}),
-      ),
-      ...(card.asked ? [row('You asked for', card.asked)] : []),
-      ...(card.story
-        ? [
-            row(
-              'Story',
-              `${card.story.id} ${card.story.title}${card.story.branch ? ` · ${card.story.branch}` : ''}`,
-            ),
-          ]
-        : []),
-      ...(card.requirements.length
-        ? [
-            row(
-              'Requirements',
-              card.requirements.map((r) => `${r.id}${r.title ? ` ${r.title}` : ''}`).join('; '),
-            ),
-          ]
-        : []),
-      ...(card.doing ? [row('Happening', card.doing)] : []),
-      ...(card.settled.length
-        ? [
-            text('Already settled', { dimColor: true }),
-            ...card.settled.map((line, i) =>
+      Box({
+        key: 'decide-options',
+        flexDirection: 'column',
+        children: choices.map((o, i) =>
+          Box({
+            key: `decide-option-${o.id}`,
+            flexDirection: 'row',
+            columnGap: 2,
+            children: [
               Box({
-                key: `decision-settled-${i}`,
-                children: [text(`  · ${line}`, { wrap: 'wrap' })],
+                flexShrink: 0,
+                children: [
+                  Button({
+                    key: `decide-${o.id}`,
+                    label: o.label,
+                    ...(i < 9 ? { hotkey: String(i + 1) } : {}),
+                    plain: true,
+                    ...(i === 0 && !card.typed ? { autoFocus: true } : {}),
+                    onPress: () => on.onOption(o, card),
+                  }),
+                ],
               }),
+              ...(o.effect
+                ? [
+                    Box({
+                      flexShrink: 1,
+                      children: [text(o.effect, { dimColor: true, wrap: 'wrap' })],
+                    }),
+                  ]
+                : []),
+            ],
+          }),
+        ),
+      }),
+      ...(card.typed
+        ? [
+            Input({
+              key: 'decide-typed',
+              label: choices.length ? 'Or in your own words' : 'Your answer',
+              value: typing.text,
+              submitLabel: 'Answer',
+              autoFocus: true,
+              onInput: (value) => on.onTypedInput(value),
+              onSubmit: (value) => on.onTyped(card, value),
+            }),
+            ...(typing.error ? [text(typing.error, { color: 'red', wrap: 'wrap' })] : []),
+            ...asideNodes(
+              typing.aside ?? { thread: [], draft: '' },
+              { Text, Input, Markdown },
+              { onAskInput: on.onAskInput, onAsk: (q) => on.onAsk(card, q) },
+              'What does it mean, and what would you suggest?',
             ),
           ]
         : []),
-      ...(card.why ? [row('Why it is yours', card.why, { color: 'yellow' })] : []),
-      text('Your options', { dimColor: true }),
-      ...card.options.map((o) =>
-        Box({
-          key: `decision-option-${o.id}`,
-          flexDirection: 'row',
-          columnGap: 2,
-          children: [
-            Button({
-              key: `decide-${o.id}`,
-              label: o.label,
-              ...(o.hotkey ? { hotkey: o.hotkey } : {}),
-              variant: 'primary',
-              onPress: () => on.onNeed(o.act ?? o.id, o.line ?? card.line),
-            }),
-            ...(o.effect ? [text(o.effect, { dimColor: true, wrap: 'wrap' })] : []),
-          ],
-        }),
-      ),
+      Box({
+        key: 'decide-keys',
+        flexDirection: 'row',
+        columnGap: 2,
+        children: [
+          ...(cards.length > 1
+            ? [
+                Button({
+                  key: 'decide-next',
+                  label: 'Next',
+                  hotkey: 'n',
+                  plain: true,
+                  onPress: () => move(1),
+                }),
+                Button({
+                  key: 'decide-prev',
+                  label: 'Previous',
+                  hotkey: 'p',
+                  plain: true,
+                  onPress: () => move(-1),
+                }),
+              ]
+            : []),
+          Box({
+            flexShrink: 1,
+            children: [text('esc closes; it waits in Needs you', { dimColor: true, wrap: 'wrap' })],
+          }),
+        ],
+      }),
     ],
   });
-  return [
-    text(
-      `${cards.length} decision${cards.length === 1 ? '' : 's'} need${cards.length === 1 ? 's' : ''} you. Everything else is the lead's.`,
-      { bold: true, wrap: 'wrap' },
-    ),
-    Box({
-      key: 'decision-kinds',
-      children: [
-        text(
-          [...kinds]
-            .map(([tag, n]) => `${n} ${tag}${n === 1 || tag.endsWith('brief') ? '' : 's'}`)
-            .join(' · '),
-          { dimColor: true, wrap: 'wrap' },
-        ),
-      ],
-    }),
-    ...(cards.length > 1 ? [list, keys] : []),
-    detail,
-  ];
 }
 
 const JOURNAL_GLYPH = {
