@@ -2,13 +2,16 @@
 // PreToolUse on Agent (docs/specs/23-the-team.md, SCHED-1): a lane runs one story at a time, across every
 // session in the project. Starting a lane's agent claims the lane; a second agent for a claimed lane is
 // refused, naming the story and the session that has it. Any other agent starts as before. A lane agent
-// that starts is logged with the model it runs on, and why (SCHED-3).
+// that starts is logged with the model it runs on, and why (SCHED-3). LEAN-10: a lane agent started with
+// a worktree gets its lane's (worktree-create.mjs): the lane is noted here for that hook, so agents
+// with worktrees start one at a time, each in a message of its own.
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { recordDispatch, storyModels } from './lib/dispatches.mjs';
 import { block, start } from './lib/hook.mjs';
 import { CLI } from './lib/rules.mjs';
 import { claimLane, shortSession } from './lib/laneclaims.mjs';
+import { dropNextLane, mainCheckout, nextLane, noteNextLane } from './lib/lanetrees.mjs';
 import { readStories, storyBranch } from './lib/plan.mjs';
 import { agentFileModel } from './lib/schedule.mjs';
 import { memberOf, readSession } from './lib/sessions.mjs';
@@ -18,14 +21,26 @@ const { input, project, config, error } = start();
 if (error) process.exit(0);
 const call = input.tool_input ?? {};
 const lane = Object.entries(config.lanes).find(([, l]) => l.agent === call.subagent_type)?.[0];
-if (!lane) process.exit(0);
+const isolated = call.isolation === 'worktree';
+const main = isolated ? (mainCheckout(input.cwd || project) ?? project) : project;
 const story =
   String(call.description ?? '')
     .match(/\bST-\d+\b/i)?.[0]
     ?.toUpperCase() ?? null;
+// LEAN-10: the worktree hook is told only the worktree's name, so it takes the one note waiting: every
+// agent with a worktree is noted, a lane's or not, and a second started before the first one's worktree
+// is made is refused, so it can't take the other's.
+if (isolated && !noteNextLane(main, { lane: lane ?? null, story: lane ? story : null })) {
+  const waiting = nextLane(main);
+  block(
+    `Blocked: ${waiting?.lane ? `the ${waiting.lane} lane's agent${waiting.story ? ` for ${waiting.story}` : ''}` : 'another agent'} is still being given its worktree. Start agents that work in worktrees one at a time, each in a message of its own: start this one again in your next message.`,
+  );
+}
+if (!lane) process.exit(0);
 const session = input.session_id ?? null;
 const claimed = claimLane(project, { lane, story, session });
 if (!claimed.ok) {
+  if (isolated) dropNextLane(main);
   const c = claimed.claim;
   // SESS-1: the session by its member and, where it has one, its task.
   const holder = readSession(project, c.session);

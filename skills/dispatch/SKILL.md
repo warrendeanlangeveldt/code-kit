@@ -50,7 +50,7 @@ When the story carries out an intent the team agreed (`code-kit intend`), add `-
 
 One agent per story: never send a running lane agent a second story, or a send-back. A story that goes on (sent back, or handed back at its context limit) gets a fresh agent: first run `node "${CLAUDE_PLUGIN_ROOT}/bin/code-kit.mjs" worktrees release <branch>`, which keeps the branch's commits and moves its report to the main checkout, then start the agent as below with the brief, "Read your earlier report first: `.claude/state/reports/<branch with / as _>.md` in the main checkout", and what `node "${CLAUDE_PLUGIN_ROOT}/bin/code-kit.mjs" replay <story> --brief` prints: the story's last commit, the tests last run, what changed since, and what was reconciled, from its event log, which holds them even when the stopped agent wrote no report. A long-lived agent rereads its whole context on every step, which is most of what a build costs.
 
-Start each story with the Agent tool: `subagent_type` is the lane's agent, `model` the one `code-kit next --json` gives the story in `models` (with the lane model `story`, each story's model follows its `**Size:**`, raised for a security requirement, a fix or a send-back; a story with no size runs on Sonnet, so size it in the plan first if it's plainly small or large), `isolation: "worktree"`, and run them in the background, with a `description` that starts with the story's id ("ST-12 booking form"): the loop reads it to know the story is in flight, and won't ask for it again while the agent works. Start every story in the batch in the same message so they run in parallel.
+Start each story with the Agent tool: `subagent_type` is the lane's agent, `model` the one `code-kit next --json` gives the story in `models` (with the lane model `story`, each story's model follows its `**Size:**`, raised for a security requirement, a fix or a send-back; a story with no size runs on Sonnet, so size it in the plan first if it's plainly small or large), `isolation: "worktree"`, and run them in the background, with a `description` that starts with the story's id ("ST-12 booking form"): the loop reads it to know the story is in flight, and won't ask for it again while the agent works. Each lane works in its own worktree, `.claude/worktrees/lane-<lane>`, kept from story to story with its installs: code-kit gives it to the lane's agent when it starts, detached at the main checkout's HEAD, so the agent makes or switches to its story's branch as the brief says. So start the agents one per message, each right after the last (they still run in parallel in the background): code-kit tells each agent's worktree whose it is as it starts, and refuses a second agent with a worktree in the same message.
 
 The brief is the agent's whole context. Write it so the agent needs nothing else:
 
@@ -69,7 +69,7 @@ Designs: <for a story that builds screens, what `code-kit designs ST-<n>` lists:
 Out of scope: <what neighbouring stories or other lanes will do>
 
 Steps:
-1. Run the spec-check skill against these requirements and save the report (the path guard requires it).
+1. Run the spec-check skill against these requirements and save the report, with its `| Requirement |` table (the path guard requires it, and reads a report without that table as none).
    If it recommends "blocked on questions", stop and report the questions.
 2. Build it end to end in your lane's paths. No mocks, stubs, placeholder screens or "coming soon".
 3. Write tests that prove each acceptance criterion. Name the requirement ID in each test's title,
