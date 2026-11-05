@@ -6,6 +6,10 @@ What changed in each release of code-kit, newest first. Versions follow the plug
 
 - **Writes outside the checkout before a commit.** Drafting a commit message in a scratchpad and committing it in one command (`git log -1 --format=%B > /tmp/msg && sed -i '' 's/…/…/' /tmp/msg && git commit --amend -F /tmp/msg`) was refused as a command that may write files the commit can't see. A read whose output goes only to full paths outside the project and the commit's checkout, and sed's substitutions on such files in place, can't change what's committed, so they're allowed. A path from a variable, a link back into the project, a sed that writes a file or runs a command, and any write into the checkout are still refused.
 
+## Unreleased
+
+- **Lane agents know the spec-check table before they write code.** A lane agent that wrote its spec-check report by hand, without the skill, often left out the requirement table. The report saved, but every code edit after it was refused, several at a time, until the agent rewrote the report. The lane agents' instructions and dispatch's brief now say the report is a table whose header row starts `| Requirement |`, one row per requirement, and that the path guard reads a report without it as none. Projects get the new wording when `code-kit next` brings their instructions up to date.
+
 ## 0.31.1 (2026-11-05)
 
 - **`next` in a working session says whose step it is.** When another session leads the project, `code-kit next` and `/code-kit:next` handed a working session the lead's step, such as a dispatch. The session went on to write the lead's contracts and was refused at every edit. It now gets the step `working`: which session leads and what its next step is, and what this session does instead (a task of its own, recorded with `code-kit task`, in a worktree of its own).
