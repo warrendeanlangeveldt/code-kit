@@ -46,8 +46,10 @@ export function maskQuotes(text) {
 }
 
 const SEPARATOR = /[;&|\n()`]/;
+// A quoted value is taken whole: unquoted, a value stops at a quote, so `CK="node x"` with nothing after it
+// is never read as `CK="node` running `x"`.
 const LEADING =
-  /^(?:(?:[A-Za-z_]\w*=(?:"[^"]*"|'[^']*'|\S*)\s+)|(?:sudo|exec|time|command|nohup|env)\s+|!\s+)+/;
+  /^(?:(?:[A-Za-z_]\w*=(?:"[^"]*"|'[^']*'|[^\s"']*)\s+)|(?:sudo|exec|time|command|nohup|env)\s+|!\s+)+/;
 
 /**
  * The simple commands `cmd` runs, in order: split at `;`, `&`, `|`, newlines, parentheses and
