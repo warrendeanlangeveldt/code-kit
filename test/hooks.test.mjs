@@ -900,6 +900,11 @@ try {
     0,
   );
   expect(
+    'and after a variable whose quoted value holds a space, which is one assignment',
+    bash(`K="node /opt/my tools/code-kit.mjs"; git add notes.txt && git commit -m x`),
+    0,
+  );
+  expect(
     'and after staging with its errors sent away',
     bash('git add -A notes.txt 2>/dev/null; git add notes.txt 2>&1 && git commit -m x'),
     0,
