@@ -5,10 +5,8 @@ What changed in each release of code-kit, newest first. Versions follow the plug
 ## Unreleased
 
 - **Writes outside the checkout before a commit.** Drafting a commit message in a scratchpad and committing it in one command (`git log -1 --format=%B > /tmp/msg && sed -i '' 's/…/…/' /tmp/msg && git commit --amend -F /tmp/msg`) was refused as a command that may write files the commit can't see. A read whose output goes only to full paths outside the project and the commit's checkout, and sed's substitutions on such files in place, can't change what's committed, so they're allowed. A path from a variable, a link back into the project, a sed that writes a file or runs a command, and any write into the checkout are still refused.
-
-## Unreleased
-
 - **Lane agents know the spec-check table before they write code.** A lane agent that wrote its spec-check report by hand, without the skill, often left out the requirement table. The report saved, but every code edit after it was refused, several at a time, until the agent rewrote the report. The lane agents' instructions and dispatch's brief now say the report is a table whose header row starts `| Requirement |`, one row per requirement, and that the path guard reads a report without it as none. Projects get the new wording when `code-kit next` brings their instructions up to date.
+- **A lane agent stopped mid-command no longer holds its worktree for good.** `code-kit worktrees release <branch>` refused as long as the lane agent's last recorded act had no end, which is what an agent stopped in the middle of a command leaves behind. The refusal said the agent was still at work, though none was running, and nothing the lead could do would clear it. An open act now holds the worktree only while its agent may still be in it. Once `code-kit next` has reconciled the act, or the agent's session has ended, it handed back, or the act is older than the stall restart (`harness.stall.restartMinutes`, 10 by default), the release goes ahead.
 
 ## 0.31.1 (2026-11-05)
 
