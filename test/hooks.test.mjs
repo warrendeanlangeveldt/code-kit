@@ -2267,6 +2267,17 @@ try {
       ),
       0,
     );
+    // A lane agent that writes its spec-check report by hand, without the skill, still knows the table the
+    // path guard reads: without it, every code edit is refused until the report is rewritten.
+    expect(
+      "a lane agent's instructions name the spec-check table the path guard reads",
+      truth(
+        kit('instructions', 'show', 'lane', 'web').stdout.includes(
+          'a table whose header row starts `| Requirement |`',
+        ),
+      ),
+      0,
+    );
     rmSync(join(repo, '.claude/approvals'), { recursive: true, force: true });
     rmSync(join(repo, '.claude/state/questions.jsonl'), { force: true });
     rmSync(join(repo, '.claude/state/requests.jsonl'), { force: true });
