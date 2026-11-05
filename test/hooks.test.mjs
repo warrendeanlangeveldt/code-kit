@@ -9968,6 +9968,177 @@ else process.exit(1);
     t.git('checkout', '-q', 'main');
   }
 
+  // --- LEAN-10: one worktree per lane, reused by each of its stories with its installs ---------------
+  {
+    const w = newRepo();
+    cleanups.push(w.dir);
+    writeFileSync(
+      join(w.dir, '.gitignore'),
+      '.claude/approvals/\n.claude/state/\n.claude/worktrees/\nnode_modules/\n.env\n',
+    );
+    writeFileSync(join(w.dir, '.worktreeinclude'), '.env\n');
+    writeFileSync(join(w.dir, '.env'), 'KEY=local\n');
+    w.git('add', '-A');
+    w.git('commit', '-q', '-m', 'ignore worktrees');
+    const run = (hook, input) =>
+      spawnSync('node', [join(hooks, hook)], {
+        input: JSON.stringify({ cwd: w.dir, session_id: 's1', ...input }),
+        env: { ...process.env, CLAUDE_PROJECT_DIR: w.dir },
+        encoding: 'utf8',
+      });
+    const startAgent = (agent, description) =>
+      run('guard-agent.mjs', {
+        tool_name: 'Agent',
+        tool_input: { subagent_type: agent, description, prompt: 'x', isolation: 'worktree' },
+      });
+    const create = (name) =>
+      run('worktree-create.mjs', { hook_event_name: 'WorktreeCreate', name });
+    const laneTree = join(realpathSync(w.dir), '.claude/worktrees/lane-web');
+    expect(
+      'LEAN-10 a lane agent started with a worktree is noted',
+      startAgent('web-engineer', 'ST-1 list'),
+      0,
+    );
+    expect(
+      'LEAN-10 and a second agent with a worktree, started before the first has its worktree, is refused',
+      startAgent('mobile-engineer', 'ST-2 app'),
+      2,
+      "the web lane's agent for ST-1 is still being given its worktree",
+    );
+    const first = create('agent-aaa');
+    expect(
+      "LEAN-10 the worktree Claude Code asks for is the lane's, detached, with the files .worktreeinclude names",
+      truth(
+        first.status === 0 &&
+          realpathSync(first.stdout.trim()) === laneTree &&
+          w.git('-C', laneTree, 'branch', '--show-current').trim() === '' &&
+          existsSync(join(laneTree, '.env')),
+        first.stdout + first.stderr,
+      ),
+      0,
+    );
+    // The lane's agent builds its story there, installs and all, and finishes.
+    execFileSync('git', ['-C', laneTree, 'switch', '-q', '-c', 'web/st-1', 'main']);
+    mkdirSync(join(laneTree, 'node_modules/dep'), { recursive: true });
+    writeFileSync(join(laneTree, 'node_modules/dep/index.js'), '1\n');
+    releaseLane(w.dir, 'web', { session: 's1' });
+    expect(
+      'LEAN-10 the next story in the lane starts',
+      startAgent('web-engineer', 'ST-3 detail'),
+      0,
+    );
+    const second = create('agent-bbb');
+    expect(
+      'LEAN-10 and gets the same worktree, its installs kept, its last branch let go',
+      truth(
+        realpathSync(second.stdout.trim()) === laneTree &&
+          existsSync(join(laneTree, 'node_modules/dep/index.js')) &&
+          w.git('-C', laneTree, 'branch', '--show-current').trim() === '' &&
+          !existsSync(join(w.dir, '.claude/worktrees/agent-bbb')),
+        second.stdout + second.stderr,
+      ),
+      0,
+    );
+    // Work its last agent left uncommitted stays where it is: the next agent gets a worktree of its own.
+    writeFileSync(join(laneTree, 'left.txt'), 'uncommitted\n');
+    releaseLane(w.dir, 'web', { session: 's1' });
+    startAgent('web-engineer', 'ST-4 more');
+    const dirty = create('agent-ccc');
+    expect(
+      "LEAN-10 a lane worktree holding someone's uncommitted work isn't reused: the agent gets its own",
+      truth(
+        dirty.status === 0 &&
+          dirty.stdout.trim().endsWith('.claude/worktrees/agent-ccc') &&
+          existsSync(join(laneTree, 'left.txt')) &&
+          w.git('branch', '--list', 'worktree-agent-ccc').includes('worktree-agent-ccc'),
+        dirty.stdout + dirty.stderr,
+      ),
+      0,
+    );
+    rmSync(join(laneTree, 'left.txt'));
+    const plain = create('agent-ddd');
+    expect(
+      'LEAN-10 with no lane noted, the worktree is the one Claude Code would make',
+      truth(
+        plain.stdout.trim().endsWith('.claude/worktrees/agent-ddd') &&
+          w.git('-C', plain.stdout.trim(), 'branch', '--show-current').trim() ===
+            'worktree-agent-ddd',
+        plain.stdout + plain.stderr,
+      ),
+      0,
+    );
+    const done = (id, agent = 'general-purpose') =>
+      run('worktree-done.mjs', {
+        hook_event_name: 'SubagentStop',
+        agent_id: id,
+        agent_type: agent,
+      });
+    done('ddd');
+    expect(
+      'LEAN-10 an agent that changed nothing in its own worktree: it and its branch go when it stops',
+      truth(
+        !existsSync(join(w.dir, '.claude/worktrees/agent-ddd')) &&
+          !w.git('branch', '--list', 'worktree-agent-ddd').includes('worktree-agent-ddd'),
+      ),
+      0,
+    );
+    writeFileSync(join(w.dir, '.claude/worktrees/agent-ccc/kept.txt'), 'work\n');
+    execFileSync('git', ['-C', join(w.dir, '.claude/worktrees/agent-ccc'), 'add', 'kept.txt']);
+    execFileSync('git', [
+      '-C',
+      join(w.dir, '.claude/worktrees/agent-ccc'),
+      '-c',
+      'user.email=t@t',
+      '-c',
+      'user.name=t',
+      'commit',
+      '-q',
+      '-m',
+      'work',
+    ]);
+    done('ccc', 'web-engineer');
+    expect(
+      'LEAN-10 one that committed work keeps it',
+      truth(existsSync(join(w.dir, '.claude/worktrees/agent-ccc'))),
+      0,
+    );
+    // Once its story is merged, the lane's worktree stays, and lets go of the branch.
+    execFileSync('git', ['-C', laneTree, 'switch', '-q', 'web/st-1']);
+    writeFileSync(join(laneTree, 'st1.txt'), 'built\n');
+    execFileSync('git', ['-C', laneTree, 'add', 'st1.txt']);
+    execFileSync('git', [
+      '-C',
+      laneTree,
+      '-c',
+      'user.email=t@t',
+      '-c',
+      'user.name=t',
+      'commit',
+      '-q',
+      '-m',
+      'ST-1',
+    ]);
+    w.git('merge', '-q', '--no-ff', '-m', 'merge web/st-1', 'web/st-1');
+    releaseLane(w.dir, 'web', { session: 's1' });
+    const pruned = spawnSync('node', [kitCli, 'worktrees', 'prune'], {
+      cwd: w.dir,
+      encoding: 'utf8',
+    });
+    expect(
+      "LEAN-10 prune keeps the lane's worktree and its installs, and detaches it once its story is merged",
+      truth(
+        existsSync(join(laneTree, 'node_modules/dep/index.js')) &&
+          w.git('-C', laneTree, 'branch', '--show-current').trim() === '' &&
+          spawnSync('node', [kitCli, 'worktrees'], {
+            cwd: w.dir,
+            encoding: 'utf8',
+          }).stdout.includes("the web lane's worktree, kept with its installs"),
+        pruned.stdout + pruned.stderr,
+      ),
+      0,
+    );
+  }
+
   // --- LEAN-6: worktrees released for a fresh agent, and pruned once merged ------------------------
   {
     const t = newRepo();

@@ -280,7 +280,7 @@ The config's `lanes.<name>.agent` must match the agent file's `name`. That's how
 
 Editing an agent file can't loosen a rule. And the agent files are kit files (`.claude/**`), so only the lead changes them, and every change is logged.
 
-**Spawned per story.** Dispatch starts a fresh instance of the lane's agent for each story, in its own worktree on `<lane>/st-<n>`. Agents for different lanes run in parallel. Each starts knowing only its agent file and the story's brief, so nothing leaks between stories.
+**Spawned per story, in the lane's worktree.** Dispatch starts a fresh instance of the lane's agent for each story, on `<lane>/st-<n>`. Agents for different lanes run in parallel. Each starts knowing only its agent file and the story's brief, so nothing leaks between stories. Each lane has one worktree, `.claude/worktrees/lane-<lane>`, kept from story to story with its installs: code-kit's `WorktreeCreate` hook gives it to the lane's agent in place of a new worktree per agent, so a project's installs aren't made again for every story. Agents with worktrees start one per message (code-kit refuses a second until the first has its worktree), since the hook is told only the worktree's name. A lane worktree that still holds uncommitted work isn't reused: the next agent gets a worktree of its own. Every other agent gets the worktree Claude Code would make, taken away with its branch when the agent stops having changed nothing.
 
 **How the spec is followed, step by step** (the steps a hook or `verify` enforces are marked):
 
