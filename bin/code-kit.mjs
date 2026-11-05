@@ -301,7 +301,9 @@ const storyGiven = option('--story');
 const whyGiven = option('--why');
 const needsGiven = option('--needs');
 const whatGiven = option('--what');
-const withGiven = option('--with');
+// `--with a --with b` and `--with a,b` alike.
+const withsGiven = [];
+for (let o = option('--with'); o !== undefined; o = option('--with')) withsGiven.push(o);
 const untilGiven = option('--until');
 const expectedGiven = option('--expected');
 const commandGiven = option('--command');
@@ -1166,8 +1168,8 @@ function queue() {
     // The commit the review passed: the queue merges exactly it, and a branch that moves is reviewed again.
     const added = enqueue(root, branch, commit);
     // MQ-7: branches that only land together.
-    const partnersGiven = (withGiven ?? '')
-      .split(/[\s,]+/)
+    const partnersGiven = withsGiven
+      .flatMap((w) => w.split(/[\s,]+/))
       .filter(Boolean)
       .filter((b) => b !== branch);
     if (partnersGiven.length) setPartners(root, branch, partnersGiven);
@@ -2267,10 +2269,24 @@ function reconcileCommand(id) {
 }
 
 function next() {
-  const step = nextStep(resolve('.'), (config) => findBase(config, false));
+  const root = resolve('.');
+  let step = nextStep(root, (config) => findBase(config, false));
+  // SESS-2: the project's steps are the lead's. A working session that asks is told whose they are,
+  // and what's its own, instead of being handed a dispatch or a review it may not do.
+  const me = callerSession ? readSession(root, callerSession) : null;
+  const lead = leadSession(root);
+  if (me && lead && lead.id !== me.id && !['wait', 'done'].includes(step.step))
+    step = {
+      ...step,
+      step: 'working',
+      lead: { session: lead.id, step: step.step, args: step.args ?? null },
+      args: null,
+      then: [],
+      why: `This is a working session: session ${shortSession(lead.id)} leads the project, and the next step, ${step.step}${step.args ? ` ${step.args}` : ''}, is the lead's (${step.why}). Here, do a task of your own, in a worktree of your own: record it with \`code-kit task "<what>" --touches "<globs>"\` first. To lead from this session instead, ask the person to make it the lead.`,
+    };
   if (flag('--json')) return out(JSON.stringify(step, null, 2));
   const command = (s, args) => `/code-kit:${s}${args ? ` ${args}` : ''}`;
-  const actionable = !['wait', 'done'].includes(step.step);
+  const actionable = !['wait', 'done', 'working'].includes(step.step);
   out(actionable ? `Next: ${command(step.step, step.args)}` : `Next: ${step.step}`);
   out(`Why: ${step.why}`);
   for (const t of step.then) out(`Then: ${command(t.step, t.args)}`);
@@ -3138,9 +3154,9 @@ function worktreesCommand() {
   if (rest[0] === 'release') {
     const w = list.find((x) => x.branch === rest[1] || x.path === rest[1]);
     if (!w) die(`No worktree has ${rest[1] ?? '<branch>'} checked out.`);
-    if (agentBusy(root, w))
+    if (agentBusy(root, w, config))
       die(
-        `The ${w.branch.split('/')[0]} lane's agent is still at work on ${w.branch} (its last act was under ${BUSY_MS / 60_000} minutes ago, with no hand-back); nothing was removed. Wait for it to hand back, or stop it with TaskStop, then release it.`,
+        `The ${w.branch.split('/')[0]} lane's agent is still at work on ${w.branch} (its last act is still running, or came under ${BUSY_MS / 60_000} minutes ago, with no hand-back); nothing was removed. Wait for it to hand back, or stop it with TaskStop, then release it.`,
       );
     return out(`Released ${releaseWorktree(w)}. The branch and its commits stay.`);
   }
@@ -3256,6 +3272,23 @@ function standardsCommand() {
 }
 
 /**
+ * HAND-12: the approved designs a story's screens are built from: its own entries and its design
+ * stories' (designsFor), and every registered screen its branch changes, which verify and the merge
+ * queue ask the review's evidence for whichever design story the entry names.
+ */
+function storyDesigns(root, config, entries, storyId, stories) {
+  const own = designsFor(entries, storyId, stories);
+  const story = stories.find((s) => s.id.toLowerCase() === String(storyId).toLowerCase());
+  const branch = story ? `${story.lane}/${story.id.toLowerCase()}` : storyId;
+  const base = config.branches.protected[0];
+  const diff = spawnSync('git', ['-C', root, 'diff', '--name-only', `${base}...${branch}`], {
+    encoding: 'utf8',
+  });
+  const changed = new Set(diff.status === 0 ? diff.stdout.split('\n').filter(Boolean) : []);
+  return [...own, ...entries.filter((e) => changed.has(e.file) && !own.includes(e))];
+}
+
+/**
  * HAND-3, HAND-5: the approved designs, from the design register. `designs <story>` gives the designs a
  * story's screens are built from (its own entries and its design stories'), each state's files and
  * viewport, for the lane's brief; `designs` lists every entry and what's wrong with it.
@@ -3269,11 +3302,13 @@ function designsCommand() {
   if (rest[0] === 'evidence') return designEvidence(root, config, entries);
   const story = rest[0];
   const stories = config.docs?.plan ? readStories(root, config.docs.plan) : [];
-  const shown = (story ? designsFor(entries, story, stories) : entries).map((e) => ({
-    ...e,
-    handedOver: handedOver(e),
-    problems: entryProblems(root, e, config.docs?.specs),
-  }));
+  const shown = (story ? storyDesigns(root, config, entries, story, stories) : entries).map(
+    (e) => ({
+      ...e,
+      handedOver: handedOver(e),
+      problems: entryProblems(root, e, config.docs?.specs),
+    }),
+  );
   if (flag('--json')) return out(JSON.stringify(shown, null, 2));
   if (!shown.length)
     return out(
@@ -3317,7 +3352,9 @@ function designEvidence(root, config, entries) {
     die(
       `${storyArg} has no branch here (${branch}): name the story whose branch you reviewed, or its branch.`,
     );
-  const designs = (story ? designsFor(entries, story.id, stories) : entries).filter(handedOver);
+  const designs = (story ? storyDesigns(root, config, entries, story.id, stories) : entries).filter(
+    handedOver,
+  );
   const key = (v) =>
     String(v ?? '')
       .trim()

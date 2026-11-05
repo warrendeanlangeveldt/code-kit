@@ -33,7 +33,10 @@ export const DEPENDENCY_APPROVAL = 'dep-';
 export const dependencyApproval = (pkg) =>
   `${DEPENDENCY_APPROVAL}${pkg.replace(/\//g, '+').replace(/[^\w.@+-]/g, '_')}`;
 
-const js = (name) => name.replace(/(?<=.)@.*$/, ''); // lodash@4, @scope/pkg@^1
+// lodash@4, @scope/pkg@^1; one of the project's own packages (`@scope/pkg@workspace:*`, a `link:` or
+// `file:` path) comes from no registry, so it's no new dependency.
+const js = (name) =>
+  /(?<=.)@(?:workspace|link|file|portal):/.test(name) ? '' : name.replace(/(?<=.)@.*$/, '');
 const py = (name) => name.split(/[[<>=!~;\s]/)[0]; // httpx>=0.27, requests[socks]
 const at = (name) => name.replace(/@.*$/, ''); // serde@1, example.com/m@v1
 
