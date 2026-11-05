@@ -8286,6 +8286,27 @@ else process.exit(1);
       ),
       0,
     );
+    const nextOf = (id) => JSON.parse(tCli(id, 'next', '--json').stdout);
+    const [nextA, nextB] = [nextOf(A), nextOf(B)];
+    expect(
+      "SESS-2 next tells a working session the step is the lead's, not hands it the step",
+      truth(
+        nextB.step === 'working' &&
+          nextB.lead.session === A &&
+          nextB.lead.step === nextA.step &&
+          nextA.step !== 'working' &&
+          nextB.why.includes('aaaa0001') &&
+          nextB.why.includes('code-kit task'),
+        JSON.stringify([nextA.step, nextB]),
+      ),
+      0,
+    );
+    const nextText = tCli(B, 'next').stdout;
+    expect(
+      'SESS-2 and its text names no step to run',
+      truth(nextText.startsWith('Next: working') && !nextText.includes('/code-kit:'), nextText),
+      0,
+    );
     finish(A);
     const unled = tCli(null, 'loop', 'lead', '--session', B);
     expect(

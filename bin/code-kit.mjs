@@ -2268,10 +2268,24 @@ function reconcileCommand(id) {
 }
 
 function next() {
-  const step = nextStep(resolve('.'), (config) => findBase(config, false));
+  const root = resolve('.');
+  let step = nextStep(root, (config) => findBase(config, false));
+  // SESS-2: the project's steps are the lead's. A working session that asks is told whose they are,
+  // and what's its own, instead of being handed a dispatch or a review it may not do.
+  const me = callerSession ? readSession(root, callerSession) : null;
+  const lead = leadSession(root);
+  if (me && lead && lead.id !== me.id && !['wait', 'done'].includes(step.step))
+    step = {
+      ...step,
+      step: 'working',
+      lead: { session: lead.id, step: step.step, args: step.args ?? null },
+      args: null,
+      then: [],
+      why: `This is a working session: session ${shortSession(lead.id)} leads the project, and the next step, ${step.step}${step.args ? ` ${step.args}` : ''}, is the lead's (${step.why}). Here, do a task of your own, in a worktree of your own: record it with \`code-kit task "<what>" --touches "<globs>"\` first. To lead from this session instead, ask the person to make it the lead.`,
+    };
   if (flag('--json')) return out(JSON.stringify(step, null, 2));
   const command = (s, args) => `/code-kit:${s}${args ? ` ${args}` : ''}`;
-  const actionable = !['wait', 'done'].includes(step.step);
+  const actionable = !['wait', 'done', 'working'].includes(step.step);
   out(actionable ? `Next: ${command(step.step, step.args)}` : `Next: ${step.step}`);
   out(`Why: ${step.why}`);
   for (const t of step.then) out(`Then: ${command(t.step, t.args)}`);

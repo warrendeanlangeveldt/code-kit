@@ -17,6 +17,7 @@ It returns `step`, `why`, `args`, `then` (steps that can follow straight after) 
 
 | State                                                        | Step                                                      |
 | ------------------------------------------------------------ | --------------------------------------------------------- |
+| This is a working session (another session leads)            | working: the step is the lead's, not this session's       |
 | Invalid config                                               | `check`, then fix the config                              |
 | No config, a draft waiting                                   | `init`, to show it for approval                           |
 | No config, a spec still being shaped (brief not `ready`)     | `spec-design`, resuming                                   |
@@ -47,6 +48,7 @@ Run the named skill with the Skill tool: `code-kit:<step>`, with `args` (and the
 - **`update`:** run `code-kit:init`. `why` names what the setup is missing (the design gate, design stories, a QA lane, a security reviewer); init adds those, shows the person the difference, and sets `"setup": 3`. Until then no new story starts; work already started goes on to review and merge.
 - **`instructions`:** there's no skill to run. With `args` `write`, run `code-kit instructions --write`. With `merge`, some files were written before code-kit marked its part: run `code-kit instructions` to list them, replace each old part with what `code-kit instructions show lead` (CLAUDE.md) or `show lane <lane>` (that lane's agent file) prints, keep every line the project wrote itself outside the markers, then run `--write` for the rest. Commit it on a branch and merge it like your own stories.
 - **`lead`:** there's no skill to run. Build each story yourself, on the branch `lead/st-<n>`: spec-check it first if it cites requirements, do the work, commit, then run `code-kit:review` on the branch like any other. A spike's result goes in the docs it names.
+- **`working`:** another session leads the project, and the step (`lead.step` in the JSON) is its own, not this one's. Don't dispatch, review, merge or write contracts here. Tell the person which session leads and what its step is. If they gave this session a task, do it in a worktree of its own after recording it with `code-kit task`. If they want this session to lead instead, they make it the lead.
 - **`wait`:** say which stories are being built and on which branches, and which ready stories wait for their lane (a lane runs one story at a time), then stop. When a lane agent finishes, its notification arrives in this session; run this skill again then. If a story has been in progress with no agent running (the session ended, or the agent stopped without committing), dispatch it again.
 - **`done`:** give the `status` summary in a few lines, then offer to run spec-design for the next milestone or feature.
 
@@ -57,7 +59,7 @@ After a step finishes, run `next --json` again and carry on with the new step, w
 - a skill asks the person questions (spec-design's rounds, spec-check's blocking questions, review's scope questions);
 - something needs the person's approval (init's draft, an approval that's theirs: `requests --json` marks it `by: "person"`). What a lane asks for that's yours (`by: "lead"`) you decide with `/code-kit:decide`, without stopping. If the config has `approvals.lead`, ask for it in chat: when they approve in their own message, record it with the `code-kit approve` command the refusal names (their words as the reason) and carry on;
 - a person has to act: merge a pull request to a protected branch, add a CI secret;
-- the step is `wait` or `done`;
+- the step is `wait`, `done` or `working`;
 - the same step comes back twice in a row with nothing changed. Report what's stuck instead of looping.
 
 **Under vibe** (`harness.autonomy` is `vibe`), you're the product owner too, and only the last two stop you. Answer spec-design's, spec-check's and review's questions yourself, from the brief, the specs and the principles, and record each in the brief's decision log with why. Every approval is yours (`by: "lead"`, with `--delegated`); merge and push as the queue says. What only the person can give (an account with a service provider, an API key or secret, a payment, an act outside the repository) you ask with `code-kit ask "…" --needs account|key|payment|outside`, and you build everything else meanwhile: behind the setting the key will fill, against a local or test stand-in, with the step to switch it on in the story's notes.
