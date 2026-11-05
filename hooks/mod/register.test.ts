@@ -5,6 +5,7 @@ import { expect, mock, test } from 'claude-code/testing';
 import { charactersOf } from './characters.mjs';
 
 const PANE = 'code-kit-lanes';
+const DECIDE = 'code-kit-decide';
 const APPROVE = 'code-kit-approve';
 const RESULT = 'code-kit-result';
 const SETTINGS = 'code-kit-settings';
@@ -583,6 +584,9 @@ const bandUi = ($: any) =>
     viewport: { columns: 120, rows: 40 },
     props: { hasSurvey: false, isWorking: false, maxRows: 6, bodyColumns: 100 },
   });
+/** Every text a mounted tree draws, one per line. */
+const textsOf = async (ui: any) =>
+  (await ui.findAll({ type: 'Text' })).map((t: any) => t.text).join('\n');
 const press = ($: any, key: string, requestId?: string) =>
   $.ui.press({ plugin: 'code-kit', key, ...(requestId ? { requestId } : {}) });
 const lanes = ($: any, args = '') => $.command.run({ command: 'lanes', args });
@@ -739,10 +743,10 @@ test("HELM-6 a request the lead decides isn't the person's: only theirs waits in
   await press($, 'band-decide');
   await ui.unmount();
   // Not needed drops it by the number the CLI gave it, past the lead's request it doesn't show.
-  const decisions = await pane($, PANE);
-  await press($, 'decide-dropRequest', PANE);
+  const decide = await pane($, DECIDE);
+  await press($, 'decide-dropRequest', DECIDE);
   expect(w.acts).toContainEqual(['requests', 'drop', '2', '--via', 'pane']);
-  await decisions.unmount();
+  await decide.unmount();
 });
 
 test('ACT-1 and BAND-3 approving with the prefilled reason grants it for the lane, and the line goes', async ($, on) => {
@@ -1526,7 +1530,7 @@ test('HOLD-1 and HOLD-2 a lane installing a new package is held, and the band as
   expect(refused(await call)).toBe(true);
 });
 
-test('DECIDE-2 a decision in the band says which story it is for, and d opens it as a card with its lineage', async ($, on) => {
+test('DECIDE-2 and DECIDE-5 a decision in the band says which story it is for, and d opens all of it in the Decide pane', async ($, on) => {
   const w = project();
   w.refusal = webInstall;
   w.stories[0] = { ...w.stories[0], requirements: ['BOOK-1'] };
@@ -1551,24 +1555,27 @@ test('DECIDE-2 a decision in the band says which story it is for, and d opens it
   expect((await band.find({ key: 'band-decide' }))?.props.hotkey).toBe('d');
   await press($, 'band-decide');
   await band.unmount();
-  const ui = await pane($, PANE);
-  const card = await ui.find({ key: 'decision-card' });
-  expect(card?.text).toMatch(/ST-4 Booking form · web\/st-4/);
-  expect(card?.text).toMatch(/BOOK-1 Request a booking/);
-  expect(card?.text).toMatch(/npm install dayjs/);
-  expect(card?.text).toMatch(/ST-4 Booking form \(BOOK-1\) was handed to the web lane/);
-  expect(card?.text).toMatch(/Blocked: a new dependency \(dayjs\) needs a person's approval\./);
-  expect(card?.text).not.toMatch(/limits you set/);
-  expect((await ui.find({ key: 'decision-option-approveHeld' }))?.text).toMatch(
+  expect(w.opened).toContain(DECIDE);
+  const ui = await pane($, DECIDE);
+  const all = await textsOf(ui);
+  expect(all).toMatch(/ST-4 Booking form \(BOOK-1 Request a booking\)/);
+  expect(all).toMatch(/npm install dayjs/);
+  expect(all).toMatch(/ST-4 Booking form \(BOOK-1\) was handed to the web lane/);
+  expect(all).toMatch(/Blocked: a new dependency \(dayjs\) needs a person's approval\./);
+  expect(all).not.toMatch(/limits you set/);
+  expect((await ui.find({ key: 'decide-option-approveHeld' }))?.text).toMatch(
     /The held call runs now, and the agent carries on/,
   );
+  // Each option on its number.
+  expect((await ui.find({ key: 'decide-approveHeld' }))?.props.hotkey).toBe('1');
+  expect((await ui.find({ key: 'decide-refuseHeld' }))?.props.hotkey).toBe('2');
   await ui.unmount();
   w.waiting.get('tu-h1')?.('timed out');
   // A timed-out hold refuses the call, as the hooks did; awaited, so the test doesn't end mid-call.
   expect(refused(await call)).toBe(true);
 });
 
-test('DECIDE-3 an option on the card answers the decision, as the band would', async ($, on) => {
+test('DECIDE-3 an option in the Decide pane answers the decision, as the band would', async ($, on) => {
   const w = project();
   w.refusal = webInstall;
   w.agents = [{ id: 'a1', type: 'web-engineer', description: 'ST-4', status: 'running' }];
@@ -1578,9 +1585,11 @@ test('DECIDE-3 an option on the card answers the decision, as the band would', a
   const band = await bandUi($);
   await press($, 'band-decide');
   await band.unmount();
-  const ui = await pane($, PANE);
-  await press($, 'decide-refuseHeld', PANE);
+  const ui = await pane($, DECIDE);
+  await press($, 'decide-refuseHeld', DECIDE);
   expect(refused(await call)).toBe(true);
+  // Nothing else waits: the pane says so.
+  expect(await ui.find({ type: 'Text', text: 'Nothing needs you now.' })).toBeDefined();
   await ui.unmount();
   const after = await bandUi($);
   expect(await after.find({ key: 'band-decide' })).toBeUndefined();
@@ -1615,7 +1624,7 @@ const question = (extra: any = {}) => ({
   ...extra,
 });
 
-test("ASK-2 the lead's question waits in the band and as a card; an option answers it and tells the lead", async ($, on) => {
+test("ASK-2 the lead's question waits in the band and in the Decide pane; an option answers it and tells the lead", async ($, on) => {
   const w = project();
   w.questions = [
     question(),
@@ -1636,23 +1645,24 @@ test("ASK-2 the lead's question waits in the band and as a card; an option answe
   expect(await band.find({ type: 'Text', text: '1 more waiting · /lanes' })).toBeDefined();
   await press($, 'band-openDecision');
   await band.unmount();
-  const ui = await pane($, PANE);
-  // One card per question, not one for both.
-  expect(await ui.find({ key: 'decision-pick-0' })).toBeDefined();
-  expect(await ui.find({ key: 'decision-pick-1' })).toBeDefined();
+  const ui = await pane($, DECIDE);
+  // One decision per question, not one for both.
+  expect(await ui.find({ type: 'Text', text: '1 of 2' })).toBeDefined();
   expect(await ui.find({ type: 'Text', text: 'ST-4 waits on your answer.' })).toBeDefined();
   expect(
     await ui.find({ type: 'Text', text: 'Free, Australian data; we credit the Bureau.' }),
   ).toBeDefined();
-  await press($, 'decide-answerWith-0', PANE);
+  await press($, 'decide-answerWith-0', DECIDE);
   expect(w.acts).toContainEqual(['ask', 'answer', 'Q-1', 'Bureau of Meteorology', '--via', 'pane']);
   expect(w.prompts.at(-1)).toBe(
     'The person answered Q-1 (Which weather provider: the Bureau of Meteorology or a commercial service?): Bureau of Meteorology. ST-4 no longer waits on them. Carry on with it.',
   );
+  // The next takes its place.
+  expect(await ui.find({ type: 'Text', text: 'May sessions show your city?' })).toBeDefined();
   await ui.unmount();
 });
 
-test("ASK-2 a question with no options, or Something else…, is answered in the person's own words", async ($, on) => {
+test("ASK-2 a question with no options is answered in the person's own words, in the Decide pane itself", async ($, on) => {
   const w = project();
   w.questions = [
     question({
@@ -1667,17 +1677,16 @@ test("ASK-2 a question with no options, or Something else…, is answered in the
   const band = await bandUi($);
   await press($, 'band-openDecision');
   await band.unmount();
-  const ui = await pane($, PANE);
-  await press($, 'decide-answer', PANE);
-  expect(w.opened).toContain('code-kit-answer');
-  const box = await pane($, 'code-kit-answer');
-  await $.ui.input({ plugin: 'code-kit', key: 'answer-text', text: '' });
+  const ui = await pane($, DECIDE);
+  // No Answer… to press first, and no box of its own.
+  expect(await ui.find({ key: 'decide-answer' })).toBeUndefined();
+  await $.ui.input({ plugin: 'code-kit', key: 'decide-typed', text: '' });
   expect(
-    await box.find({ type: 'Text', text: 'Type your answer: the lead builds on it.' }),
+    await ui.find({ type: 'Text', text: 'Type your answer: the lead builds on it.' }),
   ).toBeDefined();
   await $.ui.input({
     plugin: 'code-kit',
-    key: 'answer-text',
+    key: 'decide-typed',
     text: 'Only the suburb, never the street',
   });
   expect(w.acts).toContainEqual([
@@ -1691,8 +1700,7 @@ test("ASK-2 a question with no options, or Something else…, is answered in the
   expect(w.prompts.at(-1)).toBe(
     'The person answered Q-2 (May sessions show your city?): Only the suburb, never the street. Carry on with it.',
   );
-  expect(w.closed).toContain('code-kit-answer');
-  await box.unmount();
+  expect(await ui.find({ type: 'Text', text: 'Nothing needs you now.' })).toBeDefined();
   await ui.unmount();
 });
 
@@ -1716,15 +1724,12 @@ test("ASK-4 the brief's open questions are the person's decisions: answered to t
   expect(await band.find({ type: 'Text', text: '1 more waiting · /lanes' })).toBeDefined();
   await press($, 'band-openDecision');
   await band.unmount();
-  const ui = await pane($, PANE);
+  const ui = await pane($, DECIDE);
   expect(await ui.find({ type: 'Text', text: 'Accounts: AWS, Supabase, Fly' })).toBeDefined();
-  expect(await ui.find({ type: 'Text', text: 'open in docs/brief.md' })).toBeDefined();
-  await press($, 'decide-laterBrief', PANE);
+  expect(await ui.find({ type: 'Text', text: /open question in docs\/brief\.md/ })).toBeDefined();
+  await press($, 'decide-laterBrief', DECIDE);
   expect(await ui.find({ type: 'Text', text: 'The product domain' })).toBeDefined();
-  await press($, 'decide-answerBrief', PANE);
-  const box = await pane($, 'code-kit-answer');
-  await $.ui.input({ plugin: 'code-kit', key: 'answer-text', text: 'example.com' });
-  await box.unmount();
+  await $.ui.input({ plugin: 'code-kit', key: 'decide-typed', text: 'example.com' });
   expect(w.prompts.at(-1)).toBe(
     'The person answered an open question in docs/brief.md, "The product domain": example.com. Record it in the brief\'s decision log, take it out of the open questions, and carry on with it.',
   );
@@ -1734,7 +1739,7 @@ test("ASK-4 the brief's open questions are the person's decisions: answered to t
   await after.unmount();
 });
 
-test("ASK-5 a brief's question shows as a question, with who decides and what it holds up, and can be asked about before answering", async ($, on) => {
+test("ASK-5 a brief's question shows whole, with who decides and what it holds up, and can be asked about before answering", async ($, on) => {
   const w = project();
   w.next = {
     ...w.next,
@@ -1762,8 +1767,8 @@ test("ASK-5 a brief's question shows as a question, with who decides and what it
   const band = await bandUi($);
   await press($, 'band-openDecision');
   await band.unmount();
-  const ui = await pane($, PANE);
-  expect(await ui.find({ type: 'Text', text: 'An open question in your brief' })).toBeDefined();
+  const ui = await pane($, DECIDE);
+  expect(await ui.find({ type: 'Text', text: 'your brief' })).toBeDefined();
   expect(
     await ui.find({
       type: 'Text',
@@ -1780,16 +1785,13 @@ test("ASK-5 a brief's question shows as a question, with who decides and what it
     }),
   ).toBeDefined();
   expect(await ui.find({ type: 'Text', text: /dep-rrule/ })).toBeUndefined();
-  await press($, 'decide-answerBrief', PANE);
-  const box = await pane($, 'code-kit-answer');
   await $.ui.input({ plugin: 'code-kit', key: 'ask-about', text: 'What is this for?' });
   expect(w.sideAsks[0].prompt).toMatch(/An open question in docs\/brief\.md:\n- Product domain/);
   expect(w.sideAsks[0].prompt).toMatch(/what it holds up: CAP-1 \(M2\)/);
-  expect(JSON.stringify(await box.find({ key: 'aside-a-0' }))).toMatch(
+  expect(JSON.stringify(await ui.find({ key: 'aside-a-0' }))).toMatch(
     /dayjs formats the booking dates/,
   );
   expect(w.prompts).toEqual([]);
-  await box.unmount();
   await ui.unmount();
 });
 
@@ -1802,22 +1804,21 @@ test('ASK-2 and ASK-4 an answer closes its decision at once, though the lead hea
   const band = await bandUi($);
   await press($, 'band-openDecision');
   await band.unmount();
-  const ui = await pane($, PANE);
-  await press($, 'decide-answer', PANE);
-  let box = await pane($, 'code-kit-answer');
-  await $.ui.input({ plugin: 'code-kit', key: 'answer-text', text: 'The Bureau' });
-  await box.unmount();
-  expect(w.closed).toContain('code-kit-answer');
+  const ui = await pane($, DECIDE);
+  await $.ui.input({ plugin: 'code-kit', key: 'decide-typed', text: 'The Bureau' });
   expect(await ui.find({ type: 'Text', text: /Which weather provider/ })).toBeUndefined();
-  await press($, 'decide-answerBrief', PANE);
-  box = await pane($, 'code-kit-answer');
-  await $.ui.input({ plugin: 'code-kit', key: 'answer-text', text: 'example.com' });
-  await box.unmount();
+  // The brief's question takes its place, its box empty.
+  expect(await ui.find({ type: 'Text', text: 'The product domain' })).toBeDefined();
+  expect((await ui.find({ key: 'decide-typed' }))?.props.value).toBe('');
+  await $.ui.input({ plugin: 'code-kit', key: 'decide-typed', text: 'example.com' });
   expect(w.prompts).toHaveLength(2);
-  // UI-3: with nothing left to decide, the view gives way to the panels, and Needs you takes no room.
-  expect(await ui.find({ key: 'panel-needs' })).toBeUndefined();
-  expect(await ui.find({ key: 'panel-build' })).toBeDefined();
   await ui.unmount();
+  // UI-3: with nothing left to decide, Needs you takes no room in the Lanes pane.
+  await lanes($);
+  const lanesUi = await pane($, PANE);
+  expect(await lanesUi.find({ key: 'panel-needs' })).toBeUndefined();
+  expect(await lanesUi.find({ key: 'panel-build' })).toBeDefined();
+  await lanesUi.unmount();
 });
 
 test('OWN-2 sixty calls Claude Code refused, each followed by the lead finding another way, are no decisions: the Lanes pane shows the latest as activity', async ($, on) => {
@@ -1870,16 +1871,31 @@ test('CARD-8 two approvals waiting are two decisions, each approved or dropped o
   expect(await band.find({ type: 'Text', text: '1 more waiting · /lanes' })).toBeDefined();
   await press($, 'band-decide');
   await band.unmount();
-  const ui = await pane($, PANE);
-  expect(await ui.find({ key: 'decision-pick-0' })).toBeDefined();
-  expect(await ui.find({ key: 'decision-pick-1' })).toBeDefined();
-  await press($, 'decision-pick-1', PANE);
-  await press($, 'decide-dropRequest', PANE);
+  const ui = await pane($, DECIDE);
+  expect(await ui.find({ type: 'Text', text: '1 of 2' })).toBeDefined();
+  await press($, 'decide-next', DECIDE);
+  expect(await ui.find({ type: 'Text', text: '2 of 2' })).toBeDefined();
+  expect(await ui.find({ type: 'Text', text: /Approve zod/ })).toBeDefined();
+  await press($, 'decide-dropRequest', DECIDE);
   expect(w.acts).toContainEqual(['requests', 'drop', '2', '--via', 'pane']);
   await ui.unmount();
 });
 
-test('CARD-9 many decisions read as short cards, a few at a time, with the selected one in full', async ($, on) => {
+test('DECIDE-5 /lanes decide opens the Decide pane on the first decision, and a long question is drawn whole', async ($, on) => {
+  const w = project();
+  const long = `${'Which of the providers should the booking reminders go through, given the costs and the limits each one sets on messages a day, '.repeat(3)}and who pays for it?`;
+  w.questions = [question({ question: long })];
+  await start($, on, w);
+  await lanes($, 'decide');
+  expect(w.opened).toContain(DECIDE);
+  const ui = await pane($, DECIDE);
+  expect((await ui.find({ key: 'decide-question' }))?.text).toBe(long);
+  expect((await ui.find({ type: 'Text', text: long }))?.props.wrap).toBe('wrap');
+  await ui.unmount();
+  w.questions = [];
+});
+
+test('CARD-9 and DECIDE-5 many decisions are taken one at a time, n and p going round them, none cut', async ($, on) => {
   const w = project();
   w.requests = Array.from({ length: 8 }, (_, i) => ({
     ...dayjs,
@@ -1892,31 +1908,23 @@ test('CARD-9 many decisions read as short cards, a few at a time, with the selec
   const band = await bandUi($);
   await press($, 'band-decide');
   await band.unmount();
-  const ui = await pane($, PANE);
+  const ui = await pane($, DECIDE);
   // UI-3: most urgent first: the lead's question before the approvals.
-  expect((await ui.find({ key: 'decision-kinds' }))?.text).toBe('1 question · 8 approvals');
-  await press($, 'decision-next', PANE);
-  // Five cards at a time, each a headline and a line under it; the command cut at its pipe, on one line.
-  expect(await ui.find({ key: 'decision-item-4' })).toBeDefined();
-  expect(await ui.find({ key: 'decision-item-5' })).toBeUndefined();
-  expect(await ui.find({ type: 'Text', text: '  ↓ 4 more' })).toBeDefined();
-  expect((await ui.find({ key: 'decision-head-1' }))?.text).toMatch(
-    /approval\s*Approve pkg0, a, b and 1 more/,
-  );
+  expect(await ui.find({ type: 'Text', text: '1 of 9' })).toBeDefined();
+  expect(await ui.find({ type: 'Text', text: 'question' })).toBeDefined();
+  await press($, 'decide-next', DECIDE);
+  expect(await ui.find({ type: 'Text', text: '2 of 9' })).toBeDefined();
+  expect(await ui.find({ type: 'Text', text: 'Approve pkg0, a, b and 1 more' })).toBeDefined();
+  // The command cut at its pipe; the heredoc it wrote never shown.
   expect(
-    await ui.find({
-      type: 'Text',
-      text: 'for the web lane · ST-4 · pnpm --filter @app/web add pkg0 a b c',
-    }),
+    await ui.find({ type: 'Text', text: /pnpm --filter @app\/web add pkg0 a b c/ }),
   ).toBeDefined();
   expect((await ui.findAll({ type: 'Text' })).some((t: any) => /tsconfig|EOF/.test(t.text))).toBe(
     false,
   );
-  await press($, 'decision-next', PANE);
-  await press($, 'decision-next', PANE);
-  await press($, 'decision-next', PANE);
-  expect(await ui.find({ type: 'Text', text: /↑ \d+ more/ })).toBeDefined();
-  expect((await ui.findAll({ type: 'Text' })).some((t: any) => t.text === '5 of 9')).toBe(true);
+  await press($, 'decide-prev', DECIDE);
+  await press($, 'decide-prev', DECIDE);
+  expect(await ui.find({ type: 'Text', text: '9 of 9' })).toBeDefined();
   await ui.unmount();
 });
 
@@ -1944,15 +1952,15 @@ test('REPORT-3 a bug report an agent drafted waits for the person, who reads it 
   ).toBeDefined();
   await press($, 'band-openDecision');
   await band.unmount();
-  const ui = await pane($, PANE);
+  const ui = await pane($, DECIDE);
   expect(
     await ui.find({ type: 'Text', text: '**What happened:** the card never showed' }),
   ).toBeDefined();
-  await press($, 'decide-sendReport', PANE);
+  await press($, 'decide-sendReport', DECIDE);
   expect(w.acts.filter((a: string[]) => a[0] === 'report' && a[1] === 'send')).toEqual([
     ['report', 'send', 'R-1'],
   ]);
-  // Sent, it leaves the tab, and the result is a toast, not a pane to close.
+  // Sent, it leaves the pane, and the result is a toast, not a pane to close.
   expect(w.toasts).toEqual([
     "Sending R-1 to code-kit's GitHub…",
     'Filed https://github.com/o/code-kit/issues/9',
@@ -1983,8 +1991,8 @@ test('REPORT-3 a report GitHub refused stays to send again, and says why', async
   const band = await bandUi($);
   await press($, 'band-openDecision');
   await band.unmount();
-  const ui = await pane($, PANE);
-  await press($, 'decide-sendReport', PANE);
+  const ui = await pane($, DECIDE);
+  await press($, 'decide-sendReport', DECIDE);
   expect(w.opened).toContain(RESULT);
   const result = await pane($, RESULT);
   expect(await result.find({ type: 'Text', text: /GitHub didn't take it/ })).toBeDefined();
@@ -2014,12 +2022,14 @@ test('LEAN-8 a merged worktree still holding changes waits for the person, who k
   ).toBeDefined();
   await press($, 'band-openDecision');
   await band.unmount();
-  const ui = await pane($, PANE);
+  const ui = await pane($, DECIDE);
   expect(await ui.find({ type: 'Text', text: /\?\? notes\.txt/ })).toBeDefined();
-  await press($, 'decide-discardWorktree', PANE);
+  await press($, 'decide-discardWorktree', DECIDE);
   expect(w.acts).toContainEqual(['worktrees', 'discard', 'web/st-2']);
   expect(w.opened).not.toContain(RESULT);
-  await press($, 'decide-keepWorktree', PANE);
+  // The other takes its place, and is kept.
+  expect(await ui.find({ type: 'Text', text: /api\/st-3/ })).toBeDefined();
+  await press($, 'decide-keepWorktree', DECIDE);
   expect(w.acts.filter((a: string[]) => a[0] === 'worktrees')).toEqual([
     ['worktrees', 'discard', 'web/st-2'],
   ]);
@@ -2909,7 +2919,7 @@ test('LOOP-10 the lead session renews its lease while it runs, and releases it a
   expect(w.leadSession).toBe(null);
 });
 
-test("LOOP-11 a reply that waits on the person holds the loop; the dialog asks the lead's question and the answer goes to the lead", async ($, on) => {
+test('LOOP-11 a reply that waits on the person holds the loop; its question waits in the band, and the answer goes to the lead', async ($, on) => {
   const w = project();
   w.sideReply = unread;
   const clock = await start($, on, w);
@@ -2926,7 +2936,6 @@ test("LOOP-11 a reply that waits on the person holds the loop; the dialog asks t
     reason: 'a pricing rule only the person can set',
   });
   w.next = { step: 'review', args: 'ST-4', then: [] };
-  w.answer = 'Include GST';
   await leadSays($, 't-2', 'Before I dispatch ST-9: should its prices include GST?');
   await settle(clock);
   // The side call read the reply over the lead's own conversation, with the step it answered.
@@ -2935,17 +2944,23 @@ test("LOOP-11 a reply that waits on the person holds the loop; the dialog asks t
   expect(w.sideAsks.at(-1).model).toBe('sonnet');
   expect(w.sideAsks.at(-1).prompt).toMatch(/prompted you: "Dispatch ST-9/);
   expect(w.sideAsks.at(-1).prompt).toMatch(/should its prices include GST\?/);
-  expect(w.asked.at(-1)).toEqual({
-    question: 'Should ST-9 show prices with GST?',
-    options: ['Include GST', 'Exclude GST'],
-    header: 'the lead',
-  });
+  // DECIDE-5: nothing pops up over the conversation.
+  expect(w.asked).toEqual([]);
+  expect(w.prompts).toHaveLength(1);
+  const band = await bandUi($);
+  await press($, 'band-decide');
+  await band.unmount();
+  const ui = await pane($, DECIDE);
+  expect(await ui.find({ type: 'Text', text: 'Should ST-9 show prices with GST?' })).toBeDefined();
+  expect(await ui.find({ type: 'Text', text: 'Every price shows GST.' })).toBeDefined();
+  await press($, 'decide-answerLead-0', DECIDE);
+  await ui.unmount();
   expect(w.prompts.slice(1)).toEqual([
     'The person answered what you asked ("Should ST-9 show prices with GST?"): Include GST. Carry on with it.',
   ]);
 });
 
-test('LOOP-11 dismissed, what the lead waits on stays in the band, and the loop prompts again only once the person has spoken', async ($, on) => {
+test('LOOP-11 what the lead waits on stays in the band, and the loop prompts again only once the person has spoken', async ($, on) => {
   const w = project();
   w.sideReply = unread;
   const clock = await start($, on, w);
@@ -2964,7 +2979,7 @@ test('LOOP-11 dismissed, what the lead waits on stays in the band, and the loop 
   await settle(clock);
   await clock.advance(6000);
   expect(w.prompts).toHaveLength(1);
-  expect(w.asked).toHaveLength(1); // asked once, and dismissed: not asked again
+  expect(w.asked).toHaveLength(0); // never raised in a dialog by itself
   const ui = await bandUi($);
   expect(
     await ui.find({
@@ -3392,7 +3407,7 @@ test('LOOP-12 a design story is handed to the lead once; the loop leaves designi
   );
 });
 
-test("DECIDE-4 the loop's first offer is asked in Claude Code's own dialog; Keep going records it and takes the step", async ($, on) => {
+test("DECIDE-5 the loop's first offer waits in the band, not a dialog; Keep going records it and takes the step", async ($, on) => {
   const w = project();
   (w.check as any).harnessSet = [];
   w.sideReply = unread;
@@ -3400,28 +3415,24 @@ test("DECIDE-4 the loop's first offer is asked in Claude Code's own dialog; Keep
   const clock = await start($, on, w);
   await leadTurn($);
   await settle(clock);
-  expect(w.asked[0].options).toEqual(['Keep going', 'Ask each time', 'Off']);
-  expect(w.asked[0].question).toMatch(
-    /^code-kit can keep the build moving between your prompts\. Next: Dispatch ST-9\. How much should it do on its own\?$/,
-  );
+  expect(w.asked).toEqual([]);
+  expect(w.prompts).toEqual([]);
+  const band = await bandUi($);
+  expect(await band.find({ key: 'band-keepGoing' })).toBeDefined();
+  await press($, 'band-keepGoing');
+  await band.unmount();
+  await settle(clock);
   expect(w.acts.some((a) => a.join(' ').startsWith('settings set autonomy autonomous'))).toBe(true);
   expect(w.prompts).toEqual(['Dispatch ST-9: run /code-kit:dispatch ST-9.']);
 });
 
-test("DECIDE-4 the lead's question is asked in the dialog: an option answers it, and a dismissed one isn't asked again", async ($, on) => {
+test("DECIDE-5 the lead's question is never asked in a dialog by itself: it waits in the band", async ($, on) => {
   const w = project();
   w.questions = [question()];
   w.next = { step: 'wait', args: '', then: [] };
   const clock = await start($, on, w);
-  await clock.advance(4000);
-  expect(w.asked).toHaveLength(1);
-  expect(w.asked[0]).toEqual({
-    question: 'Which weather provider: the Bureau of Meteorology or a commercial service?',
-    options: ['Bureau of Meteorology', 'Commercial'],
-    header: 'question',
-  });
-  await clock.advance(6000);
-  expect(w.asked).toHaveLength(1);
+  await clock.advance(10000);
+  expect(w.asked).toEqual([]);
   const ui = await bandUi($);
   expect(
     await ui.find({ type: 'Text', text: /^The lead asks: Which weather provider/ }),
@@ -3447,7 +3458,7 @@ test("OWN-1 a question another session's lead asked isn't shown, asked or answer
   await ui.unmount();
 });
 
-test("OWN-1 and OWN-5 this session's own question is asked in its dialog, and the answer goes to its own lead", async ($, on) => {
+test("OWN-1 and OWN-5 this session's own question waits in its band, and the answer goes to its own lead", async ($, on) => {
   const w = project();
   const mine = { ...question(), session: 's1' };
   w.questions = [mine];
@@ -3458,11 +3469,20 @@ test("OWN-1 and OWN-5 this session's own question is asked in its dialog, and th
   w.next = { step: 'wait', args: '', then: [] };
   const clock = await start($, on, w);
   await clock.advance(4000);
-  expect(w.asked).toHaveLength(1);
-  expect(w.asked[0].question).toMatch(/^Which weather provider/);
+  expect(w.asked).toEqual([]);
+  const band = await bandUi($);
+  expect(
+    await band.find({ type: 'Text', text: /^The lead asks: Which weather provider/ }),
+  ).toBeDefined();
+  await press($, 'band-decide');
+  await band.unmount();
+  const ui = await pane($, DECIDE);
+  await press($, 'decide-answerWith-0', DECIDE);
+  await ui.unmount();
+  expect(w.prompts.at(-1)).toMatch(/^The person answered Q-1 .*: Bureau of Meteorology\./);
 });
 
-test('OWN-5 a working session asks its own question in its dialog, though another session leads', async ($, on) => {
+test('OWN-5 a working session shows its own question in its band, though another session leads', async ($, on) => {
   const w = project();
   w.role = 'working';
   w.leadSession = 's-lead';
@@ -3476,16 +3496,30 @@ test('OWN-5 a working session asks its own question in its dialog, though anothe
   const clock = await start($, on, w);
   await clock.advance(4000);
   expect(w.prompts).toEqual([]);
-  expect(w.asked).toHaveLength(1);
+  expect(w.asked).toEqual([]);
+  const band = await bandUi($);
+  expect(
+    await band.find({ type: 'Text', text: /^The lead asks: Which weather provider/ }),
+  ).toBeDefined();
+  await band.unmount();
 });
 
-test("DECIDE-4 an option chosen in the dialog, or the person's own words typed there, answer the lead's question", async ($, on) => {
+test("DECIDE-5 the person's own words, typed in the Decide pane, answer the lead's question that has options", async ($, on) => {
   const w = project();
   w.questions = [question()];
   w.next = { step: 'wait', args: '', then: [] };
-  w.typed = 'Both, the Bureau first';
   const clock = await start($, on, w);
   await clock.advance(4000);
+  const band = await bandUi($);
+  await press($, 'band-decide');
+  await band.unmount();
+  const ui = await pane($, DECIDE);
+  // Its options on their numbers, and the person's own words beneath them.
+  expect((await ui.find({ key: 'decide-answerWith-0' }))?.props.hotkey).toBe('1');
+  expect(await ui.find({ key: 'decide-answer' })).toBeUndefined();
+  expect((await ui.find({ key: 'decide-typed' }))?.props.label).toBe('Or in your own words');
+  await $.ui.input({ plugin: 'code-kit', key: 'decide-typed', text: 'Both, the Bureau first' });
+  await ui.unmount();
   expect(w.acts).toContainEqual([
     'ask',
     'answer',
@@ -3908,7 +3942,7 @@ test("SETUP-2 with no rules on the base yet, the lead puts them there under auto
   await ui.unmount();
 });
 
-test("SETUP-2 with the loop off, the merge is the person's, and its card says how the rules get onto main", async ($, on) => {
+test("SETUP-2 with the loop off, the merge is the person's, and the Decide pane says how the rules get onto main", async ($, on) => {
   const w = project();
   (w.check as any).firstMerge = true;
   (w.check as any).harness = { autonomy: 'off' };
@@ -3918,10 +3952,8 @@ test("SETUP-2 with the loop off, the merge is the person's, and its card says ho
   expect(await band.find({ type: 'Text', text: 'lead/st-1 is next to merge' })).toBeDefined();
   await press($, 'band-decide');
   await band.unmount();
-  const ui = await pane($, PANE);
-  expect((await ui.find({ key: 'decision-card' }))?.text).toMatch(
-    /code-kit queue rules puts them there/,
-  );
+  const ui = await pane($, DECIDE);
+  expect(await textsOf(ui)).toMatch(/code-kit queue rules puts them there/);
   await ui.unmount();
 });
 
@@ -4081,7 +4113,7 @@ test("VIEW-4 each card shows its agent's last tool call and the time since, its 
   await ui.unmount();
 });
 
-test('UI-3 and UI-8 Needs you holds a held install open, its Approve on 1 in the pane as in the band', async ($, on) => {
+test('UI-3 and UI-8 Needs you lists a held install on a line; it opens in the Decide pane, its Approve on 1 there as in the band', async ($, on) => {
   const w = project();
   w.refusal = webInstall;
   const clock = await start($, on, w);
@@ -4089,18 +4121,23 @@ test('UI-3 and UI-8 Needs you holds a held install open, its Approve on 1 in the
   await lanes($);
   const ui = await pane($, PANE);
   expect((await ui.find({ key: 'status-needs' }))?.text).toMatch(/Needs you\s*·\s*1 waiting/);
-  const open = (await ui.find({ key: 'need-open' }))?.text ?? '';
-  expect(open).toMatch(/held call\s*web wants to install dayjs · 2:00/);
-  expect(open).toMatch(/for ST-4 Booking form/);
-  const approve = await ui.find({ key: 'need-approveHeld' });
-  expect(approve?.props.hotkey).toBe('1');
-  expect(approve?.props.label).toBe('1 Approve');
+  expect((await ui.find({ key: 'need-row-0' }))?.text).toMatch(
+    /held call\s*web wants to install dayjs · 2:00/,
+  );
+  expect(await ui.find({ key: 'need-open' })).toBeUndefined();
   const band = await bandUi($);
   expect((await band.find({ key: 'band-approveHeld' }))?.props.hotkey).toBe('1');
   await band.unmount();
-  await press($, 'need-approveHeld', PANE);
-  expect(w.opened).toContain(APPROVE);
+  await press($, 'need-line-0', PANE);
   await ui.unmount();
+  expect(w.opened).toContain(DECIDE);
+  const decide = await pane($, DECIDE);
+  const approve = await decide.find({ key: 'decide-approveHeld' });
+  expect(approve?.props.hotkey).toBe('1');
+  expect(approve?.props.label).toBe('Approve');
+  await press($, 'decide-approveHeld', DECIDE);
+  expect(w.opened).toContain(APPROVE);
+  await decide.unmount();
   w.waiting.get('tu-h1')?.('timed out');
   // A timed-out hold refuses the call, as the hooks did; awaited, so the test doesn't end mid-call.
   expect(refused(await call)).toBe(true);
@@ -5213,15 +5250,17 @@ test("with a live provider (the hub), the band says when it fell back to GitHub,
   );
   expect(needs).toContain('drift on web/st-9: BOOK-2 now holds prices in cents.');
   expect(needs).not.toMatch(/only a note/);
-  // UI-3: choosing the drift opens it in its place; its Team button opens the Team pane on the drift.
+  // UI-3: choosing the drift opens it in the Decide pane; its Team button opens the Team pane on the drift.
   const rows = await lanesUi.findAll({ type: 'Box' });
   const drift = rows.find(
     (b: any) => /^need-row-/.test(String(b.key)) && /drift on web\/st-9/.test(b.text),
   );
   await press($, String(drift!.key).replace('need-row-', 'need-line-'), PANE);
-  await press($, 'need-team', PANE);
   await lanesUi.unmount();
-  expect(w.opened).toEqual([PANE, TEAM]);
+  const decide = await pane($, DECIDE);
+  await press($, 'decide-team', DECIDE);
+  await decide.unmount();
+  expect(w.opened).toEqual([PANE, DECIDE, TEAM]);
   const ui = await pane($, TEAM);
   expect((await ui.find({ key: 'team-provider' }))?.text).toMatch(
     /can't be reached \(code-kit hub can't be reached\.\): claims are checked through GitHub/,
@@ -5359,7 +5398,7 @@ const axios = {
   what: 'npm install axios',
 };
 
-test('UI-3 and UI-9 a held call and two approvals: the held call is open with Approve and Refuse, the approvals a line each; the band says 2 more', async ($, on) => {
+test('UI-3 and UI-9 a held call and two approvals are a line each, in order; choosing one opens it in the Decide pane; the band says 2 more', async ($, on) => {
   const w = project();
   w.refusal = webInstall;
   w.requests = [zod, axios];
@@ -5367,22 +5406,21 @@ test('UI-3 and UI-9 a held call and two approvals: the held call is open with Ap
   const { call } = await heldCall($, w, clock);
   await lanes($);
   const ui = await pane($, PANE);
-  expect((await ui.find({ key: 'need-open' }))?.text).toMatch(
+  expect((await ui.find({ key: 'need-row-0' }))?.text).toMatch(
     /held call\s*web wants to install dayjs/,
   );
-  expect((await ui.find({ key: 'need-approveHeld' }))?.props.label).toBe('1 Approve');
-  expect((await ui.find({ key: 'need-refuseHeld' }))?.props.label).toBe('2 Refuse');
   expect((await ui.find({ key: 'need-row-1' }))?.text).toMatch(
     /approval\s*Approve zod for the api lane: npm install zod/,
   );
   expect((await ui.find({ key: 'need-row-2' }))?.text).toMatch(
     /approval\s*Approve axios for the core lane: npm install axios/,
   );
-  // Choosing one opens it in its place, its own button numbered as in the band.
   await press($, 'need-line-2', PANE);
-  expect((await ui.find({ key: 'need-open' }))?.text).toMatch(/Approve axios for the core lane/);
-  expect((await ui.find({ key: 'need-approve' }))?.props.label).toBe('4 Approve…');
   await ui.unmount();
+  const decide = await pane($, DECIDE);
+  expect(await decide.find({ type: 'Text', text: /Approve axios/ })).toBeDefined();
+  expect((await decide.find({ key: 'decide-approve' }))?.props.label).toBe('Approve…');
+  await decide.unmount();
   const band = await bandUi($);
   expect(await band.find({ type: 'Text', text: /web wants to install dayjs/ })).toBeDefined();
   expect(await band.find({ key: 'band-refuseHeld' })).toBeDefined();
@@ -5494,7 +5532,7 @@ test('UI-11 /lanes characters draws the sheet: every lane of the project in ever
   await ui.unmount();
   const res = await lanes($, 'dance');
   expect(res.text).toMatch(
-    /isn't a view: try \/lanes, or \/lanes trail, map, journal, usage or characters/,
+    /isn't a view: try \/lanes, or \/lanes decide, trail, map, journal, usage or characters/,
   );
 });
 

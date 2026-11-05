@@ -2,6 +2,10 @@
 
 What changed in each release of code-kit, newest first. Versions follow the plugin manifest and the npm package `@warren-dean/code-kit`. Each release is also on [GitHub Releases](https://github.com/warrendeanlangeveldt/code-kit/releases).
 
+## Unreleased
+
+- **The Decide pane: decisions no longer pop up mid-conversation, or get cut.** code-kit used to ask a decision in Claude Code's own question dialog whenever the lead went idle. The dialog took only the question and up to four short labels, cut what didn't fit, and came up over whatever you were reading. Now nothing pops up: a decision waits in the band and in Needs you, with a notification, until you open it with **d**, its line in Needs you, or `/lanes decide`. The Decide pane opens beside the conversation with one decision at a time, all of it: the whole question, why it's yours, the story and requirements, what was happening, what's settled, and each option on its number with what it does. Questions that take your own words have the box in the pane, with Ask about it. **n** and **p** move between decisions, and the one in view stays put as others come and go. Needs you is now a line per decision, so it no longer jumps as you move through it.
+
 ## 0.31.1 (2026-11-05)
 
 - **`next` in a working session says whose step it is.** When another session leads the project, `code-kit next` and `/code-kit:next` handed a working session the lead's step, such as a dispatch. The session went on to write the lead's contracts and was refused at every edit. It now gets the step `working`: which session leads and what its next step is, and what this session does instead (a task of its own, recorded with `code-kit task`, in a worktree of its own).

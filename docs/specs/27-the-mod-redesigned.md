@@ -73,11 +73,11 @@ The Build panel shows the milestone being built and a bar of its requirements by
 
 ### UI-3 Needs you: what needs me?
 
-Everything waiting on the person is listed here, and only here in the pane, most urgent first: a held call, then the lead's questions, approvals, merges and reviews that are the person's, stalls, the brief's open questions, notes. The first is open, with its story, what it's for and its buttons; the rest are one line each. Choosing one opens it in its place. Its full card (DECIDE-2's lineage) is Enter away.
+Everything waiting on the person is listed here, and only here in the pane, most urgent first: a held call, then the lead's questions, approvals, merges and reviews that are the person's, stalls, the brief's open questions, notes. Each is one line, whichever is chosen (DECIDE-5); a note keeps its own buttons on its line. Choosing a decision opens it in the Decide pane, all of it, with its lineage (DECIDE-2) and its options.
 
 **Acceptance**
 
-- Given a held call and two approvals, then the held call is open with Approve and Refuse, and the approvals are a line each beneath it.
+- Given a held call and two approvals, then each is a line, the held call first; choosing one opens it in the Decide pane, its Approve on 1.
 
 ### UI-4 Lanes: where is each story?
 
@@ -107,7 +107,7 @@ The full views open over the pane, and Escape brings it back:
 - **Code map** (MAP-1 to MAP-5), with **c** on a story (its files) or `/lanes map` (the whole project).
 - **Journal** (JOURNAL-1), with **l** on the Log or `/lanes journal`.
 - **Usage** (spec 08), with `/lanes usage`.
-- **Decision** (DECIDE-2), with Enter on a line in Needs you.
+- **Decision** (DECIDE-2): the Decide pane, a pane of its own (DECIDE-5), from a line in Needs you, `d` in the band or `/lanes decide`.
 
 **Acceptance**
 

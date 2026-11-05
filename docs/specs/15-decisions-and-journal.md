@@ -60,27 +60,34 @@ Usage, the plan's pause, finish checks and "all done" are notes: labelled "note"
 - Given the web lane's `npm install dayjs` held, for ST-4 (BOOK-1), then the band's line reads "for ST-4 Booking form (BOOK-1)", and its card shows the story with its branch, BOOK-1's title, the command, the dispatch from the journal, the refusal's rule with "You haven't let the lead approve these itself.", and Approve with "The held call runs now, and the agent carries on."
 - Given only a usage line, then the band says "note", not "you", and offers no Why.
 
-### DECIDE-3 The Decisions tab
+### DECIDE-3 The Decide pane
 
 Spec 23 (OWN-1 to OWN-5) adds that a decision belongs to the session that raised it: it's shown, asked and answered only there, read from `code-kit decisions`.
 
-`d` in the band ("Why, and what each choice does") opens the Lanes pane on the Decisions tab (2), on the first decision. It lists every decision when there's more than one, shows the selected one as a card, and its options answer exactly as the band's buttons do. With none, it says nothing needs the person.
+`d` in the band (Decide…), a decision's line in Needs you, or `/lanes decide` opens the Decide pane, a pane of its own beside the conversation, on that decision (DECIDE-5). Its options answer exactly as the band's buttons do. With none left, it says nothing needs the person.
 
 **Acceptance**
 
-- Given a held call, when the person presses `d` then Refuse on the card, then the call is refused and the band no longer offers Why.
+- Given a held call, when the person presses `d` then Refuse in the Decide pane, then the call is refused, the pane says nothing needs them, and the band no longer offers Decide….
 
-### DECIDE-4 A choice is asked in Claude Code's own dialog
+### DECIDE-4 Nothing is asked over the conversation
 
-Spec 23 (OWN-1 to OWN-5) adds that a decision belongs to the session that raised it: it's shown, asked and answered only there, read from `code-kit decisions`.
-
-A decision settled by choosing (the loop's first offer of how hands-off it is, a step under `propose`, a step still next after two prompts or one the lead didn't take, a lane stalled past its restarts, a stale claim of the person's, and a question from the lead with two to four answers) is asked in Claude Code's own question dialog, while the lead is idle and nothing is typed in the prompt, one at a time. Each answer acts as its button does; words typed under Other answer a question from the lead as the person's own. A decision with one choice offers Not now beside it. Each is asked once a session: dismissed, it stays in the band and the Decisions tab. What needs a reason or words typed (an approval, a send-back, a setting, a question with no answers offered) stays in the pane, and a turn the person stopped, or a reply with no question in it, opens no dialog. Nothing is asked in a session another one runs the loop for (LOOP-10), nor where nobody can be asked (`claude -p`).
+Replaced 2026-11-05: a decision was asked in Claude Code's own question dialog while the lead was idle. The dialog takes only the question, up to four short labels and a 12-character chip, and cuts what doesn't fit, and it came up in the middle of whatever the person was reading. Now no decision opens a dialog by itself: it waits in the band and in Needs you, with a notification (NOTIFY-1), until the person opens it (DECIDE-5). The compaction after a milestone (LEAN-3) is the one question still asked in the dialog, as `compact.milestone` says.
 
 **Acceptance**
 
-- Given the loop's first offer, when the dialog is answered Keep going, then autonomy is recorded as the person's choice and the step is taken.
-- Given the lead's question with two answers, when the person picks one, or types their own words, then it's recorded and sent to the lead; dismissed, it waits in the band and isn't asked again.
-- Given an approval waiting, then no dialog opens for it.
+- Given the loop's first offer, or the lead's question with two answers, then no dialog opens: it waits in the band, and its button or the Decide pane answers it.
+
+### DECIDE-5 One decision at a time, all of it
+
+The Decide pane shows one decision at a time, and all of it: what it asks, never cut; why it's the person's; the story and requirements it's for; what was happening; what they asked for; what's already settled; and each option on its number (1 to 9), with what it does. A decision that takes the person's own words (the lead's question, one in the brief, what the lead's reply waits on) has a box for them beneath its options, in the pane, and a question about it first (ASK-5). **n** and **p** go to the next and the previous, round the list, with "2 of 5" at the top. Each decision keeps its place by what it's about, not its position: as others come and go, the one in view stays, and once it's settled the one now in its place is shown. Needs you lists every decision a line each, the same height whichever is chosen, so the list never moves under the person.
+
+**Acceptance**
+
+- Given a question of 400 characters, then the Decide pane draws all of it, wrapped.
+- Given the lead's question with two answers, then they're on 1 and 2 with what each does, and the person's own words typed beneath answer it as theirs.
+- Given nine decisions, when the person presses n, then the pane says 2 of 9; p from the first goes to 9 of 9.
+- Given a question answered in the pane, then the next decision takes its place, its box empty.
 
 ### ASK-1 The lead asks through code-kit
 
