@@ -13,6 +13,7 @@ import {
   readFileSync,
   realpathSync,
   rmSync,
+  symlinkSync,
   utimesSync,
   writeFileSync,
 } from 'node:fs';
@@ -906,7 +907,34 @@ try {
     bash('git add -A notes.txt 2>/dev/null; git add notes.txt 2>&1 && git commit -m x'),
     0,
   );
+  // A commit message drafted outside the checkout (a session's scratchpad) can't go into the commit.
+  const scratch = mkdtempSync(join(tmpdir(), 'code-kit-scratch-'));
+  cleanups.push(scratch);
+  const msg = join(scratch, 'msg.txt');
+  symlinkSync(repo, join(scratch, 'back'));
+  expect(
+    'and after writing and editing files outside the checkout',
+    bash(
+      `git log -1 --format=%B > ${msg} && sed -i '' 's/a \\/ b/c/g; s|x|y|' "${msg}" && cat > ${scratch}/new/n.txt <<'EOF'\nnote\nEOF\ngit commit -q --amend -F ${msg}`,
+    ),
+    0,
+  );
   for (const [what, command] of [
+    [
+      'a redirect into the checkout by its full path',
+      `echo x > ${repo}/notes.txt && git commit -m x`,
+    ],
+    [
+      'a redirect through a link into the checkout',
+      `echo x > ${scratch}/back/n.txt && git commit -m x`,
+    ],
+    [
+      'an in-place sed on a file outside and one inside',
+      `sed -i '' 's/a/b/' ${msg} notes.txt && git commit -m x`,
+    ],
+    ['a sed outside that writes a file', `sed -i '' 's/a/b/w notes.txt' ${msg} && git commit -m x`],
+    ['a redirect outside from a command that writes', `node -e 1 > ${msg} && git commit -m x`],
+    ['a redirect to a path from a variable', 'echo x > "$OUT/m.txt" && git commit -m x'],
     ['an in-place sed', `sed -i '' 's/a/b/' notes.txt && git commit -m x`],
     ['a redirect into a file', 'cat notes.txt >> other.txt && git commit -m x'],
     ['a heredoc into a file', "cat > notes.txt <<'EOF'\nnew\nEOF\ngit add -A && git commit -m x"],
@@ -2238,6 +2266,17 @@ try {
           !kit('instructions', 'show', 'lead').stdout.includes(
             "A screen's visual design is theirs",
           ),
+      ),
+      0,
+    );
+    // A lane agent that writes its spec-check report by hand, without the skill, still knows the table the
+    // path guard reads: without it, every code edit is refused until the report is rewritten.
+    expect(
+      "a lane agent's instructions name the spec-check table the path guard reads",
+      truth(
+        kit('instructions', 'show', 'lane', 'web').stdout.includes(
+          'a table whose header row starts `| Requirement |`',
+        ),
       ),
       0,
     );
@@ -10179,6 +10218,42 @@ else process.exit(1);
       1,
       'still at work on web/st-2',
     );
+    // An act its agent is in the middle of, in a live session, holds the worktree too.
+    const { startSession: liveSession } = await import('../hooks/lib/sessions.mjs');
+    liveSession(t.dir, 's1');
+    const open = (ago) => JSON.stringify({ ...JSON.parse(act('run', 'start', ago)), act: 't1' });
+    writeFileSync(join(events, 'ST-2.jsonl'), `${open(60_000)}\n`);
+    expect(
+      'a worktree whose lane agent is in the middle of an act is never released',
+      tCli('worktrees', 'release', 'web/st-2'),
+      1,
+      'still at work on web/st-2',
+    );
+    // But an act left open by an agent that was stopped mid-call doesn't hold it for good: once code-kit
+    // has reconciled the act, or the act is older than the stall restart, the agent isn't at work.
+    const reconciled = JSON.stringify({
+      at: new Date().toISOString(),
+      story: 'ST-2',
+      actor: 'code-kit',
+      kind: 'reconciled',
+      target: 't1',
+      phase: 'note',
+      branch: 'web/st-2',
+    });
+    for (const [what, log] of [
+      ['once code-kit has reconciled it', `${open(60_000)}\n${reconciled}\n`],
+      ['once it is older than the stall restart', `${open(30 * 60_000)}\n`],
+    ]) {
+      writeFileSync(join(events, 'ST-2.jsonl'), log);
+      expect(
+        `an act left open by a stopped agent stops holding its worktree ${what}`,
+        truth(
+          tCli('worktrees', 'release', 'web/st-2').status === 0 && !existsSync(tree('web/st-2')),
+        ),
+        0,
+      );
+      t.git('worktree', 'add', '-q', tree('web/st-2'), 'web/st-2');
+    }
     // The lead's reviewer, still polling for verify on the story, isn't the lane's agent at work.
     const helper = JSON.stringify({
       at: new Date(Date.now() - 10_000).toISOString(),

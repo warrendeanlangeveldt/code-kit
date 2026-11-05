@@ -69,7 +69,7 @@ Designs: <for a story that builds screens, what `code-kit designs ST-<n>` lists:
 Out of scope: <what neighbouring stories or other lanes will do>
 
 Steps:
-1. Run the spec-check skill against these requirements and save the report (the path guard requires it).
+1. Run the spec-check skill against these requirements and save the report, with its `| Requirement |` table (the path guard requires it, and reads a report without that table as none).
    If it recommends "blocked on questions", stop and report the questions.
 2. Build it end to end in your lane's paths. No mocks, stubs, placeholder screens or "coming soon".
 3. Write tests that prove each acceptance criterion. Name the requirement ID in each test's title,

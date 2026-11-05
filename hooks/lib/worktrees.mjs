@@ -19,7 +19,8 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
-import { pruneLogs, readEvents } from './events.mjs';
+import { pruneLogs, readEvents, stopped } from './events.mjs';
+import { sessions } from './sessions.mjs';
 import { laneClaims } from './laneclaims.mjs';
 import { storyOfBranch } from './teamfacts.mjs';
 import { CHECKOUTS_DIR } from './checkout.mjs';
@@ -179,18 +180,30 @@ export const BUSY_MS = 3 * 60_000;
 
 /**
  * LEAN-6: whether a lane agent is still at work on a worktree's story, by the story's event log (spec
- * 26): its lane's last act is still open, or came within BUSY_MS, with no hand-back or stop after it. Releasing
+ * 26): its lane's last act is still open (and its agent hasn't stopped), or came within BUSY_MS, with no
+ * hand-back or stop after it. Releasing
  * a worktree under a running agent takes its git away mid-step. Only the branch's own lane counts: the
  * lead's helpers (a reviewer, a security reviewer) act on the story too, but never commit on its branch.
  */
-export function agentBusy(root, w, now = Date.now()) {
+export function agentBusy(root, w, config = {}, now = Date.now()) {
   if (!w.story || !w.branch?.includes('/')) return false;
   const lane = w.branch.split('/')[0];
-  const last = readEvents(root, w.story)
-    .filter((e) => e.actor === lane && e.agent)
-    .at(-1);
+  const events = readEvents(root, w.story);
+  const last = events.filter((e) => e.actor === lane && e.agent).at(-1);
   if (!last || ['handback', 'stopped'].includes(last.kind)) return false;
-  return last.phase === 'start' || now - Date.parse(last.at) < BUSY_MS;
+  if (last.phase !== 'start') return now - Date.parse(last.at) < BUSY_MS;
+  // An act still open: its agent is at work, unless it was stopped mid-call and the act left open for good.
+  // That's settled as reconcile settles it: code-kit reconciled the act, or its session ended, it handed
+  // back, or it's older than the stall restart (DUR-4, LOOP-3).
+  if (last.act && events.some((e) => e.kind === 'reconciled' && e.target === last.act))
+    return false;
+  const liveSessions = new Set(
+    sessions(root, now)
+      .filter((s) => s.live)
+      .map((s) => s.id),
+  );
+  const restartMs = (config.harness?.stall?.restartMinutes ?? 10) * 60_000;
+  return !stopped(last, events, { liveSessions, restartMs, now });
 }
 
 /** Whether a worktree holds nothing uncommitted, read now where worktrees() didn't. */

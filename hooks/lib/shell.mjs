@@ -162,6 +162,74 @@ function sedPrints(text) {
   return scripts.length > 0 && scripts.every((s) => SED_PRINTS.test(s));
 }
 
+/**
+ * Where a command sends its output: each `>` or `>>` redirect's target as written, quotes off (`2>&1`
+ * and /dev/null left out), and the command without them. Null for a read-write redirect (`<>`).
+ */
+export function outputRedirects(cmd) {
+  const text = withoutHarmlessRedirects(cmd);
+  const code = maskQuotes(text);
+  if (/<>/.test(code)) return null;
+  const targets = [];
+  let rest = '';
+  let at = 0;
+  for (const m of code.matchAll(/(?:\d+|&)?>>?\|?\s*/g)) {
+    const from = m.index + m[0].length;
+    const word = code.slice(from).match(/^[^\s;&|<>()]*/)[0];
+    targets.push(text.slice(from, from + word.length).replace(/^(['"])(.*)\1$/s, '$2'));
+    rest += `${text.slice(at, m.index)} `;
+    at = from + word.length;
+  }
+  return { targets, rest: rest + text.slice(at) };
+}
+
+// One or more sed substitutions (`s/a/b/g`, `s|a|b|`; `;` between them), with no flag that writes a
+// file (`w`) or runs a command (`e`).
+function onlySubstitutes(script) {
+  const s = script.trim();
+  let i = 0;
+  while (i < s.length) {
+    const d = s[i + 1];
+    if (s[i] !== 's' || !d || /[\s\\]/.test(d)) return false;
+    let j = i + 2;
+    for (let parts = 0; parts < 2; j++) {
+      if (j >= s.length) return false;
+      if (s[j] === '\\') j++;
+      else if (s[j] === d) parts++;
+    }
+    j += s.slice(j).match(/^[gIip\d]*\s*/)[0].length;
+    if (j < s.length && s[j] !== ';') return false;
+    i = j + 1;
+    while (s[i] === ' ') i++;
+  }
+  return s.length > 0;
+}
+
+/**
+ * The files a `sed -i` edits in place when every script only substitutes (onlySubstitutes), or null
+ * for any other sed: `-i`, `-i.bak` and BSD's `-i ''`, with `-e`, `-E` and `-r` beside them.
+ */
+export function sedInPlaceFiles(text) {
+  if (!/^sed\s/.test(text) || /[`$<>]/.test(maskQuotes(text))) return null;
+  const words = wordsOf(text).slice(1);
+  const scripts = [];
+  const files = [];
+  let inPlace = false;
+  for (let i = 0; i < words.length; i++) {
+    const w = words[i];
+    if (w === '-i' || w === '--in-place') {
+      inPlace = true;
+      if (words[i + 1] === '') i++;
+    } else if (/^-i\.?\w*$|^--in-place=/.test(w)) inPlace = true;
+    else if (w === '-e' || w === '--expression') scripts.push(words[++i] ?? '');
+    else if (/^-[Er]+$/.test(w)) continue;
+    else if (w.startsWith('-')) return null;
+    else files.push(w);
+  }
+  if (!scripts.length && files.length) scripts.push(files.shift());
+  return inPlace && files.length && scripts.every(onlySubstitutes) ? files : null;
+}
+
 /** Whether an awk command only prints: -F and -v only, and no redirect, pipe, system() or getline. */
 function awkPrints(text) {
   const words = wordsOf(text).slice(1);
