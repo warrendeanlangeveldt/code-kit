@@ -9,9 +9,11 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   realpathSync,
   rmSync,
+  symlinkSync,
   utimesSync,
   writeFileSync,
 } from 'node:fs';
@@ -23,6 +25,7 @@ import { holdable } from '../hooks/mod/hold.mjs';
 import { claimLane, releaseLane } from '../hooks/lib/laneclaims.mjs';
 import { markMerging } from '../hooks/lib/queue.mjs';
 import { openRequests, recordRequest } from '../hooks/lib/rules.mjs';
+import { keptCheckoutOf } from '../hooks/lib/checkout.mjs';
 
 // SESS-1: the CLI reads the calling session from Claude Code's environment; these tests say it themselves.
 delete process.env.CLAUDE_CODE_SESSION_ID;
@@ -909,7 +912,34 @@ try {
     bash('git add -A notes.txt 2>/dev/null; git add notes.txt 2>&1 && git commit -m x'),
     0,
   );
+  // A commit message drafted outside the checkout (a session's scratchpad) can't go into the commit.
+  const scratch = mkdtempSync(join(tmpdir(), 'code-kit-scratch-'));
+  cleanups.push(scratch);
+  const msg = join(scratch, 'msg.txt');
+  symlinkSync(repo, join(scratch, 'back'));
+  expect(
+    'and after writing and editing files outside the checkout',
+    bash(
+      `git log -1 --format=%B > ${msg} && sed -i '' 's/a \\/ b/c/g; s|x|y|' "${msg}" && cat > ${scratch}/new/n.txt <<'EOF'\nnote\nEOF\ngit commit -q --amend -F ${msg}`,
+    ),
+    0,
+  );
   for (const [what, command] of [
+    [
+      'a redirect into the checkout by its full path',
+      `echo x > ${repo}/notes.txt && git commit -m x`,
+    ],
+    [
+      'a redirect through a link into the checkout',
+      `echo x > ${scratch}/back/n.txt && git commit -m x`,
+    ],
+    [
+      'an in-place sed on a file outside and one inside',
+      `sed -i '' 's/a/b/' ${msg} notes.txt && git commit -m x`,
+    ],
+    ['a sed outside that writes a file', `sed -i '' 's/a/b/w notes.txt' ${msg} && git commit -m x`],
+    ['a redirect outside from a command that writes', `node -e 1 > ${msg} && git commit -m x`],
+    ['a redirect to a path from a variable', 'echo x > "$OUT/m.txt" && git commit -m x'],
     ['an in-place sed', `sed -i '' 's/a/b/' notes.txt && git commit -m x`],
     ['a redirect into a file', 'cat notes.txt >> other.txt && git commit -m x'],
     ['a heredoc into a file', "cat > notes.txt <<'EOF'\nnew\nEOF\ngit add -A && git commit -m x"],
@@ -2241,6 +2271,17 @@ try {
           !kit('instructions', 'show', 'lead').stdout.includes(
             "A screen's visual design is theirs",
           ),
+      ),
+      0,
+    );
+    // A lane agent that writes its spec-check report by hand, without the skill, still knows the table the
+    // path guard reads: without it, every code edit is refused until the report is rewritten.
+    expect(
+      "a lane agent's instructions name the spec-check table the path guard reads",
+      truth(
+        kit('instructions', 'show', 'lane', 'web').stdout.includes(
+          'a table whose header row starts `| Requirement |`',
+        ),
       ),
       0,
     );
@@ -4806,8 +4847,21 @@ else process.exit(2);
       0,
     );
     expect(
-      'temporary worktrees are cleaned up',
-      truth(m.git('worktree', 'list').trim().split('\n').length === 1),
+      'temporary worktrees are cleaned up: only the kept checkout stays (MQ-9)',
+      truth(
+        (() => {
+          const kept = keptCheckoutOf(m.dir, 'code-kit-merge-');
+          cleanups.push(kept, `${kept}.installs.json`, `${kept}.lock`);
+          const others = m
+            .git('worktree', 'list', '--porcelain')
+            .split('\n')
+            .filter((l) => l.startsWith('worktree '))
+            .slice(1)
+            .map((l) => realpathSync(l.slice(9)));
+          return others.length === 1 && others[0] === realpathSync(kept);
+        })(),
+        m.git('worktree', 'list'),
+      ),
       0,
     );
     expect('the merge needs --delegated', mKit('merge', 'web/st-1'), 1);
@@ -5943,6 +5997,20 @@ const op = process.argv[2]; let input = ''; process.stdin.on('data', (d) => (inp
       ),
       0,
     );
+    // MQ-9: the merge's checkout is kept, with its installs, out of Spotlight's index, for the next one.
+    const kept = keptCheckoutOf(m.dir, 'code-kit-merge-');
+    cleanups.push(kept, `${kept}.installs.json`, `${kept}.lock`);
+    expect(
+      'MQ-9 the merge keeps its checkout, with the installs it copied, in a folder Spotlight skips',
+      truth(
+        kept.includes('.noindex/') &&
+          existsSync(join(kept, 'node_modules/marker-v1')) &&
+          !existsSync(`${kept}.lock`),
+        kept,
+      ),
+      0,
+    );
+    writeFileSync(join(kept, 'node_modules/kept-sentinel'), '');
     laneTree('web/st-32', {
       'apps/office/two.ts': 'export const two = 2;\n',
       'pnpm-lock.yaml': 'v2\n',
@@ -5959,6 +6027,19 @@ const op = process.argv[2]; let input = ''; process.stdin.on('data', (d) => (inp
           !existsSync(join(m.dir, 'node_modules/marker-v2')),
         reinstalled.stdout + reinstalled.stderr,
       ),
+      0,
+    );
+    expect(
+      'MQ-9 the next merge reuses the kept installs instead of copying them again, and installs there',
+      truth(
+        existsSync(join(kept, 'node_modules/kept-sentinel')) &&
+          existsSync(join(kept, 'node_modules/marker-v2')),
+      ),
+      0,
+    );
+    expect(
+      "MQ-9 worktree cleanup keeps it, and says it's code-kit's own",
+      says(mKit(m.dir, 'worktrees'), 'kept with its installs'),
       0,
     );
     laneTree('web/st-33', {
@@ -9892,6 +9973,177 @@ else process.exit(1);
     t.git('checkout', '-q', 'main');
   }
 
+  // --- LEAN-10: one worktree per lane, reused by each of its stories with its installs ---------------
+  {
+    const w = newRepo();
+    cleanups.push(w.dir);
+    writeFileSync(
+      join(w.dir, '.gitignore'),
+      '.claude/approvals/\n.claude/state/\n.claude/worktrees/\nnode_modules/\n.env\n',
+    );
+    writeFileSync(join(w.dir, '.worktreeinclude'), '.env\n');
+    writeFileSync(join(w.dir, '.env'), 'KEY=local\n');
+    w.git('add', '-A');
+    w.git('commit', '-q', '-m', 'ignore worktrees');
+    const run = (hook, input) =>
+      spawnSync('node', [join(hooks, hook)], {
+        input: JSON.stringify({ cwd: w.dir, session_id: 's1', ...input }),
+        env: { ...process.env, CLAUDE_PROJECT_DIR: w.dir },
+        encoding: 'utf8',
+      });
+    const startAgent = (agent, description) =>
+      run('guard-agent.mjs', {
+        tool_name: 'Agent',
+        tool_input: { subagent_type: agent, description, prompt: 'x', isolation: 'worktree' },
+      });
+    const create = (name) =>
+      run('worktree-create.mjs', { hook_event_name: 'WorktreeCreate', name });
+    const laneTree = join(realpathSync(w.dir), '.claude/worktrees/lane-web');
+    expect(
+      'LEAN-10 a lane agent started with a worktree is noted',
+      startAgent('web-engineer', 'ST-1 list'),
+      0,
+    );
+    expect(
+      'LEAN-10 and a second agent with a worktree, started before the first has its worktree, is refused',
+      startAgent('mobile-engineer', 'ST-2 app'),
+      2,
+      "the web lane's agent for ST-1 is still being given its worktree",
+    );
+    const first = create('agent-aaa');
+    expect(
+      "LEAN-10 the worktree Claude Code asks for is the lane's, detached, with the files .worktreeinclude names",
+      truth(
+        first.status === 0 &&
+          realpathSync(first.stdout.trim()) === laneTree &&
+          w.git('-C', laneTree, 'branch', '--show-current').trim() === '' &&
+          existsSync(join(laneTree, '.env')),
+        first.stdout + first.stderr,
+      ),
+      0,
+    );
+    // The lane's agent builds its story there, installs and all, and finishes.
+    execFileSync('git', ['-C', laneTree, 'switch', '-q', '-c', 'web/st-1', 'main']);
+    mkdirSync(join(laneTree, 'node_modules/dep'), { recursive: true });
+    writeFileSync(join(laneTree, 'node_modules/dep/index.js'), '1\n');
+    releaseLane(w.dir, 'web', { session: 's1' });
+    expect(
+      'LEAN-10 the next story in the lane starts',
+      startAgent('web-engineer', 'ST-3 detail'),
+      0,
+    );
+    const second = create('agent-bbb');
+    expect(
+      'LEAN-10 and gets the same worktree, its installs kept, its last branch let go',
+      truth(
+        realpathSync(second.stdout.trim()) === laneTree &&
+          existsSync(join(laneTree, 'node_modules/dep/index.js')) &&
+          w.git('-C', laneTree, 'branch', '--show-current').trim() === '' &&
+          !existsSync(join(w.dir, '.claude/worktrees/agent-bbb')),
+        second.stdout + second.stderr,
+      ),
+      0,
+    );
+    // Work its last agent left uncommitted stays where it is: the next agent gets a worktree of its own.
+    writeFileSync(join(laneTree, 'left.txt'), 'uncommitted\n');
+    releaseLane(w.dir, 'web', { session: 's1' });
+    startAgent('web-engineer', 'ST-4 more');
+    const dirty = create('agent-ccc');
+    expect(
+      "LEAN-10 a lane worktree holding someone's uncommitted work isn't reused: the agent gets its own",
+      truth(
+        dirty.status === 0 &&
+          dirty.stdout.trim().endsWith('.claude/worktrees/agent-ccc') &&
+          existsSync(join(laneTree, 'left.txt')) &&
+          w.git('branch', '--list', 'worktree-agent-ccc').includes('worktree-agent-ccc'),
+        dirty.stdout + dirty.stderr,
+      ),
+      0,
+    );
+    rmSync(join(laneTree, 'left.txt'));
+    const plain = create('agent-ddd');
+    expect(
+      'LEAN-10 with no lane noted, the worktree is the one Claude Code would make',
+      truth(
+        plain.stdout.trim().endsWith('.claude/worktrees/agent-ddd') &&
+          w.git('-C', plain.stdout.trim(), 'branch', '--show-current').trim() ===
+            'worktree-agent-ddd',
+        plain.stdout + plain.stderr,
+      ),
+      0,
+    );
+    const done = (id, agent = 'general-purpose') =>
+      run('worktree-done.mjs', {
+        hook_event_name: 'SubagentStop',
+        agent_id: id,
+        agent_type: agent,
+      });
+    done('ddd');
+    expect(
+      'LEAN-10 an agent that changed nothing in its own worktree: it and its branch go when it stops',
+      truth(
+        !existsSync(join(w.dir, '.claude/worktrees/agent-ddd')) &&
+          !w.git('branch', '--list', 'worktree-agent-ddd').includes('worktree-agent-ddd'),
+      ),
+      0,
+    );
+    writeFileSync(join(w.dir, '.claude/worktrees/agent-ccc/kept.txt'), 'work\n');
+    execFileSync('git', ['-C', join(w.dir, '.claude/worktrees/agent-ccc'), 'add', 'kept.txt']);
+    execFileSync('git', [
+      '-C',
+      join(w.dir, '.claude/worktrees/agent-ccc'),
+      '-c',
+      'user.email=t@t',
+      '-c',
+      'user.name=t',
+      'commit',
+      '-q',
+      '-m',
+      'work',
+    ]);
+    done('ccc', 'web-engineer');
+    expect(
+      'LEAN-10 one that committed work keeps it',
+      truth(existsSync(join(w.dir, '.claude/worktrees/agent-ccc'))),
+      0,
+    );
+    // Once its story is merged, the lane's worktree stays, and lets go of the branch.
+    execFileSync('git', ['-C', laneTree, 'switch', '-q', 'web/st-1']);
+    writeFileSync(join(laneTree, 'st1.txt'), 'built\n');
+    execFileSync('git', ['-C', laneTree, 'add', 'st1.txt']);
+    execFileSync('git', [
+      '-C',
+      laneTree,
+      '-c',
+      'user.email=t@t',
+      '-c',
+      'user.name=t',
+      'commit',
+      '-q',
+      '-m',
+      'ST-1',
+    ]);
+    w.git('merge', '-q', '--no-ff', '-m', 'merge web/st-1', 'web/st-1');
+    releaseLane(w.dir, 'web', { session: 's1' });
+    const pruned = spawnSync('node', [kitCli, 'worktrees', 'prune'], {
+      cwd: w.dir,
+      encoding: 'utf8',
+    });
+    expect(
+      "LEAN-10 prune keeps the lane's worktree and its installs, and detaches it once its story is merged",
+      truth(
+        existsSync(join(laneTree, 'node_modules/dep/index.js')) &&
+          w.git('-C', laneTree, 'branch', '--show-current').trim() === '' &&
+          spawnSync('node', [kitCli, 'worktrees'], {
+            cwd: w.dir,
+            encoding: 'utf8',
+          }).stdout.includes("the web lane's worktree, kept with its installs"),
+        pruned.stdout + pruned.stderr,
+      ),
+      0,
+    );
+  }
+
   // --- LEAN-6: worktrees released for a fresh agent, and pruned once merged ------------------------
   {
     const t = newRepo();
@@ -9971,6 +10223,42 @@ else process.exit(1);
       1,
       'still at work on web/st-2',
     );
+    // An act its agent is in the middle of, in a live session, holds the worktree too.
+    const { startSession: liveSession } = await import('../hooks/lib/sessions.mjs');
+    liveSession(t.dir, 's1');
+    const open = (ago) => JSON.stringify({ ...JSON.parse(act('run', 'start', ago)), act: 't1' });
+    writeFileSync(join(events, 'ST-2.jsonl'), `${open(60_000)}\n`);
+    expect(
+      'a worktree whose lane agent is in the middle of an act is never released',
+      tCli('worktrees', 'release', 'web/st-2'),
+      1,
+      'still at work on web/st-2',
+    );
+    // But an act left open by an agent that was stopped mid-call doesn't hold it for good: once code-kit
+    // has reconciled the act, or the act is older than the stall restart, the agent isn't at work.
+    const reconciled = JSON.stringify({
+      at: new Date().toISOString(),
+      story: 'ST-2',
+      actor: 'code-kit',
+      kind: 'reconciled',
+      target: 't1',
+      phase: 'note',
+      branch: 'web/st-2',
+    });
+    for (const [what, log] of [
+      ['once code-kit has reconciled it', `${open(60_000)}\n${reconciled}\n`],
+      ['once it is older than the stall restart', `${open(30 * 60_000)}\n`],
+    ]) {
+      writeFileSync(join(events, 'ST-2.jsonl'), log);
+      expect(
+        `an act left open by a stopped agent stops holding its worktree ${what}`,
+        truth(
+          tCli('worktrees', 'release', 'web/st-2').status === 0 && !existsSync(tree('web/st-2')),
+        ),
+        0,
+      );
+      t.git('worktree', 'add', '-q', tree('web/st-2'), 'web/st-2');
+    }
     // The lead's reviewer, still polling for verify on the story, isn't the lane's agent at work.
     const helper = JSON.stringify({
       at: new Date(Date.now() - 10_000).toISOString(),
@@ -10079,7 +10367,33 @@ else process.exit(1);
     mkdirSync(join(t.dir, '.claude/worktrees/lead-st66/.claude/state'), { recursive: true });
     const gone = addTree('web/st-7');
     rmSync(gone, { recursive: true, force: true });
+    // LEAN-9: merged, holding only a tool's records (Context Graph writes .ctx/ at each turn's end).
+    mkdirSync(join(t.dir, '.ctx'), { recursive: true });
+    writeFileSync(join(t.dir, '.ctx/decisions.ctx'), 'one\n');
+    t.git('add', '.ctx/decisions.ctx');
+    t.git('commit', '-q', '-m', 'ctx records');
+    const records = addTree('web/st-18');
+    commitIn(records, 'st18.txt', 'work\n');
+    t.git('merge', '-q', '--no-ff', '-m', 'merge st-18', 'web/st-18');
+    writeFileSync(join(records, '.ctx/decisions.ctx'), 'one\ntwo, recorded after the merge\n');
     const pruned = tCli('worktrees', 'prune');
+    expect(
+      "LEAN-9 a merged worktree holding only a tool's records goes, the records kept as a patch",
+      truth(
+        pruned.status === 0 &&
+          !existsSync(records) &&
+          pruned.stdout.includes('the tool records it held kept as .claude/state/discarded/') &&
+          readdirSync(join(t.dir, '.claude/state/discarded')).some(
+            (f) =>
+              f.startsWith('web_st-18-') &&
+              readFileSync(join(t.dir, '.claude/state/discarded', f), 'utf8').includes(
+                'two, recorded after the merge',
+              ),
+          ),
+        pruned.stdout + pruned.stderr,
+      ),
+      0,
+    );
     expect(
       "LEAN-8 prune takes what is done with: a finished agent's locked worktree, a gone one, a stray folder",
       truth(

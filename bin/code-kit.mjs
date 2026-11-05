@@ -972,7 +972,8 @@ function mergeOne(branch, config, byPerson, commit = null, partners = []) {
     // it) isn't held to the partner's files. A partner built on this member already holds the member's
     // commits, so it's left out of the member's base, which would otherwise show no change at all.
     for (const b of members.length ? [{ branch, tip }, ...members] : []) {
-      const own = freshCheckout(root, into, { prefix: 'code-kit-merge-' });
+      // Only the lane paths are checked here, so it needs no installs.
+      const own = freshCheckout(root, into, { prefix: 'code-kit-merge-', installsFrom: null });
       temporary.push(own);
       const others = [{ branch, tip }, ...members].filter(
         (x) => x.branch !== b.branch && !contains(x.tip, b.tip),
@@ -3153,9 +3154,9 @@ function worktreesCommand() {
   if (rest[0] === 'release') {
     const w = list.find((x) => x.branch === rest[1] || x.path === rest[1]);
     if (!w) die(`No worktree has ${rest[1] ?? '<branch>'} checked out.`);
-    if (agentBusy(root, w))
+    if (agentBusy(root, w, config))
       die(
-        `The ${w.branch.split('/')[0]} lane's agent is still at work on ${w.branch} (its last act was under ${BUSY_MS / 60_000} minutes ago, with no hand-back); nothing was removed. Wait for it to hand back, or stop it with TaskStop, then release it.`,
+        `The ${w.branch.split('/')[0]} lane's agent is still at work on ${w.branch} (its last act is still running, or came under ${BUSY_MS / 60_000} minutes ago, with no hand-back); nothing was removed. Wait for it to hand back, or stop it with TaskStop, then release it.`,
       );
     return out(`Released ${releaseWorktree(w)}. The branch and its commits stay.`);
   }

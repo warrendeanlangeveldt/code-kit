@@ -5,9 +5,9 @@
 // approval log on commit and scans commits for secrets. Shell writes are also checked afterwards by
 // lane-audit.mjs. With `approvals.lead` on, the lead may act for the person on what they say in chat:
 // record their approvals (`code-kit approve`) and run blocked commands marked `person`.
-import { appendFileSync, existsSync, readFileSync } from 'node:fs';
+import { appendFileSync, existsSync, readFileSync, realpathSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
-import { join, resolve } from 'node:path';
+import { basename, dirname, join, resolve, sep } from 'node:path';
 import {
   addedPackages,
   dependencyApproval,
@@ -19,7 +19,9 @@ import {
   GIT,
   codeOf,
   commandsOf,
+  outputRedirects,
   readsOnly,
+  sedInPlaceFiles,
   unreadNames,
   ruleMatches,
   runs,
@@ -796,7 +798,8 @@ ${approvalHowTo(TESTS_APPROVAL, actor, root, 'weakening tests in one commit', pe
 // unlogged. Before the commit, a chain may only move into the checkout, make a branch where it stands
 // (no start point, so no file changes), stage or unstage, make folders, take away a worktree (keepsFiles)
 // and run commands that only read (lib/shell.mjs readsOnly: git's status, diff, log and show among them,
-// with no output file). Errors sent into the output or /dev/null write no file.
+// with no output file), or that write only outside the checkout (writesOutside). Errors sent into the
+// output or /dev/null write no file.
 const BEFORE_COMMIT = new RegExp(
   String.raw`^(?:cd\s|${GIT}(?:add|rm|mv|restore\s+--staged|reset\s+--soft)(?![\w-])|${GIT}(?:switch\s+(?:-q\s+|--quiet\s+)*(?:-c|--create)|checkout\s+(?:-q\s+|--quiet\s+)*-b)\s+[^\s-]\S*\s*$)`,
 );
@@ -828,6 +831,32 @@ function keepsFiles(c) {
   const named = before.filter((w) => !w.startsWith('-'));
   return !(paths < 0 && named.length === 1 && named[0] !== 'HEAD' && isCommit(named[0]));
 }
+// A path the commit can't take: written out in full, outside this project and the checkout the commit
+// is in (a session's scratchpad, the system's temporary folder). The real path of what's there counts,
+// so a link back into the project doesn't pass.
+function realOf(p) {
+  let at = resolve(p);
+  const tail = [];
+  while (!existsSync(at) && dirname(at) !== at) {
+    tail.unshift(basename(at));
+    at = dirname(at);
+  }
+  return join(realpathSync(at), ...tail);
+}
+const within = (p, dir) => p === dir || p.startsWith(dir.endsWith(sep) ? dir : dir + sep);
+function outsideCheckout(p) {
+  if (!p.startsWith('/') || /[$`*?{}[\]~]/.test(p)) return false;
+  const real = realOf(p);
+  return ![project, root].some((r) => within(real, realOf(r)));
+}
+// What writes only outside the checkout (a message drafted in a scratchpad for `git commit -F`): a read
+// whose output goes only to such paths, or sed's substitutions on such files in place.
+function writesOutside(c) {
+  const out = outputRedirects(c.whole);
+  if (!out?.targets.every(outsideCheckout)) return false;
+  if (out.targets.length && readsOnly(out.rest)) return true;
+  return sedInPlaceFiles(out.rest.trim())?.every(outsideCheckout) ?? false;
+}
 function writesBeforeCommit() {
   const pieces = commandsOf(withoutHarmlessRedirects(cmd));
   const at = pieces.findIndex((c) => new RegExp(String.raw`^${GIT}commit(?![\w-])`).test(c.text));
@@ -839,7 +868,8 @@ function writesBeforeCommit() {
         !readsOnly(c.whole) &&
         !assignsOnly(c) &&
         !recordsOnly(c) &&
-        !keepsFiles(c),
+        !keepsFiles(c) &&
+        !writesOutside(c),
     );
 }
 

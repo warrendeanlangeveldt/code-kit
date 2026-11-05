@@ -19,15 +19,20 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
-import { pruneLogs, readEvents } from './events.mjs';
+import { pruneLogs, readEvents, stopped } from './events.mjs';
+import { sessions } from './sessions.mjs';
 import { laneClaims } from './laneclaims.mjs';
 import { storyOfBranch } from './teamfacts.mjs';
+import { CHECKOUTS_DIR } from './checkout.mjs';
+import { matchesAny } from './glob.mjs';
 
 export const WORKTREES_DIR = '.claude/worktrees';
 export const DISCARDED_DIR = '.claude/state/discarded';
 /** A temporary merge checkout this old belongs to a merge that didn't finish. */
 export const TEMP_MERGE_MS = 30 * 60_000;
 const TEMP_MERGE = /^code-kit-merge-/;
+// A temporary checkout made beside the kept ones while another run holds the kept one.
+const TEMP_CHECKOUT = /^code-kit-(merge|fix)-/;
 
 const git = (cwd, ...args) => spawnSync('git', ['-C', cwd, ...args], { encoding: 'utf8' });
 const real = (p) => {
@@ -109,10 +114,16 @@ export function worktrees(root, config, now = Date.now(), cwd = cwdNow()) {
       const where = real(path);
       const here = Boolean(cwd && (cwd === where || cwd.startsWith(`${where}/`)));
       const kind = where.startsWith(`${agents}/`)
-        ? 'agent'
-        : where.startsWith(`${temp}/`) && TEMP_MERGE.test(basename(path))
-          ? 'merge'
-          : 'other';
+        ? // LEAN-10: a lane's own worktree, reused by each of its stories (lanetrees.mjs).
+          /^lane-/.test(basename(path))
+          ? 'lane'
+          : 'agent'
+        : // MQ-9: code-kit's kept checkout, reused by each merge with its installs.
+          where.startsWith(`${real(CHECKOUTS_DIR)}/`) && !TEMP_CHECKOUT.test(basename(path))
+          ? 'kept'
+          : where.startsWith(`${temp}/`) && TEMP_MERGE.test(basename(path))
+            ? 'merge'
+            : 'other';
       const story = branch ? storyOfBranch(branch) : null;
       const merged = Boolean(
         branch &&
@@ -126,8 +137,16 @@ export function worktrees(root, config, now = Date.now(), cwd = cwdNow()) {
       // Read only where it decides anything: an unmerged worktree stays whatever it holds.
       const status =
         missing || (!merged && kind !== 'other') ? null : git(path, 'status', '--porcelain');
-      const changes =
-        status?.status === 0 ? status.stdout.split('\n').filter(Boolean).length : null;
+      // LEAN-9: a tool's own records (an adapter's anyActor files, written at each turn's end) are no
+      // one's work in progress: they're kept as a patch when the worktree goes, and don't keep it.
+      const lines = status?.status === 0 ? status.stdout.split('\n').filter(Boolean) : null;
+      const recordsOnly = (l) =>
+        l
+          .slice(3)
+          .split(' -> ')
+          .every((f) => matchesAny(f.replace(/^"|"$/g, ''), config?.anyActor ?? []));
+      const changes = lines ? lines.filter((l) => !recordsOnly(l)).length : null;
+      const records = lines ? lines.filter(recordsOnly).length : 0;
       const lane = branch?.includes('/') ? branch.split('/')[0] : null;
       const report = branch ? `.claude/state/reports/${branch.replace(/[^\w.-]+/g, '_')}.md` : null;
       return {
@@ -137,8 +156,9 @@ export function worktrees(root, config, now = Date.now(), cwd = cwdNow()) {
         kind,
         missing,
         merged,
-        clean: changes === null ? null : changes === 0,
+        clean: changes === null ? null : changes === 0 && records === 0,
         changes,
+        records,
         // What it holds, as git status words it: the first ten.
         files: status?.status === 0 ? status.stdout.split('\n').filter(Boolean).slice(0, 10) : [],
         report: report && !missing && existsSync(join(path, report)) ? report : null,
@@ -160,18 +180,30 @@ export const BUSY_MS = 3 * 60_000;
 
 /**
  * LEAN-6: whether a lane agent is still at work on a worktree's story, by the story's event log (spec
- * 26): its lane's last act is still open, or came within BUSY_MS, with no hand-back or stop after it. Releasing
+ * 26): its lane's last act is still open (and its agent hasn't stopped), or came within BUSY_MS, with no
+ * hand-back or stop after it. Releasing
  * a worktree under a running agent takes its git away mid-step. Only the branch's own lane counts: the
  * lead's helpers (a reviewer, a security reviewer) act on the story too, but never commit on its branch.
  */
-export function agentBusy(root, w, now = Date.now()) {
+export function agentBusy(root, w, config = {}, now = Date.now()) {
   if (!w.story || !w.branch?.includes('/')) return false;
   const lane = w.branch.split('/')[0];
-  const last = readEvents(root, w.story)
-    .filter((e) => e.actor === lane && e.agent)
-    .at(-1);
+  const events = readEvents(root, w.story);
+  const last = events.filter((e) => e.actor === lane && e.agent).at(-1);
   if (!last || ['handback', 'stopped'].includes(last.kind)) return false;
-  return last.phase === 'start' || now - Date.parse(last.at) < BUSY_MS;
+  if (last.phase !== 'start') return now - Date.parse(last.at) < BUSY_MS;
+  // An act still open: its agent is at work, unless it was stopped mid-call and the act left open for good.
+  // That's settled as reconcile settles it: code-kit reconciled the act, or its session ended, it handed
+  // back, or it's older than the stall restart (DUR-4, LOOP-3).
+  if (last.act && events.some((e) => e.kind === 'reconciled' && e.target === last.act))
+    return false;
+  const liveSessions = new Set(
+    sessions(root, now)
+      .filter((s) => s.live)
+      .map((s) => s.id),
+  );
+  const restartMs = (config.harness?.stall?.restartMinutes ?? 10) * 60_000;
+  return !stopped(last, events, { liveSessions, restartMs, now });
 }
 
 /** Whether a worktree holds nothing uncommitted, read now where worktrees() didn't. */
@@ -186,6 +218,10 @@ export function cleanOf(w) {
 export function keptBecause(w) {
   if (w.missing) return null;
   if (w.kind === 'merge') return w.age < TEMP_MERGE_MS ? 'a merge may be using it now' : null;
+  if (w.kind === 'lane')
+    return `it's the ${basename(w.path).slice(5)} lane's worktree, kept with its installs for the lane's next story`;
+  if (w.kind === 'kept')
+    return "it's code-kit's own checkout for merges and fix checks, kept with its installs so each one doesn't copy them again";
   if (w.kind === 'other') return "it isn't one code-kit made; release it by name if it's done";
   // A merge run from inside a lane's worktree mustn't take away the folder its own shell is in.
   if (w.here)
@@ -195,7 +231,7 @@ export function keptBecause(w) {
   if (!w.branch) return 'it has no branch checked out';
   if (!w.merged) return "its branch isn't merged";
   if (w.agentAtWork) return "its lane's agent is still at work on it";
-  if (!w.clean)
+  if (!w.clean && w.changes > 0)
     return `it's merged, but holds ${w.changes} uncommitted change${w.changes === 1 ? '' : 's'}`;
   return null;
 }
@@ -237,6 +273,12 @@ function keepReport(root, w) {
  */
 export function removeWorktree(root, w, { force = false } = {}) {
   if (w.missing) return { ok: true };
+  // LEAN-10: a lane's worktree stays for its next story: it only lets go of the branch.
+  if (w.kind === 'lane') {
+    keepReport(root, w);
+    const freed = git(w.path, 'switch', '--quiet', '--detach');
+    return freed.status === 0 ? { ok: true } : { ok: false, why: freed.stderr.trim() };
+  }
   keepReport(root, w);
   const locked = Boolean(w.locked);
   const args = [
@@ -261,6 +303,16 @@ export function pruneWorktrees(root, config, now = Date.now()) {
   for (const w of list) {
     const label = w.branch ?? w.path;
     const why = keptBecause(w);
+    // LEAN-10: a lane's worktree stays; once its story is merged and it holds nothing, it lets go of the
+    // branch, so the branch can be checked out elsewhere and the lane's next agent starts clean.
+    if (w.kind === 'lane' && w.branch && w.merged && w.changes === 0 && !w.agentAtWork && !w.here) {
+      if (w.records > 0) {
+        keepAsPatch(root, w, now);
+        git(w.path, 'reset', '--hard', '--quiet');
+      }
+      keepReport(root, w);
+      git(w.path, 'switch', '--quiet', '--detach');
+    }
     if (why) {
       kept.push({
         label,
@@ -274,8 +326,13 @@ export function pruneWorktrees(root, config, now = Date.now()) {
       continue;
     }
     if (w.missing) continue;
-    const r = removeWorktree(root, w, { force: w.kind === 'merge' });
-    if (r.ok) removed.push(`${label}${w.report ? ` (its report kept at ${w.report})` : ''}`);
+    // LEAN-9: a tool's records it holds are kept as a patch first, as a discard keeps what it held.
+    const patch = w.records > 0 ? keepAsPatch(root, w, now) : null;
+    const r = removeWorktree(root, w, { force: w.kind === 'merge' || Boolean(patch) });
+    if (r.ok)
+      removed.push(
+        `${label}${w.report ? ` (its report kept at ${w.report})` : ''}${patch ? ` (the tool records it held kept as ${patch})` : ''}`,
+      );
     else
       kept.push({
         label,
@@ -298,6 +355,22 @@ export function pruneWorktrees(root, config, now = Date.now()) {
   return { removed, kept };
 }
 
+/** What a worktree holds uncommitted, kept as a patch under .claude/state/discarded: its path there. */
+export function keepAsPatch(root, w, now) {
+  git(w.path, 'add', '-A');
+  const diff = spawnSync('git', ['-C', w.path, 'diff', '--cached', '--binary', 'HEAD'], {
+    encoding: 'utf8',
+    maxBuffer: 256 * 1024 * 1024,
+  });
+  const patch = join(
+    DISCARDED_DIR,
+    `${(w.branch ?? basename(w.path)).replace(/[^\w.-]+/g, '_')}-${new Date(now).toISOString().replace(/[:.]/g, '-')}.patch`,
+  );
+  mkdirSync(join(root, DISCARDED_DIR), { recursive: true });
+  writeFileSync(join(root, patch), diff.stdout ?? '');
+  return patch;
+}
+
 /**
  * LEAN-8: the person discards a merged worktree that still holds changes. What it held is kept first,
  * as a patch under .claude/state/discarded, with the files nobody had added; then it goes.
@@ -315,20 +388,7 @@ export function discardWorktree(root, config, branch, now = Date.now()) {
       ok: false,
       why: `The ${branch.split('/')[0]} lane's agent is still at work on ${branch}.`,
     };
-  let patch = null;
-  if (!w.clean) {
-    git(w.path, 'add', '-A');
-    const diff = spawnSync('git', ['-C', w.path, 'diff', '--cached', '--binary', 'HEAD'], {
-      encoding: 'utf8',
-      maxBuffer: 256 * 1024 * 1024,
-    });
-    patch = join(
-      DISCARDED_DIR,
-      `${branch.replace(/[^\w.-]+/g, '_')}-${new Date(now).toISOString().replace(/[:.]/g, '-')}.patch`,
-    );
-    mkdirSync(join(root, DISCARDED_DIR), { recursive: true });
-    writeFileSync(join(root, patch), diff.stdout ?? '');
-  }
+  const patch = w.clean ? null : keepAsPatch(root, w, now);
   const r = removeWorktree(root, w, { force: true });
   if (!r.ok) return { ok: false, why: `git wouldn't remove it: ${r.why.split('\n')[0]}` };
   return { ok: true, patch, report: w.report };
