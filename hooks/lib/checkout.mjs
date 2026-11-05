@@ -3,11 +3,30 @@
 // taken out (REG-1). It's a temporary worktree with its own copy of the installs (node_modules and
 // the like): a link back to a worktree's installs resolves outside the checkout, which path-sensitive
 // tools refuse, and an install run in it would rewrite the worktree's own.
+// MQ-9: the checkout is kept between runs, one per project and use, with its installs: copying a
+// project's installs in and deleting them again on every merge is millions of files each time, which
+// keeps the machine's file-change tracking and search indexing busy. Each run checks out the tree it
+// needs, and installs again only where its manifests and lockfiles differ from the ones the kept
+// installs were made for. The folder's name ends in .noindex, which Spotlight leaves alone.
+import { createHash } from 'node:crypto';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import {
+  closeSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  openSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { platform, tmpdir } from 'node:os';
-import { basename, dirname, join } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 import { isDependencyFile } from './dependencies.mjs';
+
+/** Where the kept checkouts live: in the temporary folder, out of Spotlight's index. */
+export const CHECKOUTS_DIR = join(tmpdir(), 'code-kit-checkouts.noindex');
 
 // The folders an install puts beside the code, which a fresh checkout lacks.
 const INSTALLS = new Set(['node_modules', '.venv', 'venv']);
@@ -51,32 +70,155 @@ export function copyInstalls(root, dir) {
   }
 }
 
+const real = (p) => {
+  try {
+    return realpathSync(p);
+  } catch {
+    return p;
+  }
+};
+
+/** The kept checkout for `root` and this use (`prefix`), the project's main checkout's. */
+export function keptCheckoutOf(root, prefix) {
+  let main = root;
+  try {
+    main = dirname(real(resolve(root, git(root, 'rev-parse', '--git-common-dir').trim())));
+  } catch {
+    // not a repository: its own folder names it
+  }
+  const id = createHash('sha256').update(real(main)).digest('hex').slice(0, 10);
+  return join(CHECKOUTS_DIR, `${basename(main)}-${id}-${prefix.replace(/^code-kit-|-$/g, '')}`);
+}
+
+/** The manifests and lockfiles the installs in a kept checkout were made for, by content hash. */
+const stampOf = (dir) => `${dir}.installs.json`;
+function dependencyHashes(dir) {
+  const hashes = {};
+  for (const f of trackedDependencies(dir)) {
+    try {
+      hashes[f] = createHash('sha256')
+        .update(readFileSync(join(dir, f)))
+        .digest('hex');
+    } catch {
+      hashes[f] = null;
+    }
+  }
+  return hashes;
+}
+
+/** Takes the kept checkout's lock for this process, or false while another live process holds it. */
+function lock(slot) {
+  const file = `${slot}.lock`;
+  for (let tries = 0; tries < 2; tries++) {
+    try {
+      const fd = openSync(file, 'wx');
+      writeFileSync(fd, String(process.pid));
+      closeSync(fd);
+      return () => rmSync(file, { force: true });
+    } catch {
+      const pid = Number(readFileSafe(file));
+      let alive = false;
+      try {
+        alive = pid > 0 && process.kill(pid, 0);
+      } catch {
+        alive = false;
+      }
+      if (alive) return false;
+      rmSync(file, { force: true });
+    }
+  }
+  return false;
+}
+const readFileSafe = (f) => {
+  try {
+    return readFileSync(f, 'utf8');
+  } catch {
+    return '';
+  }
+};
+
+/** Whether `dir` is one of `root`'s worktrees now. */
+const isWorktreeOf = (root, dir) => {
+  try {
+    return git(root, 'worktree', 'list', '--porcelain')
+      .split('\n')
+      .some((l) => l.startsWith('worktree ') && real(l.slice(9)) === real(dir));
+  } catch {
+    return false;
+  }
+};
+
 /**
- * A temporary worktree of `ref` (detached), with `merge` merged into it when given, and the installs
- * of `installsFrom` copied in. `{ dir, remove }`; a merge that conflicts throws a `conflict` error
- * after removing what it made. `remove` never throws: a folder that won't go is left to the OS.
+ * A worktree of `ref` (detached), with `merge` merged into it when given, and installs that were made
+ * for a tree: the project's kept checkout for this use (MQ-9), its installs kept from its last run, or
+ * where another run holds that one, a temporary worktree. Installs are copied from `installsFrom` only
+ * into a checkout that has none (null copies none). `{ dir, remove }`; a merge that conflicts throws a
+ * `conflict` error after putting things back. `remove` never throws: it frees the kept checkout, or
+ * takes the temporary one away, leaving a folder that won't go to the OS.
  */
 export function freshCheckout(
   root,
   ref,
   { merge = null, installsFrom = root, prefix = 'code-kit-' } = {},
 ) {
-  const dir = mkdtempSync(join(tmpdir(), prefix));
-  rmSync(dir, { recursive: true });
-  git(root, 'worktree', 'add', '--quiet', '--detach', dir, ref);
-  const remove = () => {
-    try {
-      git(root, 'worktree', 'remove', '--force', dir);
-    } catch {
-      // git leaves it when a process still writes there; the folder goes, and git prunes its record
+  // Named in the project, not in the kept checkout, where HEAD is the last run's.
+  ref = git(root, 'rev-parse', '--verify', '--quiet', `${ref}^{commit}`).trim();
+  const slot = keptCheckoutOf(root, prefix);
+  mkdirSync(CHECKOUTS_DIR, { recursive: true });
+  const unlock = lock(slot);
+  let dir;
+  let remove;
+  if (unlock) {
+    dir = slot;
+    let ready = false;
+    if (existsSync(dir) && isWorktreeOf(root, dir)) {
+      try {
+        // What the last run left (a merge, files a check wrote) goes; the installs stay.
+        git(dir, 'reset', '--hard', '--quiet');
+        git(dir, 'checkout', '--quiet', '--force', '--detach', ref);
+        git(dir, 'clean', '-ffdxq', ...[...INSTALLS].flatMap((i) => ['-e', i]));
+        ready = true;
+      } catch {
+        ready = false;
+      }
     }
-    try {
+    if (!ready) {
+      try {
+        git(root, 'worktree', 'remove', '--force', dir);
+      } catch {
+        // not registered, or already gone
+      }
       rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+      rmSync(stampOf(dir), { force: true });
       git(root, 'worktree', 'prune');
-    } catch {
-      // the OS clears its temporary folder
+      git(root, 'worktree', 'add', '--quiet', '--detach', dir, ref);
     }
-  };
+    remove = () => {
+      try {
+        git(dir, 'merge', '--abort');
+      } catch {
+        // no merge in progress
+      }
+      unlock();
+    };
+  } else {
+    dir = mkdtempSync(join(CHECKOUTS_DIR, prefix));
+    rmSync(dir, { recursive: true });
+    git(root, 'worktree', 'add', '--quiet', '--detach', dir, ref);
+    remove = () => {
+      try {
+        git(root, 'worktree', 'remove', '--force', dir);
+      } catch {
+        // git leaves it when a process still writes there; the folder goes, and git prunes its record
+      }
+      try {
+        rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+        git(root, 'worktree', 'prune');
+      } catch {
+        // the OS clears its temporary folder
+      }
+    };
+  }
   if (merge) {
     const merged = spawnSync(
       'git',
@@ -101,8 +243,23 @@ export function freshCheckout(
       throw Object.assign(new Error(why || 'the merge conflicts'), { conflict: true });
     }
   }
-  copyInstalls(installsFrom, dir);
+  if (installsFrom && !installsOf(dir).length) {
+    copyInstalls(installsFrom, dir);
+    // The copied installs were made for installsFrom's manifests and lockfiles.
+    if (dir === slot) writeFileSync(stampOf(dir), JSON.stringify(dependencyHashes(installsFrom)));
+  }
   return { dir, remove };
+}
+
+/** The manifests and lockfiles git tracks in `d`. */
+function trackedDependencies(d) {
+  try {
+    return git(d, 'ls-files')
+      .split('\n')
+      .filter((f) => f && isDependencyFile(f));
+  } catch {
+    return [];
+  }
 }
 
 /**
@@ -110,15 +267,21 @@ export function freshCheckout(
  * trees: where installs copied from `from` may not match the code in `dir`.
  */
 export function dependencyDifferences(from, dir) {
-  const tracked = (d) => {
+  // A kept checkout's installs were made for the files its stamp records, whatever `from` holds now.
+  const stamp = readFileSafe(stampOf(dir));
+  if (stamp) {
+    let made = {};
     try {
-      return git(d, 'ls-files')
-        .split('\n')
-        .filter((f) => f && isDependencyFile(f));
+      made = JSON.parse(stamp);
     } catch {
-      return [];
+      made = {};
     }
-  };
+    const now = dependencyHashes(dir);
+    return [...new Set([...Object.keys(made), ...Object.keys(now)])]
+      .filter((f) => (made[f] ?? null) !== (now[f] ?? null))
+      .sort();
+  }
+  const tracked = trackedDependencies;
   const read = (d, f) => {
     try {
       return readFileSync(join(d, f), 'utf8');
@@ -185,7 +348,17 @@ export function matchInstalls(dir, from, { prepare = null, timeout = 900000 } = 
   const facts = { differ, copied, lockfile: present };
   if (!command) return { ...facts, command: null, failed: null };
   const res = spawnSync(command, { cwd: dir, shell: true, encoding: 'utf8', timeout });
-  if (res.status === 0) return { ...facts, command, failed: null };
+  const stamp = stampOf(dir);
+  if (res.status === 0) {
+    // A kept checkout's installs now match this tree.
+    if (existsSync(stamp)) writeFileSync(stamp, JSON.stringify(dependencyHashes(dir)));
+    return { ...facts, command, failed: null };
+  }
+  // What a failed install left can't be trusted: the next run copies the installs afresh.
+  if (existsSync(stamp)) {
+    rmSync(stamp, { force: true });
+    for (const rel of installsOf(dir)) rmSync(join(dir, rel), { recursive: true, force: true });
+  }
   const output = `${res.stdout ?? ''}${res.stderr ?? ''}`.trim().split('\n').slice(-20).join('\n');
   return {
     ...facts,

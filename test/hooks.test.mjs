@@ -9,6 +9,7 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   realpathSync,
   rmSync,
@@ -24,6 +25,7 @@ import { holdable } from '../hooks/mod/hold.mjs';
 import { claimLane, releaseLane } from '../hooks/lib/laneclaims.mjs';
 import { markMerging } from '../hooks/lib/queue.mjs';
 import { openRequests, recordRequest } from '../hooks/lib/rules.mjs';
+import { keptCheckoutOf } from '../hooks/lib/checkout.mjs';
 
 // SESS-1: the CLI reads the calling session from Claude Code's environment; these tests say it themselves.
 delete process.env.CLAUDE_CODE_SESSION_ID;
@@ -4840,8 +4842,21 @@ else process.exit(2);
       0,
     );
     expect(
-      'temporary worktrees are cleaned up',
-      truth(m.git('worktree', 'list').trim().split('\n').length === 1),
+      'temporary worktrees are cleaned up: only the kept checkout stays (MQ-9)',
+      truth(
+        (() => {
+          const kept = keptCheckoutOf(m.dir, 'code-kit-merge-');
+          cleanups.push(kept, `${kept}.installs.json`, `${kept}.lock`);
+          const others = m
+            .git('worktree', 'list', '--porcelain')
+            .split('\n')
+            .filter((l) => l.startsWith('worktree '))
+            .slice(1)
+            .map((l) => realpathSync(l.slice(9)));
+          return others.length === 1 && others[0] === realpathSync(kept);
+        })(),
+        m.git('worktree', 'list'),
+      ),
       0,
     );
     expect('the merge needs --delegated', mKit('merge', 'web/st-1'), 1);
@@ -5977,6 +5992,20 @@ const op = process.argv[2]; let input = ''; process.stdin.on('data', (d) => (inp
       ),
       0,
     );
+    // MQ-9: the merge's checkout is kept, with its installs, out of Spotlight's index, for the next one.
+    const kept = keptCheckoutOf(m.dir, 'code-kit-merge-');
+    cleanups.push(kept, `${kept}.installs.json`, `${kept}.lock`);
+    expect(
+      'MQ-9 the merge keeps its checkout, with the installs it copied, in a folder Spotlight skips',
+      truth(
+        kept.includes('.noindex/') &&
+          existsSync(join(kept, 'node_modules/marker-v1')) &&
+          !existsSync(`${kept}.lock`),
+        kept,
+      ),
+      0,
+    );
+    writeFileSync(join(kept, 'node_modules/kept-sentinel'), '');
     laneTree('web/st-32', {
       'apps/office/two.ts': 'export const two = 2;\n',
       'pnpm-lock.yaml': 'v2\n',
@@ -5993,6 +6022,19 @@ const op = process.argv[2]; let input = ''; process.stdin.on('data', (d) => (inp
           !existsSync(join(m.dir, 'node_modules/marker-v2')),
         reinstalled.stdout + reinstalled.stderr,
       ),
+      0,
+    );
+    expect(
+      'MQ-9 the next merge reuses the kept installs instead of copying them again, and installs there',
+      truth(
+        existsSync(join(kept, 'node_modules/kept-sentinel')) &&
+          existsSync(join(kept, 'node_modules/marker-v2')),
+      ),
+      0,
+    );
+    expect(
+      "MQ-9 worktree cleanup keeps it, and says it's code-kit's own",
+      says(mKit(m.dir, 'worktrees'), 'kept with its installs'),
       0,
     );
     laneTree('web/st-33', {
@@ -10149,7 +10191,33 @@ else process.exit(1);
     mkdirSync(join(t.dir, '.claude/worktrees/lead-st66/.claude/state'), { recursive: true });
     const gone = addTree('web/st-7');
     rmSync(gone, { recursive: true, force: true });
+    // LEAN-9: merged, holding only a tool's records (Context Graph writes .ctx/ at each turn's end).
+    mkdirSync(join(t.dir, '.ctx'), { recursive: true });
+    writeFileSync(join(t.dir, '.ctx/decisions.ctx'), 'one\n');
+    t.git('add', '.ctx/decisions.ctx');
+    t.git('commit', '-q', '-m', 'ctx records');
+    const records = addTree('web/st-18');
+    commitIn(records, 'st18.txt', 'work\n');
+    t.git('merge', '-q', '--no-ff', '-m', 'merge st-18', 'web/st-18');
+    writeFileSync(join(records, '.ctx/decisions.ctx'), 'one\ntwo, recorded after the merge\n');
     const pruned = tCli('worktrees', 'prune');
+    expect(
+      "LEAN-9 a merged worktree holding only a tool's records goes, the records kept as a patch",
+      truth(
+        pruned.status === 0 &&
+          !existsSync(records) &&
+          pruned.stdout.includes('the tool records it held kept as .claude/state/discarded/') &&
+          readdirSync(join(t.dir, '.claude/state/discarded')).some(
+            (f) =>
+              f.startsWith('web_st-18-') &&
+              readFileSync(join(t.dir, '.claude/state/discarded', f), 'utf8').includes(
+                'two, recorded after the merge',
+              ),
+          ),
+        pruned.stdout + pruned.stderr,
+      ),
+      0,
+    );
     expect(
       "LEAN-8 prune takes what is done with: a finished agent's locked worktree, a gone one, a stray folder",
       truth(

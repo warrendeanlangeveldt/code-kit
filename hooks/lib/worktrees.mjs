@@ -23,12 +23,16 @@ import { pruneLogs, readEvents, stopped } from './events.mjs';
 import { sessions } from './sessions.mjs';
 import { laneClaims } from './laneclaims.mjs';
 import { storyOfBranch } from './teamfacts.mjs';
+import { CHECKOUTS_DIR } from './checkout.mjs';
+import { matchesAny } from './glob.mjs';
 
 export const WORKTREES_DIR = '.claude/worktrees';
 export const DISCARDED_DIR = '.claude/state/discarded';
 /** A temporary merge checkout this old belongs to a merge that didn't finish. */
 export const TEMP_MERGE_MS = 30 * 60_000;
 const TEMP_MERGE = /^code-kit-merge-/;
+// A temporary checkout made beside the kept ones while another run holds the kept one.
+const TEMP_CHECKOUT = /^code-kit-(merge|fix)-/;
 
 const git = (cwd, ...args) => spawnSync('git', ['-C', cwd, ...args], { encoding: 'utf8' });
 const real = (p) => {
@@ -111,9 +115,12 @@ export function worktrees(root, config, now = Date.now(), cwd = cwdNow()) {
       const here = Boolean(cwd && (cwd === where || cwd.startsWith(`${where}/`)));
       const kind = where.startsWith(`${agents}/`)
         ? 'agent'
-        : where.startsWith(`${temp}/`) && TEMP_MERGE.test(basename(path))
-          ? 'merge'
-          : 'other';
+        : // MQ-9: code-kit's kept checkout, reused by each merge with its installs.
+          where.startsWith(`${real(CHECKOUTS_DIR)}/`) && !TEMP_CHECKOUT.test(basename(path))
+          ? 'kept'
+          : where.startsWith(`${temp}/`) && TEMP_MERGE.test(basename(path))
+            ? 'merge'
+            : 'other';
       const story = branch ? storyOfBranch(branch) : null;
       const merged = Boolean(
         branch &&
@@ -127,8 +134,16 @@ export function worktrees(root, config, now = Date.now(), cwd = cwdNow()) {
       // Read only where it decides anything: an unmerged worktree stays whatever it holds.
       const status =
         missing || (!merged && kind !== 'other') ? null : git(path, 'status', '--porcelain');
-      const changes =
-        status?.status === 0 ? status.stdout.split('\n').filter(Boolean).length : null;
+      // LEAN-9: a tool's own records (an adapter's anyActor files, written at each turn's end) are no
+      // one's work in progress: they're kept as a patch when the worktree goes, and don't keep it.
+      const lines = status?.status === 0 ? status.stdout.split('\n').filter(Boolean) : null;
+      const recordsOnly = (l) =>
+        l
+          .slice(3)
+          .split(' -> ')
+          .every((f) => matchesAny(f.replace(/^"|"$/g, ''), config?.anyActor ?? []));
+      const changes = lines ? lines.filter((l) => !recordsOnly(l)).length : null;
+      const records = lines ? lines.filter(recordsOnly).length : 0;
       const lane = branch?.includes('/') ? branch.split('/')[0] : null;
       const report = branch ? `.claude/state/reports/${branch.replace(/[^\w.-]+/g, '_')}.md` : null;
       return {
@@ -138,8 +153,9 @@ export function worktrees(root, config, now = Date.now(), cwd = cwdNow()) {
         kind,
         missing,
         merged,
-        clean: changes === null ? null : changes === 0,
+        clean: changes === null ? null : changes === 0 && records === 0,
         changes,
+        records,
         // What it holds, as git status words it: the first ten.
         files: status?.status === 0 ? status.stdout.split('\n').filter(Boolean).slice(0, 10) : [],
         report: report && !missing && existsSync(join(path, report)) ? report : null,
@@ -199,6 +215,8 @@ export function cleanOf(w) {
 export function keptBecause(w) {
   if (w.missing) return null;
   if (w.kind === 'merge') return w.age < TEMP_MERGE_MS ? 'a merge may be using it now' : null;
+  if (w.kind === 'kept')
+    return "it's code-kit's own checkout for merges and fix checks, kept with its installs so each one doesn't copy them again";
   if (w.kind === 'other') return "it isn't one code-kit made; release it by name if it's done";
   // A merge run from inside a lane's worktree mustn't take away the folder its own shell is in.
   if (w.here)
@@ -208,7 +226,7 @@ export function keptBecause(w) {
   if (!w.branch) return 'it has no branch checked out';
   if (!w.merged) return "its branch isn't merged";
   if (w.agentAtWork) return "its lane's agent is still at work on it";
-  if (!w.clean)
+  if (!w.clean && w.changes > 0)
     return `it's merged, but holds ${w.changes} uncommitted change${w.changes === 1 ? '' : 's'}`;
   return null;
 }
@@ -287,8 +305,13 @@ export function pruneWorktrees(root, config, now = Date.now()) {
       continue;
     }
     if (w.missing) continue;
-    const r = removeWorktree(root, w, { force: w.kind === 'merge' });
-    if (r.ok) removed.push(`${label}${w.report ? ` (its report kept at ${w.report})` : ''}`);
+    // LEAN-9: a tool's records it holds are kept as a patch first, as a discard keeps what it held.
+    const patch = w.records > 0 ? keepAsPatch(root, w, now) : null;
+    const r = removeWorktree(root, w, { force: w.kind === 'merge' || Boolean(patch) });
+    if (r.ok)
+      removed.push(
+        `${label}${w.report ? ` (its report kept at ${w.report})` : ''}${patch ? ` (the tool records it held kept as ${patch})` : ''}`,
+      );
     else
       kept.push({
         label,
@@ -311,6 +334,22 @@ export function pruneWorktrees(root, config, now = Date.now()) {
   return { removed, kept };
 }
 
+/** What a worktree holds uncommitted, kept as a patch under .claude/state/discarded: its path there. */
+function keepAsPatch(root, w, now) {
+  git(w.path, 'add', '-A');
+  const diff = spawnSync('git', ['-C', w.path, 'diff', '--cached', '--binary', 'HEAD'], {
+    encoding: 'utf8',
+    maxBuffer: 256 * 1024 * 1024,
+  });
+  const patch = join(
+    DISCARDED_DIR,
+    `${(w.branch ?? basename(w.path)).replace(/[^\w.-]+/g, '_')}-${new Date(now).toISOString().replace(/[:.]/g, '-')}.patch`,
+  );
+  mkdirSync(join(root, DISCARDED_DIR), { recursive: true });
+  writeFileSync(join(root, patch), diff.stdout ?? '');
+  return patch;
+}
+
 /**
  * LEAN-8: the person discards a merged worktree that still holds changes. What it held is kept first,
  * as a patch under .claude/state/discarded, with the files nobody had added; then it goes.
@@ -328,20 +367,7 @@ export function discardWorktree(root, config, branch, now = Date.now()) {
       ok: false,
       why: `The ${branch.split('/')[0]} lane's agent is still at work on ${branch}.`,
     };
-  let patch = null;
-  if (!w.clean) {
-    git(w.path, 'add', '-A');
-    const diff = spawnSync('git', ['-C', w.path, 'diff', '--cached', '--binary', 'HEAD'], {
-      encoding: 'utf8',
-      maxBuffer: 256 * 1024 * 1024,
-    });
-    patch = join(
-      DISCARDED_DIR,
-      `${branch.replace(/[^\w.-]+/g, '_')}-${new Date(now).toISOString().replace(/[:.]/g, '-')}.patch`,
-    );
-    mkdirSync(join(root, DISCARDED_DIR), { recursive: true });
-    writeFileSync(join(root, patch), diff.stdout ?? '');
-  }
+  const patch = w.clean ? null : keepAsPatch(root, w, now);
   const r = removeWorktree(root, w, { force: true });
   if (!r.ok) return { ok: false, why: `git wouldn't remove it: ${r.why.split('\n')[0]}` };
   return { ok: true, patch, report: w.report };
