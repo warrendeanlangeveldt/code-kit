@@ -5,6 +5,7 @@ What changed in each release of code-kit, newest first. Versions follow the plug
 ## Unreleased
 
 - **A branch queued again after a batch failed no longer goes back to its lane.** When a batch fails verify in the merge queue, every branch in it is sent back, including those with nothing wrong. The lead queued those again at the same commits, yet `status` still read them as sent back, and `next` proposed dispatching lanes with nothing to fix whenever it wasn't the lead's turn to merge. A branch queued since its send-back, at that commit, now reads as passed and waits to merge. A branch that's sent back while it's in the queue stays sent back.
+- **A lane's report, then its commit.** `cat >> .claude/state/reports/<branch>.md <<'EOF' … EOF`, followed by `git add … && git commit` in the same command, was refused as a write the commit's checks can't see, and lanes hit this often as they finished a story. The state folder is ignored, so no commit can take what goes there. A read or a heredoc redirected only into it now passes, as long as the project's `.gitignore` covers the folder.
 
 ## 0.33.0 (2026-11-06)
 

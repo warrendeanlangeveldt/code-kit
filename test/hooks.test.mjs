@@ -962,6 +962,50 @@ try {
     ),
     0,
   );
+  // A lane's report goes in the state folder, which the project ignores: no commit can take it.
+  for (const [what, command] of [
+    [
+      'by its path from here',
+      "cat > .claude/state/reports/web.md <<'EOF'\ndone\nEOF\ngit commit -m x",
+    ],
+    [
+      'added to',
+      "mkdir -p .claude/state/reports && cat >> .claude/state/reports/web.md <<'E'\nmore\nE\ngit add notes.txt && git commit -m x",
+    ],
+    [
+      'by its full path',
+      `printf 'done' >> ${repo}/.claude/state/reports/web.md && git commit -m x`,
+    ],
+    [
+      'after moving into the checkout',
+      `cd ${repo} && cat > .claude/state/reports/web.md <<'EOF'\ndone\nEOF\ngit commit -m x`,
+    ],
+  ])
+    expect(`and after writing a report into the state folder, ${what}`, bash(command), 0);
+  for (const [what, command] of [
+    [
+      'a path that climbs out of the state folder',
+      'echo x > .claude/state/../../notes.txt && git commit -m x',
+    ],
+    ['a folder that only starts the same', 'echo x > .claude/stateful/n.txt && git commit -m x'],
+    ['a move before it', 'cd apps && echo x > .claude/state/n.txt && git commit -m x'],
+    [
+      'a move in the middle',
+      'git status && cd apps && echo x > .claude/state/n.txt && git commit -m x',
+    ],
+    ['a path from a variable', 'echo x > .claude/state/$F && git commit -m x'],
+    ['a command that writes as well', 'node -e 1 > .claude/state/n.txt && git commit -m x'],
+  ])
+    expect(`a commit after ${what} still counts`, bash(command), 2, 'this commit runs after');
+  const ignored = readFileSync(join(repo, '.gitignore'), 'utf8');
+  writeFileSync(join(repo, '.gitignore'), '.claude/approvals/\n');
+  expect(
+    "a state folder the project doesn't ignore could go into the commit",
+    bash('echo x > .claude/state/n.txt && git commit -m x'),
+    2,
+    'this commit runs after',
+  );
+  writeFileSync(join(repo, '.gitignore'), ignored);
   for (const [what, command] of [
     [
       'a redirect into the checkout by its full path',

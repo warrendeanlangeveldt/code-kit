@@ -887,17 +887,34 @@ function realOf(p) {
   }
   return join(realpathSync(at), ...tail);
 }
+const STATE_DIR = '.claude/state';
 const within = (p, dir) => p === dir || p.startsWith(dir.endsWith(sep) ? dir : dir + sep);
 function outsideCheckout(p) {
   if (!p.startsWith('/') || /[$`*?{}[\]~]/.test(p)) return false;
   const real = realOf(p);
   return ![project, root].some((r) => within(real, realOf(r)));
 }
-// What writes only outside the checkout (a message drafted in a scratchpad for `git commit -F`): a read
-// whose output goes only to such paths, or sed's substitutions on such files in place.
+// A path in code-kit's own state folder (a lane's report), which the project's .gitignore keeps out of
+// any commit. A relative path is read from where the command runs, so one that moves elsewhere on the
+// way, or commits in another repository, doesn't pass.
+function inOwnState(p) {
+  if (/[$`*?{}[\]~]/.test(p)) return false;
+  if (!p.startsWith('/')) {
+    const moves = commandsOf(cmd).filter((c) => /^(?:cd|pushd|popd)\b/.test(c.text));
+    if (/\bgit\s+-C\b/.test(cmd) || moves.length > (/^\s*cd\s/.test(cmd) ? 1 : 0)) return false;
+  }
+  const real = realOf(resolve(input.cwd || project, gitDir ?? '.', p));
+  if (within(real, join(realOf(project), STATE_DIR)) && realOf(project) !== realOf(root))
+    return true;
+  if (!within(real, join(realOf(root), STATE_DIR))) return false;
+  return spawnSync('git', ['-C', root, 'check-ignore', '-q', real]).status === 0;
+}
+// What writes only where no commit can take it (a message drafted in a scratchpad for `git commit -F`,
+// a lane's report): a read whose output goes only to such paths, or sed's substitutions in place on
+// files outside the checkout.
 function writesOutside(c) {
   const out = outputRedirects(c.whole);
-  if (!out?.targets.every(outsideCheckout)) return false;
+  if (!out?.targets.every((t) => outsideCheckout(t) || inOwnState(t))) return false;
   if (out.targets.length && readsOnly(out.rest)) return true;
   return sedInPlaceFiles(out.rest.trim())?.every(outsideCheckout) ?? false;
 }
