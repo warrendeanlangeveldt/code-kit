@@ -246,6 +246,7 @@ import {
 } from '../hooks/lib/worktrees.mjs';
 import { decisionsFor, openDecisions } from '../hooks/lib/decisionstore.mjs';
 import { WORKFLOWS_DIR, ciFindings, ciUsage, releaseBranch } from '../hooks/lib/ci.mjs';
+import { COST_APPROVAL, costReport, infraFiles, money } from '../hooks/lib/costs.mjs';
 import {
   appliesTo,
   projectStandards,
@@ -584,6 +585,7 @@ const VERIFY_GROUPS = {
   tests: 'Weakened tests',
   regression: 'Fixes and their tests',
   standards: 'Standards',
+  cost: 'Running cost',
   checks: 'Checks',
 };
 
@@ -1824,6 +1826,56 @@ function settings() {
 }
 
 /**
+ * COST-3: each environment's estimated running cost from the register, against the budget the person
+ * set, with what's wrong with the register and the prices to recheck. Exits 1 when anything's wrong.
+ */
+function costCommand() {
+  const { config } = load();
+  const root = resolve('.');
+  const cost = config.cost;
+  const some = (files) => `${files.slice(0, 3).join(', ')}${files.length > 3 ? ', …' : ''}`;
+  if (!cost) {
+    const infra = infraFiles(root);
+    if (flag('--json'))
+      return (out(JSON.stringify({ budget: null, infra }, null, 2)), process.exit(1));
+    out(
+      `No running budget is set${infra.length ? `, and the project has infrastructure (${some(infra)})` : ''}. The person sets how much a month each environment may cost; /code-kit:init asks for it and writes it to "cost" in ${file}.`,
+    );
+    process.exit(1);
+  }
+  const report = costReport(root, config);
+  const infra = cost.paths.length ? infraFiles(root, cost.paths) : [];
+  if (!report.exists && infra.length)
+    report.problems.unshift(
+      `There is no cost register (${report.file}), but the project has infrastructure (${some(infra)}). The lead costs it there: a row per paid thing, with its monthly estimate and where the price came from.`,
+    );
+  if (flag('--json')) {
+    out(JSON.stringify({ budget: cost, ...report, infra }, null, 2));
+    process.exit(report.problems.length ? 1 : 0);
+  }
+  out(
+    `Running cost against the budget, ${cost.currency} a month${cost.load ? `, for ${cost.load}` : ''}${report.exists ? `, from ${report.file}` : `; no register yet (${report.file})`}:`,
+  );
+  for (const e of report.environments)
+    out(
+      `  ${e.name.padEnd(10)} ${money(e.total).padStart(9)} of ${money(e.budget)}${e.over > 0 ? `, ${money(e.over)} over` : ''}`,
+    );
+  for (const r of report.rows)
+    out(
+      `    ${r.environment.padEnd(8)} ${String(r.monthly).padStart(9)}  ${r.item}${r.provider ? ` (${[r.provider, r.size].filter(Boolean).join(', ')})` : ''}`,
+    );
+  if (report.problems.length)
+    out(`\nProblems:\n${report.problems.map((p) => `  ${p}`).join('\n')}`);
+  if (report.stale.length)
+    out(`\nPrices to recheck:\n${report.stale.map((p) => `  ${p}`).join('\n')}`);
+  if (report.environments.some((e) => e.over > 0))
+    out(
+      "\nOver the budget, the lead brings the person options that fit (smaller sizes, cheaper tiers or providers, fewer environments, less at launch), each with what it gives up. A commit that raises a total past its budget needs the person's cost approval.",
+    );
+  if (report.problems.length) process.exit(1);
+}
+
+/**
  * CIC-2, CIC-4: `ci check` lists what in the project's workflows multiplies their cost with a story per
  * branch; `ci usage` sums the Actions runs of the last days, by workflow and trigger.
  */
@@ -2352,7 +2404,12 @@ async function approve(given) {
     );
   if (laneName !== undefined && !config.lanes[laneName])
     die(`There is no lane "${laneName}". Lanes: ${Object.keys(config.lanes).join(', ')}.`);
-  const known = new Set(['kit', TESTS_APPROVAL, ...config.protected.map((p) => p.approval)]);
+  const known = new Set([
+    'kit',
+    TESTS_APPROVAL,
+    COST_APPROVAL,
+    ...config.protected.map((p) => p.approval),
+  ]);
   const isPackage = (n) => /^(@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/.test(n);
   const names = given.map((n) =>
     n.startsWith(DEPENDENCY_APPROVAL) || known.has(n) || !isPackage(n) ? n : dependencyApproval(n),
@@ -3442,6 +3499,7 @@ const commands = {
   timeline,
   'sent-back': () => (rest.length === 1 ? sentBackCommand(rest[0]) : usage()),
   ci: ciCommand,
+  cost: () => (rest.length === 0 ? costCommand() : usage()),
   release: () => (rest.length === 1 ? releaseCommand(rest[0]) : usage()),
   replay: () => (rest.length === 1 ? replayCommand(rest[0]) : usage()),
   reconcile: () => (rest.length <= 1 ? reconcileCommand(rest[0]) : usage()),
@@ -3481,6 +3539,7 @@ function usage() {
       '              | who | task "<what>" --touches globs | task done | task take <session>\n' +
       '              | decisions [--json] [--all]\n' +
       '              | ci check [--json] | ci usage [--days N] [--json] | release <version>\n' +
+      '              | cost [--json]\n' +
       '              | hold <id> [--minutes N] | hold <id> --answer approved|refused\n' +
       '              | queue [--json] | queue add|drop <branch> | queue rules | queue merge --delegated|--person\n' +
       '              | queue pause --reason "…" | queue resume\n' +

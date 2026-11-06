@@ -12,6 +12,7 @@ import {
   standardLine,
   standardsFile,
 } from './standards.mjs';
+import { registerFile } from './costs.mjs';
 
 /** The version of code-kit's instructions: raised whenever the templates' rules change. */
 export const INSTRUCTIONS_VERSION = 12;
@@ -68,6 +69,9 @@ function factsOf(root, config, lane = null) {
     'docs.plan': config.docs?.plan ?? 'the plan',
     'docs.principles': config.docs?.principles ?? "the project's principles",
     'docs.standards': standardsFile(config),
+    // Spec 29: the running budget and its register.
+    cost: Boolean(config.cost),
+    'docs.costs': registerFile(config),
     standards: laneStandards(root, config, lane),
     'standards.all': standardsOf(root, config)
       .map((s) => `${s.id} ${s.title}`)

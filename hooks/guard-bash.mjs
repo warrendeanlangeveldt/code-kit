@@ -37,6 +37,7 @@ import { historyWrites, storyMerges } from './lib/queue.mjs';
 import { approverOf } from './lib/journal.mjs';
 import { loginHere } from './lib/sessions.mjs';
 import { TESTS_APPROVAL, commitWeakenings } from './lib/regression.mjs';
+import { COST_APPROVAL, overBudget, overWords, registerFile } from './lib/costs.mjs';
 import {
   STANDARDS_APPROVAL,
   noteFor,
@@ -656,6 +657,39 @@ function recordApprovals() {
         `Blocked: this commit weakens the project's standards in ${stdFile}: ${stdWeak.join('; ')}. Removing a standard, or weakening a required one, is the person's call, never the lead's. Ask them, with what the standard costs the project and your recommendation; they approve it with\n${approvalHowTo(STANDARDS_APPROVAL, actor, root, 'weakening the standards in one commit', personOnly)}`,
       );
     }
+  }
+  // COST-5: a commit that takes an environment's estimated running cost past its budget, or further
+  // past it, waits for the person's cost approval (never the lead's), which records what it allowed.
+  const costRegister = config.cost ? registerFile(config) : null;
+  const overCost =
+    costRegister &&
+    files.includes(costRegister) &&
+    !arrivesWithMerge(root, costRegister, { staged: true })
+      ? overBudget(
+          git('show', `HEAD:${costRegister}`),
+          existsSync(join(root, costRegister))
+            ? readFileSync(join(root, costRegister), 'utf8')
+            : '',
+          config.cost,
+        )
+      : [];
+  if (overCost.length) {
+    const granted = approval(root, COST_APPROVAL, actor);
+    if (!granted || granted.reason.includes(delegatedMark('').slice(0, -1))) {
+      const over = overWords(overCost, config.cost.currency);
+      recordRequest(root, actor, COST_APPROVAL, costRegister, `Over the running budget: ${over}.`);
+      const personOnly = { ...config, approvals: { ...config.approvals, delegate: null } };
+      block(
+        `Blocked: this commit takes the estimated running cost past the budget the person set: ${over}. Going past the budget is the person's call, never the lead's. First find options that fit it: a smaller size, a cheaper tier or provider, one environment instead of two, a service the product can do without at launch, or less scope, each with what it gives up. ${askHowTo(COST_APPROVAL, actor, root, personOnly, { allows: 'one commit over the running budget', need: 'the change, what it costs a month against the budget, and the options that fit, each with what it gives up' })}`,
+      );
+    }
+    record(costRegister, {
+      approval: COST_APPROVAL,
+      reason: granted.reason,
+      grantedAt: granted.grantedAt,
+      over: overCost,
+    });
+    useApproval(root, COST_APPROVAL, actor);
   }
   // The commit that switches code-kit on: the person approved the setup it holds as init showed it.
   const setup = settingUp && files.includes(CONFIG_FILE) && beforeSetup(root);
