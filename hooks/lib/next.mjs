@@ -19,6 +19,7 @@ import { isTestFile } from './testfiles.mjs';
 import { laneClaims } from './laneclaims.mjs';
 import { keptBecause, worktrees } from './worktrees.mjs';
 import { ciFindings } from './ci.mjs';
+import { costReport, infraFiles, money } from './costs.mjs';
 import { storyModels } from './dispatches.mjs';
 import { pickPerLane } from './schedule.mjs';
 import { reconcileAll } from './events.mjs';
@@ -76,6 +77,43 @@ export function readBrief(root, config) {
     })
     .filter((q) => q.question && !q.question.startsWith('{{'));
   return { path, status: status ?? null, openQuestions: open.map((q) => q.question), open };
+}
+
+/**
+ * Spec 29: the running budget and the cost register, as next's attention. A project with infrastructure
+ * and no budget is asked for one (COST-6); with one, an estimate over it goes to the person with options
+ * (COST-5), and the register's other problems are named (COST-3).
+ */
+export function costAttention(root, config) {
+  const some = (files) => `${files.slice(0, 3).join(', ')}${files.length > 3 ? ', …' : ''}`;
+  if (!config.cost) {
+    const infra = infraFiles(root);
+    return infra.length
+      ? [
+          `No running budget is set, and the project has infrastructure (${some(infra)}). Ask the person how much a month each environment may cost and the load to plan for; /code-kit:init records it, and the lead then costs what's built in the register.`,
+        ]
+      : [];
+  }
+  const report = costReport(root, config);
+  const infra = config.cost.paths.length ? infraFiles(root, config.cost.paths) : [];
+  if (!report.exists)
+    return infra.length
+      ? [
+          `There is no cost register (${report.file}) for the project's infrastructure (${some(infra)}). Cost it there, a row per paid thing with its monthly estimate and where the price came from; \`code-kit cost\` adds it up against the budget.`,
+        ]
+      : [];
+  const words = [];
+  const over = report.environments.filter((e) => e.over > 0);
+  if (over.length)
+    words.push(
+      `The running cost is over the budget: ${over.map((e) => `${e.name} ${money(e.total, config.cost.currency)} a month against ${money(e.budget, config.cost.currency)}`).join(', ')}. Bring the person options that fit (smaller sizes, cheaper tiers or providers, fewer environments, less at launch), each with what it gives up, and let them decide.`,
+    );
+  const other = report.problems.length - over.length;
+  if (other > 0)
+    words.push(
+      `${report.file} has ${other} problem${other === 1 ? '' : 's'} (\`code-kit cost\` says which): an estimate that isn't a number, a row without where its price came from, or one for an environment the budget doesn't name.`,
+    );
+  return words;
 }
 
 const hasMarkdown = (dir) => {
@@ -390,6 +428,7 @@ export function nextStep(root, base) {
       `${ci.length} thing${ci.length === 1 ? '' : 's'} in the project's CI (${files.join(', ')}) ${ci.length === 1 ? 'runs' : 'run'} once per story or without a time limit; \`code-kit ci check\` says what, and the fix for the person to approve.`,
     );
   }
+  attention.push(...costAttention(root, config));
   const instructions = instructionsState(root, config);
   const behind = instructions.filter((f) => ['stale', 'legacy'].includes(f.state));
   // A file with no code-kit part may be one the project keeps without it: said, not insisted on.

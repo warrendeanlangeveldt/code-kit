@@ -21,6 +21,7 @@ code-kit is a Claude Code plugin: hooks (`hooks/`), skills (`skills/<name>/SKILL
   - `designs.mjs`: the design register's approved designs as files, every state with its hash, and what's wrong with an entry (spec 24, HAND-1 to HAND-5);
   - `checkout.mjs`: a fresh checkout for checks that mustn't run in anyone's worktree (the queue's merged tree, the fix check's), with its own copy of the installs, and the install run there when its manifests or lockfiles differ from them (MQ-1, REG-1);
   - `ci.mjs`: what the project's workflows run per story, what its Actions runs cost, and the release branch the full CI runs on (spec 25);
+  - `costs.mjs`: the running budget, the cost register read against it, and what takes an environment past it (spec 29);
   - `checks.mjs`, `verify.mjs`, `plan.mjs`, `trace.mjs`, `next.mjs` (what to do next, including companions to set up and designs before screens, spec 17);
   - `adapters/`: tools that share a project, such as Context Graph.
 - `hooks/mod/`: the mod, for Claude Code 2.1.287 or later: `register.mjs` (its hooks and the person's acts), and what it draws and decides, as pure functions:
@@ -28,7 +29,7 @@ code-kit is a Claude Code plugin: hooks (`hooks/`), skills (`skills/<name>/SKILL
   - `characters.mjs`: each lane's character from its name, in every pose and move; `surface/`: the surface modules that animate on the surface's own frame clock (`character.mjs`, `clock.mjs`, `rail.mjs`);
   - `view.mjs` (the project's state and the band's lines), `panes.mjs` (the full views: a story, the Trail, the Code map, the Decide pane and the Journal), `art.mjs` (half-block cells and the timelines), `loop.mjs`, `hold.mjs`, `review.mjs`, `mission.mjs` (the milestone and the next step), `codemap.mjs` (the code map), `trail.mjs` (the trail), `decisions.mjs` (each decision that needs the person, with its lineage and how it's answered in the Decide pane), `teamview.mjs` (the team's band lines and the Team pane);
   - `register.test.ts` (run by `claude plugin test`, through `test/mod.mjs`). It reads the CLI's JSON and never enforces anything.
-- `bin/code-kit.mjs`: the CLI (`check`, `who`, `unowned`, `diff`, `baseline`, `graph`, `verify`, `security`, `status`, `next`, `instructions`, `standards`, `worktrees`, `adapters`, `trace`, `approve`, `merge`, `defer`, `requests`, `stops`, `sent-back`, `settings`, `lanes`, `sessions`, `task`, `decisions`, `hold`, `queue`, `story`, `timeline`, `loop`, `map`, `trail`, `journal`, `team`, `intend`, `ci`, `release`, `publish`, `replay`, `reconcile`).
+- `bin/code-kit.mjs`: the CLI (`check`, `who`, `unowned`, `diff`, `baseline`, `graph`, `verify`, `security`, `status`, `next`, `instructions`, `standards`, `worktrees`, `adapters`, `trace`, `approve`, `merge`, `defer`, `requests`, `stops`, `sent-back`, `settings`, `lanes`, `sessions`, `task`, `decisions`, `hold`, `queue`, `story`, `timeline`, `loop`, `map`, `trail`, `journal`, `team`, `intend`, `ci`, `cost`, `release`, `publish`, `replay`, `reconcile`).
 - `skills/`: instructions for Claude, not code. They call the CLI as `node "${CLAUDE_PLUGIN_ROOT}/bin/code-kit.mjs"`.
 - `test/units.test.mjs` (pure functions), `test/hooks.test.mjs` (every hook end to end in throwaway git repositories), `test/fixture.json` (the config they use), `test/mod.mjs` (the mod's tests, skipped on older Claude Code).
 

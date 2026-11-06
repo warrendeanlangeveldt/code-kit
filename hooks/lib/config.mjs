@@ -5,6 +5,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { VIBE, harnessProblems, harnessSettings } from './harness.mjs';
 import { teamProblems } from './team.mjs';
 import { join } from 'node:path';
+import { DEFAULT_REGISTER } from './costs.mjs';
 import { ADAPTERS, applyAdapters } from './adapters/index.mjs';
 
 export const CONFIG_FILE = '.claude/code-kit.json';
@@ -82,7 +83,12 @@ export function withDefaults(c) {
       paths: [...c.lead.paths, '.claude/**', '.mcp.json'],
       outside: [...(c.lead.outside ?? []), ...CLAUDE_OWN],
     },
-    anyActor: [...(c.anyActor ?? []).map(anyActorGlob), '.claude/state/**'],
+    // Spec 29: the cost register, which a lane changes with the infrastructure its story adds.
+    anyActor: [
+      ...(c.anyActor ?? []).map(anyActorGlob),
+      '.claude/state/**',
+      ...(c.cost ? [c.docs?.costs ?? DEFAULT_REGISTER] : []),
+    ],
     // Who reviews changes to files any agent may write; the lead unless an entry names a lane.
     anyActorReviewers: (c.anyActor ?? [])
       .filter((e) => typeof e === 'object' && e?.reviewer)
@@ -108,6 +114,14 @@ export function withDefaults(c) {
           : delegateRules(c.approvals?.delegate, c.protected ?? []),
     },
     harness: harnessSettings(c.harness),
+    cost: c.cost
+      ? {
+          currency: c.cost.currency,
+          monthly: c.cost.monthly,
+          load: c.cost.load ?? null,
+          paths: c.cost.paths ?? [],
+        }
+      : null,
   };
 }
 
@@ -363,7 +377,7 @@ export function validate(c) {
   );
   // A brownfield project may have no specs yet: then there is no spec-check gate.
   need(c.docs === undefined || isObj(c.docs), '"docs" must be an object');
-  for (const k of ['specs', 'principles', 'plan', 'decisions', 'standards'])
+  for (const k of ['specs', 'principles', 'plan', 'decisions', 'standards', 'costs'])
     need(c.docs?.[k] === undefined || isStr(c.docs[k]), `"docs.${k}" must be a path`);
   need(isObj(c.lead) && isList(c.lead?.paths), '"lead.paths" must be a list of globs');
   need(
@@ -465,9 +479,36 @@ export function validate(c) {
     [undefined, 'push', 'pull-request'].includes(c.branches?.publish),
     '"branches.publish" must be "push" or "pull-request": how merges reach the remote\'s base',
   );
+  if (c.cost !== undefined) validateCost(c.cost, need);
   p.push(...harnessProblems(c.harness));
   p.push(...teamProblems(c));
   return p;
+}
+
+// Spec 29: the running budget the person set, per environment, in one currency.
+function validateCost(cost, need) {
+  if (!need(isObj(cost), '"cost" must be an object: { currency, monthly, load?, paths? }')) return;
+  need(
+    /^[A-Z]{3}$/.test(cost.currency ?? ''),
+    '"cost.currency" must be a three-letter currency code, such as USD, AUD or EUR',
+  );
+  need(
+    isObj(cost.monthly) &&
+      Object.keys(cost.monthly).length > 0 &&
+      Object.entries(cost.monthly).every(
+        ([env, v]) =>
+          /^[a-z][a-z0-9-]*$/.test(env) && env !== 'all' && typeof v === 'number' && v >= 0,
+      ),
+    '"cost.monthly" must map each environment (a lower-case name such as prod or dev, not "all") to its monthly budget, a number of 0 or more',
+  );
+  need(
+    cost.load === undefined || isStr(cost.load),
+    '"cost.load" must say, in words, the load the budget plans for',
+  );
+  need(
+    cost.paths === undefined || isList(cost.paths),
+    '"cost.paths" must be a list of globs: the infrastructure files',
+  );
 }
 
 /** A deliverable kind's name (a layer's or lane's `label`): one line, at most 60 characters. */

@@ -55,7 +55,7 @@ For each, read the lane's change request (its report, in `.claude/state/reports/
 
 ## 4. The person's requests
 
-A request `by: "person"` is a guardrail the lane hit: a spec, a contract, a design, CI, or a weakened test. Check the lane really needs it first: often the story can be done inside the guardrail, and you tell the lane how and drop the request. If it does need it, the request is already waiting for the person, in their band and the pane's Needs you. Add your recommendation with `ask` when the choice isn't obvious from the request alone.
+A request `by: "person"` is a guardrail the lane hit: a spec, a contract, a design, CI, a weakened test, or the running budget. A `cost` request (a commit over the budget, spec 29) is the person's under vibe too, and never goes to them bare: first look for what fits the budget (a smaller size, a cheaper tier or provider, one environment instead of two, a service the story can do without at launch), and send the lane back with it if one does. If none fits, ask them with each option that comes closest, what it gives up and what it saves a month, and the over-budget one with its cost (`code-kit ask … --option …`; under vibe, `--needs payment`). Check the lane really needs it first: often the story can be done inside the guardrail, and you tell the lane how and drop the request. If it does need it, the request is already waiting for the person, in their band and the pane's Needs you. Add your recommendation with `ask` when the choice isn't obvious from the request alone.
 
 ## 5. Report
 

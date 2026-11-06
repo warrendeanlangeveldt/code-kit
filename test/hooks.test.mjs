@@ -12122,6 +12122,335 @@ else process.exit(1);
     );
   }
 
+  // --- COST-1 to COST-7: what it costs to run -----------------------------------------------------
+  {
+    const k = newRepo();
+    cleanups.push(k.dir);
+    const kPut = (rel, body = '') => {
+      mkdirSync(dirname(join(k.dir, rel)), { recursive: true });
+      writeFileSync(join(k.dir, rel), body);
+    };
+    const kCommit = (m) => {
+      k.git('add', '-A');
+      k.git('commit', '-q', '-m', m);
+    };
+    const kCli = (...args) =>
+      spawnSync('node', [join(here, '..', 'bin', 'code-kit.mjs'), ...args], {
+        cwd: k.dir,
+        encoding: 'utf8',
+      });
+    const kHook = (command, agent) =>
+      spawnSync('node', [join(hooks, 'guard-bash.mjs')], {
+        input: JSON.stringify({
+          cwd: k.dir,
+          tool_input: { command },
+          ...(agent ? { agent_type: agent } : {}),
+        }),
+        env: { ...process.env, CLAUDE_PROJECT_DIR: k.dir },
+        encoding: 'utf8',
+      });
+    const both = (r) => r.stdout + r.stderr;
+    const budget = {
+      currency: 'USD',
+      monthly: { prod: 100, dev: 20 },
+      load: '500 users at launch',
+      paths: ['workers/**/wrangler.toml'],
+    };
+    const withCost = (cost) =>
+      JSON.stringify({ ...JSON.parse(fixture), ...(cost ? { cost } : {}) }, null, 2);
+    kPut('docs/spec/01-x.md', '# 01. X\n\n### X-1 One\n');
+    kPut(
+      'docs/spec/plan.md',
+      '# Plan\n\n## M1\n\n### ST-1 One\n\n**Lane:** backend\n**Requirements:** X-1\n**Depends on:** none\n**Status:** todo\n',
+    );
+    kPut('design/approved-screens.json', JSON.stringify({ screens: [] }));
+    kPut('workers/api/wrangler.toml', 'name = "api"\n');
+    kCommit('a project with infrastructure and no budget');
+
+    kPut('.claude/bad.json', withCost({ currency: 'dollars', monthly: { prod: '100' } }));
+    const bad = kCli('check', '--config', '.claude/bad.json');
+    expect(
+      'COST-1 check names a budget that is not a currency code and amounts per environment',
+      truth(
+        bad.status !== 0 &&
+          both(bad).includes('"cost.currency" must be a three-letter currency code') &&
+          both(bad).includes('"cost.monthly" must map each environment'),
+        both(bad),
+      ),
+      0,
+    );
+    rmSync(join(k.dir, '.claude/bad.json'));
+    expect(
+      'COST-6 next names the missing budget for a project with infrastructure',
+      truth(
+        nextIn(k.dir).attention.some((a) =>
+          a.startsWith(
+            'No running budget is set, and the project has infrastructure (workers/api/wrangler.toml)',
+          ),
+        ),
+        JSON.stringify(nextIn(k.dir).attention),
+      ),
+      0,
+    );
+    const none = kCli('cost');
+    expect(
+      'COST-6 and so does cost, which exits 1',
+      truth(none.status === 1 && none.stdout.includes('No running budget is set'), both(none)),
+      0,
+    );
+
+    kPut('.claude/code-kit.json', withCost(budget));
+    kCommit('the budget');
+    const unregistered = kCli('cost');
+    expect(
+      'COST-3 with a budget and infrastructure but no register, cost says so',
+      truth(
+        unregistered.status === 1 &&
+          unregistered.stdout.includes(
+            'There is no cost register (docs/costs.md), but the project has infrastructure (workers/api/wrangler.toml)',
+          ),
+        both(unregistered),
+      ),
+      0,
+    );
+    expect(
+      'COST-3 and next does too',
+      truth(
+        nextIn(k.dir).attention.some((a) =>
+          a.startsWith('There is no cost register (docs/costs.md)'),
+        ),
+        JSON.stringify(nextIn(k.dir).attention),
+      ),
+      0,
+    );
+
+    const today = new Date().toISOString().slice(0, 10);
+    const old = new Date(Date.now() - 100 * 86_400_000).toISOString().slice(0, 10);
+    const header =
+      '# Costs\n\n| Item | Provider | Environment | Size | Monthly | Basis |\n| --- | --- | --- | --- | --- | --- |\n';
+    const row = (item, env, monthly, basis = `pricing page, ${today}`) =>
+      `| ${item} | Provider | ${env} | small | ${monthly} | ${basis} |\n`;
+    kPut(
+      'docs/costs.md',
+      header +
+        row('Postgres', 'prod', '25') +
+        row('API', 'prod', '7.80') +
+        row('Domain', 'all', '1') +
+        row('Cache', 'prod', '~30') +
+        row('Mail', 'dev', '0', `pricing page, ${old}`),
+    );
+    const report = kCli('cost');
+    expect(
+      'COST-3 cost adds each environment up against its budget, an all row in every one',
+      truth(
+        /prod\s+33\.80 of 100/.test(report.stdout) && /dev\s+1 of 20/.test(report.stdout),
+        report.stdout,
+      ),
+      0,
+    );
+    expect(
+      'COST-3 and names a row whose Monthly is not a number',
+      truth(
+        report.status === 1 &&
+          report.stdout.includes('docs/costs.md:8 (Cache): Monthly is "~30", not a number'),
+        report.stdout,
+      ),
+      0,
+    );
+    expect(
+      'COST-7 and a price read more than 90 days ago, to recheck',
+      truth(
+        report.stdout.includes(
+          'docs/costs.md:9 (Mail): its price was read 100 days ago; recheck it',
+        ),
+        report.stdout,
+      ),
+      0,
+    );
+    kPut(
+      'docs/costs.md',
+      header +
+        row('Postgres', 'prod', '25') +
+        row('API', 'prod', '7.80') +
+        row('Domain', 'all', '1'),
+    );
+    kCommit('the register');
+    expect('COST-3 a register within its budget passes', kCli('cost'), 0);
+
+    // COST-4: a lane's branch that changes the infrastructure changes the register too.
+    k.git('checkout', '-q', '-b', 'backend/st-1');
+    kPut('workers/api/wrangler.toml', 'name = "api"\n[[d1_databases]]\nbinding = "DB"\n');
+    kCommit('ST-1 a database');
+    const uncosted = kCli('verify', '--base', 'main', '--no-checks');
+    expect(
+      'COST-4 verify fails a branch that changes the infrastructure without the register',
+      truth(
+        uncosted.status === 1 &&
+          both(uncosted).includes('Running cost') &&
+          both(uncosted).includes(
+            "workers/api/wrangler.toml changed the infrastructure, but docs/costs.md didn't change",
+          ),
+        both(uncosted),
+      ),
+      0,
+    );
+    kPut(
+      'docs/costs.md',
+      header +
+        row('Postgres', 'prod', '25') +
+        row('API', 'prod', '7.80') +
+        row('Domain', 'all', '1') +
+        row('D1', 'prod', '5'),
+    );
+    expect(
+      'COST-4 a lane may write the register, which any agent keeps',
+      kHook(
+        'git add docs/costs.md && git commit -q -m "ST-1 cost the database"',
+        'backend-engineer',
+      ),
+      0,
+    );
+    kCommit('ST-1 cost the database');
+    expect(
+      'COST-4 with its row, the branch passes verify',
+      truth(
+        !both(kCli('verify', '--base', 'main', '--no-checks')).includes('Running cost'),
+        both(kCli('verify', '--base', 'main', '--no-checks')),
+      ),
+      0,
+    );
+
+    // COST-5: a commit over the budget waits for the person, with options that fit.
+    const overRegister =
+      header +
+      row('Postgres', 'prod', '120') +
+      row('API', 'prod', '7.80') +
+      row('Domain', 'all', '1') +
+      row('D1', 'prod', '5');
+    kPut('docs/costs.md', overRegister);
+    const laneOver = kHook(
+      'git add docs/costs.md && git commit -q -m "ST-1 a bigger database"',
+      'backend-engineer',
+    );
+    expect(
+      'COST-5 a lane commit over the budget is refused, saying by how much, to bring options to the lead',
+      truth(
+        laneOver.status === 2 &&
+          laneOver.stderr.includes(
+            'prod would be 133.80 USD a month against its budget of 100 USD, 33.80 USD over (it was 38.80 USD)',
+          ) &&
+          laneOver.stderr.includes('First find options that fit it') &&
+          laneOver.stderr.includes('Hand the lead a change request and stop'),
+        laneOver.stderr,
+      ),
+      0,
+    );
+    const leadOver = kHook('git add docs/costs.md && git commit -q -m "a bigger database"');
+    expect(
+      "COST-5 and the lead's is the person's call too",
+      truth(
+        leadOver.status === 2 &&
+          leadOver.stderr.includes("This is the person's decision: ask them") &&
+          leadOver.stderr.includes('.claude/approvals/cost'),
+        leadOver.stderr,
+      ),
+      0,
+    );
+    expect(
+      "COST-5 the lead can't approve it within the delegated rules",
+      truth(kCli('approve', 'cost', '--delegated', '--reason', 'x').status !== 0, ''),
+      0,
+    );
+    mkdirSync(join(k.dir, '.claude/approvals'), { recursive: true });
+    writeFileSync(
+      join(k.dir, '.claude/approvals/cost'),
+      'the bigger database is worth it at launch',
+    );
+    const approved = kHook('git add docs/costs.md && git commit -q -m "a bigger database"');
+    const logged = readFileSync(join(k.dir, '.claude/approval-log.jsonl'), 'utf8');
+    expect(
+      "COST-5 with the person's cost approval it goes through, and the log records what it allowed",
+      truth(
+        approved.status === 0 &&
+          logged.includes('"approval":"cost"') &&
+          logged.includes('"after":133.8') &&
+          !existsSync(join(k.dir, '.claude/approvals/cost')),
+        approved.stderr + logged,
+      ),
+      0,
+    );
+    kCommit('a bigger database');
+    expect(
+      'COST-5 verify accepts the branch with the approval logged',
+      truth(
+        !both(kCli('verify', '--base', 'main', '--no-checks')).includes('Running cost'),
+        both(kCli('verify', '--base', 'main', '--no-checks')),
+      ),
+      0,
+    );
+    expect(
+      'COST-5 and next takes the total over the budget to the person, with options',
+      truth(
+        nextIn(k.dir).attention.some((a) =>
+          a.startsWith(
+            'The running cost is over the budget: prod 133.80 USD a month against 100 USD. Bring the person options that fit',
+          ),
+        ),
+        JSON.stringify(nextIn(k.dir).attention),
+      ),
+      0,
+    );
+    kPut(
+      'docs/costs.md',
+      header +
+        row('Postgres', 'prod', '110') +
+        row('API', 'prod', '7.80') +
+        row('Domain', 'all', '1') +
+        row('D1', 'prod', '5'),
+    );
+    expect(
+      'COST-5 a commit that lowers a total already over the budget needs no approval',
+      kHook('git add docs/costs.md && git commit -q -m "a smaller database"'),
+      0,
+    );
+    k.git('checkout', '-q', '-f', 'main');
+    k.git('checkout', '-q', '-b', 'backend/st-2');
+    kPut('docs/costs.md', overRegister);
+    kCommit('over the budget by hand');
+    const unapproved = kCli('verify', '--base', 'main', '--no-checks');
+    expect(
+      'COST-5 verify fails a branch over the budget with no cost approval logged',
+      truth(
+        unapproved.status === 1 &&
+          both(unapproved).includes(
+            'docs/costs.md: prod would be 133.80 USD a month against its budget of 100 USD',
+          ),
+        both(unapproved),
+      ),
+      0,
+    );
+    k.git('checkout', '-q', 'main');
+
+    const lane = kCli('instructions', 'show', 'lane', 'backend').stdout;
+    const lead = kCli('instructions', 'show', 'lead').stdout;
+    expect(
+      "COST-4 a lane agent's instructions say to cost what it adds in the register",
+      truth(
+        lane.includes('The project has a running budget') && lane.includes('docs/costs.md'),
+        lane,
+      ),
+      0,
+    );
+    expect(
+      "COST-5 the lead's say going past the budget is always the person's",
+      truth(
+        lead.includes("Going past the budget is always the person's call, under vibe too"),
+        lead,
+      ),
+      0,
+    );
+  }
+
   // The reads the mod makes stay a few git calls however many stories there are: one each outlasted
   // the mod's 30 seconds in a project with 500 stories.
   {

@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import { BASELINE_FILE, loadBaseline, newProblems } from './baseline.mjs';
 import { runChecks } from './checks.mjs';
 import { CONFIG_FILE } from './config.mjs';
+import { COST_APPROVAL, overBudget, overWords, registerFile } from './costs.mjs';
 import { isDependencyFile } from './dependencies.mjs';
 import { entryProblems, freshEntries, readRegister, statesWithoutEvidence } from './designs.mjs';
 import { evidenceRecords } from './reviews.mjs';
@@ -239,6 +240,7 @@ export function verifyBranch({
     tests: [],
     regression: [],
     standards: [],
+    cost: [],
     checks: [],
   };
   const { entries, problems: logProblems } = logEntries(root, from);
@@ -402,6 +404,29 @@ export function verifyBranch({
       found.standards.push(
         `${stdFile}: ${weakened.join('; ')}. Removing a standard, or weakening a required one, needs the person's standards approval, which the commit records in ${APPROVAL_LOG}. Restore it, or ask the person.`,
       );
+  }
+
+  // COST-4: a branch that changes the infrastructure says in the register what that costs. COST-5: one
+  // that takes an environment past its budget carries the person's cost approval, which the commit logs.
+  if (config.cost) {
+    const register = registerFile(config);
+    const infra = changed.filter((f) => matchesAny(f, config.cost.paths));
+    if (infra.length && !changed.includes(register))
+      found.cost.push(
+        `${infra.slice(0, 3).join(', ')}${infra.length > 3 ? `, and ${infra.length - 3} more,` : ''} changed the infrastructure, but ${register} didn't change. Say there what the change costs a month: a new or changed row for each paid thing it adds or resizes, or a Basis saying why the cost didn't move.`,
+      );
+    if (changed.includes(register)) {
+      const over = overBudget(
+        showAt(root, from, register),
+        showAt(root, 'HEAD', register),
+        config.cost,
+      );
+      const approved = entries.some((e) => e.file === register && e.approval === COST_APPROVAL);
+      if (over.length && !approved)
+        found.cost.push(
+          `${register}: ${overWords(over, config.cost.currency)}. Going past the budget is the person's call: bring them options that fit, each with what it gives up, and the cost of this one; their cost approval is recorded in ${APPROVAL_LOG} by the commit.`,
+        );
+    }
   }
 
   // REG-1: a fix's tests fail without it, as the bug.
