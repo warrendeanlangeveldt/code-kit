@@ -4,6 +4,7 @@ What changed in each release of code-kit, newest first. Versions follow the plug
 
 ## Unreleased
 
+- **A branch made where the checkout stands, then a commit.** `git checkout -b <branch> main && git add … && git commit …`, run with the checkout already at main, was refused as a command that may write files the commit can't see, because the branch named a start point. A start point that is the commit the checkout is at changes no file, so it now passes like a branch made with no start point. One at any other commit is still refused.
 - **Reverting a commit that logged approvals.** A `git revert` of a merge, or of any commit that appended to `.claude/approval-log.jsonl`, takes those entries back out with the rest, so verify failed the branch as an edited log, and no shell command was allowed to put the log back: the only way out was to make the branch again by hand. A command that doesn't commit may now put the log back as the last commit has it (`git restore --staged --worktree .claude/approval-log.jsonl`, or `git checkout HEAD -- …`), which can lose only what isn't committed. Verify's problem now says what took the entries out and how to make the revert again: `git revert --no-commit <commit>`, then that restore, then commit. A restore from any other commit, or in the same command as a commit, is still refused, since the commit hook appends before the command runs.
 
 ## 0.32.0 (2026-11-06)
