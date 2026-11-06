@@ -10712,6 +10712,34 @@ else process.exit(1);
       truth(states()['CLAUDE.md'] === 'stale'),
       0,
     );
+    // A teammate on a newer code-kit already updated this part: nothing here may write it back.
+    const leadText = kRead('CLAUDE.md');
+    const newer = leadText.replace(/code-kit:begin v\d+/, 'code-kit:begin v9999');
+    kPut('CLAUDE.md', newer);
+    expect(
+      'instructions from a newer code-kit read as ahead, not behind',
+      truth(states()['CLAUDE.md'] === 'ahead', JSON.stringify(states())),
+      0,
+    );
+    const aheadNext = JSON.parse(kCli('next', '--json').stdout);
+    expect(
+      'next asks for the update, and not for writing them back',
+      truth(
+        !aheadNext.why.includes('CLAUDE.md') &&
+          aheadNext.attention.some(
+            (a) => a.includes('newer code-kit') && a.includes('/plugin marketplace update'),
+          ),
+        JSON.stringify(aheadNext),
+      ),
+      0,
+    );
+    kCli('instructions', '--write');
+    expect(
+      '--write leaves instructions from a newer code-kit as they are',
+      truth(kRead('CLAUDE.md') === newer),
+      0,
+    );
+    kPut('CLAUDE.md', leadText);
     kCli('instructions', '--write');
     expect(
       "--write brings it up to date, keeping the project's own lines",

@@ -40,4 +40,5 @@ code-kit is a Claude Code plugin: hooks (`hooks/`), skills (`skills/<name>/SKILL
 - The core never names another tool: tool-specific rules belong in `hooks/lib/adapters/`.
 - Refusals say why, and what to do instead, in plain sentences an agent can act on.
 - Keep the README's config table and CLI list in step with the code.
+- When the instructions change (`templates/claude-md.md`, `templates/agent.md` or the facts that fill them), raise `INSTRUCTIONS_VERSION`. A session on an older code-kit relies on it to leave a newer one's instructions alone; `test/units.test.mjs` fails until it's raised.
 - Every release adds an entry at the top of `CHANGELOG.md`: the version, the date, and what changed for someone using code-kit, in plain sentences. The GitHub Release notes use the same text.

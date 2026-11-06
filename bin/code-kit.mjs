@@ -3176,6 +3176,8 @@ function instructionsCommand() {
   const said = {
     current: 'up to date',
     stale: 'from an older code-kit or config; --write brings it up to date',
+    ahead:
+      'from a newer code-kit than this one; --write leaves it. Run /plugin marketplace update code-kit and restart Claude Code',
     missing: 'none yet; --write adds it',
     legacy: 'written before code-kit marked its part; merge it once, by hand (below)',
   };

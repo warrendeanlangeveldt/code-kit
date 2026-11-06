@@ -14,6 +14,8 @@ import { newProblems } from '../hooks/lib/baseline.mjs';
 import { addedPackages, dependencyApproval, isDependencyFile } from '../hooks/lib/dependencies.mjs';
 import { commandsOf, readsOnly, runs, withoutHeredocs } from '../hooks/lib/shell.mjs';
 import { storyMerges } from '../hooks/lib/queue.mjs';
+import { INSTRUCTIONS_VERSION, agentRules, leadSection } from '../hooks/lib/instructions.mjs';
+import { createHash } from 'node:crypto';
 import { publishTitle } from '../hooks/lib/publish.mjs';
 import {
   NOT_CODE_KIT,
@@ -4180,4 +4182,22 @@ test('HAND-6 the loop hands over designs only in the design tool', async () => {
   );
   assert.equal(stepLabel(step), 'Hand over ST-1');
   assert.notEqual(stepKey(step), stepKey({ step: 'design', args: 'ST-1' }));
+});
+
+// A session on an older code-kit tells a newer one's instructions from out-of-date ones by this number.
+test('ONB-8 the instructions version is raised whenever what they say changes', () => {
+  const root = mkdtempSync(join(tmpdir(), 'code-kit-rendered-'));
+  const config = withDefaults(clone());
+  const rendered = [leadSection(root, config), agentRules(root, config)]
+    .join('\n')
+    .replace(/code-kit:begin v\d+/g, 'code-kit:begin');
+  rmSync(root, { recursive: true, force: true });
+  assert.deepEqual(
+    {
+      version: INSTRUCTIONS_VERSION,
+      rendered: createHash('sha256').update(rendered).digest('hex'),
+    },
+    { version: 13, rendered: '61e60c980d0e4dd6d4214036687aa6ead2a38b7754d76b864ac3ed474f5e617e' },
+    'The instructions changed: raise INSTRUCTIONS_VERSION in hooks/lib/instructions.mjs, then set this version and hash.',
+  );
 });

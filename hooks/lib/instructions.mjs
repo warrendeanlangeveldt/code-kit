@@ -15,7 +15,7 @@ import {
 import { registerFile } from './costs.mjs';
 
 /** The version of code-kit's instructions: raised whenever the templates' rules change. */
-export const INSTRUCTIONS_VERSION = 12;
+export const INSTRUCTIONS_VERSION = 13;
 
 const TEMPLATES = fileURLToPath(new URL('../../templates/', import.meta.url));
 const BEGIN = (v) => `<!-- code-kit:begin v${v} -->`;
@@ -111,12 +111,14 @@ const AGENT_LEGACY = /^Always:\s*$/;
 
 /**
  * Where a file's code-kit part stands: `current`; `stale` (marked, from an older code-kit or an older
- * config); `legacy` (written before the markers, often tailored by hand, so merged once by the lead, not
+ * config); `ahead` (marked by a newer code-kit than this one, as when a teammate has updated: never
+ * written back to this one's older rules); `legacy` (written before the markers, often tailored by hand, so merged once by the lead, not
  * overwritten); or `missing` (none yet).
  */
 function stateOf(text, block, legacy) {
   const m = MARKED.exec(text);
   // A formatter that rewraps the project's markdown doesn't make code-kit's part out of date.
+  if (m && Number(m[1]) > INSTRUCTIONS_VERSION) return { state: 'ahead', version: Number(m[1]) };
   if (m) return { state: same(m[0], block) ? 'current' : 'stale', version: Number(m[1]) };
   if (text.split('\n').some((l) => legacy.test(l))) return { state: 'legacy', version: 0 };
   return { state: 'missing', version: null };

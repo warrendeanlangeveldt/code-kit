@@ -437,6 +437,12 @@ export function nextStep(root, base) {
     attention.push(
       `${none.map((f) => f.file).join(', ')} ${none.length === 1 ? 'has' : 'have'} none of code-kit's instructions; \`code-kit instructions --write\` adds them.`,
     );
+  // Newer than this code-kit: a teammate updated first. The session's own code-kit is what's behind.
+  const ahead = instructions.filter((f) => f.state === 'ahead');
+  if (ahead.length)
+    attention.push(
+      `code-kit's instructions in ${ahead.map((f) => f.file).join(', ')} come from a newer code-kit than this session's: don't write them back. Run /plugin marketplace update code-kit and restart Claude Code.`,
+    );
   if (behind.length) {
     const legacy = behind.filter((f) => f.state === 'legacy');
     return result(
