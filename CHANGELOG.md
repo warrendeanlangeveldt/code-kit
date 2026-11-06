@@ -2,6 +2,10 @@
 
 What changed in each release of code-kit, newest first. Versions follow the plugin manifest and the npm package `@warren-dean/code-kit`. Each release is also on [GitHub Releases](https://github.com/warrendeanlangeveldt/code-kit/releases).
 
+## Unreleased
+
+- **A branch queued again after a batch failed no longer goes back to its lane.** When a batch fails verify in the merge queue, every branch in it is sent back, including those with nothing wrong. The lead queued those again at the same commits, yet `status` still read them as sent back, and `next` proposed dispatching lanes with nothing to fix whenever it wasn't the lead's turn to merge. A branch queued since its send-back, at that commit, now reads as passed and waits to merge. A branch that's sent back while it's in the queue stays sent back.
+
 ## 0.33.0 (2026-11-06)
 
 - **A running budget.** Projects were being designed on each provider's production defaults, with nothing adding up what they'd cost a month. spec-design now asks how much a month each environment may cost, in your currency, and the load to plan for; init writes it to `cost` in the config, with the project's infrastructure files. spec-design costs each architecture it proposes against it and, when your preferred one doesn't fit, offers options that do, each with what it gives up. The costs go in `docs/costs.md`, a row per paid thing with where its price came from, and `code-kit cost` adds them up against the budget. A branch that changes the infrastructure has to change the register (verify), lanes may write it, and a commit that takes an environment past its budget waits for your `cost` approval, which the lead can't give, under vibe either. `next` asks a project with infrastructure and no budget for one. It works for any provider: code-kit holds no prices, and the lead cites where each came from. Reading real spend from an account comes later.

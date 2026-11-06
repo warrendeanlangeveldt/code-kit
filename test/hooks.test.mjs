@@ -8855,6 +8855,32 @@ else process.exit(1);
     0,
   );
   nextIs("next proposes the lane's fix, not another review", v.dir, 'dispatch', 'ST-2');
+  // A batch's failure sends back branches with nothing wrong: queued again at the same commit, they
+  // wait to merge, and no lane is sent to fix them.
+  const storyState = () =>
+    JSON.parse(vCli('status', '--json').stdout).stories.find((s) => s.id === 'ST-2').state;
+  vCli('queue', 'add', 'web/st-2');
+  expect(
+    'a branch queued again after its send-back reads as passed, not sent back',
+    truth(storyState() === 'review', storyState()),
+    0,
+  );
+  const requeuedNext = JSON.parse(vCli('next', '--json').stdout);
+  expect(
+    'next sends no lane to fix a branch queued again at the commit it was sent back at',
+    truth(
+      requeuedNext.step !== 'dispatch' && !/sent back/.test(requeuedNext.why),
+      JSON.stringify(requeuedNext),
+    ),
+    0,
+  );
+  vCli('sent-back', 'web/st-2', '--reason', 'the review found one more thing');
+  expect(
+    'a send-back after the branch was queued still counts',
+    truth(storyState() === 'sent back', storyState()),
+    0,
+  );
+  vCli('queue', 'drop', 'web/st-2');
   v.git('checkout', '-q', 'web/st-2');
   vPut('apps/office/lib/cancel.test.ts', "test('BOOK-2 cancel', () => {});\n");
   vCommit('ST-2 fix');
@@ -9126,7 +9152,7 @@ else process.exit(1);
         st2.started > 0 &&
         st2.lastCommit >= st2.started &&
         st2.merged === null &&
-        st2.sentBack.length === 1 &&
+        st2.sentBack.length === 2 &&
         timed.now >= st2.lastCommit,
       JSON.stringify(st2),
     ),
