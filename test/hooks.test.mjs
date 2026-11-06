@@ -931,6 +931,20 @@ try {
     bash(`K="node /opt/my tools/code-kit.mjs"; git add notes.txt && git commit -m x`),
     0,
   );
+  git('branch', '-q', '-f', 'here', 'HEAD');
+  git('branch', '-q', '-f', 'before', git('commit-tree', 'HEAD^{tree}', '-m', 'another').trim());
+  expect(
+    'and after making a branch at the commit the checkout is at, named by another ref',
+    bash('git checkout -q -b fresh here && git add notes.txt && git commit -m x'),
+    0,
+  );
+  expect(
+    'but not at another commit, which changes the files the commit is judged on',
+    bash('git switch -q -c fresh before && git add notes.txt && git commit -m x'),
+    2,
+    'git switch -q -c fresh before',
+  );
+  git('branch', '-q', '-D', 'here', 'before');
   expect(
     'and after staging with its errors sent away',
     bash('git add -A notes.txt 2>/dev/null; git add notes.txt 2>&1 && git commit -m x'),
@@ -2478,9 +2492,10 @@ try {
       mHook('git switch -q -c lead/sync && git commit -q --allow-empty -m x'),
       0,
     );
+    m.git('branch', '-q', '-f', 'elsewhere', m.git('commit-tree', 'HEAD^{tree}', '-m', 'x').trim());
     expect(
       'but a branch made from another start point may change files before the commit',
-      mHook('git switch -q -c lead/sync2 web/st-1 && git commit -q --allow-empty -m x'),
+      mHook('git switch -q -c lead/sync2 elsewhere && git commit -q --allow-empty -m x'),
       2,
       'this commit runs after',
     );

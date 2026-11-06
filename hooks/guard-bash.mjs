@@ -796,7 +796,7 @@ ${approvalHowTo(TESTS_APPROVAL, actor, root, 'weakening tests in one commit', pe
 // The commit hook judges what the commit holds before the command runs, so a file a command earlier in
 // the chain writes (a formatter, a script, a heredoc) can't be seen, and would go in unjudged and
 // unlogged. Before the commit, a chain may only move into the checkout, make a branch where it stands
-// (no start point, so no file changes), stage or unstage, make folders, take away a worktree (keepsFiles)
+// (no start point, or one at the commit the checkout is at, so no file changes), stage or unstage, make folders, take away a worktree (keepsFiles)
 // and run commands that only read (lib/shell.mjs readsOnly: git's status, diff, log and show among them,
 // with no output file), or that write only outside the checkout (writesOutside). Errors sent into the
 // output or /dev/null write no file.
@@ -812,15 +812,25 @@ const assignsOnly = (c) => ASSIGNS_ONLY.test(c.code) && !/`|\$\(|<\(/.test(c.tex
 const recordsOnly = (c) =>
   !/[<>]/.test(c.code) && (config.shell.records ?? []).some((re) => new RegExp(re).test(c.text));
 // What changes no file a commit could take: making folders (git keeps no empty folder), taking away a
-// worktree, which is a checkout of its own, and unstaging (`git reset [HEAD] [--] [<paths>]`, which
-// leaves the files as they are). A reset to another commit with no paths moves HEAD, so it counts.
+// worktree, which is a checkout of its own, unstaging (`git reset [HEAD] [--] [<paths>]`, which
+// leaves the files as they are) and making a branch at the commit the checkout is at. A reset to another commit with no paths moves HEAD, so it counts.
 const KEEPS_FILES = new RegExp(String.raw`^(?:mkdir\s|${GIT}worktree\s+(?:remove|prune)(?![\w-]))`);
+// A branch made at a start point that is the commit the checkout is at already: no file changes.
+const BRANCHES_AT =
+  /^git\s+(?:switch\s+(?:-q\s+|--quiet\s+)*(?:-c|--create)|checkout\s+(?:-q\s+|--quiet\s+)*-b)\s+[^\s-]\S*\s+([^\s-$`]\S*)\s*$/;
+const commitOf = (ref) =>
+  spawnSync('git', ['-C', root, 'rev-parse', '--verify', '--quiet', `${ref}^{commit}`], {
+    encoding: 'utf8',
+  }).stdout.trim();
 const RESETS = new RegExp(String.raw`^${GIT}reset((?:\s+\S+)*)\s*$`);
 const isCommit = (w) =>
   spawnSync('git', ['-C', root, 'rev-parse', '--verify', '--quiet', `${w}^{commit}`]).status === 0;
 function keepsFiles(c) {
   if (/[<>]/.test(c.code)) return false;
   if (KEEPS_FILES.test(c.text)) return true;
+  const start = c.text.match(BRANCHES_AT)?.[1];
+  if (start && !/[$`]/.test(start))
+    return commitOf(start) !== '' && commitOf(start) === commitOf('HEAD');
   const reset = c.text.match(RESETS);
   if (!reset) return false;
   const words = reset[1].trim().split(/\s+/).filter(Boolean);
