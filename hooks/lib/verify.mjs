@@ -117,7 +117,9 @@ function logEntries(root, base) {
   if (added === null)
     return {
       entries: [],
-      problems: [`${APPROVAL_LOG} was edited, not appended to; it is append-only.`],
+      problems: [
+        `${APPROVAL_LOG} was edited, not appended to; it is append-only. An entry it has where the branch left the base is gone or changed, as a \`git revert\` of a commit that logged approvals leaves it. Take that commit out of the branch and make it again without the log's change: \`git revert --no-commit <commit>\`, then \`git restore --staged --worktree ${APPROVAL_LOG}\`, then commit.`,
+      ],
     };
   const entries = [];
   const problems = [];

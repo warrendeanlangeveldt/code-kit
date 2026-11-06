@@ -304,7 +304,45 @@ export function unreadNames(cmd, pattern) {
       if (andOr) i++;
     }
   }
-  return parts.filter((p) => pattern.test(p) && !readsOnly(p));
+  // The commit hook appends to the log before the command runs: a restore beside a commit could drop that.
+  const restores = !runs(
+    cmd,
+    new RegExp(String.raw`^${GIT}(?:commit|merge|revert|cherry-pick|rebase|am|pull)(?![\w-])`),
+  );
+  return parts.filter(
+    (p) => pattern.test(p) && !readsOnly(p) && !(restores && restoresFromHead(p, pattern)),
+  );
+}
+
+// git restore's flags that keep its source the last commit (or the index), and change nothing else.
+const RESTORE_FLAG = /^(?:--staged|-S|--worktree|-W|-SW|-WS|--source=HEAD|-q|--quiet|--)$/;
+
+/**
+ * Whether `part` only puts a file `pattern` names back as the last commit (or the index) has it:
+ * `git restore [--staged] [--worktree] <file>` or `git checkout [HEAD] -- <file>`. That can lose only
+ * what isn't committed, never what the history holds, as after `git revert --no-commit` took a file's
+ * committed lines out.
+ */
+export function restoresFromHead(part, pattern) {
+  const pieces = commandsOf(part);
+  if (pieces.length !== 1 || /[|<>`$]/.test(codeOf(part))) return false;
+  const words = wordsOf(pieces[0].text);
+  if (words[0] !== 'git' || words.length < 3) return false;
+  const file = words.at(-1);
+  if (!pattern.test(file) || /[*?[]/.test(file)) return false;
+  const flags = words.slice(2, -1);
+  if (words[1] === 'restore') {
+    for (let i = 0; i < flags.length; i++) {
+      if ((flags[i] === '-s' || flags[i] === '--source') && flags[i + 1] === 'HEAD') i++;
+      else if (!RESTORE_FLAG.test(flags[i])) return false;
+    }
+    return true;
+  }
+  if (words[1] === 'checkout')
+    return (
+      flags.join(' ') === '--' || flags.join(' ') === 'HEAD --' || flags.join(' ') === '-q HEAD --'
+    );
+  return false;
 }
 
 // What may come before a command it runs: a package runner (`npx`, `pnpm exec`, `uv run`…) or a wrapper

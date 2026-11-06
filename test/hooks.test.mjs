@@ -635,6 +635,30 @@ try {
     "ls; python3 - <<'EOF'\nopen('.claude/approval-log.jsonl', 'a')\nEOF",
   ])
     expect(`but nothing that could write it: ${write}`, bash(write, 'web-engineer'), 2);
+  // Putting the log back as the last commit has it can't take out an entry the history holds.
+  for (const restore of [
+    'git restore --staged --worktree .claude/approval-log.jsonl',
+    'git restore -SW --source HEAD .claude/approval-log.jsonl',
+    'git checkout HEAD -- .claude/approval-log.jsonl',
+    'git status --short; git restore --staged .claude/approval-log.jsonl && git status --short',
+  ])
+    expect(`the log may be put back as HEAD has it: ${restore}`, bash(restore), 0);
+  for (const restore of [
+    'git restore --source main .claude/approval-log.jsonl',
+    'git restore --source=HEAD~1 --staged --worktree .claude/approval-log.jsonl',
+    'git checkout main -- .claude/approval-log.jsonl',
+    'git checkout HEAD~2 -- .claude/approval-log.jsonl',
+    'git restore --staged --worktree .claude/approval-log.jsonl .claude/approvals',
+    'git restore --staged --worktree .claude/approval-log.jsonl && git commit -q -m x',
+    'L=.claude/approval-log.jsonl; git restore --staged --worktree $L',
+  ])
+    expect(`but not from anywhere else, or before a commit: ${restore}`, bash(restore), 2);
+  expect(
+    'and the refusal says how to put it back',
+    bash('git checkout main -- .claude/approval-log.jsonl'),
+    2,
+    'git restore --staged --worktree .claude/approval-log.jsonl',
+  );
   expect(
     "a lane may read the log's history with git, as a review does",
     bash('git diff main...HEAD -- .claude/approval-log.jsonl | head -40', 'web-engineer'),
@@ -7286,6 +7310,33 @@ const op = process.argv[2]; let input = ''; process.stdin.on('data', (d) => (inp
   expect(
     'verify fails a rewritten approval log',
     failsWith(verify('--no-checks'), 'append-only'),
+    0,
+  );
+  v.git('reset', '-q', '--hard', 'HEAD~1');
+  // A revert of a commit that logged an approval takes its entry back out with the rest.
+  v.git('revert', '--no-edit', 'HEAD');
+  expect(
+    'verify fails a revert that took entries out of the log, and says how to make it again',
+    failsWith(verify('--no-checks'), 'git revert --no-commit <commit>'),
+    0,
+  );
+  v.git('reset', '-q', '--hard', 'HEAD~1');
+  v.git('revert', '--no-commit', 'HEAD');
+  const restore = 'git restore --staged --worktree .claude/approval-log.jsonl';
+  const restoring = spawnSync('node', [join(hooks, 'guard-bash.mjs')], {
+    input: JSON.stringify({ cwd: v.dir, tool_input: { command: restore } }),
+    env: { ...process.env, CLAUDE_PROJECT_DIR: v.dir },
+    encoding: 'utf8',
+  });
+  if (restoring.status === 0) spawnSync('sh', ['-c', restore], { cwd: v.dir });
+  v.git('commit', '-q', '-m', 'revert, keeping the log');
+  expect(
+    'made again with --no-commit and the log put back, the revert keeps every entry',
+    truth(
+      restoring.status === 0 &&
+        !(({ stdout, stderr }) => stdout + stderr)(verify('--no-checks')).includes('append-only'),
+      restoring.stderr,
+    ),
     0,
   );
   v.git('reset', '-q', '--hard', 'HEAD~1');

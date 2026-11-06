@@ -2,6 +2,10 @@
 
 What changed in each release of code-kit, newest first. Versions follow the plugin manifest and the npm package `@warren-dean/code-kit`. Each release is also on [GitHub Releases](https://github.com/warrendeanlangeveldt/code-kit/releases).
 
+## Unreleased
+
+- **Reverting a commit that logged approvals.** A `git revert` of a merge, or of any commit that appended to `.claude/approval-log.jsonl`, takes those entries back out with the rest, so verify failed the branch as an edited log, and no shell command was allowed to put the log back: the only way out was to make the branch again by hand. A command that doesn't commit may now put the log back as the last commit has it (`git restore --staged --worktree .claude/approval-log.jsonl`, or `git checkout HEAD -- …`), which can lose only what isn't committed. Verify's problem now says what took the entries out and how to make the revert again: `git revert --no-commit <commit>`, then that restore, then commit. A restore from any other commit, or in the same command as a commit, is still refused, since the commit hook appends before the command runs.
+
 ## 0.32.0 (2026-11-06)
 
 - **Writes outside the checkout before a commit.** Drafting a commit message in a scratchpad and committing it in one command (`git log -1 --format=%B > /tmp/msg && sed -i '' 's/…/…/' /tmp/msg && git commit --amend -F /tmp/msg`) was refused as a command that may write files the commit can't see. A read whose output goes only to full paths outside the project and the commit's checkout, and sed's substitutions on such files in place, can't change what's committed, so they're allowed. A path from a variable, a link back into the project, a sed that writes a file or runs a command, and any write into the checkout are still refused.
