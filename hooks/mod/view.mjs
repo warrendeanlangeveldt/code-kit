@@ -7,7 +7,7 @@ export const NOT_CODE_KIT = "This project doesn't use code-kit.";
 const LEAD = 'lead';
 
 /** A CLI run's stdout as JSON, or null when it printed none. */
-import { limitText } from './loop.mjs';
+import { limitText, talkingText } from './loop.mjs';
 import { teamLines } from './teamview.mjs';
 
 export function parseJson(stdout) {
@@ -379,6 +379,22 @@ export function bandLines({
   // LOOP-11, LOOP-12: what the loop read in the lead's reply holds it until the person says.
   const waitingLine = waitingOf(loop?.waiting);
   if (waitingLine) lines.push(waitingLine);
+  // LOOP-16: the person talks with the lead about something else; Carry on lets the loop go on now.
+  if (loop?.talking)
+    lines.push({
+      kind: 'talking',
+      text: talkingText(loop.talking.minutes),
+      actions: [{ id: 'carryOn', label: 'Carry on' }],
+    });
+  // LOOP-17: a step not due yet, and what shows it; Ask now prompts the lead with it anyway.
+  const notDue = loop?.held ?? [];
+  if (notDue.length)
+    lines.push({
+      kind: 'holding',
+      text: `${notDue[0].label}: not due yet: ${notDue[0].why}${notDue.length > 1 ? ` (and ${notDue.length - 1} more)` : ''}`,
+      step: notDue[0],
+      actions: [{ id: 'askHeld', label: 'Ask now' }],
+    });
   // A held call's request is asked on its own line above, not again here.
   // CARD-2: counted as decisions, not files: one approval for a lane covers every file it was asked for.
   const asks = approvalAsks((requests?.open ?? []).filter((r) => !held.some((h) => sameAsk(h, r))));

@@ -177,6 +177,7 @@ function project() {
     leadBusy: false, // prompts are queued behind the lead's turn, and never resolve in the test
     sideAsks: [] as any[], // side calls: { fork } or { model }, with their prompt
     sideReply: { isAnswered: true, text: 'dayjs formats the booking dates.', usage: null } as any,
+    checkReply: null as any, // LOOP-17: the check's reading of a step, or none that reads
     holdWaits: false, // false: the hold ends at once, as if timed out (tests about cards, not hold)
     waiting: new Map<string, (answer: string) => void>(),
     // The CLI commands that never answer: their run rejects, as one past its time does.
@@ -436,6 +437,9 @@ function stub(on: any, w: World) {
     w.sideAsks.push({ model: e.model, prompt: e.prompt });
     // LEAN-6: the loop reads the lead's reply with a small model; the test's reading answers it.
     if (/Say where that reply left things/.test(e.prompt)) return { value: w.sideReply };
+    // LOOP-17: the check of a step against the project, before the lead is prompted with it.
+    if (w.checkReply && /is about to prompt the lead/.test(e.prompt))
+      return { value: w.checkReply };
     return { value: { isAnswered: true, text: 'From the facts alone.', usage: null } };
   });
   // Claude Code's own settings hooks beneath: none answer a permission denial.
@@ -3121,6 +3125,146 @@ test('LOOP-13 a story asked about again after waiting with nothing moving comes 
   await leadTurn($, 't-5');
   await settle(clock);
   expect(w.prompts.at(-1)).toBe('Review ST-160: run /code-kit:review ST-160.');
+});
+
+/** LOOP-17: the check's reading of a step against the project. */
+const checked = (o: any) => ({ isAnswered: true, text: JSON.stringify(o), usage: null });
+
+test('LOOP-16 the person talking with the lead about something else holds the loop until they have been quiet', async ($, on) => {
+  const w = project();
+  w.next = { step: 'merge', args: 'lead/st-1', then: [] };
+  const merges = () => w.prompts.filter((p: string) => p.startsWith('Merge lead/st-1'));
+  const clock = await start($, on, w);
+  // Mid-build, the person asks the lead something that isn't the build.
+  w.sideReply = outcome({ outcome: 'done', talk: 'conversation' });
+  await personSays($, 'Which model does the web lane run on?');
+  await leadSays($, 't-1', 'The web lane runs on Sonnet.');
+  await settle(clock);
+  expect(merges()).toEqual([]);
+  // The reading of the reply was told what the person said.
+  expect(w.sideAsks.some((a: any) => /Which model does the web lane run on\?/.test(a.prompt))).toBe(
+    true,
+  );
+  const ui = await bandUi($);
+  expect(
+    await ui.find({
+      type: 'Text',
+      text: "You're talking with the lead: the loop waits until you've been quiet for 10 minutes",
+    }),
+  ).toBeDefined();
+  await ui.unmount();
+  // Nine minutes on, still nothing; past ten, the step is prompted.
+  await clock.advance(9 * 60_000);
+  await settle(clock);
+  expect(merges()).toEqual([]);
+  await clock.advance(2 * 60_000);
+  await settle(clock);
+  expect(merges()).toHaveLength(1);
+  // Asking the lead to carry on with the build holds nothing: the next step is prompted at once.
+  w.next = { step: 'decide', args: '1', then: [] };
+  w.sideReply = outcome({ outcome: 'done', talk: 'build' });
+  await personSays($, 'Carry on with the build.');
+  await leadSays($, 't-3', 'Carrying on.');
+  await settle(clock);
+  expect(w.prompts.at(-1)).toMatch(/Run \/code-kit:decide 1\.$/);
+  // The lead takes it; then the person talks again, a new step comes due meanwhile, and Carry on in
+  // the band lets the loop go on at once.
+  w.sideReply = outcome({ outcome: 'done' });
+  await leadSays($, 't-3b', 'Decided request 1.');
+  await settle(clock);
+  w.sideReply = outcome({ outcome: 'done', talk: 'conversation' });
+  await personSays($, 'What does the Trail show?');
+  await leadSays($, 't-4', 'Each requirement and its tests.');
+  await settle(clock);
+  w.next = { step: 'dispatch', args: 'ST-9', then: [] };
+  w.refs += ' d1 refs/heads/core/st-2\n';
+  await clock.advance(4000);
+  await settle(clock);
+  expect(w.prompts.at(-1)).toBe('What does the Trail show?');
+  const band = await bandUi($);
+  await press($, 'band-carryOn');
+  await band.unmount();
+  expect(w.prompts.at(-1)).toBe('Dispatch ST-9: run /code-kit:dispatch ST-9.');
+});
+
+test('LOOP-17 a merge the lead said waits stays held when the person speaks and lanes commit, until the check finds it due', async ($, on) => {
+  const w = project();
+  w.next = { step: 'merge', args: 'lead/st-1', then: [] };
+  const merges = () => w.prompts.filter((p: string) => p.startsWith('Merge lead/st-1'));
+  w.sideReply = unread;
+  const clock = await start($, on, w);
+  await leadTurn($);
+  await settle(clock);
+  expect(merges()).toHaveLength(1);
+  // The lead holds the merge: its verify is still running.
+  w.sideReply = outcome({ outcome: 'waiting', reason: 'its verify is still running' });
+  await leadSays($, 't-2', 'Holding the merge: verify is still running.');
+  await settle(clock);
+  // The person asks how it's going, and another lane commits: it isn't asked again.
+  w.sideReply = outcome({ outcome: 'done', talk: 'build' });
+  await personSays($, 'How is the build going?');
+  await leadSays($, 't-3', 'Verify is still running on lead/st-1.');
+  await settle(clock);
+  w.refs += ' x1 refs/heads/core/st-1\n';
+  await clock.advance(2 * 60_000);
+  await settle(clock);
+  expect(merges()).toHaveLength(1);
+  const ui = await bandUi($);
+  expect(
+    await ui.find({
+      type: 'Text',
+      text: 'Merge lead/st-1: not due yet: its verify is still running',
+    }),
+  ).toBeDefined();
+  await ui.unmount();
+  // Five minutes on, with the project moved, it's checked again: due now, and prompted with why.
+  w.checkReply = checked({ due: true, why: 'its verify finished and nothing else holds it.' });
+  await clock.advance(4 * 60_000);
+  await settle(clock);
+  expect(merges()).toHaveLength(2);
+  expect(merges()[1]).toMatch(
+    / \(Checked against the project just now: its verify finished and nothing else holds it\.\)$/,
+  );
+  // The check read the project itself, and the lead's replies.
+  const check = w.sideAsks.findLast((a: any) => /about to prompt the lead/.test(a.prompt));
+  expect(check.prompt).toContain('Step: Merge lead/st-1');
+  expect(check.prompt).toContain('Agents at work: none');
+  expect(check.prompt).toContain('Verify is still running on lead/st-1.');
+});
+
+test('LOOP-17 a step the check finds not due is held, not prompted; Ask now prompts it anyway', async ($, on) => {
+  const w = project();
+  w.next = { step: 'dispatch', args: 'ST-9', then: [] };
+  w.checkReply = checked({
+    due: false,
+    why: 'web/st-9 already has commits and a web-engineer agent is at work on it',
+  });
+  const clock = await start($, on, w);
+  await leadTurn($);
+  await settle(clock);
+  expect(w.prompts).toEqual([]);
+  const ui = await bandUi($);
+  expect(
+    await ui.find({
+      type: 'Text',
+      text: 'Dispatch ST-9: not due yet: web/st-9 already has commits and a web-engineer agent is at work on it',
+    }),
+  ).toBeDefined();
+  await press($, 'band-askHeld');
+  await ui.unmount();
+  expect(w.prompts).toEqual(['Dispatch ST-9: run /code-kit:dispatch ST-9.']);
+});
+
+test('LOOP-17 with loop.check off, the step is prompted unchecked', async ($, on) => {
+  const w = project();
+  w.next = { step: 'dispatch', args: 'ST-9', then: [] };
+  w.check = { ...w.check, harness: { loop: { check: false } } } as any;
+  w.checkReply = checked({ due: false, why: 'already under way' });
+  const clock = await start($, on, w);
+  await leadTurn($);
+  await settle(clock);
+  expect(w.prompts).toEqual(['Dispatch ST-9: run /code-kit:dispatch ST-9.']);
+  expect(w.sideAsks.some((a: any) => /about to prompt the lead/.test(a.prompt))).toBe(false);
 });
 
 /** LOOP-14: a lead turn the API failed, as Claude Code ends it. */

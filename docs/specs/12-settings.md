@@ -12,17 +12,19 @@
 
 ## Data
 
-| Setting                     | Type    | Default      | Rules                                                                                                                    |
-| --------------------------- | ------- | ------------ | ------------------------------------------------------------------------------------------------------------------------ |
-| `autonomy`                  | enum    | `autonomous` | `autonomous`, `propose`, `off` (05)                                                                                      |
-| `hold.minutes`              | number  | 2            | 0 switches holding off (06); at most 10 (a held call waits in a process, which Claude Code runs for ten minutes at most) |
-| `stall.nudgeMinutes`        | number  | 5            | (05)                                                                                                                     |
-| `stall.restartMinutes`      | number  | 10           | Greater than `nudgeMinutes`                                                                                              |
-| `stall.maxRestarts`         | integer | 2            |                                                                                                                          |
-| `agents.reviewer`           | object  | off          | `{ on, model }`; model an alias (`haiku`, `sonnet`, `opus`) or an id; without one, the session's model                   |
-| `agents.lanes.model`        | string  | none         | The lane agents' model, an alias or an id, or `story` for each story's size (23, SCHED-3); without one, the session's    |
-| `background.pauseAtPercent` | number  | 80           | Of the plan's 5-hour use (08)                                                                                            |
-| `report.on`                 | boolean | `false`      | Agents may draft bug reports for code-kit, which the person sends or discards (15, REPORT-1)                             |
+| Setting                     | Type    | Default      | Rules                                                                                                                             |
+| --------------------------- | ------- | ------------ | --------------------------------------------------------------------------------------------------------------------------------- |
+| `autonomy`                  | enum    | `autonomous` | `autonomous`, `propose`, `off` (05)                                                                                               |
+| `loop.quietMinutes`         | number  | 10           | While the person talks with the lead about something else, the loop waits this long after they last spoke; 0 to 120 (05, LOOP-16) |
+| `loop.check`                | boolean | `true`       | Each step checked against the project as it is now before the lead is prompted (05, LOOP-17)                                      |
+| `hold.minutes`              | number  | 2            | 0 switches holding off (06); at most 10 (a held call waits in a process, which Claude Code runs for ten minutes at most)          |
+| `stall.nudgeMinutes`        | number  | 5            | (05)                                                                                                                              |
+| `stall.restartMinutes`      | number  | 10           | Greater than `nudgeMinutes`                                                                                                       |
+| `stall.maxRestarts`         | integer | 2            |                                                                                                                                   |
+| `agents.reviewer`           | object  | off          | `{ on, model }`; model an alias (`haiku`, `sonnet`, `opus`) or an id; without one, the session's model                            |
+| `agents.lanes.model`        | string  | none         | The lane agents' model, an alias or an id, or `story` for each story's size (23, SCHED-3); without one, the session's             |
+| `background.pauseAtPercent` | number  | 80           | Of the plan's 5-hour use (08)                                                                                                     |
+| `report.on`                 | boolean | `false`      | Agents may draft bug reports for code-kit, which the person sends or discards (15, REPORT-1)                                      |
 
 Context Graph's agents have their own `[harness]` section in `.ctx/config.toml`, specified there.
 

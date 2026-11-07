@@ -77,7 +77,12 @@ import {
   leadPrompt,
   nudgeText,
   outcomePrompt,
+  CHECKED_STEPS,
   COMPACT_FLOOR,
+  RECHECK_MS,
+  checkPrompt,
+  readCheck,
+  talkingText,
   PARK_MS,
   compactInstructions,
   continuePrompt,
@@ -173,6 +178,15 @@ const loop = {
   idled: new Map(),
   // LEAN-3: the milestones already done when this session first looked, and those finished since.
   milestones: null,
+  // LOOP-16: the person's last prompt to the lead ({ at, text }), and, while they talk with the lead
+  // about something other than the build, until when the loop waits ({ until }).
+  talk: null,
+  talking: null,
+  // LOOP-17: steps not due yet, by key, whether the lead said so or the check found it: { why, at, print, label }
+  held: new Map(),
+  // LOOP-17: the lead's last replies, for the check: { at, text, label }
+  replies: [],
+  unchecked: null, // LOOP-17: the step the person asked for from the band, prompted without a check
 };
 // LOOP-10: whether this session runs the loop, the session that does when another does, and when this
 // one last renewed its lease.
@@ -1494,6 +1508,94 @@ export function register(on) {
           });
         return true;
       },
+      // LOOP-17: a step checked against the project before the lead is prompted with it: the prompt, with
+      // what shows it's due, or null when it isn't (held by its key). A check that can't be read lets
+      // the step go, as before.
+      check: async ({ prompt, step, key, label, print }) => {
+        const facts = await act
+          .stepFacts(step)
+          .catch((err) => `(not read: ${err?.message ?? err})`);
+        const said = await $.model
+          .complete({ model: 'sonnet', prompt: checkPrompt({ prompt, facts }), maxTokens: 400 })
+          .catch(() => ({ isAnswered: false }));
+        const heard = said.isAnswered ? readCheck(said.text) : null;
+        if (!heard) return prompt;
+        if (heard.due)
+          return heard.why
+            ? `${prompt} (Checked against the project just now: ${heard.why.replace(/[.\s]+$/, '')}.)`
+            : prompt;
+        const why = heard.why ?? 'the project shows it is not due';
+        loop.held.set(key, { why, at: await $.clock.now(), print, label });
+        await act.record('held', `${label}: ${why}`);
+        $.ui.invalidate('ui.render');
+        return null;
+      },
+      // LOOP-17: what the check reads, as the project is now: the step's stories and branches against
+      // the base, the merge queue, the agents at work, the latest commits and the lead's last replies.
+      stepFacts: async (step) => {
+        const git = async (...args) => {
+          const r = await $.process.run(['git', ...args], { cwd }).catch(() => null);
+          return r?.exitCode === 0 ? String(r.stdout ?? '').trim() : null;
+        };
+        const base = model.base ?? 'main';
+        const now = await $.clock.now();
+        const lines = [`Step: ${stepLabel(step)}`];
+        const stories = model.state?.stories ?? [];
+        const named = [step, ...(step.then ?? [])].flatMap((s) => stepStories(s));
+        const branches = new Set(
+          (step.step === 'merge' ? String(step.args ?? '').split(/\s+/) : []).filter(Boolean),
+        );
+        for (const id of new Set(named)) {
+          const s = stories.find((x) => x.id === id);
+          lines.push(
+            s
+              ? `${id} ${s.title ?? ''}: ${s.state}${s.branch ? `, branch ${s.branch}` : ''}`
+              : `${id}: not in the plan`,
+          );
+          if (s?.branch) branches.add(s.branch);
+        }
+        for (const b of branches) {
+          const head = await git('log', '-1', '--format=%h %cr: %s', b);
+          if (head === null) {
+            lines.push(`${b}: no such branch here`);
+            continue;
+          }
+          const ahead = await git('rev-list', '--count', `${base}..${b}`);
+          const merged = await $.process
+            .run(['git', 'merge-base', '--is-ancestor', b, base], { cwd })
+            .then((r) => r.exitCode === 0)
+            .catch(() => false);
+          lines.push(
+            `${b}: last commit ${head}; ${merged ? `merged into ${base}` : `${ahead ?? '?'} commits ahead of ${base}`}`,
+          );
+        }
+        const queue = (model.queue ?? []).filter(
+          (q) => q.state !== 'merged' || branches.has(q.branch),
+        );
+        if (queue.length)
+          lines.push(`Merge queue: ${queue.map((q) => `${q.branch} ${q.state}`).join('; ')}`);
+        const atWork = ((await $.agent.list().catch(() => [])) ?? []).filter((a) =>
+          ['pending', 'running', 'waiting'].includes(a.status),
+        );
+        lines.push(
+          atWork.length
+            ? `Agents at work: ${atWork.map((a) => `${a.type} (${a.status}): ${a.description}`).join('; ')}`
+            : 'Agents at work: none',
+        );
+        lines.push(
+          `Latest commits on ${base}:\n${(await git('log', '--oneline', '-8', base)) ?? '(none)'}`,
+        );
+        const here = await git('rev-parse', '--abbrev-ref', 'HEAD');
+        if (here && here !== base)
+          lines.push(
+            `This checkout is on ${here}:\n${(await git('log', '--oneline', '-5', 'HEAD')) ?? ''}`,
+          );
+        for (const r of loop.replies)
+          lines.push(
+            `The lead's reply ${Math.round((now - r.at) / 60_000)} minutes ago, to ${r.label ? `"${r.label}"` : 'the person'}:\n${r.text}`,
+          );
+        return lines.join('\n');
+      },
       // LOOP-11: the lead's last reply, read once before the loop prompts it again. A reply that waits on
       // the person, or a turn they stopped, holds the loop until they speak; a step the lead didn't take
       // holds that step while it's still next.
@@ -1538,11 +1640,25 @@ export function register(on) {
         const said = await $.model
           .complete({
             model: 'sonnet',
-            prompt: outcomePrompt({ prompt: sent?.prompt ?? null, answer: reply.text }),
+            prompt: outcomePrompt({
+              prompt: sent?.prompt ?? null,
+              answer: reply.text,
+              said: reply.said,
+            }),
             maxTokens: 600,
           })
           .catch(() => ({ isAnswered: false }));
         const heard = said.isAnswered ? readOutcome(said.text) : null;
+        // LOOP-16: the person talking with the lead about something other than the build holds the loop
+        // until they've been quiet a while; asking it to carry on, or a reply that can't be read, doesn't.
+        if (!sent && reply.said) {
+          const quiet = harness().loop.quietMinutes;
+          loop.talking =
+            heard?.talk === 'conversation' && quiet > 0 && loop.talk
+              ? { until: loop.talk.at + quiet * 60_000 }
+              : null;
+          if (loop.talking) await act.record('talking', `the loop waits ${quiet} minutes`);
+        }
         // Spec 05's data: what came of the step, once known.
         const record = sent ? loop.steps.findLast((x) => x.prompt === sent.prompt) : null;
         if (record) record.outcome = heard?.outcome ?? 'unread';
@@ -1561,6 +1677,15 @@ export function register(on) {
             })),
           );
         }
+        // LOOP-17: a step without stories (a merge, the instructions) the lead said isn't due, or didn't
+        // take, is held by its key, so the person speaking doesn't bring it back while nothing changed.
+        if (['waiting', 'blocked'].includes(heard?.outcome) && sent && !ids.length)
+          loop.held.set(sent.key, {
+            why: heard.reason ?? heard.waits?.[0]?.why ?? "the lead didn't take it",
+            at: await $.clock.now(),
+            print: await act.fingerprint(),
+            label: sent.label,
+          });
         // LOOP-13: a story the lead's turn left exactly where it stood wasn't taken, whatever the reply
         // reads as; it's parked like one the lead said waits, so the loop doesn't prompt it again until
         // it moves.
@@ -1588,6 +1713,7 @@ export function register(on) {
         const w = loop.waiting;
         if (!w?.prompt || leadTurn) return;
         loop.waiting = null;
+        loop.held.delete(w.key);
         for (const id of w.stories ?? []) loop.parked.delete(id);
         loop.asked = { key: w.key, times: 0 };
         await act.submit(w.prompt, w.stepKind, w.target, { key: w.key, label: w.label });
@@ -1596,6 +1722,9 @@ export function register(on) {
       carryOn: async () => {
         for (const id of loop.waiting?.stories ?? []) loop.parked.delete(id);
         loop.waiting = null;
+        // LOOP-16, LOOP-17: the person lets it go on: no wait for their quiet, and no step held.
+        loop.talking = null;
+        loop.held.clear();
         loop.lastKey = null;
         loop.askedAt = { print: null, keys: new Set() };
         $.ui.invalidate('ui.render');
@@ -1638,7 +1767,7 @@ export function register(on) {
         const stale = () => leadTurn || leadTurns !== turns;
         // LOOP-14: a prompt now would fail as the last turn did.
         if (loop.limited && (await $.clock.now()) < loop.limited.until) return;
-        if (trigger === 'tick' && !loop.started && !loop.pending.length) return;
+        if (trigger === 'tick' && !loop.started && !loop.pending.length && !loop.talking) return;
         const box = await $.prompt.read().catch(() => null);
         if (box?.text?.trim()) return;
         // LOOP-10: one session in the project runs the loop; in any other, the lead is the person's alone.
@@ -1646,6 +1775,12 @@ export function register(on) {
         // LOOP-11: the lead's last reply first: one that waits on the person holds every step.
         await act.hear();
         if (loop.waiting && ['person', 'stopped'].includes(loop.waiting.kind)) return;
+        // LOOP-16: while the person talks with the lead about something else, nothing is prompted.
+        if (loop.talking) {
+          if ((await $.clock.now()) < loop.talking.until) return;
+          loop.talking = null;
+          $.ui.invalidate('ui.render');
+        }
         // #59: a restart or hand-back for a story that has since merged is stale, and goes unasked; LEAN-5:
         // so is carrying on a story that has since been sent back or queued to merge.
         const stories = model.state?.stories ?? [];
@@ -1749,6 +1884,14 @@ export function register(on) {
         const print = await act.fingerprint();
         if (stale()) return;
         if (key === loop.lastKey && print === loop.lastPrint) return;
+        // LOOP-17: a step not due yet waits until the project has moved and a while has passed, or for
+        // half an hour with nothing moving; then it's checked again.
+        const hold = loop.held.get(key);
+        if (hold) {
+          const since = (await $.clock.now()) - hold.at;
+          if (since < PARK_MS && (print === hold.print || since < RECHECK_MS)) return;
+          loop.held.delete(key);
+        }
         // LOOP-14: nor any step already prompted while it stood so, as steps taken in turn would be.
         if (loop.askedAt.print !== print) loop.askedAt = { print, keys: new Set() };
         if (loop.askedAt.keys.has(key)) return;
@@ -1772,6 +1915,13 @@ export function register(on) {
           $.ui.invalidate('ui.render');
           return;
         }
+        // LOOP-17: checked against the project as it is now, which code-kit's records can lag.
+        if (h.loop.check && CHECKED_STEPS.has(kind) && loop.unchecked !== key) {
+          const checked = await act.check({ prompt, step, key, label, print });
+          if (stale() || !checked) return;
+          prompt = checked;
+        }
+        loop.unchecked = null;
         loop.asked.times += 1;
         await act.submit(prompt, kind, target, { key, label });
       },
@@ -1836,6 +1986,17 @@ export function register(on) {
         loop.lastKey = null;
         loop.askedAt = { print: null, keys: new Set() };
         await act.record('resume', 'the loop');
+        $.ui.invalidate('ui.render');
+        await act.step('resume');
+      },
+      // LOOP-17: the person asks for a step held as not due: the lead is prompted with it, unchecked.
+      askHeld: async (line) => {
+        const key = line?.step?.key;
+        if (!key || leadTurn) return;
+        loop.held.delete(key);
+        loop.unchecked = key;
+        loop.lastKey = null;
+        loop.askedAt = { print: null, keys: new Set() };
         $.ui.invalidate('ui.render');
         await act.step('resume');
       },
@@ -2503,7 +2664,18 @@ export function register(on) {
         sent: loop.sent,
         asked: turnQuestions,
         read: false,
+        // LOOP-16: what the person said, when the turn was theirs.
+        said: loop.sent ? null : (loop.talk?.text ?? null),
       };
+      // LOOP-17: the lead's last replies, which the check reads.
+      if (e.answer?.trim()) {
+        loop.replies.push({
+          at: await $.clock.now(),
+          text: e.answer.trim().slice(0, 800),
+          label: loop.sent?.label ?? null,
+        });
+        if (loop.replies.length > 3) loop.replies.shift();
+      }
       loop.sent = null;
       $.ui.invalidate('ui.render');
       // LOOP-14: a turn the API failed did nothing; the loop holds until the limit resets.
@@ -2546,6 +2718,8 @@ export function register(on) {
       // LOOP-14: the person tries again themselves; the turn's end says whether the limit still holds.
       loop.limited = null;
       loop.askedAt = { print: null, keys: new Set() };
+      // LOOP-16: what they said, and when, for the reading of the lead's reply to it.
+      loop.talk = { at: await $.clock.now(), text: String(e.text ?? '') };
     }
     return next(e);
   });
@@ -2608,6 +2782,14 @@ export function register(on) {
       laneNotes,
       // LOOP-14: the hold on Claude's usage limit, while it lasts.
       limited: loop.limited && now < loop.limited.until ? loop.limited : null,
+      // LOOP-16: the wait while the person talks with the lead; LOOP-17: the steps not due yet.
+      talking:
+        loop.talking && now < loop.talking.until
+          ? { minutes: harness().loop.quietMinutes, until: loop.talking.until }
+          : null,
+      held: [...loop.held]
+        .filter(([key]) => key !== loop.waiting?.key)
+        .map(([key, x]) => ({ key, label: x.label, why: x.why })),
       now,
       reviews: [...reviews.values()].map((r) => ({
         ...r,
