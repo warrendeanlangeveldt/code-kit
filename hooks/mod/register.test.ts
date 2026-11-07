@@ -3084,6 +3084,45 @@ test("LOOP-13 a review the lead's turn didn't move isn't prompted again while ot
   expect(w.prompts).toHaveLength(2);
 });
 
+test('LOOP-13 a story asked about again after waiting with nothing moving comes with how to hold it', async ($, on) => {
+  const w = project();
+  w.stories.push({
+    id: 'ST-160',
+    title: 'Content security policy',
+    lane: 'web',
+    state: 'in review',
+    branch: 'web/st-160',
+    waitingOn: [],
+  });
+  w.refs += ' p1 refs/heads/web/st-160\n';
+  w.next = { step: 'review', args: 'ST-160', then: [] };
+  w.sideReply = unread;
+  const clock = await start($, on, w);
+  await leadTurn($);
+  await settle(clock);
+  expect(w.prompts).toEqual(['Review ST-160: run /code-kit:review ST-160.']);
+  // The lead leaves it: it waits on a run next week, and nothing it watches moves.
+  await leadSays($, 't-2', 'ST-160 waits on a scheduled run; not reviewing it yet.');
+  await settle(clock);
+  expect(w.prompts).toHaveLength(1);
+  // Half an hour on, other lanes have committed, and it's asked about again.
+  await clock.advance(31 * 60_000);
+  w.refs += ' x1 refs/heads/core/st-1\n';
+  await leadTurn($, 't-3');
+  await settle(clock);
+  expect(w.prompts).toHaveLength(2);
+  expect(w.prompts[1]).toMatch(/^Review ST-160: run \/code-kit:review ST-160\. /);
+  expect(w.prompts[1]).toContain('defer ST-160 --reason');
+  // Once it moves, the prompt is the plain one again.
+  w.refs = w.refs.replace(' p1 refs/heads/web/st-160', ' p2 refs/heads/web/st-160');
+  await leadSays($, 't-4', 'ST-160 still waits.');
+  await settle(clock);
+  w.refs = w.refs.replace(' p2 refs/heads/web/st-160', ' p3 refs/heads/web/st-160');
+  await leadTurn($, 't-5');
+  await settle(clock);
+  expect(w.prompts.at(-1)).toBe('Review ST-160: run /code-kit:review ST-160.');
+});
+
 /** LOOP-14: a lead turn the API failed, as Claude Code ends it. */
 async function failedTurn($: any, id: string, answer = "You've hit your weekly limit") {
   await $.turn.start({ turnId: id, text: '' } as any);

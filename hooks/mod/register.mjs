@@ -95,6 +95,7 @@ import {
   stepKey,
   stepLabel,
   stepStories,
+  holdHint,
   storiesInFlight,
   storiesSignature,
   withoutInFlight,
@@ -168,6 +169,8 @@ const loop = {
   handedDesign: new Set(), // LOOP-12: design stories handed to the lead this session
   // LOOP-13: stories the lead said wait on other work: id → { on, why, watch, sig, at }
   parked: new Map(),
+  // LOOP-13: parked stories that woke with nothing they watch moving, until it moves: id → { watch, sig }
+  idled: new Map(),
   // LEAN-3: the milestones already done when this session first looked, and those finished since.
   milestones: null,
 };
@@ -1414,8 +1417,13 @@ export function register(on) {
         if (!loop.parked.size) return;
         const now = await $.clock.now();
         const seen = await act.storiesNow();
-        for (const [id, p] of loop.parked)
-          if (now - p.at >= PARK_MS || seen.sig(p.watch) !== p.sig) loop.parked.delete(id);
+        for (const [id, p] of loop.parked) {
+          const moved = seen.sig(p.watch) !== p.sig;
+          if (!moved && now - p.at < PARK_MS) continue;
+          loop.parked.delete(id);
+          if (moved) loop.idled.delete(id);
+          else loop.idled.set(id, { watch: p.watch, sig: p.sig });
+        }
       },
       // LEAN-3: a milestone finished in this session: the lead's context is compacted before the next,
       // asked in Claude Code's dialog or done at once, as compact.milestone says. True when it took over
@@ -1693,6 +1701,14 @@ export function register(on) {
           return;
         }
         let prompt = leadPrompt(step, { cli });
+        // LOOP-13, LOOP-15: a story asked about again with nothing it watches moving may wait on a date or
+        // something outside the build; the lead holds it, rather than being asked every half hour.
+        const seen = loop.idled.size ? await act.storiesNow() : null;
+        const idle = stepStories(step).filter(
+          (id) =>
+            loop.idled.has(id) && seen.sig(loop.idled.get(id).watch) === loop.idled.get(id).sig,
+        );
+        if (prompt && idle.length) prompt = `${prompt} ${holdHint(idle, { cli })}`;
         let kind = step.step;
         let target = step.args ?? '';
         let key = stepKey(step);
