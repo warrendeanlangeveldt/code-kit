@@ -615,6 +615,25 @@ try {
     'python3 -c "print(1)"; tail -3 .claude/approval-log.jsonl && git status --short',
   ])
     expect(`the log may be read through the shell: ${read}`, bash(read, 'web-engineer'), 0);
+  // A variable of the agent's own, set earlier in the line, changes nothing about the read.
+  for (const read of [
+    'CK=/x/code-kit.mjs; node "$CK" status; tail -3 .claude/approval-log.jsonl | cut -c1-200',
+    'K=/x/code-kit.mjs S=/tmp/y; git diff main -- .claude/approval-log.jsonl | grep "^+"',
+  ])
+    expect(`the log may be read beside a variable: ${read}`, bash(read, 'web-engineer'), 0);
+  for (const write of [
+    'PATH=/tmp/x:$PATH; tail .claude/approval-log.jsonl',
+    'path[1]=/tmp/x; tail .claude/approval-log.jsonl',
+    'PATH+=:/tmp/x; tail .claude/approval-log.jsonl',
+    'HOME=/tmp/x; git diff -- .claude/approval-log.jsonl',
+    'GIT_EXTERNAL_DIFF=tee; git diff -- .claude/approval-log.jsonl',
+    'L=.claude/approval-log.jsonl; cat x >> $L',
+    'T=tee; $T .claude/approval-log.jsonl',
+    'K=1; echo x >> .claude/approval-log.jsonl',
+    'K=$(tee .claude/approval-log.jsonl); ls',
+    'K=1 tail .claude/approval-log.jsonl',
+  ])
+    expect(`but no variable that could write it: ${write}`, bash(write, 'web-engineer'), 2);
   for (const write of [
     "sed -i '' 1d .claude/approval-log.jsonl",
     "sed -n '1p;w x' .claude/approval-log.jsonl",
