@@ -28,6 +28,21 @@ export const SETTINGS = {
     about:
       "How the lead loop acts: on its own, by proposing each step, or not at all; vibe is on its own with every decision the lead's, and you only asked for accounts, keys and payments",
   },
+  'loop.quietMinutes': {
+    default: 10,
+    problem: (v) =>
+      Number.isFinite(v) && v >= 0 && v <= 120
+        ? null
+        : 'must be a number of minutes from 0 (off) to 120',
+    about:
+      "How long the loop waits after you last spoke, while you're talking with the lead about something other than the build; 0 for not at all",
+  },
+  'loop.check': {
+    default: true,
+    problem: (v) => (typeof v === 'boolean' ? null : 'must be true or false'),
+    about:
+      "Check each step against the project as it is now (git, the queue, the agents at work, the lead's last replies) before the lead is prompted with it",
+  },
   'hold.minutes': {
     default: 2,
     problem: (v) =>

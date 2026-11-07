@@ -200,6 +200,30 @@ Parking (LOOP-13) is for stories waiting on work still going, and wakes after 30
 - Given ST-2 held until a date, when the date comes, then it's offered again without being released.
 - Given `defer` without a reason, a time already past or a story the plan doesn't have, then nothing is held and the refusal says why.
 
+### LOOP-16 The loop doesn't cut into a conversation
+
+The loop prompts once the lead's turn ends, and the person often talks with the lead between steps: a question, a discussion, another task. When the person prompted the turn, the reading of the lead's reply (LOOP-11) is given what they said, and also says whether they asked to carry on with the build (`build`) or are talking with the lead about something else, or said not to build now (`conversation`). After a conversation turn, the loop prompts nothing until the person has been quiet for `harness.loop.quietMinutes` (10; 0 for never) since they last spoke, and the band says so ("You're talking with the lead: the loop waits until you've been quiet for 10 minutes") with **Carry on**, which lets it go on at once. A reply that can't be read, or a turn the loop prompted, holds nothing.
+
+**Acceptance**
+
+- Given the merge queue's head next, when the person asks the lead which model a lane runs on and the lead answers, then nothing is prompted, and the band says the loop waits; nine minutes on nothing is; past ten, the merge is.
+- Given the person tells the lead to carry on with the build, then the next step is prompted as the turn ends.
+- Given the loop waiting on the person's quiet, when they press Carry on, then the next step is prompted.
+
+### LOOP-17 A step is checked against the project before the lead is prompted
+
+code-kit's records can lag the work: a story merged or committed before the plan says so, work under way in an agent or a background run, a step the lead already said why it won't take. So before the loop prompts the lead with a step (any but a design, LOOP-12), it reads the project as it is now, itself: the step's stories and their states, each branch's last commit and whether it's merged into the base or how far ahead, the merge queue, the agents at work, the latest commits on the base and on the lead's checkout, and the lead's last three replies. A small model judges from those whether the step is still due. A step that is goes to the lead with what shows it ("(Checked against the project just now: …)"). One that isn't is held, by its key: nothing is prompted, the band shows it as a note ("Merge web/st-2: not due yet: …") with **Ask now**, which prompts the lead with it unchecked, and it's checked again once the project has moved and 5 minutes have passed, or after 30 minutes with nothing moving. A check that can't be read lets the step go. `harness.loop.check` (on by default) switches it off.
+
+A step without stories (a merge, the instructions, a decision) the lead's reply says waits, or that it didn't take, is held the same way, so the person speaking to the lead doesn't bring it back while nothing has changed. Carry on lets every held step go.
+
+A mod can't start an agent of its own in auto mode (Spike C), so the check is the mod's own reading and a side call, not a subagent, and the lead's context gets only the steps that are due.
+
+**Acceptance**
+
+- Given the lead said a merge waits on its verify still running, when the person asks how the build is going and another lane commits, then the merge isn't prompted again and the band says it's not due yet; 5 minutes on, the check finds it due and the lead is prompted with why.
+- Given a dispatch the check finds under way already, then nothing is prompted and the band holds it with its reason; Ask now prompts it.
+- Given `harness.loop.check` off, then each step is prompted unchecked.
+
 ## Quality targets
 
 - A step is submitted within 5 seconds of the lead going idle with work to do.

@@ -6878,6 +6878,28 @@ const op = process.argv[2]; let input = ''; process.stdin.on('data', (d) => (inp
       ),
       0,
     );
+    // LOOP-16, LOOP-17: how long the loop waits while the person talks with the lead, and the check of
+    // each step against the project, set like any setting and carried to the mod.
+    const quiet = sCli('settings', 'set', 'loop.quietMinutes', '20', '--reason', 'longer talks');
+    const offCheck = sCli('settings', 'set', 'loop.check', 'false', '--reason', 'fewer calls');
+    const loopNow = JSON.parse(sCli('check', '--json').stdout).harness?.loop;
+    expect(
+      "LOOP-16, LOOP-17 the loop's quiet wait and its step check are settings, carried to the mod",
+      truth(
+        quiet.status === 0 &&
+          offCheck.status === 0 &&
+          loopNow?.quietMinutes === 20 &&
+          loopNow?.check === false,
+        quiet.stderr + offCheck.stderr + JSON.stringify(loopNow),
+      ),
+      0,
+    );
+    expect(
+      'and a quiet wait past two hours changes nothing',
+      sCli('settings', 'set', 'loop.quietMinutes', '500', '--reason', 'x'),
+      1,
+      'must be a number of minutes from 0 (off) to 120',
+    );
     const bad = sCli('settings', 'set', 'hold.minutes', '99', '--reason', 'longer');
     expect(
       'a value out of range changes nothing',

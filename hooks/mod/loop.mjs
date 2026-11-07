@@ -267,24 +267,36 @@ const ANSWER_SHOWN = 4000;
  * lead's own conversation (so it knows the whole exchange), with the reply itself for a call that
  * can't fork. `prompt` is the loop's own prompt for that turn, or null when the person started it.
  */
-export function outcomePrompt({ prompt = null, answer = '' }) {
+export function outcomePrompt({ prompt = null, answer = '', said = null }) {
   const reply = String(answer ?? '').trim();
   const shown =
     reply.length > ANSWER_SHOWN ? `${reply.slice(0, ANSWER_SHOWN)}\n[… cut short]` : reply;
+  const person = !prompt && String(said ?? '').trim() ? clip(String(said).trim()) : null;
   return [
     prompt
       ? `code-kit's lead loop prompted you: "${prompt}"`
-      : "The person prompted you, and code-kit's lead loop is about to prompt you with the build's next step.",
+      : person
+        ? `The person prompted you:\n"""\n${person}\n"""\ncode-kit's lead loop is about to prompt you with the build's next step.`
+        : "The person prompted you, and code-kit's lead loop is about to prompt you with the build's next step.",
     `Your reply ended your turn. It read:\n"""\n${shown}\n"""`,
     'Say where that reply left things, so the loop knows whether to prompt you again. Answer with one JSON object and nothing else:',
-    '{"outcome": "done" | "started" | "needs-person" | "blocked" | "waiting", "question": "…", "options": [{"label": "…", "effect": "…"}], "reason": "…", "waits": [{"story": "ST-n", "on": ["ST-n"], "why": "…"}]}',
+    `{"outcome": "done" | "started" | "needs-person" | "blocked" | "waiting", "question": "…", "options": [{"label": "…", "effect": "…"}], "reason": "…", "waits": [{"story": "ST-n", "on": ["ST-n"], "why": "…"}]${person ? ', "talk": "build" | "conversation"' : ''}}`,
     '- done: you finished what was asked, or there was nothing to do.',
     '- started: you started work that carries on without you, such as lane agents.',
     "- needs-person: you asked the person something, or wait on their answer, approval or feedback before you go on. question: what you wait on, as one question; options: 2 to 4 answers they could give (a label of at most five words, and what it does), or [] when it's theirs to put in words.",
     "- waiting: the step isn't due yet for some or all of its stories: they wait on other work still going (a lane building a story they merge with, a rebuild, a check running). waits: one entry per story that waits, with the stories it waits on (their ST ids, [] when it's other work) and why, in a few words. Use this, not done, when you said a story can't be taken yet.",
     "- blocked: you didn't take the step, for a reason no answer from the person settles now and no work in flight will change. reason: why, in a sentence.",
+    ...(person
+      ? [
+          "- talk (LOOP-16): build when the person asked you to carry on with the build or to do its work; conversation when they're talking with you about something else (a question, a discussion, another task) or said not to build now, so a prompt from the loop would cut in.",
+        ]
+      : []),
   ].join('\n');
 }
+
+/** A text cut to what a side call is shown. */
+const clip = (text) =>
+  text.length > ANSWER_SHOWN ? `${text.slice(0, ANSWER_SHOWN)}\n[… cut short]` : text;
 
 /**
  * LOOP-11: the side call's answer: { outcome, question, options: [{ label, effect }], reason }, or
@@ -321,7 +333,51 @@ export function readOutcome(text) {
     options: options.length >= 2 ? options : [],
     reason: words(parsed.reason, 300),
     waits,
+    talk: ['build', 'conversation'].includes(parsed.talk) ? parsed.talk : null,
   };
+}
+
+/** LOOP-16: the band's words while the person talks with the lead. */
+export const talkingText = (minutes) =>
+  `You're talking with the lead: the loop waits until you've been quiet for ${minutes} minute${minutes === 1 ? '' : 's'}`;
+
+/** LOOP-17: the steps checked against the project before the lead is prompted (a design is the person's). */
+export const CHECKED_STEPS = new Set([...LEAD_STEPS].filter((s) => s !== 'design'));
+
+/** LOOP-17: how long a step judged not due waits before it's checked again, with the project moving. */
+export const RECHECK_MS = 5 * 60_000;
+
+/**
+ * LOOP-17: the side call that checks a step against the project as it is now, before the lead is
+ * prompted with it. `facts` is what the mod read itself: the step's stories and branches, the merge
+ * queue, the agents at work, the base's and this checkout's latest commits, and the lead's last replies.
+ */
+export function checkPrompt({ prompt, facts }) {
+  return [
+    `code-kit's lead loop is about to prompt the lead: "${prompt}"`,
+    "The loop's step comes from code-kit's records, which can lag the work: a story already merged or committed, work already under way in an agent or a background run, or a step the lead already said why it won't take. Judge from the project as it is now, below, whether prompting the lead is still useful.",
+    `The project now:\n"""\n${clip(String(facts ?? '').trim())}\n"""`,
+    'Answer with one JSON object and nothing else: {"due": true | false, "why": "…"}',
+    '- due false: the step is done already (its branch merged, its change on the base or this checkout), its work is under way (an agent at work on it, or the lead said a run is going and nothing since shows it finished), or the lead said why it is not taking the step and nothing it named has changed since. why: what shows it, in one sentence.',
+    '- due true: none of that shows; when unsure, due. why: what makes it due, in a few words.',
+  ].join('\n');
+}
+
+/** LOOP-17: the check's answer: { due, why }, or null when it isn't one (the step is then prompted). */
+export function readCheck(text) {
+  const raw = String(text ?? '');
+  let parsed;
+  try {
+    parsed = JSON.parse(raw.slice(raw.indexOf('{'), raw.lastIndexOf('}') + 1));
+  } catch {
+    return null;
+  }
+  if (typeof parsed?.due !== 'boolean') return null;
+  const why =
+    typeof parsed.why === 'string' && parsed.why.trim()
+      ? parsed.why.replace(/\s+/g, ' ').trim().slice(0, 300)
+      : null;
+  return { due: parsed.due, why };
 }
 
 /**

@@ -43,6 +43,8 @@ import {
   laneModel,
   leadPrompt,
   outcomePrompt,
+  checkPrompt,
+  readCheck,
   compactInstructions,
   continuePrompt,
   milestonesDone,
@@ -577,6 +579,7 @@ test("LOOP-11 the loop reads the lead's reply: what it left the build at, its qu
       ],
       reason: 'a pricing rule',
       waits: [],
+      talk: null,
     },
   );
   // One option is no choice: the person answers in their own words.
@@ -591,6 +594,37 @@ test("LOOP-11 the loop reads the lead's reply: what it left the build at, its qu
     answeredPrompt('Include GST?', 'Yes'),
     'The person answered what you asked ("Include GST?"): Yes. Carry on with it.',
   );
+});
+
+test("LOOP-16 the reading of the lead's reply to the person says whether they're talking about something else", () => {
+  const asked = outcomePrompt({
+    answer: 'It uses Sonnet.',
+    said: 'Which model does the lane use?',
+  });
+  assert.match(asked, /The person prompted you:\n"""\nWhich model does the lane use\?/);
+  assert.match(asked, /"talk": "build" \| "conversation"/);
+  // A turn the loop prompted, or one with nothing said, asks no such thing.
+  assert.doesNotMatch(outcomePrompt({ prompt: 'Review ST-1.', answer: 'x', said: 'hi' }), /"talk"/);
+  assert.doesNotMatch(outcomePrompt({ answer: 'x' }), /"talk"/);
+  assert.equal(readOutcome('{"outcome":"done","talk":"conversation"}').talk, 'conversation');
+  assert.equal(readOutcome('{"outcome":"done","talk":"chat"}').talk, null);
+});
+
+test('LOOP-17 the check of a step against the project: its prompt and its answer', () => {
+  const asked = checkPrompt({
+    prompt: 'Merge web/st-2, next in the merge queue.',
+    facts: 'web/st-2: merged into main',
+  });
+  assert.match(asked, /about to prompt the lead: "Merge web\/st-2/);
+  assert.match(asked, /web\/st-2: merged into main/);
+  assert.match(asked, /\{"due": true \| false, "why": "…"\}/);
+  assert.deepEqual(readCheck('```json\n{"due": false, "why": "  merged   already "}\n```'), {
+    due: false,
+    why: 'merged already',
+  });
+  assert.deepEqual(readCheck('{"due": true}'), { due: true, why: null });
+  assert.equal(readCheck('{"due": "no"}'), null);
+  assert.equal(readCheck('not json'), null);
 });
 
 test('LOOP-14 the hold after a failed turn: the used-up windows reset, or 5 minutes doubling to an hour', () => {
@@ -1166,6 +1200,7 @@ test('SET-1 the harness settings: defaults, validation and typed values', async 
     await import('../hooks/lib/harness.mjs');
   assert.deepEqual(harnessSettings(undefined), {
     autonomy: 'autonomous',
+    loop: { quietMinutes: 10, check: true },
     hold: { minutes: 2 },
     stall: { nudgeMinutes: 5, restartMinutes: 10, maxRestarts: 2 },
     agents: {
