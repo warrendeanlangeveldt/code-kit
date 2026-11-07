@@ -275,10 +275,18 @@ export function readsOnly(cmd) {
   );
 }
 
-// What could change what a later command in the line runs: a function or alias defined, a variable
-// set (PATH among them), a file sourced, a shell option.
+// What could change what a later command in the line runs: a function or alias defined, a file sourced,
+// a shell option, a variable exported, or one the shell or a command reads (PATH among them).
 const REDEFINES =
-  /(?:^|[;&|\n(]\s*)(?:[\w.-]+\s*\(\s*\)|function\s|alias\s|unalias\s|source\s|\.\s|hash\s|enable\s|builtin\s|set\s|setopt\s|shopt\s|unset\s|export\s|typeset\s|declare\s|local\s|readonly\s|[A-Za-z_]\w*=)/;
+  /(?:^|[;&|\n(]\s*)(?:[\w.-]+\s*\(\s*\)|function\s|alias\s|unalias\s|source\s|\.\s|hash\s|enable\s|builtin\s|set\s|setopt\s|shopt\s|unset\s|export\s|typeset\s|declare\s|local\s|readonly\s)/;
+const SHELL_READS =
+  /^(?:PATH|path|FPATH|fpath|CDPATH|cdpath|IFS|ENV|BASH_ENV|ZDOTDIR|HOME|LD_\w*|DYLD_\w*|GIT_\w*|XDG_\w*)$/;
+// Any other variable set in the line (`CK=…/code-kit.mjs`) stays in the shell: no command it runs sees
+// it, unless it was exported already, and what names it is judged on its own.
+const setsWhatRuns = (code) =>
+  [...code.matchAll(/(?:^|[;&|\n(]\s*)([A-Za-z_]\w*)(?:\[[^\]]*\])?\+?=/g)].some(
+    ([, name]) => SHELL_READS.test(name) || name in process.env,
+  );
 
 /**
  * The parts of `cmd` that name `pattern`, each a pipeline (`a | b`) of its own, that don't only read
@@ -289,7 +297,8 @@ export function unreadNames(cmd, pattern) {
   const read = withoutHarmlessRedirects(cmd);
   const code = codeOf(read);
   if (!pattern.test(cmd)) return [];
-  if (/<</.test(cmd) || REDEFINES.test(code)) return readsOnly(cmd) ? [] : [cmd];
+  if (/<</.test(cmd) || REDEFINES.test(code) || setsWhatRuns(code))
+    return readsOnly(cmd) ? [] : [cmd];
   const text = withoutHeredocs(read);
   const parts = [];
   let start = 0;

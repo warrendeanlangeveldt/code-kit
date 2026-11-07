@@ -113,6 +113,13 @@ export function storiesSignature(ids, stories = [], heads = new Map(), inFlight 
     .join('|');
 }
 
+/**
+ * LOOP-15: what the lead is told about stories it was asked about before, that waited the park's half
+ * hour with nothing they watch moving.
+ */
+export const holdHint = (ids, { cli = 'code-kit' } = {}) =>
+  `${ids.join(', ')} ${ids.length === 1 ? 'was' : 'were'} left half an hour ago with nothing ${ids.length === 1 ? 'it waits' : 'they wait'} on moving since. If ${ids.length === 1 ? 'it waits' : 'they wait'} on a date or on something outside the build, hold ${ids.length === 1 ? 'it' : 'each'} instead, so the loop stops asking: node "${cli}" defer ${ids[0]} --reason "<what it waits on>" [--until <date>].`;
+
 /** The story ids a step names, upper-cased: `review ST-158 ST-172` gives ST-158 and ST-172. */
 export const stepStories = (step) =>
   STORY_STEPS.has(step?.stepKind ?? step?.kind ?? step?.step)

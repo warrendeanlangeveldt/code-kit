@@ -9,6 +9,7 @@ import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
 import { readEvents } from './events.mjs';
 import { laneClaims } from './laneclaims.mjs';
+import { readQueue, waiting } from './queue.mjs';
 import { waitingStories } from './questions.mjs';
 import { sentBack } from './reviews.mjs';
 import { isTestFile } from './testfiles.mjs';
@@ -405,7 +406,7 @@ function worktrees(root) {
 /**
  * Where each story is. The plan's `done` stands (the lead marks it after merging, and merged
  * branches are often deleted or squashed). Otherwise git decides: a branch with commits not in
- * `base` is in review. A branch still at the commit a review sent back is `sent back`, waiting for
+ * `base` is in review. A branch with commits ahead, still at the commit a review sent back, is `sent back`, waiting for
  * its lane's fix. Without a branch, the plan's status stands. A story is `blocked` while a story it
  * depends on isn't done, whatever its branch holds; a todo story whose dependencies are done is `ready`.
  * A story with an open question for the person that holds it (`code-kit ask --blocks`) is `waiting on
@@ -426,6 +427,10 @@ function worktrees(root) {
 export function storyStates(root, stories, base, { designing = null } = {}) {
   const trees = worktrees(root);
   const backs = sentBack(root);
+  // Queued again since its send-back, at that same commit: a review passed it, and it waits to merge.
+  const queued = waiting(readQueue(root));
+  const requeued = (branch, back) =>
+    queued.some((e) => e.branch === branch && e.commit === back.sha && e.passed > back.at);
   const refs = branchRefs(root, base);
   const claims = laneClaims(root).filter((c) => !c.stale);
   const live = new Set(claims.map((c) => `${c.lane}|${c.story ?? ''}`));
@@ -464,7 +469,8 @@ export function storyStates(root, stories, base, { designing = null } = {}) {
     let stopped = false;
     if (ref && !['done', DROPPED].includes(story.status)) {
       const head = backs[branch] ? refs[ref].sha : null;
-      if (head && head === backs[branch].sha) state = 'sent back';
+      if (ahead > 0 && head && head === backs[branch].sha && !requeued(branch, backs[branch]))
+        state = 'sent back';
       else if (ahead > 0)
         state =
           building(story) || (story.lane === DESIGN && designing?.(story, ref))

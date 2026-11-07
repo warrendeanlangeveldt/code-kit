@@ -615,6 +615,25 @@ try {
     'python3 -c "print(1)"; tail -3 .claude/approval-log.jsonl && git status --short',
   ])
     expect(`the log may be read through the shell: ${read}`, bash(read, 'web-engineer'), 0);
+  // A variable of the agent's own, set earlier in the line, changes nothing about the read.
+  for (const read of [
+    'CK=/x/code-kit.mjs; node "$CK" status; tail -3 .claude/approval-log.jsonl | cut -c1-200',
+    'K=/x/code-kit.mjs S=/tmp/y; git diff main -- .claude/approval-log.jsonl | grep "^+"',
+  ])
+    expect(`the log may be read beside a variable: ${read}`, bash(read, 'web-engineer'), 0);
+  for (const write of [
+    'PATH=/tmp/x:$PATH; tail .claude/approval-log.jsonl',
+    'path[1]=/tmp/x; tail .claude/approval-log.jsonl',
+    'PATH+=:/tmp/x; tail .claude/approval-log.jsonl',
+    'HOME=/tmp/x; git diff -- .claude/approval-log.jsonl',
+    'GIT_EXTERNAL_DIFF=tee; git diff -- .claude/approval-log.jsonl',
+    'L=.claude/approval-log.jsonl; cat x >> $L',
+    'T=tee; $T .claude/approval-log.jsonl',
+    'K=1; echo x >> .claude/approval-log.jsonl',
+    'K=$(tee .claude/approval-log.jsonl); ls',
+    'K=1 tail .claude/approval-log.jsonl',
+  ])
+    expect(`but no variable that could write it: ${write}`, bash(write, 'web-engineer'), 2);
   for (const write of [
     "sed -i '' 1d .claude/approval-log.jsonl",
     "sed -n '1p;w x' .claude/approval-log.jsonl",
@@ -962,6 +981,50 @@ try {
     ),
     0,
   );
+  // A lane's report goes in the state folder, which the project ignores: no commit can take it.
+  for (const [what, command] of [
+    [
+      'by its path from here',
+      "cat > .claude/state/reports/web.md <<'EOF'\ndone\nEOF\ngit commit -m x",
+    ],
+    [
+      'added to',
+      "mkdir -p .claude/state/reports && cat >> .claude/state/reports/web.md <<'E'\nmore\nE\ngit add notes.txt && git commit -m x",
+    ],
+    [
+      'by its full path',
+      `printf 'done' >> ${repo}/.claude/state/reports/web.md && git commit -m x`,
+    ],
+    [
+      'after moving into the checkout',
+      `cd ${repo} && cat > .claude/state/reports/web.md <<'EOF'\ndone\nEOF\ngit commit -m x`,
+    ],
+  ])
+    expect(`and after writing a report into the state folder, ${what}`, bash(command), 0);
+  for (const [what, command] of [
+    [
+      'a path that climbs out of the state folder',
+      'echo x > .claude/state/../../notes.txt && git commit -m x',
+    ],
+    ['a folder that only starts the same', 'echo x > .claude/stateful/n.txt && git commit -m x'],
+    ['a move before it', 'cd apps && echo x > .claude/state/n.txt && git commit -m x'],
+    [
+      'a move in the middle',
+      'git status && cd apps && echo x > .claude/state/n.txt && git commit -m x',
+    ],
+    ['a path from a variable', 'echo x > .claude/state/$F && git commit -m x'],
+    ['a command that writes as well', 'node -e 1 > .claude/state/n.txt && git commit -m x'],
+  ])
+    expect(`a commit after ${what} still counts`, bash(command), 2, 'this commit runs after');
+  const ignored = readFileSync(join(repo, '.gitignore'), 'utf8');
+  writeFileSync(join(repo, '.gitignore'), '.claude/approvals/\n');
+  expect(
+    "a state folder the project doesn't ignore could go into the commit",
+    bash('echo x > .claude/state/n.txt && git commit -m x'),
+    2,
+    'this commit runs after',
+  );
+  writeFileSync(join(repo, '.gitignore'), ignored);
   for (const [what, command] of [
     [
       'a redirect into the checkout by its full path',
@@ -4890,7 +4953,7 @@ else process.exit(2);
       truth(
         (() => {
           const kept = keptCheckoutOf(m.dir, 'code-kit-merge-');
-          cleanups.push(kept, `${kept}.installs.json`, `${kept}.lock`);
+          cleanups.push(kept, `${kept}.installs.json`, `${kept}.installs.count`, `${kept}.lock`);
           const others = m
             .git('worktree', 'list', '--porcelain')
             .split('\n')
@@ -6038,7 +6101,7 @@ const op = process.argv[2]; let input = ''; process.stdin.on('data', (d) => (inp
     );
     // MQ-9: the merge's checkout is kept, with its installs, out of Spotlight's index, for the next one.
     const kept = keptCheckoutOf(m.dir, 'code-kit-merge-');
-    cleanups.push(kept, `${kept}.installs.json`, `${kept}.lock`);
+    cleanups.push(kept, `${kept}.installs.json`, `${kept}.installs.count`, `${kept}.lock`);
     expect(
       'MQ-9 the merge keeps its checkout, with the installs it copied, in a folder Spotlight skips',
       truth(
@@ -6079,6 +6142,26 @@ const op = process.argv[2]; let input = ''; process.stdin.on('data', (d) => (inp
     expect(
       "MQ-9 worktree cleanup keeps it, and says it's code-kit's own",
       says(mKit(m.dir, 'worktrees'), 'kept with its installs'),
+      0,
+    );
+    // The OS empties old files out of its temporary folder, leaving the folders: kept installs that
+    // lost a file are copied again, so the checks don't fail for it.
+    rmSync(join(kept, 'node_modules/marker-v1'));
+    laneTree('web/st-32b', {
+      'apps/office/two-b.ts': 'export const twoB = 2;\n',
+    });
+    mKit(m.dir, 'queue', 'add', 'web/st-32b');
+    const hollowed = mKit(m.dir, 'queue', 'merge', '--delegated');
+    expect(
+      'MQ-9 kept installs the OS took files from are copied again, and the merge goes on',
+      truth(
+        hollowed.status === 0 &&
+          stateOf('web/st-32b') === 'merged' &&
+          existsSync(join(kept, 'node_modules/marker-v1')) &&
+          existsSync(join(kept, 'node_modules/marker-v2')) &&
+          !existsSync(join(kept, 'node_modules/kept-sentinel')),
+        hollowed.stdout + hollowed.stderr,
+      ),
       0,
     );
     laneTree('web/st-33', {
@@ -8855,6 +8938,50 @@ else process.exit(1);
     0,
   );
   nextIs("next proposes the lane's fix, not another review", v.dir, 'dispatch', 'ST-2');
+  // A batch's failure sends back branches with nothing wrong: queued again at the same commit, they
+  // wait to merge, and no lane is sent to fix them.
+  const storyState = () =>
+    JSON.parse(vCli('status', '--json').stdout).stories.find((s) => s.id === 'ST-2').state;
+  vCli('queue', 'add', 'web/st-2');
+  expect(
+    'a branch queued again after its send-back reads as passed, not sent back',
+    truth(storyState() === 'review', storyState()),
+    0,
+  );
+  const requeuedNext = JSON.parse(vCli('next', '--json').stdout);
+  expect(
+    'next sends no lane to fix a branch queued again at the commit it was sent back at',
+    truth(
+      requeuedNext.step !== 'dispatch' && !/sent back/.test(requeuedNext.why),
+      JSON.stringify(requeuedNext),
+    ),
+    0,
+  );
+  vCli('sent-back', 'web/st-2', '--reason', 'the review found one more thing');
+  expect(
+    'a send-back after the branch was queued still counts',
+    truth(storyState() === 'sent back', storyState()),
+    0,
+  );
+  vCli('queue', 'drop', 'web/st-2');
+  // Merged at the commit it was sent back at: the base holds it, and no lane has anything to fix.
+  v.git('merge', '-q', '--no-ff', '-m', 'Merge web/st-2 into main', 'web/st-2');
+  expect(
+    'a branch merged at the commit it was sent back at no longer reads as sent back',
+    truth(storyState() === 'done', storyState()),
+    0,
+  );
+  const mergedNext = JSON.parse(vCli('next', '--json').stdout);
+  expect(
+    'next sends no lane to fix a branch already merged',
+    truth(
+      !(mergedNext.step === 'dispatch' && mergedNext.args?.includes('ST-2')) &&
+        !/sent back/.test(mergedNext.why),
+      JSON.stringify(mergedNext),
+    ),
+    0,
+  );
+  v.git('reset', '-q', '--hard', 'HEAD~1');
   v.git('checkout', '-q', 'web/st-2');
   vPut('apps/office/lib/cancel.test.ts', "test('BOOK-2 cancel', () => {});\n");
   vCommit('ST-2 fix');
@@ -9126,7 +9253,7 @@ else process.exit(1);
         st2.started > 0 &&
         st2.lastCommit >= st2.started &&
         st2.merged === null &&
-        st2.sentBack.length === 1 &&
+        st2.sentBack.length === 2 &&
         timed.now >= st2.lastCommit,
       JSON.stringify(st2),
     ),
@@ -10642,6 +10769,34 @@ else process.exit(1);
       truth(states()['CLAUDE.md'] === 'stale'),
       0,
     );
+    // A teammate on a newer code-kit already updated this part: nothing here may write it back.
+    const leadText = kRead('CLAUDE.md');
+    const newer = leadText.replace(/code-kit:begin v\d+/, 'code-kit:begin v9999');
+    kPut('CLAUDE.md', newer);
+    expect(
+      'instructions from a newer code-kit read as ahead, not behind',
+      truth(states()['CLAUDE.md'] === 'ahead', JSON.stringify(states())),
+      0,
+    );
+    const aheadNext = JSON.parse(kCli('next', '--json').stdout);
+    expect(
+      'next asks for the update, and not for writing them back',
+      truth(
+        !aheadNext.why.includes('CLAUDE.md') &&
+          aheadNext.attention.some(
+            (a) => a.includes('newer code-kit') && a.includes('/plugin marketplace update'),
+          ),
+        JSON.stringify(aheadNext),
+      ),
+      0,
+    );
+    kCli('instructions', '--write');
+    expect(
+      '--write leaves instructions from a newer code-kit as they are',
+      truth(kRead('CLAUDE.md') === newer),
+      0,
+    );
+    kPut('CLAUDE.md', leadText);
     kCli('instructions', '--write');
     expect(
       "--write brings it up to date, keeping the project's own lines",
