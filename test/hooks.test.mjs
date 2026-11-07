@@ -1711,6 +1711,38 @@ try {
     );
     expect('an unknown flag is refused, not asked', qKit('ask', '--bogus'), 1, 'nothing was asked');
     expect('so is a stray word', qKit('ask', 'show'), 1, "isn't a question for the person");
+    // An option after list, or anywhere in the words, never turns them into a question.
+    const listAll = qKit('ask', 'list', '--all');
+    const listHelp = qKit('ask', 'list', '--help');
+    expect(
+      'ask list with an option lists, and ask list --help prints the usage; neither asks anything',
+      truth(
+        listAll.status === 0 &&
+          listAll.stdout.includes('wait for the person') &&
+          listHelp.status === 0 &&
+          listHelp.stdout.includes('code-kit ask "<question>"') &&
+          JSON.parse(qKit('ask', '--json').stdout).length === before,
+        listAll.stdout + listAll.stderr + listHelp.stdout + listHelp.stderr,
+      ),
+      0,
+    );
+    expect(
+      'an unknown option after the question is refused, not asked',
+      qKit('ask', 'Which region should the sign-in pool use?', '--bogus'),
+      1,
+      'nothing was asked',
+    );
+    expect(
+      'and so is list with more words',
+      qKit('ask', 'list', 'open', 'ones'),
+      1,
+      'nothing was asked',
+    );
+    expect(
+      'decisions --all is taken as its option',
+      truth(qKit('decisions', '--all').status === 0, qKit('decisions', '--all').stderr),
+      0,
+    );
     const listed = JSON.parse(qKit('ask', '--json').stdout);
     expect(
       'with what each option does',

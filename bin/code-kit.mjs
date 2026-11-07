@@ -326,6 +326,7 @@ const FLAGS = [
   '--take',
   '--dry-run',
   '--for',
+  '--all',
 ];
 const flag = (name) => args.includes(name);
 const writeBaseline = flag('--write');
@@ -2974,9 +2975,16 @@ code-kit ask withdraw <id> --reason "…"`;
 
 function askCommand() {
   const root = resolve('.');
-  if (['--help', '-h', 'help'].includes(rest[0])) return out(ASK_USAGE);
-  // `ask list` lists, as `ask` does.
-  if (rest[0] === 'list' && rest.length === 1) rest.length = 0;
+  if (['--help', '-h', 'help'].includes(rest[0]) || (rest[0] === 'list' && rest.includes('--help')))
+    return out(ASK_USAGE);
+  // `ask list` lists, as `ask` does; anything after it is a mistyped listing, never a question.
+  if (rest[0] === 'list') {
+    if (rest.length > 1)
+      die(
+        `ask list takes only --json; nothing was asked (${rest.slice(1).join(' ')}).\n${ASK_USAGE}`,
+      );
+    rest.length = 0;
+  }
   const [sub, id, ...words] = rest;
   if (sub === 'answer') {
     const r = answerQuestion(root, id, {
@@ -3015,8 +3023,8 @@ function askCommand() {
   }
   const question = rest.join(' ').trim();
   // A question reaches the person, so a flag or a stray word never becomes one.
-  if (rest[0].startsWith('-'))
-    die(`${rest[0]} isn't an option of ask; nothing was asked.\n${ASK_USAGE}`);
+  const stray = rest.find((w) => w.startsWith('-'));
+  if (stray) die(`${stray} isn't an option of ask; nothing was asked.\n${ASK_USAGE}`);
   if (!/\s/.test(question) && !question.endsWith('?'))
     die(
       `"${question}" isn't a question for the person; nothing was asked. Ask it as a sentence they can answer.\n${ASK_USAGE}`,
