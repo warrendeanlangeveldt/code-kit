@@ -3879,11 +3879,37 @@ else process.exit(2);
     );
     expect(
       "without an Intents category nothing is raised, and it says how to add one, since GitHub won't let a tool",
-      sam('intend', 'Anything'),
+      sam('intend', 'Anything', 'at', 'all'),
       1,
       "Add it once in the repository's Settings › Discussions",
     );
     writeFileSync(store, JSON.stringify(withoutCategory));
+    // An intent reaches the whole team, so --help, an option intend doesn't have, or a stray word raises nothing.
+    const discussions = () => JSON.parse(readFileSync(store, 'utf8')).discussions.length;
+    const had = discussions();
+    const intendHelp = sam('intend', '--help');
+    expect(
+      'intend --help prints its usage and raises nothing',
+      truth(
+        intendHelp.status === 0 &&
+          intendHelp.stdout.includes('code-kit intend "<what') &&
+          discussions() === had,
+        intendHelp.stdout + intendHelp.stderr,
+      ),
+      0,
+    );
+    expect(
+      'an option intend does not have is refused, with nothing raised',
+      sam('intend', 'Split the report format', '--bogus'),
+      1,
+      'nothing was raised',
+    );
+    expect('so is a stray word', sam('intend', 'list'), 1, 'nothing was raised');
+    expect(
+      'and none of them raised an intent',
+      truth(discussions() === had, String(discussions())),
+      0,
+    );
     const twice = sam('intend', 'Split the report format again');
     const twiceId = twice.stdout.match(/#(\d+)/)?.[1];
     expect(

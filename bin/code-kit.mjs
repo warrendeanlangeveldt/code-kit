@@ -2901,7 +2901,13 @@ function teamInit(raw) {
  * TEAM-5: `intend "<what and why>" [--touches globs]` raises an intent before any code, so the team sees
  * a change of direction first; `intend agree|drop|duplicate <id> [--reason "…"]` is the tech lead's answer.
  */
+const INTEND_USAGE = `code-kit intend "<what you'll change, and why>" [--touches "<glob>,<glob>"]
+  raises an intent the team sees before code is built on it
+code-kit intend agree|drop|duplicate <number> [--reason "…"]   the tech lead settles one
+code-kit intend record <number>   an agreed intent, written as a decision record`;
+
 function intendCommand() {
+  if (['--help', '-h', 'help'].includes(rest[0])) return out(INTEND_USAGE);
   const { raw } = load();
   const team = teamOf(raw);
   if (!team) die('This project has no "team" in its config, so intents have nowhere to go.');
@@ -2941,7 +2947,14 @@ function intendCommand() {
     );
   }
   const about = rest.join(' ').trim();
-  if (!about) die('code-kit intend "<what you\'ll change, and why>" [--touches "<glob>,<glob>"]');
+  if (!about) die(INTEND_USAGE);
+  // An intent reaches the whole team, so a flag or a stray word never becomes one.
+  const stray = rest.find((w) => w.startsWith('-'));
+  if (stray) die(`${stray} isn't an option of intend; nothing was raised.\n${INTEND_USAGE}`);
+  if (!/\s/.test(about))
+    die(
+      `"${about}" isn't an intent; nothing was raised. Say what you'll change, and why, as a sentence.\n${INTEND_USAGE}`,
+    );
   const touches = (touchesGiven ?? '')
     .split(',')
     .map((t) => t.trim())
