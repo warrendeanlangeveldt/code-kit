@@ -8,6 +8,7 @@
 import { appendFileSync, existsSync, readFileSync, realpathSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { basename, dirname, join, resolve, sep } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   addedPackages,
   dependencyApproval,
@@ -835,7 +836,7 @@ ${approvalHowTo(TESTS_APPROVAL, actor, root, 'weakening tests in one commit', pe
 // with no output file), or that write only outside the checkout (writesOutside). Errors sent into the
 // output or /dev/null write no file.
 const BEFORE_COMMIT = new RegExp(
-  String.raw`^(?:cd\s|${GIT}(?:add|rm|mv|restore\s+--staged|reset\s+--soft)(?![\w-])|${GIT}(?:switch\s+(?:-q\s+|--quiet\s+)*(?:-c|--create)|checkout\s+(?:-q\s+|--quiet\s+)*-b)\s+[^\s-]\S*\s*$)`,
+  String.raw`^(?:cd\s|${GIT}(?:add|rm|mv|restore\s+--staged|reset\s+--soft)(?![\w-])|${GIT}(?:switch\s+(?:-q\s+|--quiet\s+)*(?:-q?c|--create)|checkout\s+(?:-q\s+|--quiet\s+)*-q?b)\s+[^\s-]\S*\s*$)`,
 );
 // Setting shell variables (`f=docs/x.md`, `export MSG="…"`) writes no file, unless a value runs a
 // command. What a later `git add "$f"` stages can't be read, so it counts as every changed file.
@@ -851,7 +852,7 @@ const recordsOnly = (c) =>
 const KEEPS_FILES = new RegExp(String.raw`^(?:mkdir\s|${GIT}worktree\s+(?:remove|prune)(?![\w-]))`);
 // A branch made at a start point that is the commit the checkout is at already: no file changes.
 const BRANCHES_AT =
-  /^git\s+(?:switch\s+(?:-q\s+|--quiet\s+)*(?:-c|--create)|checkout\s+(?:-q\s+|--quiet\s+)*-b)\s+[^\s-]\S*\s+([^\s-$`]\S*)\s*$/;
+  /^git\s+(?:switch\s+(?:-q\s+|--quiet\s+)*(?:-q?c|--create)|checkout\s+(?:-q\s+|--quiet\s+)*-q?b)\s+[^\s-]\S*\s+([^\s-$`]\S*)\s*$/;
 const commitOf = (ref) =>
   spawnSync('git', ['-C', root, 'rev-parse', '--verify', '--quiet', `${ref}^{commit}`], {
     encoding: 'utf8',
@@ -918,6 +919,33 @@ function writesOutside(c) {
   if (out.targets.length && readsOnly(out.rest)) return true;
   return sedInPlaceFiles(out.rest.trim())?.every(outsideCheckout) ?? false;
 }
+// code-kit's own commands that write only its state folder (a question, a hold, a send-back, the merge
+// queue's entries), or only read: run by this code-kit's own CLI, by its path or through a variable the
+// line sets to it, with no redirect of their own, where the project ignores the state folder.
+const KIT_CLI = realOf(join(dirname(fileURLToPath(import.meta.url)), '..', 'bin', 'code-kit.mjs'));
+const KIT_RECORDS =
+  /^(?:ask|defer|sent-back|reconcile|requests\s+drop|queue(?:\s+(?:add|drop|pause|resume))?|next|status|who|trace)(?:\s|$)/;
+function kitRecordsOnly(c) {
+  if (/[<>]/.test(c.code) || /(?:^|\s)--write(?:\s|$)/.test(c.code)) return false;
+  const run = c.text.match(/^node\s+(?:"([^"]+)"|'([^']+)'|(\S+))\s+(.*)$/s);
+  if (!run || !KIT_RECORDS.test(run[4])) return false;
+  let path = run[1] ?? run[2] ?? run[3];
+  const variable = path.match(/^\$\{?([A-Za-z_]\w*)\}?$/)?.[1];
+  if (variable) {
+    const set = [
+      ...cmd.matchAll(
+        new RegExp(
+          String.raw`(?:^|[;&|\n]\s*)(?:export\s+)?${variable}=(?:"([^"$\`]+)"|'([^']+)'|([^\s"'$\`;&|]+))`,
+          'g',
+        ),
+      ),
+    ];
+    if (set.length !== 1) return false;
+    path = set[0][1] ?? set[0][2] ?? set[0][3];
+  }
+  if (/[$\`]/.test(path) || realOf(resolve(input.cwd || project, path)) !== KIT_CLI) return false;
+  return spawnSync('git', ['-C', root, 'check-ignore', '-q', join(root, STATE_DIR)]).status === 0;
+}
 function writesBeforeCommit() {
   const pieces = commandsOf(withoutHarmlessRedirects(cmd));
   const at = pieces.findIndex((c) => new RegExp(String.raw`^${GIT}commit(?![\w-])`).test(c.text));
@@ -929,6 +957,7 @@ function writesBeforeCommit() {
         !readsOnly(c.whole) &&
         !assignsOnly(c) &&
         !recordsOnly(c) &&
+        !kitRecordsOnly(c) &&
         !keepsFiles(c) &&
         !writesOutside(c),
     );
