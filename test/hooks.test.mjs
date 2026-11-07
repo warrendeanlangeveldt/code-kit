@@ -8964,6 +8964,24 @@ else process.exit(1);
     0,
   );
   vCli('queue', 'drop', 'web/st-2');
+  // Merged at the commit it was sent back at: the base holds it, and no lane has anything to fix.
+  v.git('merge', '-q', '--no-ff', '-m', 'Merge web/st-2 into main', 'web/st-2');
+  expect(
+    'a branch merged at the commit it was sent back at no longer reads as sent back',
+    truth(storyState() === 'done', storyState()),
+    0,
+  );
+  const mergedNext = JSON.parse(vCli('next', '--json').stdout);
+  expect(
+    'next sends no lane to fix a branch already merged',
+    truth(
+      !(mergedNext.step === 'dispatch' && mergedNext.args?.includes('ST-2')) &&
+        !/sent back/.test(mergedNext.why),
+      JSON.stringify(mergedNext),
+    ),
+    0,
+  );
+  v.git('reset', '-q', '--hard', 'HEAD~1');
   v.git('checkout', '-q', 'web/st-2');
   vPut('apps/office/lib/cancel.test.ts', "test('BOOK-2 cancel', () => {});\n");
   vCommit('ST-2 fix');

@@ -406,7 +406,7 @@ function worktrees(root) {
 /**
  * Where each story is. The plan's `done` stands (the lead marks it after merging, and merged
  * branches are often deleted or squashed). Otherwise git decides: a branch with commits not in
- * `base` is in review. A branch still at the commit a review sent back is `sent back`, waiting for
+ * `base` is in review. A branch with commits ahead, still at the commit a review sent back, is `sent back`, waiting for
  * its lane's fix. Without a branch, the plan's status stands. A story is `blocked` while a story it
  * depends on isn't done, whatever its branch holds; a todo story whose dependencies are done is `ready`.
  * A story with an open question for the person that holds it (`code-kit ask --blocks`) is `waiting on
@@ -469,7 +469,7 @@ export function storyStates(root, stories, base, { designing = null } = {}) {
     let stopped = false;
     if (ref && !['done', DROPPED].includes(story.status)) {
       const head = backs[branch] ? refs[ref].sha : null;
-      if (head && head === backs[branch].sha && !requeued(branch, backs[branch]))
+      if (ahead > 0 && head && head === backs[branch].sha && !requeued(branch, backs[branch]))
         state = 'sent back';
       else if (ahead > 0)
         state =
