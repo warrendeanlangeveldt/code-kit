@@ -1016,6 +1016,43 @@ try {
     ['a command that writes as well', 'node -e 1 > .claude/state/n.txt && git commit -m x'],
   ])
     expect(`a commit after ${what} still counts`, bash(command), 2, 'this commit runs after');
+  // code-kit's own commands that write only its state folder: by the CLI's path, or through a variable.
+  for (const [what, command] of [
+    [
+      'a question withdrawn',
+      `node ${kitCli} ask withdraw Q-1 --reason "settled" && git add notes.txt && git commit -m x`,
+    ],
+    [
+      'a hold released and a question withdrawn, through a variable',
+      `CK=${kitCli}\nnode $CK ask withdraw Q-1 --reason "it's signed in again"\nnode "$CK" defer release ST-1\ngit add notes.txt && git commit -m x`,
+    ],
+    ['a branch queued', `node "${kitCli}" queue add web/st-1 && git commit -m x`],
+    [
+      'a branch made with combined flags',
+      'git switch -qc combined && git add notes.txt && git commit -m x',
+    ],
+  ])
+    expect(`and after ${what}`, bash(command), 0);
+  for (const [what, command] of [
+    [
+      'a code-kit command that writes the checkout',
+      `node ${kitCli} instructions --write && git commit -m x`,
+    ],
+    ['one that takes away worktrees', `node ${kitCli} worktrees prune && git commit -m x`],
+    [
+      'another script of the same name',
+      'node /tmp/elsewhere/bin/code-kit.mjs ask withdraw Q-1 && git commit -m x',
+    ],
+    [
+      'a variable set twice',
+      `CK=${kitCli}; CK=/tmp/x.mjs; node $CK defer release ST-1 && git commit -m x`,
+    ],
+    [
+      'a code-kit command redirected into the checkout',
+      `node ${kitCli} next > notes.txt && git commit -m x`,
+    ],
+  ])
+    expect(`a commit after ${what} still counts`, bash(command), 2, 'this commit runs after');
   const ignored = readFileSync(join(repo, '.gitignore'), 'utf8');
   writeFileSync(join(repo, '.gitignore'), '.claude/approvals/\n');
   expect(
