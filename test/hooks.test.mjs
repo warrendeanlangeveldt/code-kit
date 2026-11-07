@@ -4953,7 +4953,7 @@ else process.exit(2);
       truth(
         (() => {
           const kept = keptCheckoutOf(m.dir, 'code-kit-merge-');
-          cleanups.push(kept, `${kept}.installs.json`, `${kept}.lock`);
+          cleanups.push(kept, `${kept}.installs.json`, `${kept}.installs.count`, `${kept}.lock`);
           const others = m
             .git('worktree', 'list', '--porcelain')
             .split('\n')
@@ -6101,7 +6101,7 @@ const op = process.argv[2]; let input = ''; process.stdin.on('data', (d) => (inp
     );
     // MQ-9: the merge's checkout is kept, with its installs, out of Spotlight's index, for the next one.
     const kept = keptCheckoutOf(m.dir, 'code-kit-merge-');
-    cleanups.push(kept, `${kept}.installs.json`, `${kept}.lock`);
+    cleanups.push(kept, `${kept}.installs.json`, `${kept}.installs.count`, `${kept}.lock`);
     expect(
       'MQ-9 the merge keeps its checkout, with the installs it copied, in a folder Spotlight skips',
       truth(
@@ -6142,6 +6142,26 @@ const op = process.argv[2]; let input = ''; process.stdin.on('data', (d) => (inp
     expect(
       "MQ-9 worktree cleanup keeps it, and says it's code-kit's own",
       says(mKit(m.dir, 'worktrees'), 'kept with its installs'),
+      0,
+    );
+    // The OS empties old files out of its temporary folder, leaving the folders: kept installs that
+    // lost a file are copied again, so the checks don't fail for it.
+    rmSync(join(kept, 'node_modules/marker-v1'));
+    laneTree('web/st-32b', {
+      'apps/office/two-b.ts': 'export const twoB = 2;\n',
+    });
+    mKit(m.dir, 'queue', 'add', 'web/st-32b');
+    const hollowed = mKit(m.dir, 'queue', 'merge', '--delegated');
+    expect(
+      'MQ-9 kept installs the OS took files from are copied again, and the merge goes on',
+      truth(
+        hollowed.status === 0 &&
+          stateOf('web/st-32b') === 'merged' &&
+          existsSync(join(kept, 'node_modules/marker-v1')) &&
+          existsSync(join(kept, 'node_modules/marker-v2')) &&
+          !existsSync(join(kept, 'node_modules/kept-sentinel')),
+        hollowed.stdout + hollowed.stderr,
+      ),
       0,
     );
     laneTree('web/st-33', {

@@ -7,7 +7,9 @@
 // project's installs in and deleting them again on every merge is millions of files each time, which
 // keeps the machine's file-change tracking and search indexing busy. Each run checks out the tree it
 // needs, and installs again only where its manifests and lockfiles differ from the ones the kept
-// installs were made for. The folder's name ends in .noindex, which Spotlight leaves alone.
+// installs were made for. The folder's name ends in .noindex, which Spotlight leaves alone. The OS
+// empties old files out of its temporary folder and leaves the folders and links, so a run counts the
+// kept installs' files, and copies them again when any have gone.
 import { createHash } from 'node:crypto';
 import { execFileSync, spawnSync } from 'node:child_process';
 import {
@@ -16,6 +18,7 @@ import {
   mkdirSync,
   mkdtempSync,
   openSync,
+  readdirSync,
   readFileSync,
   realpathSync,
   rmSync,
@@ -105,6 +108,26 @@ function dependencyHashes(dir) {
   }
   return hashes;
 }
+
+// The files in a kept checkout's installs, and how many there were when they were made. Tools' caches
+// come and go on their own, so they don't count. A folder that can't be read counts as empty.
+const countOf = (dir) => `${dir}.installs.count`;
+function installedFiles(dir) {
+  let files = 0;
+  for (const rel of installsOf(dir)) {
+    try {
+      for (const e of readdirSync(join(dir, rel), { recursive: true, withFileTypes: true }))
+        if (e.isFile() && !/[\\/]\.cache(?:[\\/]|$)/.test(e.parentPath)) files++;
+    } catch {
+      // gone while being read: fewer files, so it's copied again
+    }
+  }
+  return files;
+}
+const recordInstalled = (dir) => writeFileSync(countOf(dir), String(installedFiles(dir)));
+/** Whether a kept checkout's installs have lost files, or lost the records of what they were made for. */
+const hollow = (dir) =>
+  !existsSync(stampOf(dir)) || !(installedFiles(dir) >= Number(readFileSafe(countOf(dir)) || NaN));
 
 /** Takes the kept checkout's lock for this process, or false while another live process holds it. */
 function lock(slot) {
@@ -243,10 +266,19 @@ export function freshCheckout(
       throw Object.assign(new Error(why || 'the merge conflicts'), { conflict: true });
     }
   }
+  // MQ-9: the OS took files out of the kept installs: they can't be trusted, so they're copied again.
+  // What they're copied from may be behind the base by now, so the stamp names nothing, and the
+  // project's install runs over the copy for this tree.
+  const emptied = installsFrom && dir === slot && installsOf(dir).length > 0 && hollow(dir);
+  if (emptied)
+    for (const rel of installsOf(dir)) rmSync(join(dir, rel), { recursive: true, force: true });
   if (installsFrom && !installsOf(dir).length) {
     copyInstalls(installsFrom, dir);
     // The copied installs were made for installsFrom's manifests and lockfiles.
-    if (dir === slot) writeFileSync(stampOf(dir), JSON.stringify(dependencyHashes(installsFrom)));
+    if (dir === slot) {
+      writeFileSync(stampOf(dir), JSON.stringify(emptied ? {} : dependencyHashes(installsFrom)));
+      recordInstalled(dir);
+    }
   }
   return { dir, remove };
 }
@@ -351,7 +383,10 @@ export function matchInstalls(dir, from, { prepare = null, timeout = 900000 } = 
   const stamp = stampOf(dir);
   if (res.status === 0) {
     // A kept checkout's installs now match this tree.
-    if (existsSync(stamp)) writeFileSync(stamp, JSON.stringify(dependencyHashes(dir)));
+    if (existsSync(stamp)) {
+      writeFileSync(stamp, JSON.stringify(dependencyHashes(dir)));
+      recordInstalled(dir);
+    }
     return { ...facts, command, failed: null };
   }
   // What a failed install left can't be trusted: the next run copies the installs afresh.
