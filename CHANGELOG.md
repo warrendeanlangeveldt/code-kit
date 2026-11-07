@@ -2,7 +2,7 @@
 
 What changed in each release of code-kit, newest first. Versions follow the plugin manifest and the npm package `@warren-dean/code-kit`. Each release is also on [GitHub Releases](https://github.com/warrendeanlangeveldt/code-kit/releases).
 
-## Unreleased
+## 0.34.0 (2026-11-08)
 
 - **The loop no longer cuts into a conversation.** It prompted the lead as soon as each turn ended, so when you were talking with the lead about something else, the next step landed a minute after its answer to you. The reading of the lead's reply is now given what you said and tells a conversation from asking it to carry on; after a conversation, the loop waits until you've been quiet for `harness.loop.quietMinutes` (10 by default), and the band says so, with **Carry on**.
 - **Each step is checked against the project before the lead gets it.** The loop kept prompting steps the lead had already explained: a merge whose verify was still running, instructions already brought up to date on the base, a story already under way. A story the lead said waits was held, but a merge or an instructions step wasn't, and anything you said to the lead let every step come back. Before each prompt, the loop now reads the project itself (the step's branches against the base, the merge queue, the agents at work, the latest commits and the lead's last replies) and a small model judges whether the step is still due. One that isn't waits in the band as a note with **Ask now**, and is checked again once the project moves. A step the lead said waits, or didn't take, is held the same way. `harness.loop.check` switches the check off. In auto mode a mod can't start an agent itself, so this is a side call, not a subagent.
