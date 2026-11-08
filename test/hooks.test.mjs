@@ -613,6 +613,9 @@ try {
     // Other commands in the line don't stop a read that only reads.
     'grep -c spec .claude/approval-log.jsonl 2>/dev/null; node "/opt/my tools/code-kit.mjs" reconcile ST-1',
     'python3 -c "print(1)"; tail -3 .claude/approval-log.jsonl && git status --short',
+    // Nor does a heredoc whose body doesn't name the log.
+    "python3 - <<'EOF'\nprint(open('docs/plan.md').read()[:9])\nEOF\ngrep -c spec .claude/approval-log.jsonl",
+    'tail -2 .claude/approval-log.jsonl; cat <<EOF\nnotes\nEOF',
   ])
     expect(`the log may be read through the shell: ${read}`, bash(read, 'web-engineer'), 0);
   // A variable of the agent's own, set earlier in the line, changes nothing about the read.
@@ -652,6 +655,9 @@ try {
     'export PATH=/tmp/x:$PATH; tail .claude/approval-log.jsonl',
     'alias tail=tee; tail .claude/approval-log.jsonl',
     "ls; python3 - <<'EOF'\nopen('.claude/approval-log.jsonl', 'a')\nEOF",
+    "tail .claude/approval-log.jsonl; python3 - <<'EOF'\nopen('.claude/approval-log.jsonl', 'a')\nEOF",
+    'tail .claude/approval-log.jsonl; bash <<EOF\necho x >> .claude/approval-log.jsonl',
+    "grep -c spec .claude/approval-log.jsonl; cat > .claude/approval-log.jsonl <<'EOF'\nx\nEOF",
   ])
     expect(`but nothing that could write it: ${write}`, bash(write, 'web-engineer'), 2);
   // Putting the log back as the last commit has it can't take out an entry the history holds.
@@ -1021,8 +1027,16 @@ try {
     'set -o pipefail && git add notes.txt && git commit -m x',
     'set -euo pipefail; git commit -m x',
     'set +x && git commit -m x',
+    'unset SOME_API_KEY && git add notes.txt && git commit -m x',
+    'unset -v A B; git commit -m x',
   ])
     expect(`a commit after the shell's options are set passes: ${command}`, bash(command), 0);
+  expect(
+    'and an unset that redirects still counts',
+    bash('unset A > notes.txt && git commit -m x'),
+    2,
+    'this commit runs after',
+  );
   expect(
     'but one that redirects still counts',
     bash('set -o pipefail > notes.txt && git commit -m x'),

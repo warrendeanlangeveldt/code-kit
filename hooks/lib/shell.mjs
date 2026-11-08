@@ -3,22 +3,27 @@
 // (`git commit`, `code-kit merge`) look only at the simple commands it runs, each from its own start.
 // Rules about text the command carries (a commit trailer, a path in a redirect) still read it whole.
 
-/** The command with each heredoc's body taken out: the lines after `<<WORD` up to the line `WORD`. */
-export function withoutHeredocs(cmd) {
-  const out = [];
+/** The command's lines and its heredocs' bodies apart: a body is the lines after `<<WORD` up to the line `WORD`. */
+function heredocsApart(cmd) {
+  const kept = [];
+  const bodies = [];
   let until = null;
   for (const line of String(cmd).split('\n')) {
     if (until) {
       if (line.trim() === until) until = null;
+      else bodies.push(line);
       continue;
     }
-    out.push(line);
+    kept.push(line);
     // `<<WORD`, `<<-WORD`, `<<'WORD'` or `<<"WORD"`; not a `<<<` here-string, whose text is on the line.
     const m = line.match(/(?<!<)<<-?\s*(['"]?)([\w.-]+)\1(?!<)/);
     if (m && !line.includes('<<<')) until = m[2];
   }
-  return out.join('\n');
+  return { kept: kept.join('\n'), bodies: bodies.join('\n') };
 }
+
+/** The command with each heredoc's body taken out: the lines after `<<WORD` up to the line `WORD`. */
+export const withoutHeredocs = (cmd) => heredocsApart(cmd).kept;
 
 /** `text` with every quoted character replaced by `_`, the quotes kept: same length, nothing inside to match. */
 export function maskQuotes(text) {
@@ -290,14 +295,15 @@ const setsWhatRuns = (code) =>
 
 /**
  * The parts of `cmd` that name `pattern`, each a pipeline (`a | b`) of its own, that don't only read
- * (readsOnly): what a rule for a file only reads may hold. A line with a heredoc, or one that could
- * change what its commands run (REDEFINES), is one part, judged whole.
+ * (readsOnly): what a rule for a file only reads may hold. A line with a heredoc whose body names
+ * `pattern`, or one that could change what its commands run (REDEFINES), is one part, judged whole; a
+ * heredoc that doesn't name it is judged like any other command that doesn't.
  */
 export function unreadNames(cmd, pattern) {
   const read = withoutHarmlessRedirects(cmd);
   const code = codeOf(read);
   if (!pattern.test(cmd)) return [];
-  if (/<</.test(cmd) || REDEFINES.test(code) || setsWhatRuns(code))
+  if (pattern.test(heredocsApart(cmd).bodies) || REDEFINES.test(code) || setsWhatRuns(code))
     return readsOnly(cmd) ? [] : [cmd];
   const text = withoutHeredocs(read);
   const parts = [];
