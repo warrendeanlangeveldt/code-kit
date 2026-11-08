@@ -113,7 +113,7 @@ const READERS = [
   /^(?:cd|pwd|cat|head|tail|wc|grep|egrep|fgrep|cut|jq|nl|tr|ls|stat|diff|cmp|echo|printf|true)(?:\s|$)/,
   // less with no log file of what it shows.
   /^(?!.*\s(?:-[a-zA-Z]*[oO]|--log-file\b|--LOG-FILE\b))less(?:\s|$)/,
-  /^(?!.*\s(?:--output\b|-O|--open-files-in-pager\b))git(?:\s+(?:-C\s+\S+|--no-pager|-P))*\s+(?:diff|log|show|blame|grep|status|cat-file|ls-files|shortlog|rev-parse)(?:\s|$)/,
+  /^(?!.*\s(?:--output\b|-O|--open-files-in-pager\b))git(?:\s+(?:-C\s+\S+|--no-pager|-P))*\s+(?:diff|log|show|blame|grep|status|cat-file|ls-files|ls-tree|shortlog|rev-parse|rev-list|merge-base|check-ignore|check-attr|describe|name-rev|show-ref|for-each-ref|cherry)(?:\s|$)/,
   // git branch only listing branches or naming the current one: no name to create, move or delete.
   /^git(?:\s+(?:-C\s+\S+|--no-pager|-P))*\s+branch(?:\s+(?:--show-current|--list|-l|-a|--all|-r|--remotes|-vv?|--verbose|--no-color|--color|--merged|--no-merged))*\s*$/,
   // rg with no preprocessor; sort with no output file or compressor.

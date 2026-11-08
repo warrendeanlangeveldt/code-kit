@@ -1029,6 +1029,19 @@ try {
     2,
     'this commit runs after',
   );
+  // git's read-only plumbing writes nothing either.
+  for (const command of [
+    'git check-ignore -q .claude/state/r.md && git add notes.txt && git commit -m x',
+    'git merge-base --is-ancestor HEAD HEAD && git commit -m x',
+    'git rev-list --count HEAD && git ls-tree HEAD && git commit -m x',
+  ])
+    expect(`a commit after git only reads passes: ${command}`, bash(command), 0);
+  expect(
+    'but git plumbing redirected into the checkout still counts',
+    bash('git rev-list HEAD > notes.txt && git commit -m x'),
+    2,
+    'this commit runs after',
+  );
   // code-kit's own commands that write only its state folder: by the CLI's path, or through a variable.
   for (const [what, command] of [
     [

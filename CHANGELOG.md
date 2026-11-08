@@ -4,6 +4,7 @@ What changed in each release of code-kit, newest first. Versions follow the plug
 
 ## Unreleased
 
+- **git's read-only plumbing before a commit.** `git check-ignore -q <path> && git commit …` was refused as a write the commit's checks can't see. `check-ignore`, `check-attr`, `ls-tree`, `rev-list`, `merge-base`, `describe`, `name-rev`, `show-ref`, `for-each-ref` and `cherry` only read, and now pass like `git status` and `git log`; redirected into the checkout, they still count.
 - **Python's bare asserts count.** The weakened-test check counted `assert(…)` calls and `self.assertEqual(…)`, but not Python's and pytest's bare `assert x == y` statements. A test file whose assertions went from calls to statements, or that gained bare asserts, could be read as having fewer and refused as weakened. Each bare `assert` statement now counts as one assertion.
 - **`set -o pipefail`, then a commit.** Setting the shell's options (`set -euo pipefail`, `set +x`) before a commit in the same command was refused as a command that may write files. It writes nothing, so it passes now; with a redirect it still counts.
 
