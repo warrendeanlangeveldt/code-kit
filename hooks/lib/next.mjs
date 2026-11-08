@@ -20,6 +20,9 @@ import { laneClaims } from './laneclaims.mjs';
 import { keptBecause, worktrees } from './worktrees.mjs';
 import { ciFindings } from './ci.mjs';
 import { costReport, infraFiles, money } from './costs.mjs';
+import { loadBaseline } from './baseline.mjs';
+import { LAYER_RULES, conformance } from './conform.mjs';
+import { projectStandards } from './standards.mjs';
 import { storyModels } from './dispatches.mjs';
 import { pickPerLane } from './schedule.mjs';
 import { reconcileAll } from './events.mjs';
@@ -133,6 +136,31 @@ const hasMarkdown = (dir) => {
  * review), `merge` (the head of the merge queue, where the lead merges), `wait` (lanes are
  * building) or `done`. `base(config)` resolves the branch lanes merge into.
  */
+/**
+ * CONF-3, CONF-6: what `next` says of the code against the standards: a project with code and no
+ * standards is offered them, and a standard with breaches no open refactor story covers, the pathway.
+ */
+function conformAttention(root, config, stories) {
+  const { standards, exists } = projectStandards(root, config);
+  if (!standards.length && !exists)
+    return [
+      'This project has no standards yet. /code-kit:conform suggests them, those its code follows and those it should move to, audits the code against them, and drafts a refactor pathway to bring it there; you approve each standard.',
+    ];
+  const { standards: breaches, layers } = loadBaseline(root);
+  // CONF-8: the layer rules' recorded violations are planned like a standard's breaches.
+  const layered = Object.keys(layers).length > 0;
+  return conformance(
+    [...(layered ? [LAYER_RULES] : []), ...standards],
+    layered ? { ...breaches, [LAYER_RULES.id]: layers } : breaches,
+    stories,
+  )
+    .filter((s) => s.unplanned.length)
+    .map(
+      (s) =>
+        `${s.id} ${s.title}: ${s.unplanned.length} file${s.unplanned.length === 1 ? '' : 's'} with recorded breaches no refactor story covers. Draft the pathway with \`code-kit conform plan ${s.id}\` and add it to the plan as its own milestone.`,
+    );
+}
+
 export function nextStep(root, base) {
   const attention = [];
   // ASK-4: the brief's open questions, for the person's Decisions tab.
@@ -321,6 +349,8 @@ export function nextStep(root, base) {
     attention.push(
       `The plan's status lines are out of date for ${status.drift.map((d) => d.story).join(', ')}.`,
     );
+  // Spec 30: existing code against the standards: none yet, or breaches no refactor story covers.
+  attention.push(...conformAttention(root, config, plan ? readStories(root, plan) : []));
 
   // A lane's story whose agent stopped before its first commit is ready again, for a fresh agent.
   const stopped = status.stories.filter((s) => s.stopped).map((s) => s.id);

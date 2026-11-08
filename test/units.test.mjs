@@ -4232,7 +4232,220 @@ test('ONB-8 the instructions version is raised whenever what they say changes', 
       version: INSTRUCTIONS_VERSION,
       rendered: createHash('sha256').update(rendered).digest('hex'),
     },
-    { version: 13, rendered: '61e60c980d0e4dd6d4214036687aa6ead2a38b7754d76b864ac3ed474f5e617e' },
+    { version: 14, rendered: '61e60c980d0e4dd6d4214036687aa6ead2a38b7754d76b864ac3ed474f5e617e' },
     'The instructions changed: raise INSTRUCTIONS_VERSION in hooks/lib/instructions.mjs, then set this version and hash.',
+  );
+});
+
+test('CONF-2 to CONF-6 the breaches: adopted, only shrinking, fixed where touched, and the pathway', async () => {
+  const {
+    adoptedStandards,
+    breachesGained,
+    touchedBreaches,
+    layerOrder,
+    pathwayOrder,
+    refactorStories,
+    refactorPathway,
+    withBreach,
+    withoutBreach,
+  } = await import('../hooks/lib/conform.mjs');
+  const { baselineShrinks } = await import('../hooks/lib/baseline.mjs');
+  const std = (id, level, applied) => `### ${id} A rule\n\nlevel: ${level}\napplied: ${applied}\n`;
+  // Adopted: new, or tightened; a standard left as it was isn't.
+  const adopted = adoptedStandards(
+    std('PAT-1', 'recommended', 'checked') + std('CON-1', 'required', 'advice'),
+    std('PAT-1', 'required', 'checked') +
+      std('CON-1', 'required', 'advice') +
+      std('ARC-3', 'recommended', 'advice'),
+  );
+  assert.deepEqual([...adopted].sort(), ['ARC-3', 'PAT-1']);
+  // Gained: only for a standard not adopted here.
+  const before = withBreach({}, 'CON-1', 'a.ts', 'line 1');
+  const after = withBreach(withBreach(before, 'CON-1', 'b.ts', 'line 2'), 'PAT-1', 'c.ts', 'x');
+  const gained = breachesGained(before, after, adopted, 'the baseline');
+  assert.equal(gained.length, 1);
+  assert.match(gained[0], /gained a breach of CON-1 in b\.ts \(line 2\)/);
+  // Touched: what the base recorded in a changed file, still recorded.
+  assert.deepEqual(touchedBreaches(before, before, ['a.ts']), [
+    { id: 'CON-1', file: 'a.ts', breach: 'line 1' },
+  ]);
+  assert.deepEqual(
+    touchedBreaches(before, withoutBreach(before, 'CON-1', 'a.ts').breaches, ['a.ts']),
+    [],
+  );
+  // Only shrinking: entries taken out, nothing new, nothing else changed.
+  const base = JSON.stringify({ layers: { 'x.ts': ['p'] }, standards: before });
+  assert.equal(baselineShrinks(base, JSON.stringify({ layers: {}, standards: {} })), true);
+  assert.equal(
+    baselineShrinks(base, JSON.stringify({ layers: { 'x.ts': ['p'] }, standards: after })),
+    false,
+  );
+  assert.equal(baselineShrinks(base, JSON.stringify({ layers: { 'x.ts': ['q'] } })), false);
+  assert.equal(baselineShrinks(base, '{not json'), false);
+  // The pathway: a layer before those that may import it; required, then structure before detail.
+  const layers = [
+    { name: 'web', paths: ['web/**'], mayImport: ['domain', 'types'] },
+    { name: 'domain', paths: ['domain/**'], mayImport: ['types'] },
+    { name: 'types', paths: ['types/**'], mayImport: [] },
+  ];
+  assert.deepEqual(layerOrder(layers), ['types', 'domain', 'web']);
+  assert.deepEqual(
+    pathwayOrder([
+      { id: 'CON-1', level: 'required' },
+      { id: 'PAT-2', level: 'recommended' },
+      { id: 'ARC-4', level: 'required' },
+    ]).map((s) => s.id),
+    ['ARC-4', 'CON-1', 'PAT-2'],
+  );
+  const config = {
+    layers,
+    lanes: { app: { paths: ['web/**', 'domain/**', 'types/**'] } },
+    lead: { paths: [] },
+  };
+  let many = {};
+  for (let i = 0; i < 7; i++) many = withBreach(many, 'PAT-1', `web/pages/p${i}.ts`, 'line 1');
+  many = withBreach(many, 'PAT-1', 'domain/core/rules.ts', 'line 3');
+  const drafted = refactorStories({ id: 'PAT-1', title: 'Repositories' }, many, config, {
+    next: 10,
+  });
+  assert.deepEqual(
+    drafted.map((s) => [s.id, s.layer, s.files.length, s.dependsOn]),
+    [
+      ['ST-10', 'domain', 1, []],
+      ['ST-11', 'web', 5, ['ST-10']],
+      ['ST-12', 'web', 2, ['ST-10']],
+    ],
+  );
+  // Files already in an open refactor story aren't drafted again.
+  const open = [
+    { id: 'ST-3', status: 'todo', conforms: ['PAT-1'], files: ['domain/core/rules.ts'] },
+  ];
+  assert.equal(
+    refactorStories({ id: 'PAT-1', title: 'R' }, many, config, { next: 1, stories: open }).length,
+    2,
+  );
+  // Across standards: the next milestone's first story waits on the last of the one before.
+  const two = withBreach(many, 'CON-2', 'types/t.ts', 'line 9');
+  const path = refactorPathway(
+    [
+      { id: 'PAT-1', title: 'Repositories', level: 'recommended' },
+      { id: 'CON-2', title: 'Names', level: 'required' },
+    ],
+    two,
+    config,
+    { next: 20 },
+  );
+  assert.deepEqual(
+    path.map((m) => [m.standard.id, m.stories[0].id, m.stories[0].dependsOn]),
+    [
+      ['CON-2', 'ST-20', []],
+      ['PAT-1', 'ST-21', ['ST-20']],
+    ],
+  );
+});
+
+test('CONF-7 to CONF-9 the structure measured, adopted layers, splits and moves', async () => {
+  const {
+    structureFacts,
+    factBreaches,
+    adoptedLayers,
+    adoptedProblem,
+    reshapeOf,
+    withReshape,
+    reshapeLeft,
+    refactorStories,
+    pathwayOrder,
+    LAYER_RULES,
+  } = await import('../hooks/lib/conform.mjs');
+  const facts = structureFacts(
+    [
+      { rel: 'src/a.ts', source: "import { b } from './b.js';\n" },
+      { rel: 'src/b.ts', source: "import { a } from './a';\nconst k = process.env.K;\n" },
+      { rel: 'src/c.ts', source: "import { a } from '@app/a';\n" },
+      { rel: 'src/index.ts', source: '' },
+      { rel: 'src/big.py', source: 'x = 1\n'.repeat(12) },
+      { rel: 'src/config.ts', source: 'export const k = process.env.K;\n' },
+    ],
+    { aliases: { '@app': 'src' }, lines: 10 },
+  );
+  assert.deepEqual(facts.cycles, [['src/a.ts', 'src/b.ts']]);
+  assert.deepEqual(facts.large, [{ file: 'src/big.py', lines: 12 }]);
+  assert.deepEqual(facts.unused, ['src/c.ts', 'src/config.ts'], 'entry points are left out');
+  assert.deepEqual(facts.env, [{ file: 'src/b.ts', lines: [2] }]);
+  assert.equal(factBreaches(facts, 'cycles').length, 2);
+  assert.match(factBreaches(facts, 'large')[0].breach, /^12 lines, over 10/);
+  assert.deepEqual(reshapeOf(factBreaches(facts, 'large')[0].breach), { kind: 'split', to: [] });
+
+  assert.deepEqual(
+    [
+      ...adoptedLayers(
+        [{ name: 'domain', paths: ['d/**'], mayImport: [] }],
+        [
+          { name: 'domain', paths: ['d/**'], mayImport: [] },
+          { name: 'ui', paths: ['u/**'], mayImport: [] },
+        ],
+      ),
+    ],
+    ['ui'],
+  );
+  const adopted = new Set(['domain']);
+  assert.ok(
+    adoptedProblem(
+      'u/x.ts (ui) imports ../d/y (domain); ui may depend on no other layer.',
+      adopted,
+    ),
+  );
+  assert.ok(
+    !adoptedProblem(
+      'u/x.ts (ui) imports ../s/y (schemas); ui may depend on no other layer.',
+      adopted,
+    ),
+  );
+
+  const moved = withReshape('rules outside the domain', 'move', ['d/p.ts']);
+  assert.deepEqual(reshapeOf(moved), { kind: 'move', to: ['d/p.ts'] });
+  assert.equal(reshapeOf('plain'), null);
+  const here = new Set(['p.ts']);
+  assert.match(
+    reshapeLeft('p.ts', moved, (f) => here.has(f)),
+    /doesn't exist yet/,
+  );
+  here.add('d/p.ts');
+  assert.match(
+    reshapeLeft('p.ts', moved, (f) => here.has(f)),
+    /still there/,
+  );
+  here.delete('p.ts');
+  assert.equal(
+    reshapeLeft('p.ts', moved, (f) => here.has(f)),
+    null,
+  );
+
+  const { touchedBreaches } = await import('../hooks/lib/conform.mjs');
+  const base = { 'ARC-1': { 'p.ts': [moved, 'line 3: reads the database'] } };
+  assert.deepEqual(
+    touchedBreaches(base, base, ['p.ts']).map((b) => b.breach),
+    ['line 3: reads the database'],
+    'a split or a move is left to its own story',
+  );
+  const config = { layers: [], lanes: {} };
+  const drafted = refactorStories(
+    { id: 'ARC-1', title: 'Rules in the domain' },
+    { 'ARC-1': { 'src/p.ts': [moved], 'src/q.ts': ['x'], 'src/r.ts': ['y'] } },
+    config,
+    { next: 3 },
+  );
+  assert.deepEqual(
+    drafted.map((s) => s.files),
+    [
+      ['src/q.ts', 'src/r.ts'],
+      ['src/p.ts', 'd/p.ts'],
+    ],
+    'a move is a story of its own',
+  );
+  assert.equal(
+    pathwayOrder([{ id: 'ARC-1', level: 'required' }, LAYER_RULES])[0].id,
+    'layers',
+    'the layer rules come first',
   );
 });

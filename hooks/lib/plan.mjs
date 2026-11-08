@@ -258,6 +258,18 @@ export function readStories(root, planPath) {
         noRequirements: /^none\b/i.test(field(body, 'Requirements')),
         // REG-1: what a fix story fixes, or null.
         fixes: field(body, 'Fixes') || null,
+        // CONF-4: a refactor story's standards, and the files it brings to them.
+        // CONF-8: `layers` names the layer rules.
+        conforms: [
+          ...(/(^|[\s,`])layers\b/i.test(field(body, 'Conforms')) ? ['layers'] : []),
+          ...[...field(body, 'Conforms').matchAll(REQUIREMENT)].map((r) => r[1]),
+        ],
+        files: field(body, 'Files')
+          ? field(body, 'Files')
+              .split(/[,;]/)
+              .map((f) => f.trim().replace(/^`|`$/g, ''))
+              .filter(Boolean)
+          : [],
         dependsOn: [...field(body, 'Depends on').matchAll(/\bST-\d+\b/g)].map((r) => r[0]),
         status: STATES.includes(status) || status === DROPPED ? status : 'todo',
         milestone,

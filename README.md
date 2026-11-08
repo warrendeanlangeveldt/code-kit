@@ -236,6 +236,18 @@ Requirements are headings (`### BOOK-4 Cancel a booking`). Stories are `### ST-1
 
 **No specs yet?** Leave `docs.specs` out, and lanes aren't held to a spec-check report. Add it once specs exist.
 
+### Bring existing code to the standards
+
+`/code-kit:conform` takes a brownfield codebase to the standards and engineering principles you want it to follow, not only the ones it follows already:
+
+- **Standards to move to.** It suggests the standards the code already follows, with the evidence, and the ones it should move to: what the project's docs ask for, and what its stack and size call for. For each one it says how much of the code breaks it. You approve, edit or drop each.
+- **The structure, measured.** `code-kit conform measure` finds the files over 500 lines, the import cycles, the files nothing imports and the files that read the environment themselves. That's the evidence for the structural standards it suggests: one responsibility per module (no god classes), services behind providers, no import cycles, no dead code, one place for each rule, and modules by feature.
+- **A target architecture.** It proposes the layers the code should have, what each may import and the lane that owns each, as a config draft you approve. On the branch that adopts them, `code-kit baseline --write` records the code's violations of the new rules, new code is held to them at once, and the pathway plans the violations first.
+- **An audit, as evidence.** For each standard you adopt, read-only agents read the code layer by layer and report every breach with its file and line. The lead checks them and records each in the baseline (`code-kit conform record`), on the branch that adopts the standard. A breach recorded anywhere else is refused, and the breaches only ever shrink.
+- **A refactor pathway.** `code-kit conform plan` drafts a conformance milestone per standard, for the plan. Required standards come first, and structure before detail (architecture, patterns, policies, conventions, then principles). Each milestone goes through the layers that others import first, and each story depends on the same standard's stories in the layers it imports. A breach recorded with `--split` or `--move` is a story of its own, splitting the file into the files named or moving it to its layer, and it's only done when they exist and a moved file is gone. A story takes at most five files, lists its breaches, writes tests that pin down what the files do first where there are none, and keeps behaviour unchanged. You decide where the milestones go.
+- **Fix what you touch.** Every story that changes a file with a recorded breach fixes it there: `code-kit conform --for <file>` lists them, and verify refuses the branch while one is still recorded. Fixing one takes it out of the baseline with `code-kit conform fixed`, which any lane may commit, since it only shrinks.
+- **Progress.** `code-kit conform` shows each standard's breaches, its refactor stories and what's not planned yet; `code-kit next` says when a standard has breaches no story covers, or when a project with code has no standards.
+
 ## The agents and skills it creates
 
 code-kit ships no fixed team. Init writes one for each project, from its docs or its code, and re-running init keeps it in step as the project changes.
@@ -479,6 +491,10 @@ code-kit worktrees [--json] | worktrees release <branch> | worktrees prune [--qu
 code-kit worktrees discard <branch>  # the person's, from the band: remove a merged worktree that still holds changes, kept as a patch
 code-kit instructions [--write] [--json] | instructions show lead|lane [<lane>]  # code-kit's part of CLAUDE.md and the lane agents: where each stands, brought up to date, or printed
 code-kit standards [--json] [--for <path>...]  # the project's standards with any its organisation's provider supplies, and what's wrong with them; --for keeps the ones for those files' layers
+code-kit conform [--json] [--for <path>...] [--story <id>]  # existing code against the standards: each standard's recorded breaches, its refactor stories and what's not planned; --for and --story list what to fix there
+code-kit conform plan [<standard>...] [--json]  # the refactor pathway: a conformance milestone per standard, its stories through the layers in order, for the plan
+code-kit conform record <standard> <path> --breach "…" [--split "<path>, …" | --move <path>] | conform fixed <standard> <path> [--breach "…"]  # record a breach (on the branch adopting the standard), with the split or move that fixes it, or take a fixed one out
+code-kit conform measure [--json] [--lines N] | conform record <standard> --measured <large|cycles|unused|env>  # the structure measured (large files, import cycles, files nothing imports, environment reads), and one kind recorded as a standard's breaches
 code-kit trace <path>... [--json]      # what a file is for: requirements, lane, layer rules
 code-kit designs [<story>] [--json]    # the approved designs: a story's screens' files, every state, or each entry and what's wrong with it
 code-kit designs evidence <story> <screen file or name> <state> <screenshot.png>  # the review records its screenshot of a built state, at the design's viewport, beside its design
