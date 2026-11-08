@@ -93,6 +93,7 @@ import {
   storyLeft,
   storyText,
   structureFacts,
+  tsconfigAliases,
   withBreach,
   withReshape,
   withoutBreach,
@@ -3354,7 +3355,15 @@ function conformCommand() {
     const files = tracked()
       .filter((f) => SOURCE.test(f) && !isTestFile(f, config) && existsSync(f))
       .map((rel) => ({ rel, source: read(rel) }));
-    return structureFacts(files, { aliases: aliases(), lines: limit });
+    const known = aliases();
+    const own = tsconfigAliases(
+      tracked().filter((f) => /(^|\/)[tj]sconfig(\.[^/]+)?\.json$/.test(f)),
+      (f) => (existsSync(f) ? read(f) : null),
+    );
+    return structureFacts(files, {
+      aliases: (rel) => ({ ...known, ...own(rel) }),
+      lines: limit,
+    });
   };
   if (sub === 'measure') {
     if (ids.length) return usage();

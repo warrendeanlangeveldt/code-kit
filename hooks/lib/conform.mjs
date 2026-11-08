@@ -23,20 +23,21 @@ export const LAYER_RULES = {
 
 /**
  * CONF-9: a breach fixed by splitting its file, or by moving it, carries where to:
- * "… [split: a.ts, b.ts]", "… [move: c.ts]".
+ * "… [split: a.ts, b.ts]", "… [move: c.ts]". A bare "[split]" (a file measured as large) is split by
+ * its responsibilities, into files its story chooses.
  */
-const RESHAPE = /\s*\[(split|move): ([^\]]+)\]$/;
+const RESHAPE = /\s*\[(split|move)(?:: ([^\]]+))?\]$/;
 export function reshapeOf(breach) {
   const m = String(breach).match(RESHAPE);
   if (!m) return null;
-  const to = m[2]
+  const to = (m[2] ?? '')
     .split(',')
     .map((t) => t.trim())
     .filter(Boolean);
-  return to.length ? { kind: m[1], to } : null;
+  return m[1] === 'split' || to.length ? { kind: m[1], to } : null;
 }
-export const withReshape = (breach, kind, to) =>
-  `${breach.replace(RESHAPE, '')} [${kind}: ${to.join(', ')}]`;
+export const withReshape = (breach, kind, to = []) =>
+  `${breach.replace(RESHAPE, '')} [${kind}${to.length ? `: ${to.join(', ')}` : ''}]`;
 
 /**
  * CONF-9: what keeps a split or a move from being done, as a sentence, or null: every file it makes
@@ -46,6 +47,7 @@ export function reshapeLeft(file, breach, exists) {
   const r = reshapeOf(breach);
   if (!r) return null;
   const missing = r.to.filter((t) => !exists(t));
+  if (!r.to.length) return null; // split as its story chose: the review judges it
   const what =
     r.kind === 'split' ? `split ${file} into ${r.to.join(', ')}` : `move ${file} to ${r.to[0]}`;
   if (missing.length)
@@ -129,12 +131,16 @@ export function breachesGained(before, after, adopted, file) {
 
 /**
  * CONF-5: the breaches the base recorded in files the branch changes that the branch still records:
- * a story fixes what it touches. `changed` holds the files the branch changed and kept.
+ * a story fixes what it touches. A split or a move is left to its own story (CONF-9): it's too large
+ * to ask of every change to the file. `changed` holds the files the branch changed and kept.
  */
 export function touchedBreaches(before, after, changed) {
   const touched = new Set(changed);
   return breachList(before).filter(
-    (b) => touched.has(b.file) && (after[b.id]?.[b.file] ?? []).includes(b.breach),
+    (b) =>
+      touched.has(b.file) &&
+      !reshapeOf(b.breach) &&
+      (after[b.id]?.[b.file] ?? []).includes(b.breach),
   );
 }
 
@@ -349,6 +355,8 @@ export function storyText(story, standard) {
     const words = b.replace(RESHAPE, '');
     if (!r) return `- \`${file}\`: ${words}`;
     const to = r.to.map((t) => `\`${t}\``).join(', ');
+    if (r.kind === 'split' && !r.to.length)
+      return `- \`${file}\`: ${words}. Split it into modules of one responsibility each, beside it, and point what imports it at them; name the new files in the story's **Files:**.`;
     return r.kind === 'split'
       ? `- \`${file}\`: ${words}. Split it into ${to}, one responsibility each, and point what imports it at the new files.`
       : `- \`${file}\`: ${words}. Move it to ${to}, and point everything that imports it at the new path.`;
@@ -415,19 +423,26 @@ export const LARGE_LINES = 500;
 
 /** Entry points: what a framework, a runtime or a command line loads, and nothing imports. */
 const ENTRY =
-  /(^|\/)(index|main|app|server|cli|page|layout|route|loading|error|not-found|template|middleware|instrumentation|_app|_document|setup|vite-env\.d)\.[^/]+$|(^|\/)(bin|scripts|pages|app|routes|migrations|seeds?)\/|\.(config|d)\.[^/]+$|(^|\/)\.[^/]+$/;
+  /(^|\/)(index|main|app|server|cli|page|layout|route|loading|error|not-found|template|middleware|instrumentation|_app|_document|setup|vite-env\.d)\.[^/]+$|(^|\/)(bin|scripts|pages|app|routes|migrations|seeds?)\/|\.(config|d|setup)\.[^/]+$|(^|\/)\.[^/]+$/;
+
+/** Generated code: nobody refactors it by hand. */
+const GENERATED = /(^|\/)(generated|__generated__)\/|\.(gen|generated)\.[^/]+$/;
 
 const ENV_READ = /\b(process\.env|import\.meta\.env|os\.environ|os\.getenv|Deno\.env|ENV\[)/;
+// Configuration and the providers that wire services may read the environment: that's their job.
 const ENV_FILE =
-  /(^|\/)(config|configs|env|settings)(\/|\.[^/]+$)|(^|\/)[^/]*(config|env|settings)\.[^/]+$/i;
+  /(^|\/)(config|configs|env|settings|providers?|dependencies|container|bootstrap)(\/|\.[^/]+$)|(^|\/)[^/]*(config|env|settings|provider)\.[^/]+$/i;
 
 /**
  * CONF-7: measured facts about the code's structure, the evidence for the structural standards: files
  * over `lines` lines (god modules), import cycles, files nothing imports (dead code, entry points left
  * out), and files that read the environment themselves (services not behind a provider). `files` are
- * [{ rel, source }], tests left out; `aliases` resolve imports as the layers do.
+ * [{ rel, source }], tests left out (generated code is left out here); `aliases` resolve imports as the layers do: an object, or a file's own
+ * (its tsconfig's paths) from a function of its path.
  */
-export function structureFacts(files, { aliases = {}, lines = LARGE_LINES } = {}) {
+export function structureFacts(all, { aliases = {}, lines = LARGE_LINES } = {}) {
+  const aliasesOf = typeof aliases === 'function' ? aliases : () => aliases;
+  const files = all.filter((f) => !GENERATED.test(f.rel));
   const code = files.filter((f) => CODE.test(f.rel));
   const byStem = new Map();
   for (const f of code) {
@@ -440,7 +455,7 @@ export function structureFacts(files, { aliases = {}, lines = LARGE_LINES } = {}
   const importedBy = new Map(code.map((f) => [f.rel, 0]));
   for (const f of code)
     for (const spec of importsOf(f.source)) {
-      const t = targetOf(spec, f.rel, aliases);
+      const t = targetOf(spec, f.rel, aliasesOf(f.rel));
       const to = t === null ? null : resolveTo(t);
       if (!to || to === f.rel) continue;
       edges.get(f.rel).add(to);
@@ -491,7 +506,7 @@ export function structureFacts(files, { aliases = {}, lines = LARGE_LINES } = {}
       .map((f) => f.rel)
       .sort(),
     env: files
-      .filter((f) => SOURCE.test(f.rel) && !ENV_FILE.test(f.rel))
+      .filter((f) => SOURCE.test(f.rel) && !ENV_FILE.test(f.rel) && !ENTRY.test(f.rel))
       .map((f) => ({
         file: f.rel,
         lines: f.source.split('\n').flatMap((text, n) => (ENV_READ.test(text) ? [n + 1] : [])),
@@ -511,7 +526,10 @@ export function factBreaches(facts, kind) {
   if (kind === 'large')
     return facts.large.map((f) => ({
       file: f.file,
-      breach: `${f.lines} lines, over ${facts.limit}: find its responsibilities and split it by them`,
+      breach: withReshape(
+        `${f.lines} lines, over ${facts.limit}: find its responsibilities and split it by them`,
+        'split',
+      ),
     }));
   if (kind === 'cycles')
     return facts.cycles.flatMap((c) =>
@@ -531,4 +549,79 @@ export function factBreaches(facts, kind) {
       breach: `${lineList(f.lines)}: reads the environment itself, not through the configuration's provider`,
     }));
   return [];
+}
+
+/** JSON with comments and trailing commas, as tsconfig allows, read as JSON; null when it doesn't read. */
+export function readJsonc(text) {
+  let out = '';
+  let inString = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (inString) {
+      out += c;
+      if (c === '\\') out += text[++i] ?? '';
+      else if (c === '"') inString = false;
+    } else if (c === '"') {
+      inString = true;
+      out += c;
+    } else if (c === '/' && text[i + 1] === '/') {
+      while (i < text.length && text[i] !== '\n') i++;
+      out += '\n';
+    } else if (c === '/' && text[i + 1] === '*') {
+      const end = text.indexOf('*/', i + 2);
+      if (end < 0) return null;
+      i = end + 1;
+    } else out += c;
+  }
+  try {
+    return JSON.parse(out.replace(/,(\s*[}\]])/g, '$1'));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * CONF-7: each tsconfig's (or jsconfig's) path aliases, as a function of a file's path to the aliases
+ * of the nearest one above it: `"@/*": ["./src/*"]` makes `@` its `src`. A config's `extends`, by a
+ * relative path, gives the paths it doesn't set. `read(rel)` is a config's text, or null.
+ */
+export function tsconfigAliases(configs, read) {
+  const own = new Map();
+  const load = (rel, seen = new Set()) => {
+    if (seen.has(rel)) return null;
+    seen.add(rel);
+    const json = readJsonc(read(rel) ?? '');
+    if (!json) return null;
+    const opts = json.compilerOptions ?? {};
+    const dir = posix.dirname(rel);
+    if (opts.paths) {
+      const base = posix.join(dir, opts.baseUrl ?? '.');
+      const map = {};
+      for (const [key, targets] of Object.entries(opts.paths)) {
+        const to = Array.isArray(targets) ? targets[0] : null;
+        if (typeof to !== 'string' || to.includes('node_modules')) continue;
+        map[key.replace(/\/?\*$/, '')] = posix.normalize(
+          posix.join(base, to.replace(/\/?\*$/, '')),
+        );
+      }
+      return map;
+    }
+    const parent =
+      typeof json.extends === 'string' && json.extends.startsWith('.') ? json.extends : null;
+    if (!parent) return null;
+    const next = posix.normalize(
+      posix.join(dir, parent.endsWith('.json') ? parent : `${parent}.json`),
+    );
+    return load(next, seen);
+  };
+  for (const rel of configs) {
+    const map = load(rel);
+    if (map) own.set(posix.dirname(rel), map);
+  }
+  return (file) => {
+    for (let d = posix.dirname(file); ; d = posix.dirname(d)) {
+      if (own.has(d)) return own.get(d);
+      if (d === '.' || d === '/' || d === '') return {};
+    }
+  };
 }

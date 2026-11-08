@@ -87,6 +87,6 @@ Show the person the pathway: how many milestones and stories, and the order. The
 ## 5. After
 
 - Refactor stories are dispatched like any other. Their lane runs `code-kit conform --story <id>` for what to fix, fixes each breach without changing what the code does, and runs `code-kit conform fixed <standard> <file>` for it; verify refuses the branch while a breach in its files is still recorded. A split's breach comes out only once its new files exist, and a move's once the file is at its new path and gone from the old one. A layer rules story fixes the imports and runs `code-kit baseline --write`.
-- Any other story that changes a file with recorded breaches fixes them too (`code-kit conform --for <files>` lists them); verify refuses it otherwise. A breach too large to fix in that story is a reason to schedule its refactor story first, not to merge around it.
+- Any other story that changes a file with recorded breaches fixes them too, except a split or a move, which its own story does (`code-kit conform --for <files>` lists them); verify refuses it otherwise. A breach too large to fix in that story is a reason to schedule its refactor story first, not to merge around it.
 - In review, check each breach taken out is really fixed, and that behaviour didn't change: the same tests pass, none weakened. A breach removed from the baseline but still in the code is sent back.
 - `code-kit conform` shows the progress: each standard's breaches, its stories and what's not planned yet. `code-kit next` says when a standard has breaches no story covers.

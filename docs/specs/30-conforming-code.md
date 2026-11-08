@@ -85,7 +85,7 @@ A refactor story names its standards in `**Conforms:**` and its files in `**File
 
 ### CONF-5 A story fixes what it touches
 
-A branch that changes a file the base's baseline records breaking a standard fixes it on that branch: verify refuses it while the breach is still recorded, saying how to take it out. `code-kit conform --for <file>` lists a file's breaches, and the lane agents' instructions say to run it before changing a file. A baseline change that only takes entries out excuses nothing new, so any agent may commit it, and verify doesn't count it against the lane's paths. In review, the lead checks each breach taken out is really fixed.
+A branch that changes a file the base's baseline records breaking a standard fixes it on that branch, except a split or a move, which is its own story's (CONF-9): verify refuses it while the breach is still recorded, saying how to take it out. `code-kit conform --for <file>` lists a file's breaches, and the lane agents' instructions say to run it before changing a file. A baseline change that only takes entries out excuses nothing new, so any agent may commit it, and verify doesn't count it against the lane's paths. In review, the lead checks each breach taken out is really fixed.
 
 **Acceptance**
 

@@ -4374,6 +4374,7 @@ test('CONF-7 to CONF-9 the structure measured, adopted layers, splits and moves'
   assert.deepEqual(facts.env, [{ file: 'src/b.ts', lines: [2] }]);
   assert.equal(factBreaches(facts, 'cycles').length, 2);
   assert.match(factBreaches(facts, 'large')[0].breach, /^12 lines, over 10/);
+  assert.deepEqual(reshapeOf(factBreaches(facts, 'large')[0].breach), { kind: 'split', to: [] });
 
   assert.deepEqual(
     [
@@ -4420,6 +4421,13 @@ test('CONF-7 to CONF-9 the structure measured, adopted layers, splits and moves'
     null,
   );
 
+  const { touchedBreaches } = await import('../hooks/lib/conform.mjs');
+  const base = { 'ARC-1': { 'p.ts': [moved, 'line 3: reads the database'] } };
+  assert.deepEqual(
+    touchedBreaches(base, base, ['p.ts']).map((b) => b.breach),
+    ['line 3: reads the database'],
+    'a split or a move is left to its own story',
+  );
   const config = { layers: [], lanes: {} };
   const drafted = refactorStories(
     { id: 'ARC-1', title: 'Rules in the domain' },

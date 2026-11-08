@@ -11405,6 +11405,17 @@ else process.exit(1);
     );
     put('apps/office/src/domain/rule.ts', 'export const rule = 1;\n');
     put('apps/office/src/a.test.ts', "import { a } from './a';\n");
+    // An app's own alias, from its tsconfig (with a comment, as tsconfig allows), and generated code.
+    put(
+      'apps/office/tsconfig.json',
+      '{\n  // the app\'s alias\n  "compilerOptions": { "paths": { "@/*": ["./src/*"] } },\n}\n',
+    );
+    put('apps/office/src/shown.ts', 'export const shown = 1;\n');
+    put('apps/office/src/uses.ts', "import { shown } from '@/shown';\nexport const u = shown;\n");
+    put(
+      'apps/office/src/generated/client.ts',
+      `${Array.from({ length: 700 }, (_, i) => `export const g${i} = ${i};`).join('\n')}\n`,
+    );
     put(
       'docs/spec/plan.md',
       '# Plan\n\n## Launch\n\n### ST-1 Office\n\n**Lane:** web\n**Requirements:** none\n**Status:** done\n',
@@ -11416,13 +11427,15 @@ else process.exit(1);
     // CONF-7: the structure measured, as evidence for the structural standards.
     const facts = JSON.parse(mKit('conform', 'measure', '--json').stdout);
     expect(
-      'CONF-7 measure finds the import cycle, the large file, the environment read and what nothing imports',
+      'CONF-7 measure finds the import cycle, the large file, the environment read and what nothing imports (through tsconfig aliases, generated code left out)',
       truth(
         facts.cycles.some((c) => c.join() === 'apps/office/src/a.ts,apps/office/src/b.ts') &&
           facts.large.some((f) => f.file === 'apps/office/src/big.ts' && f.lines === 600) &&
           facts.env.some((f) => f.file === 'apps/office/src/pay.ts' && f.lines.join() === '1') &&
           facts.unused.includes('apps/office/src/pay.ts') &&
           !facts.unused.includes('apps/office/src/a.ts') &&
+          !facts.unused.includes('apps/office/src/shown.ts') &&
+          !facts.large.some((f) => f.file.includes('/generated/')) &&
           !facts.unused.includes('apps/office/src/a.test.ts'),
         JSON.stringify(facts),
       ),
@@ -11612,6 +11625,20 @@ else process.exit(1);
     );
     m.git('reset', '-q', '--hard');
     m.git('clean', '-qfd');
+    m.git('checkout', '-q', 'main');
+
+    // CONF-5, CONF-9: a change to a file with a move recorded is held to its other breaches, not the move.
+    m.git('checkout', '-q', '-b', 'web/st-5');
+    put(
+      'apps/office/src/pricing.ts',
+      "import { a } from './a';\nexport const price = () => a();\n",
+    );
+    m.git('commit', '-q', '-am', 'price is a function');
+    expect(
+      'CONF-5 a branch changing a file whose breach is a move isn’t made to move it',
+      truth(!/breaks ARC-1/.test(mVerify().stdout), mVerify().stdout),
+      0,
+    );
     m.git('checkout', '-q', 'main');
 
     // CONF-9: a move is done when the file is at its new path and gone from the old one.
