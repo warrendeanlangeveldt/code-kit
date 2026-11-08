@@ -11374,6 +11374,263 @@ else process.exit(1);
     c.git('checkout', '-q', 'main');
   }
 
+  // --- CONF-7 to CONF-9: the structure measured, the target architecture, splits and moves --------
+  {
+    const m = newRepo();
+    cleanups.push(m.dir);
+    const mKit = (...args) =>
+      spawnSync('node', [kitCli, ...args], {
+        cwd: m.dir,
+        encoding: 'utf8',
+        env: { ...process.env, CLAUDE_PROJECT_DIR: m.dir },
+      });
+    const put = (rel, text) => {
+      mkdirSync(join(m.dir, dirname(rel)), { recursive: true });
+      writeFileSync(join(m.dir, rel), text);
+    };
+    const mBaseline = () =>
+      JSON.parse(readFileSync(join(m.dir, '.claude/code-kit.baseline.json'), 'utf8'));
+    const mVerify = () => mKit('verify', '--base', 'main', '--no-checks');
+    put('apps/office/src/a.ts', "import { b } from './b';\nexport const a = () => b();\n");
+    put('apps/office/src/b.ts', "import { a } from './a';\nexport const b = () => a();\n");
+    put(
+      'apps/office/src/big.ts',
+      `${Array.from({ length: 600 }, (_, i) => `export const v${i} = ${i};`).join('\n')}\n`,
+    );
+    put('apps/office/src/pay.ts', 'export const key = () => process.env.PAY_KEY;\n');
+    put('apps/office/src/pricing.ts', "import { a } from './a';\nexport const price = a;\n");
+    put(
+      'apps/office/src/ui/view.ts',
+      "import { rule } from '../domain/rule';\nexport const view = rule;\n",
+    );
+    put('apps/office/src/domain/rule.ts', 'export const rule = 1;\n');
+    put('apps/office/src/a.test.ts', "import { a } from './a';\n");
+    put(
+      'docs/spec/plan.md',
+      '# Plan\n\n## Launch\n\n### ST-1 Office\n\n**Lane:** web\n**Requirements:** none\n**Status:** done\n',
+    );
+    put('.claude/code-kit.baseline.json', '{ "layers": {} }\n');
+    m.git('add', '-A');
+    m.git('commit', '-q', '-m', 'the code as it is');
+
+    // CONF-7: the structure measured, as evidence for the structural standards.
+    const facts = JSON.parse(mKit('conform', 'measure', '--json').stdout);
+    expect(
+      'CONF-7 measure finds the import cycle, the large file, the environment read and what nothing imports',
+      truth(
+        facts.cycles.some((c) => c.join() === 'apps/office/src/a.ts,apps/office/src/b.ts') &&
+          facts.large.some((f) => f.file === 'apps/office/src/big.ts' && f.lines === 600) &&
+          facts.env.some((f) => f.file === 'apps/office/src/pay.ts' && f.lines.join() === '1') &&
+          facts.unused.includes('apps/office/src/pay.ts') &&
+          !facts.unused.includes('apps/office/src/a.ts') &&
+          !facts.unused.includes('apps/office/src/a.test.ts'),
+        JSON.stringify(facts),
+      ),
+      0,
+    );
+    expect(
+      'CONF-7 and says it in words, as evidence not breaches',
+      truth(
+        /Import cycles: 1: apps\/office\/src\/a\.ts ↔ apps\/office\/src\/b\.ts/.test(
+          mKit('conform', 'measure').stdout,
+        ),
+      ),
+      0,
+    );
+
+    m.git('checkout', '-q', '-b', 'lead/structure');
+    put(
+      'docs/standards.md',
+      [
+        '# Standards',
+        '',
+        '### ARC-1 Business rules live in the domain',
+        '',
+        'level: required',
+        'applied: checked',
+        '',
+        '### PRI-3 No import cycles',
+        '',
+        'level: recommended',
+        'applied: checked',
+        '',
+      ].join('\n'),
+    );
+    const measured = mKit('conform', 'record', 'PRI-3', '--measured', 'cycles');
+    expect(
+      'CONF-7 a measured kind is recorded as the standard’s breaches in one go',
+      truth(
+        measured.status === 0 &&
+          measured.stdout.includes('Recorded 2 measured breaches (cycles) of PRI-3'),
+        measured.stdout + measured.stderr,
+      ),
+      0,
+    );
+    expect(
+      '… one for each file of the cycle',
+      truth(
+        /in an import cycle of 2 files/.test(
+          mBaseline().standards['PRI-3']['apps/office/src/b.ts'][0],
+        ),
+        JSON.stringify(mBaseline()),
+      ),
+      0,
+    );
+
+    // CONF-9: a breach fixed by moving the file says where to.
+    expect(
+      'CONF-9 a breach is recorded with the move that fixes it',
+      mKit(
+        'conform',
+        'record',
+        'ARC-1',
+        'apps/office/src/pricing.ts',
+        '--breach',
+        'business rules outside the domain',
+        '--move',
+        'apps/office/src/domain/pricing.ts',
+      ),
+      0,
+    );
+    expect(
+      'CONF-9 a split names two or more files',
+      mKit(
+        'conform',
+        'record',
+        'ARC-1',
+        'apps/office/src/big.ts',
+        '--breach',
+        'x',
+        '--split',
+        'apps/office/src/one.ts',
+      ),
+      1,
+      'two or more files',
+    );
+
+    // CONF-8: the target architecture: an interface layer that may not import the domain.
+    const cfg = JSON.parse(readFileSync(join(m.dir, '.claude/code-kit.json'), 'utf8'));
+    cfg.layers.push({ name: 'interface', paths: ['**/ui/**'], mayImport: ['schemas'] });
+    writeFileSync(join(m.dir, '.claude/code-kit.json'), JSON.stringify(cfg, null, 2));
+    const adopting = mKit('baseline', '--write');
+    expect(
+      'CONF-8 on the branch that adopts a layer, baseline --write records its violations',
+      truth(
+        adopting.status === 0 &&
+          (mBaseline().layers['apps/office/src/ui/view.ts'] ?? []).some((p) =>
+            p.includes('(interface) imports'),
+          ),
+        adopting.stdout + adopting.stderr,
+      ),
+      0,
+    );
+    m.git('add', '-A');
+    m.git('commit', '-q', '-m', 'the target architecture and its standards');
+    const adopted = mVerify();
+    expect(
+      'CONF-8 and verify accepts them, with the standards’ breaches the branch adopts',
+      truth(!/gained/.test(adopted.stdout), adopted.stdout),
+      0,
+    );
+
+    // CONF-8, CONF-9: the pathway: the layer rules first, a move a story of its own.
+    const pathway = JSON.parse(mKit('conform', 'plan', '--json').stdout);
+    const move = pathway
+      .find((p) => p.standard === 'ARC-1')
+      ?.stories.find((s) => s.reshape?.kind === 'move');
+    expect(
+      'CONF-8 conform plan drafts the layer rules’ milestone first',
+      truth(
+        pathway[0]?.standard === 'layers' &&
+          pathway[0].stories[0]?.files.join() === 'apps/office/src/ui/view.ts' &&
+          pathway[0].stories[0]?.conforms.join() === 'layers',
+        JSON.stringify(pathway),
+      ),
+      0,
+    );
+    expect(
+      'CONF-9 a move is a story of its own, naming the file and where it goes',
+      truth(
+        move?.files.join() === 'apps/office/src/pricing.ts,apps/office/src/domain/pricing.ts' &&
+          move.title.startsWith(
+            'Move apps/office/src/pricing.ts to apps/office/src/domain/pricing.ts',
+          ),
+        JSON.stringify(move),
+      ),
+      0,
+    );
+    expect(
+      'CONF-9 and the plan’s text says to move it',
+      truth(
+        /Move it to `apps\/office\/src\/domain\/pricing\.ts`/.test(
+          mKit('conform', 'plan', 'ARC-1').stdout,
+        ),
+      ),
+      0,
+    );
+    m.git('checkout', '-q', 'main');
+    m.git('merge', '-q', '--no-ff', '-m', 'adopt the structure', 'lead/structure');
+
+    // CONF-8: a layer rules story's branch is refused while its file's violation is recorded.
+    put(
+      'docs/spec/plan.md',
+      `${readFileSync(join(m.dir, 'docs/spec/plan.md'), 'utf8')}\n## Conformance: layers the layer rules\n\n### ST-2 Move the ui off the domain\n\n**Lane:** web\n**Requirements:** none\n**Conforms:** layers\n**Files:** \`apps/office/src/ui/view.ts\`\n**Status:** todo\n`,
+    );
+    m.git('commit', '-q', '-am', 'plan the layer rules');
+    m.git('checkout', '-q', '-b', 'web/st-2');
+    put('apps/office/src/ui/notes.md', 'notes\n');
+    m.git('add', '-A');
+    m.git('commit', '-q', '-m', 'notes');
+    expect(
+      'CONF-8 verify refuses a layer rules story while its file’s violation is recorded',
+      truth(
+        /ST-2 brings apps\/office\/src\/ui\/view\.ts to the layer rules/.test(mVerify().stdout),
+        mVerify().stdout,
+      ),
+      0,
+    );
+    expect(
+      'CONF-8 and conform fixed sends it to baseline --write',
+      mKit('conform', 'fixed', 'layers', 'apps/office/src/ui/view.ts'),
+      1,
+      'baseline --write',
+    );
+    m.git('checkout', '-q', 'main');
+
+    // CONF-8: once adopted, the layers' baseline only shrinks.
+    m.git('checkout', '-q', '-b', 'web/st-3');
+    put(
+      'apps/office/src/ui/list.ts',
+      "import { rule } from '../domain/rule';\nexport const list = rule;\n",
+    );
+    m.git('add', '-A');
+    expect(
+      'CONF-8 a branch that adopts no layer can’t record a new violation',
+      mKit('baseline', '--write'),
+      1,
+      'Not recorded',
+    );
+    m.git('reset', '-q', '--hard');
+    m.git('clean', '-qfd');
+    m.git('checkout', '-q', 'main');
+
+    // CONF-9: a move is done when the file is at its new path and gone from the old one.
+    m.git('checkout', '-q', '-b', 'web/st-4');
+    expect(
+      'CONF-9 conform fixed refuses a move not made yet',
+      mKit('conform', 'fixed', 'ARC-1', 'apps/office/src/pricing.ts'),
+      1,
+      "apps/office/src/domain/pricing.ts doesn't exist yet",
+    );
+    m.git('mv', 'apps/office/src/pricing.ts', 'apps/office/src/domain/pricing.ts');
+    expect(
+      'CONF-9 and takes it out once the file has moved',
+      mKit('conform', 'fixed', 'ARC-1', 'apps/office/src/pricing.ts'),
+      0,
+    );
+    m.git('checkout', '-q', '-f', 'main');
+  }
+
   // --- HUBR-1 to HUBR-8: a hosted team provider, through its adapter in code-kit -------------------
   {
     const root = mkdtempSync(join(tmpdir(), 'ck-hub-'));

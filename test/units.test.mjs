@@ -4343,3 +4343,101 @@ test('CONF-2 to CONF-6 the breaches: adopted, only shrinking, fixed where touche
     ],
   );
 });
+
+test('CONF-7 to CONF-9 the structure measured, adopted layers, splits and moves', async () => {
+  const {
+    structureFacts,
+    factBreaches,
+    adoptedLayers,
+    adoptedProblem,
+    reshapeOf,
+    withReshape,
+    reshapeLeft,
+    refactorStories,
+    pathwayOrder,
+    LAYER_RULES,
+  } = await import('../hooks/lib/conform.mjs');
+  const facts = structureFacts(
+    [
+      { rel: 'src/a.ts', source: "import { b } from './b.js';\n" },
+      { rel: 'src/b.ts', source: "import { a } from './a';\nconst k = process.env.K;\n" },
+      { rel: 'src/c.ts', source: "import { a } from '@app/a';\n" },
+      { rel: 'src/index.ts', source: '' },
+      { rel: 'src/big.py', source: 'x = 1\n'.repeat(12) },
+      { rel: 'src/config.ts', source: 'export const k = process.env.K;\n' },
+    ],
+    { aliases: { '@app': 'src' }, lines: 10 },
+  );
+  assert.deepEqual(facts.cycles, [['src/a.ts', 'src/b.ts']]);
+  assert.deepEqual(facts.large, [{ file: 'src/big.py', lines: 12 }]);
+  assert.deepEqual(facts.unused, ['src/c.ts', 'src/config.ts'], 'entry points are left out');
+  assert.deepEqual(facts.env, [{ file: 'src/b.ts', lines: [2] }]);
+  assert.equal(factBreaches(facts, 'cycles').length, 2);
+  assert.match(factBreaches(facts, 'large')[0].breach, /^12 lines, over 10/);
+
+  assert.deepEqual(
+    [
+      ...adoptedLayers(
+        [{ name: 'domain', paths: ['d/**'], mayImport: [] }],
+        [
+          { name: 'domain', paths: ['d/**'], mayImport: [] },
+          { name: 'ui', paths: ['u/**'], mayImport: [] },
+        ],
+      ),
+    ],
+    ['ui'],
+  );
+  const adopted = new Set(['domain']);
+  assert.ok(
+    adoptedProblem(
+      'u/x.ts (ui) imports ../d/y (domain); ui may depend on no other layer.',
+      adopted,
+    ),
+  );
+  assert.ok(
+    !adoptedProblem(
+      'u/x.ts (ui) imports ../s/y (schemas); ui may depend on no other layer.',
+      adopted,
+    ),
+  );
+
+  const moved = withReshape('rules outside the domain', 'move', ['d/p.ts']);
+  assert.deepEqual(reshapeOf(moved), { kind: 'move', to: ['d/p.ts'] });
+  assert.equal(reshapeOf('plain'), null);
+  const here = new Set(['p.ts']);
+  assert.match(
+    reshapeLeft('p.ts', moved, (f) => here.has(f)),
+    /doesn't exist yet/,
+  );
+  here.add('d/p.ts');
+  assert.match(
+    reshapeLeft('p.ts', moved, (f) => here.has(f)),
+    /still there/,
+  );
+  here.delete('p.ts');
+  assert.equal(
+    reshapeLeft('p.ts', moved, (f) => here.has(f)),
+    null,
+  );
+
+  const config = { layers: [], lanes: {} };
+  const drafted = refactorStories(
+    { id: 'ARC-1', title: 'Rules in the domain' },
+    { 'ARC-1': { 'src/p.ts': [moved], 'src/q.ts': ['x'], 'src/r.ts': ['y'] } },
+    config,
+    { next: 3 },
+  );
+  assert.deepEqual(
+    drafted.map((s) => s.files),
+    [
+      ['src/q.ts', 'src/r.ts'],
+      ['src/p.ts', 'd/p.ts'],
+    ],
+    'a move is a story of its own',
+  );
+  assert.equal(
+    pathwayOrder([{ id: 'ARC-1', level: 'required' }, LAYER_RULES])[0].id,
+    'layers',
+    'the layer rules come first',
+  );
+});

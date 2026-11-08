@@ -21,7 +21,7 @@ import { keptBecause, worktrees } from './worktrees.mjs';
 import { ciFindings } from './ci.mjs';
 import { costReport, infraFiles, money } from './costs.mjs';
 import { loadBaseline } from './baseline.mjs';
-import { conformance } from './conform.mjs';
+import { LAYER_RULES, conformance } from './conform.mjs';
 import { projectStandards } from './standards.mjs';
 import { storyModels } from './dispatches.mjs';
 import { pickPerLane } from './schedule.mjs';
@@ -146,8 +146,14 @@ function conformAttention(root, config, stories) {
     return [
       'This project has no standards yet. /code-kit:conform suggests them, those its code follows and those it should move to, audits the code against them, and drafts a refactor pathway to bring it there; you approve each standard.',
     ];
-  const breaches = loadBaseline(root).standards;
-  return conformance(standards, breaches, stories)
+  const { standards: breaches, layers } = loadBaseline(root);
+  // CONF-8: the layer rules' recorded violations are planned like a standard's breaches.
+  const layered = Object.keys(layers).length > 0;
+  return conformance(
+    [...(layered ? [LAYER_RULES] : []), ...standards],
+    layered ? { ...breaches, [LAYER_RULES.id]: layers } : breaches,
+    stories,
+  )
     .filter((s) => s.unplanned.length)
     .map(
       (s) =>

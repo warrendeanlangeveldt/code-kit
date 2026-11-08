@@ -6,6 +6,9 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { BASELINE_FILE, baselineShrinks, loadBaseline, newProblems } from './baseline.mjs';
 import {
+  LAYER_RULES,
+  adoptedLayers,
+  adoptedProblem,
   adoptedStandards,
   breachesGained,
   breachesOf,
@@ -388,9 +391,19 @@ export function verifyBranch({
   const breachesBefore = breachesOf(beforeRaw);
   if (showAt(root, from, CONFIG_FILE) !== null) {
     const before = beforeRaw.layers ?? {};
+    // CONF-8: the layers this branch adopts (new, or with a changed rule) may record their violations.
+    let layersBefore = [];
+    let layersAfter = [];
+    try {
+      layersBefore = JSON.parse(showAt(root, from, CONFIG_FILE)).layers ?? [];
+      layersAfter = JSON.parse(showAt(root, 'HEAD', CONFIG_FILE) ?? '{}').layers ?? [];
+    } catch {
+      // an unreadable config adopts nothing
+    }
+    const adopted = adoptedLayers(layersBefore, layersAfter);
     for (const [f, problems] of Object.entries(baseline.layers))
       for (const p of problems)
-        if (!(before[f] ?? []).includes(p))
+        if (!(before[f] ?? []).includes(p) && !adoptedProblem(p, adopted))
           found.baseline.push(`${BASELINE_FILE} gained ${p}; it only shrinks.`);
     // CONF-2: a standard's breaches are recorded only on the branch that adopts it.
     const stdText = (ref) => showAt(root, ref, standardsFile(config)) ?? '';
@@ -415,8 +428,13 @@ export function verifyBranch({
       : null;
   if (story?.conforms?.length) {
     const touched = new Set(present);
-    for (const b of storyLeft(story, baseline.standards, config))
-      if (!touched.has(b.file))
+    const recorded = { ...baseline.standards, [LAYER_RULES.id]: baseline.layers };
+    for (const b of storyLeft(story, recorded, config))
+      if (b.id === LAYER_RULES.id)
+        found.standards.push(
+          `${story.id} brings ${b.file} to the layer rules, but the baseline still records ${b.breach} Fix the import, then run \`code-kit baseline --write\`.`,
+        );
+      else if (!touched.has(b.file))
         found.standards.push(
           `${story.id} brings ${b.file} to ${b.id}, but the baseline still records its breach (${b.breach}): fix it, then run \`code-kit conform fixed ${b.id} ${b.file}\`.`,
         );

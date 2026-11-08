@@ -259,7 +259,11 @@ export function readStories(root, planPath) {
         // REG-1: what a fix story fixes, or null.
         fixes: field(body, 'Fixes') || null,
         // CONF-4: a refactor story's standards, and the files it brings to them.
-        conforms: [...field(body, 'Conforms').matchAll(REQUIREMENT)].map((r) => r[1]),
+        // CONF-8: `layers` names the layer rules.
+        conforms: [
+          ...(/(^|[\s,`])layers\b/i.test(field(body, 'Conforms')) ? ['layers'] : []),
+          ...[...field(body, 'Conforms').matchAll(REQUIREMENT)].map((r) => r[1]),
+        ],
         files: field(body, 'Files')
           ? field(body, 'Files')
               .split(/[,;]/)

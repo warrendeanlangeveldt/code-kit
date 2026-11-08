@@ -9,12 +9,14 @@ A brownfield project gets a baseline of the layer violations its code already ha
 
 ## Decisions
 
-| Date       | Decision                                                                            | Why                                                                                                          |
-| ---------- | ----------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
-| 2026-11-08 | Refactor stories go in a conformance milestone of their own, per standard           | The person decides when the refactoring runs against feature work; feature milestones stay features          |
-| 2026-11-08 | A story that changes a file with a recorded breach fixes it before it merges        | The code converges as it's worked on, and no change makes a breached file harder to fix later                |
-| 2026-11-08 | Breaches are recorded in the baseline, beside the layer violations, and only shrink | One record of what existing code is excused, with the rule it already had: only the adopting change grows it |
-| 2026-11-08 | Refactor stories cite their standard in `**Conforms:**`, not `**Requirements:**`    | A standard isn't a spec's requirement; trace keeps its rules for requirements                                |
+| Date       | Decision                                                                              | Why                                                                                                          |
+| ---------- | ------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| 2026-11-08 | Refactor stories go in a conformance milestone of their own, per standard             | The person decides when the refactoring runs against feature work; feature milestones stay features          |
+| 2026-11-08 | A story that changes a file with a recorded breach fixes it before it merges          | The code converges as it's worked on, and no change makes a breached file harder to fix later                |
+| 2026-11-08 | Breaches are recorded in the baseline, beside the layer violations, and only shrink   | One record of what existing code is excused, with the rule it already had: only the adopting change grows it |
+| 2026-11-08 | Refactor stories cite their standard in `**Conforms:**`, not `**Requirements:**`      | A standard isn't a spec's requirement; trace keeps its rules for requirements                                |
+| 2026-11-08 | Structure is measured, not guessed: size, import cycles, dead code, environment reads | Evidence the person can check; the audit agents judge what a measure can't (responsibilities, duplication)   |
+| 2026-11-08 | A target architecture is a config change, adopted on its branch like a standard       | The layer rules hold new code at once, and their violations are recorded and planned like breaches           |
 
 ## In scope
 
@@ -23,6 +25,8 @@ A brownfield project gets a baseline of the layer violations its code already ha
 - Drafting the refactor pathway: the conformance milestones and their stories, in order.
 - Holding every branch to the breaches in the files it changes, and each refactor story to its files.
 - Showing where the code stands against each standard.
+- Measuring the code's structure for the structural standards (single responsibility, no import cycles, no dead code, services behind providers).
+- Proposing a target architecture (layers, their rules and lanes), and planning the layer rules' violations, splits and moves.
 
 ## Out of scope
 
@@ -95,6 +99,31 @@ A branch that changes a file the base's baseline records breaking a standard fix
 
 - Given PAT-1 breaches in the domain layer and in the services layer that imports it, then the domain's story comes first, and the services' story depends on it.
 - Given a required CON-2 and a recommended PAT-1, then CON-2's milestone comes first, and PAT-1's first story depends on CON-2's last.
+
+### CONF-7 The structure measured
+
+`code-kit conform measure [--json] [--lines N]` measures the tracked source, tests left out: files over N lines (500 by default), import cycles among the JavaScript and TypeScript files, those files nothing imports (entry points such as pages, routes, scripts and configuration left out), and files that read the environment outside the configuration's own files. The skill suggests the structural standards from it: one responsibility per module, service providers, no import cycles, no dead code, beside one place for each rule and modules by feature, which the audit judges. `code-kit conform record <standard> --measured <large|cycles|unused|env>` records one kind as the standard's breaches, on the branch that adopts it (CONF-2).
+
+**Acceptance**
+
+- Given two files that import each other and a file of 600 lines, then measure reports the cycle with both files and the large file with its line count; `--measured cycles` records a breach for each file of the cycle.
+
+### CONF-8 The target architecture
+
+The skill proposes the layers the code should have, what each may import, and the lanes that own them, as a config draft the person approves (ONB). On the branch that adopts a layer (new, or with a changed rule), `code-kit baseline --write` records the violations from or into it, and verify accepts them; anywhere else the layers' baseline only shrinks. The layer rules' recorded violations are planned like a standard's breaches: `code-kit conform plan layers` (and `conform plan` with none named) drafts a conformance milestone for them, first in the pathway, its stories conforming to `layers`; verify refuses such a story's branch while a violation in its files is still recorded.
+
+**Acceptance**
+
+- Given a branch adding a domain layer that the interface layer may not import, and an interface file importing it, then `baseline --write` records the violation and verify accepts the branch; on a later branch, a new violation is refused.
+- Given that violation recorded, then `conform plan` drafts a layer rules story for the file, before any standard's.
+
+### CONF-9 Splits and moves
+
+`conform record … --split "<path>, <path>"` records a breach fixed by splitting the file into those files, and `--move <path>` one fixed by moving it there. Each is a refactor story of its own, its new files in its `**Files:**`, the plan's text saying what to split or move and to point what imports it at the new paths. `conform fixed` takes a split's breach out only once its files exist, and a move's once the file is at its new path and gone from the old one.
+
+**Acceptance**
+
+- Given a breach to be fixed by moving `a.ts` to `b.ts`, then its story names both files, and `conform fixed` is refused while `a.ts` is there or `b.ts` isn't.
 
 ## Quality targets
 

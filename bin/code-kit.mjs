@@ -77,17 +77,28 @@ import {
   writeBaseline as saveBaseline,
 } from '../hooks/lib/baseline.mjs';
 import {
+  FACT_KINDS,
+  LARGE_LINES,
+  LAYER_RULES,
+  SOURCE,
+  adoptedLayers,
+  adoptedProblem,
   breachList,
   conformProblems,
   conformance,
+  factBreaches,
   nextStoryNumber,
   refactorPathway,
+  reshapeLeft,
   storyLeft,
   storyText,
+  structureFacts,
   withBreach,
+  withReshape,
   withoutBreach,
 } from '../hooks/lib/conform.mjs';
 import { matchesAny } from '../hooks/lib/glob.mjs';
+import { isTestFile } from '../hooks/lib/testfiles.mjs';
 import {
   CONFIG_FILE,
   approvalSettings,
@@ -327,6 +338,10 @@ const commandGiven = option('--command');
 const refusalGiven = option('--refusal');
 const ruleGiven = option('--rule');
 const breachGiven = option('--breach');
+const splitGiven = option('--split');
+const moveGiven = option('--move');
+const measuredGiven = option('--measured');
+const linesGiven = option('--lines');
 const optionsGiven = [];
 for (let o = option('--option'); o !== undefined; o = option('--option')) optionsGiven.push(o);
 const FLAGS = [
@@ -497,13 +512,33 @@ function violations(config) {
 }
 
 /** What to record: everything at adoption; afterwards only what was already recorded (it only shrinks). */
-function toRecord(found) {
+function toRecord(found, config) {
   if (!existsSync(BASELINE_FILE)) return { keep: found, refused: [] };
   const before = loadBaseline('.').layers;
+  // CONF-8: the layers this branch adopts (new, or with a changed rule) may record their violations.
+  const from = findBase(config, false);
+  let baseLayers = null;
+  try {
+    baseLayers = from
+      ? JSON.parse(
+          execFileSync('git', ['show', `${from}:${CONFIG_FILE}`], {
+            encoding: 'utf8',
+            stdio: ['ignore', 'pipe', 'ignore'],
+          }),
+        ).layers
+      : null;
+  } catch {
+    baseLayers = null; // the base has no config: the adopting change records everything
+  }
+  const adopted = baseLayers
+    ? adoptedLayers(baseLayers, JSON.parse(read(CONFIG_FILE)).layers)
+    : new Set(config.layers.map((l) => l.name));
   const keep = {};
   const refused = [];
   for (const [rel, problems] of Object.entries(found)) {
-    const known = problems.filter((p) => (before[rel] ?? []).includes(p));
+    const known = problems.filter(
+      (p) => (before[rel] ?? []).includes(p) || adoptedProblem(p, adopted),
+    );
     if (known.length) keep[rel] = known;
     refused.push(...problems.filter((p) => !known.includes(p)));
   }
@@ -517,7 +552,7 @@ function baseline() {
   Object.values(found).flat().forEach(out);
   out(`${count} violation(s) in ${Object.keys(found).length} file(s).`);
   if (!writeBaseline) return;
-  const { keep, refused } = toRecord(found);
+  const { keep, refused } = toRecord(found, config);
   // The standards' breaches (spec 30) stay as conform keeps them.
   saveBaseline('.', { layers: keep });
   out(
@@ -3293,10 +3328,14 @@ function conformCommand() {
   const { config } = load();
   const root = resolve('.');
   const { standards } = projectStandards(root, config);
-  const { standards: breaches } = loadBaseline(root);
+  const { standards: breaches, layers: layerBreaches } = loadBaseline(root);
+  // CONF-8: the layer rules' recorded violations go through the pathway beside the standards' breaches.
+  const layered = Object.keys(layerBreaches).length > 0;
+  const allBreaches = layered ? { ...breaches, [LAYER_RULES.id]: layerBreaches } : breaches;
   const stories = config.docs?.plan ? readStories(root, config.docs.plan) : [];
   const [sub, ...ids] = rest;
   const named = (id) =>
+    (id === LAYER_RULES.id ? LAYER_RULES : null) ??
     standards.find((s) => s.id === id) ??
     die(
       `${id} isn't one of the project's standards (${standardsFile(config)}). Add it there first, with the person's standards approval; then record its breaches.`,
@@ -3308,9 +3347,65 @@ function conformCommand() {
     return rel;
   };
   const cli = 'code-kit';
+  // CONF-7: the code's structure, measured: the evidence for the structural standards.
+  const measure = () => {
+    const limit = linesGiven === undefined ? LARGE_LINES : Number(linesGiven);
+    if (!Number.isInteger(limit) || limit < 1) die('--lines takes a whole number of lines.');
+    const files = tracked()
+      .filter((f) => SOURCE.test(f) && !isTestFile(f, config) && existsSync(f))
+      .map((rel) => ({ rel, source: read(rel) }));
+    return structureFacts(files, { aliases: aliases(), lines: limit });
+  };
+  if (sub === 'measure') {
+    if (ids.length) return usage();
+    const facts = measure();
+    if (flag('--json')) return out(JSON.stringify(facts, null, 2));
+    const few = (list) =>
+      `${list.slice(0, 5).join(', ')}${list.length > 5 ? `, and ${list.length - 5} more` : ''}`;
+    out(
+      `Large files (over ${facts.limit} lines): ${facts.large.length}${facts.large.length ? `: ${few(facts.large.map((f) => `${f.file} ${f.lines}`))}` : ''}`,
+    );
+    out(
+      `Import cycles: ${facts.cycles.length}${
+        facts.cycles.length
+          ? `: ${facts.cycles
+              .slice(0, 3)
+              .map((c) => c.join(' ↔ '))
+              .join('; ')}`
+          : ''
+      }`,
+    );
+    out(
+      `Imported by nothing (entry points left out): ${facts.unused.length}${facts.unused.length ? `: ${few(facts.unused)}` : ''}`,
+    );
+    out(
+      `Reading the environment themselves: ${facts.env.length}${facts.env.length ? `: ${few(facts.env.map((f) => f.file))}` : ''}`,
+    );
+    return out(
+      `Each is evidence for a structural standard, not a breach yet. Once the person adopts the standard, record a kind as its breaches with \`${cli} conform record <standard> --measured <${FACT_KINDS.join('|')}>\`, after checking them.`,
+    );
+  }
+  if (sub === 'record' && measuredGiven !== undefined) {
+    if (ids.length !== 1 || !FACT_KINDS.includes(measuredGiven))
+      die(
+        `Usage: code-kit conform record <standard> --measured <${FACT_KINDS.join('|')}> [--lines N]`,
+      );
+    const s = named(ids[0]);
+    if (s.id === LAYER_RULES.id || s.applied === 'enforced')
+      die(`${s.id} is enforced by a rule, which finds its breaches itself. Nothing was recorded.`);
+    let next = breaches;
+    const found = factBreaches(measure(), measuredGiven);
+    for (const b of found) next = withBreach(next, s.id, b.file, b.breach);
+    saveBaseline('.', { standards: next });
+    return out(
+      `Recorded ${found.length} measured breach${found.length === 1 ? '' : 'es'} (${measuredGiven}) of ${s.id}. Take out any that the person excuses with \`${cli} conform fixed ${s.id} <path>\` before committing; breaches are only recorded on the branch that adopts ${s.id}.`,
+    );
+  }
   if (sub === 'record') {
     if (ids.length !== 2 || !breachGiven?.trim())
-      die('Usage: code-kit conform record <standard> <path> --breach "what breaks it, and where"');
+      die(
+        'Usage: code-kit conform record <standard> <path> --breach "what breaks it, and where" [--split "<path>, <path>" | --move <path>]',
+      );
     const s = named(ids[0]);
     const rel = fileArg(ids[1]);
     if (s.applied === 'enforced')
@@ -3318,7 +3413,29 @@ function conformCommand() {
         `${s.id} is enforced by ${s.enforcedBy ?? 'a rule'}, which finds its breaches itself: the layer rules' go in the baseline with \`code-kit baseline --write\`. Record breaches only for checked and advice standards. Nothing was recorded.`,
       );
     if (!existsSync(rel)) die(`${rel} doesn't exist here. Nothing was recorded.`);
-    saveBaseline('.', { standards: withBreach(breaches, s.id, rel, breachGiven.trim()) });
+    // CONF-9: a breach fixed by splitting the file, or moving it, says where to.
+    if (splitGiven !== undefined && moveGiven !== undefined)
+      die('A breach is fixed by a split or a move, not both. Nothing was recorded.');
+    let breach = breachGiven.trim();
+    if (splitGiven !== undefined) {
+      const to = splitGiven
+        .split(',')
+        .map((t) => fileArg(t.trim()))
+        .filter(Boolean);
+      if (to.length < 2)
+        die(
+          '--split names the two or more files it splits into, separated by commas. Nothing was recorded.',
+        );
+      breach = withReshape(breach, 'split', to);
+    }
+    if (moveGiven !== undefined) {
+      const to = fileArg(moveGiven);
+      if (to === rel) die(`${rel} can't move to itself. Nothing was recorded.`);
+      if (existsSync(to))
+        die(`${to} exists already: a move goes to a new path. Nothing was recorded.`);
+      breach = withReshape(breach, 'move', [to]);
+    }
+    saveBaseline('.', { standards: withBreach(breaches, s.id, rel, breach) });
     return out(
       `Recorded a breach of ${s.id} in ${rel}. Breaches are only recorded on the branch that adopts ${s.id} (adds it to ${standardsFile(config)}, or tightens it), with the person's standards approval; verify refuses one recorded anywhere else.`,
     );
@@ -3326,6 +3443,16 @@ function conformCommand() {
   if (sub === 'fixed') {
     if (ids.length !== 2) die('Usage: code-kit conform fixed <standard> <path> [--breach "…"]');
     const rel = fileArg(ids[1]);
+    if (ids[0] === LAYER_RULES.id)
+      die(
+        `The layer rules' violations leave the baseline by themselves: fix the imports, then run \`${cli} baseline --write\`.`,
+      );
+    // CONF-9: a split or a move is done when its files exist, and a moved file is gone.
+    const going = (breaches[ids[0]]?.[rel] ?? []).filter(
+      (b) => breachGiven === undefined || b === breachGiven,
+    );
+    const unfinished = going.map((b) => reshapeLeft(rel, b, (f) => existsSync(f))).filter(Boolean);
+    if (unfinished.length) die(`Not yet: ${unfinished.join('; ')}. Nothing changed.`);
     const { breaches: left, removed } = withoutBreach(breaches, ids[0], rel, breachGiven ?? null);
     if (!removed)
       die(
@@ -3337,9 +3464,11 @@ function conformCommand() {
     );
   }
   if (sub === 'plan') {
-    const chosen = ids.length ? ids.map(named) : standards.filter((s) => breaches[s.id]);
+    const chosen = ids.length
+      ? ids.map(named)
+      : [...(layered ? [LAYER_RULES] : []), ...standards.filter((s) => breaches[s.id])];
     // CONF-6: the pathway: standards in order, each one's stories through the layers in order.
-    const drafts = refactorPathway(chosen, breaches, config, {
+    const drafts = refactorPathway(chosen, allBreaches, config, {
       next: nextStoryNumber(stories),
       stories,
     });
@@ -3376,10 +3505,10 @@ function conformCommand() {
       const story = stories.find((s) => s.id === storyGiven.toUpperCase());
       if (!story) die(`${storyGiven} isn't in the plan.`);
       if (!story.conforms.length) die(`${story.id} conforms to no standard (no **Conforms:**).`);
-      left = storyLeft(story, breaches, config);
+      left = storyLeft(story, allBreaches, config);
     } else {
       const files = new Set(rest.map(fileArg));
-      left = breachList(breaches).filter((b) => files.has(b.file));
+      left = breachList(allBreaches).filter((b) => files.has(b.file));
     }
     if (flag('--json')) return out(JSON.stringify(left, null, 2));
     if (!left.length) return out('No breaches recorded there.');
@@ -3388,7 +3517,11 @@ function conformCommand() {
       `Fix each, keeping what the code does, then run \`${cli} conform fixed <standard> <path>\` for it and commit the baseline with the fix.`,
     );
   }
-  const summary = conformance(standards, breaches, stories);
+  const summary = conformance(
+    [...(layered ? [LAYER_RULES] : []), ...standards],
+    allBreaches,
+    stories,
+  );
   const known = new Set(standards.map((s) => s.id));
   const problems = [
     ...conformProblems(standards, breaches, (f) => existsSync(f)),
@@ -3404,7 +3537,7 @@ function conformCommand() {
     if (problems.length) process.exit(1);
     return;
   }
-  if (!standards.length)
+  if (!standards.length && !layered)
     return out(
       `This project has no standards yet (${standardsFile(config)}). /code-kit:conform suggests them, the ones the code already follows and the ones it should move to, and the person approves each.`,
     );
@@ -3687,7 +3820,9 @@ function usage() {
       '              | instructions [--write] [--json] | instructions show lead|lane [<lane>]\n' +
       '              | standards [--json] [--for <path>...] | designs [<story>] [--json]\n' +
       '              | conform [--json] [--for <path>...] [--story <id>] | conform plan [<standard>...] [--json]\n' +
-      '              | conform record <standard> <path> --breach "…" | conform fixed <standard> <path> [--breach "…"]\n' +
+      '              | conform record <standard> <path> --breach "…" [--split "<path>, …" | --move <path>]\n' +
+      '              | conform record <standard> --measured <large|cycles|unused|env> [--lines N]\n' +
+      '              | conform fixed <standard> <path> [--breach "…"] | conform measure [--json] [--lines N]\n' +
       '              | designs evidence <story> <screen file or name> <state> <screenshot.png>\n' +
       '              | worktrees [--json] | worktrees release|discard <branch> | worktrees prune [--quiet]\n' +
       '              | approve <name>... --reason "…" [--lane name]   [--config file]\n' +
