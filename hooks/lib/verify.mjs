@@ -4,7 +4,16 @@
 import { execFileSync, spawnSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { BASELINE_FILE, loadBaseline, newProblems } from './baseline.mjs';
+import { BASELINE_FILE, baselineShrinks, loadBaseline, newProblems } from './baseline.mjs';
+import {
+  adoptedStandards,
+  breachesGained,
+  breachesOf,
+  storyLeft,
+  touchedBreaches,
+  touchedWords,
+} from './conform.mjs';
+import { readStories } from './plan.mjs';
 import { runChecks } from './checks.mjs';
 import { CONFIG_FILE } from './config.mjs';
 import { COST_APPROVAL, overBudget, overWords, registerFile } from './costs.mjs';
@@ -253,6 +262,12 @@ export function verifyBranch({
     if (SECRETS(f))
       found.ownership.push(`${f} may hold secrets; secrets never go in the repository.`);
     if (f === APPROVAL_LOG) continue;
+    // CONF-5: a baseline with entries only taken out excuses nothing new, so any branch may change it.
+    if (
+      f === BASELINE_FILE &&
+      baselineShrinks(showAt(root, from, f) ?? '', showAt(root, 'HEAD', f) ?? '')
+    )
+      continue;
     const guarded = protectedEntry(f, config);
     const signed = guarded && !logged.has(f) && signedByPerson(root, from, f, guarded.signedBy);
     if (guarded && !logged.has(f) && !signed)
@@ -364,17 +379,47 @@ export function verifyBranch({
   }
 
   // The baseline only shrinks once the kit is adopted (the adopting change may record it).
+  let beforeRaw = {};
+  try {
+    beforeRaw = JSON.parse(showAt(root, from, BASELINE_FILE) ?? '{}');
+  } catch {
+    // an unreadable baseline excused nothing
+  }
+  const breachesBefore = breachesOf(beforeRaw);
   if (showAt(root, from, CONFIG_FILE) !== null) {
-    let before = {};
-    try {
-      before = JSON.parse(showAt(root, from, BASELINE_FILE) ?? '{}').layers ?? {};
-    } catch {
-      // an unreadable baseline excused nothing
-    }
+    const before = beforeRaw.layers ?? {};
     for (const [f, problems] of Object.entries(baseline.layers))
       for (const p of problems)
         if (!(before[f] ?? []).includes(p))
           found.baseline.push(`${BASELINE_FILE} gained ${p}; it only shrinks.`);
+    // CONF-2: a standard's breaches are recorded only on the branch that adopts it.
+    const stdText = (ref) => showAt(root, ref, standardsFile(config)) ?? '';
+    found.baseline.push(
+      ...breachesGained(
+        breachesBefore,
+        baseline.standards,
+        adoptedStandards(stdText(from), stdText('HEAD')),
+        BASELINE_FILE,
+      ),
+    );
+  }
+
+  // CONF-5: a branch that changes a file the baseline records breaking a standard fixes it too.
+  for (const b of touchedBreaches(breachesBefore, baseline.standards, present))
+    found.standards.push(touchedWords(b));
+  // CONF-4: a refactor story's branch brings every file it names to the standards it conforms to.
+  const storyId = storyOfBranch(branch ?? currentBranchOf(root));
+  const story =
+    storyId && config.docs?.plan
+      ? readStories(root, config.docs.plan).find((s) => s.id === storyId)
+      : null;
+  if (story?.conforms?.length) {
+    const touched = new Set(present);
+    for (const b of storyLeft(story, baseline.standards, config))
+      if (!touched.has(b.file))
+        found.standards.push(
+          `${story.id} brings ${b.file} to ${b.id}, but the baseline still records its breach (${b.breach}): fix it, then run \`code-kit conform fixed ${b.id} ${b.file}\`.`,
+        );
   }
 
   // REG-2: a test weakened on the branch needs the person's `tests` approval, logged by the commit.

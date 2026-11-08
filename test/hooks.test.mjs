@@ -11109,6 +11109,271 @@ else process.exit(1);
     s.git('checkout', '-q', 'main');
   }
 
+  // --- spec 30: existing code brought to the standards -------------------------------------------
+  {
+    const c = newRepo();
+    cleanups.push(c.dir);
+    const cKit = (...args) =>
+      spawnSync('node', [kitCli, ...args], {
+        cwd: c.dir,
+        encoding: 'utf8',
+        env: { ...process.env, CLAUDE_PROJECT_DIR: c.dir },
+      });
+    const cCommit = (agent) =>
+      spawnSync('node', [join(hooks, 'guard-bash.mjs')], {
+        input: JSON.stringify({
+          cwd: c.dir,
+          tool_input: { command: 'git commit -am "a commit"' },
+          ...(agent ? { agent_type: agent } : {}),
+        }),
+        env: { ...process.env, CLAUDE_PROJECT_DIR: c.dir },
+        encoding: 'utf8',
+      });
+    const put = (rel, text) => {
+      mkdirSync(join(c.dir, dirname(rel)), { recursive: true });
+      writeFileSync(join(c.dir, rel), text);
+    };
+    const baselineNow = () =>
+      JSON.parse(readFileSync(join(c.dir, '.claude/code-kit.baseline.json'), 'utf8'));
+    const verifyNow = () => cKit('verify', '--base', 'main', '--no-checks');
+    put('apps/office/src/orders.ts', 'export const orders = () => db.query("orders");\n');
+    put('apps/office/src/list.ts', 'export const list = () => db.query("list");\n');
+    put('packages/domain/rules.ts', 'export const rule = () => db.query("rules");\n');
+    put('workers/services/sync.ts', 'export const sync = () => db.query("sync");\n');
+    put(
+      'docs/spec/plan.md',
+      '# Plan\n\n## Launch\n\n### ST-1 Orders\n\n**Lane:** web\n**Requirements:** none\n**Status:** done\n',
+    );
+    c.git('add', '-A');
+    c.git('commit', '-q', '-m', 'the code as it is');
+
+    expect(
+      'CONF-3 a project with no standards is told /code-kit:conform suggests them',
+      truth(
+        /no standards yet \([^)]*\)\. \/code-kit:conform suggests them/.test(
+          cKit('conform').stdout,
+        ),
+      ),
+      0,
+    );
+    expect(
+      'CONF-3 and next says so too',
+      truth(
+        JSON.parse(cKit('next', '--json').stdout).attention.some((a) =>
+          a.includes('/code-kit:conform suggests them'),
+        ),
+      ),
+      0,
+    );
+
+    // CONF-2: the branch that adopts PAT-1 records the code's breaches of it.
+    c.git('checkout', '-q', '-b', 'lead/conform-pat-1');
+    put(
+      'docs/standards.md',
+      [
+        '# Standards',
+        '',
+        '### ARC-2 Schemas don’t depend on the domain',
+        '',
+        'level: required',
+        'applied: enforced',
+        'enforced by: layers (schemas may not import domain)',
+        '',
+        '### PAT-1 Data access goes through repositories',
+        '',
+        'level: required',
+        'applied: checked',
+        '',
+      ].join('\n'),
+    );
+    const breach = (file, words) => cKit('conform', 'record', 'PAT-1', file, '--breach', words);
+    expect(
+      'CONF-2 a breach is recorded for a standard the project has',
+      breach('apps/office/src/orders.ts', 'line 1: queries the database itself'),
+      0,
+    );
+    breach('packages/domain/rules.ts', 'line 1: queries the database itself');
+    breach('workers/services/sync.ts', 'line 1: queries the database itself');
+    expect(
+      '… into the baseline, by standard and file',
+      truth(
+        baselineNow().standards?.['PAT-1']?.['apps/office/src/orders.ts']?.[0] ===
+          'line 1: queries the database itself',
+        JSON.stringify(baselineNow()),
+      ),
+      0,
+    );
+    expect(
+      'CONF-2 not for a standard the project lacks',
+      cKit('conform', 'record', 'PAT-9', 'apps/office/src/list.ts', '--breach', 'x'),
+      1,
+      "isn't one of the project's standards",
+    );
+    expect(
+      'CONF-2 nor for an enforced one, whose rule finds its own',
+      cKit('conform', 'record', 'ARC-2', 'apps/office/src/list.ts', '--breach', 'x'),
+      1,
+      'which finds its breaches itself',
+    );
+    c.git('add', '-A');
+    c.git('commit', '-q', '-m', 'adopt PAT-1');
+    expect(
+      'CONF-2 verify accepts the breaches on the branch that adopts the standard',
+      truth(!/gained a breach/.test(verifyNow().stdout), verifyNow().stdout),
+      0,
+    );
+    c.git('checkout', '-q', 'main');
+    c.git('merge', '-q', '--no-ff', '-m', 'adopt PAT-1', 'lead/conform-pat-1');
+
+    // CONF-3: where the code stands, and next's advice while nothing plans it.
+    const where = cKit('conform');
+    expect(
+      'CONF-3 conform shows each standard with its breaches and what is not planned yet',
+      truth(
+        /PAT-1 Data access goes through repositories \(required, checked\): 3 breaches in 3 files; not planned yet/.test(
+          where.stdout,
+        ),
+        where.stdout,
+      ),
+      0,
+    );
+    expect(
+      'CONF-3 next says the breaches no refactor story covers',
+      truth(
+        JSON.parse(cKit('next', '--json').stdout).attention.some((a) =>
+          a.includes('code-kit conform plan PAT-1'),
+        ),
+      ),
+      0,
+    );
+
+    // CONF-6: the pathway: the layer others import first, each later story waiting on it.
+    const drafted = JSON.parse(cKit('conform', 'plan', '--json').stdout);
+    const [first, ...others] = drafted[0]?.stories ?? [];
+    expect(
+      'CONF-6 conform plan drafts a conformance milestone, its stories through the layers in order',
+      truth(
+        drafted.length === 1 &&
+          drafted[0].milestone === 'Conformance: PAT-1 Data access goes through repositories' &&
+          first?.id === 'ST-2' &&
+          first.files.join() === 'packages/domain/rules.ts' &&
+          others
+            .find((s) => s.files.includes('workers/services/sync.ts'))
+            ?.dependsOn.includes('ST-2'),
+        JSON.stringify(drafted),
+      ),
+      0,
+    );
+    const text = cKit('conform', 'plan').stdout;
+    expect(
+      '… as the plan writes it, with what to fix and the tests first',
+      truth(
+        /## Conformance: PAT-1/.test(text) &&
+          /\*\*Conforms:\*\* PAT-1/.test(text) &&
+          /\*\*Files:\*\* `packages\/domain\/rules\.ts`/.test(text) &&
+          /no tests that pin down what they do, write them/.test(text),
+        text,
+      ),
+      0,
+    );
+
+    // CONF-5: a story that changes a file with a recorded breach fixes it there.
+    c.git('checkout', '-q', '-b', 'web/st-7');
+    put('apps/office/src/orders.ts', 'export const orders = () => db.query("orders", 1);\n');
+    c.git('commit', '-q', '-am', 'orders take a page');
+    expect(
+      'CONF-5 verify refuses a branch that changes a breached file and leaves its breach',
+      truth(
+        verifyNow().status === 1 &&
+          /apps\/office\/src\/orders\.ts breaks PAT-1 \(line 1: queries the database itself\)/.test(
+            verifyNow().stdout,
+          ),
+        verifyNow().stdout,
+      ),
+      0,
+    );
+    put('apps/office/src/orders.ts', 'export const orders = () => orderRepository.page(1);\n');
+    expect(
+      'CONF-5 conform --for lists what the lane must fix there',
+      truth(
+        /apps\/office\/src\/orders\.ts: PAT-1 line 1/.test(
+          cKit('conform', '--for', 'apps/office/src/orders.ts').stdout,
+        ),
+      ),
+      0,
+    );
+    expect(
+      'CONF-5 conform fixed takes the breach out',
+      cKit('conform', 'fixed', 'PAT-1', 'apps/office/src/orders.ts'),
+      0,
+    );
+    expect(
+      'CONF-5 the lane commits the baseline with only its breach taken out, though the kit is the lead’s',
+      cCommit('web-engineer'),
+      0,
+    );
+    c.git('commit', '-q', '-am', 'orders through the repository');
+    const fixedNow = verifyNow();
+    expect(
+      '… and verify accepts the branch, the baseline included',
+      truth(
+        !/breaks PAT-1/.test(fixedNow.stdout) && !/code-kit\.baseline\.json/.test(fixedNow.stdout),
+        fixedNow.stdout,
+      ),
+      0,
+    );
+    // CONF-2: a breach recorded anywhere but the adopting branch is refused.
+    cKit('conform', 'record', 'PAT-1', 'apps/office/src/list.ts', '--breach', 'line 1: queries it');
+    expect(
+      'CONF-2 a lane growing the baseline is refused at the commit',
+      cCommit('web-engineer'),
+      2,
+      'code-kit.baseline.json',
+    );
+    c.git('commit', '-q', '-am', 'excuse list.ts');
+    expect(
+      'CONF-2 and by verify: breaches only shrink, except for the standard a branch adopts',
+      truth(
+        /gained a breach of PAT-1 in apps\/office\/src\/list\.ts/.test(verifyNow().stdout),
+        verifyNow().stdout,
+      ),
+      0,
+    );
+    c.git('checkout', '-q', 'main');
+
+    // CONF-4: a refactor story's branch brings every file it names to its standard.
+    put(
+      'docs/spec/plan.md',
+      `${readFileSync(join(c.dir, 'docs/spec/plan.md'), 'utf8')}\n## Conformance: PAT-1 Data access goes through repositories\n\n### ST-2 packages/domain conforms to PAT-1\n\n**Lane:** ai\n**Requirements:** none\n**Conforms:** PAT-1\n**Files:** \`packages/domain/rules.ts\`\n**Status:** todo\n`,
+    );
+    c.git('commit', '-q', '-am', 'plan the pathway');
+    expect(
+      'CONF-3 a planned file is no longer reported as unplanned',
+      truth(/ST-2 todo/.test(cKit('conform').stdout), cKit('conform').stdout),
+      0,
+    );
+    c.git('checkout', '-q', '-b', 'ai/st-2');
+    put('packages/domain/README.md', 'notes\n');
+    c.git('add', '-A');
+    c.git('commit', '-q', '-m', 'notes');
+    expect(
+      'CONF-4 verify refuses a refactor story whose files still break its standard',
+      truth(
+        /ST-2 brings packages\/domain\/rules\.ts to PAT-1, but the baseline still records its breach/.test(
+          verifyNow().stdout,
+        ),
+        verifyNow().stdout,
+      ),
+      0,
+    );
+    expect(
+      'CONF-4 conform --story says what is left',
+      truth(/packages\/domain\/rules\.ts: PAT-1/.test(cKit('conform', '--story', 'ST-2').stdout)),
+      0,
+    );
+    c.git('checkout', '-q', 'main');
+  }
+
   // --- HUBR-1 to HUBR-8: a hosted team provider, through its adapter in code-kit -------------------
   {
     const root = mkdtempSync(join(tmpdir(), 'ck-hub-'));

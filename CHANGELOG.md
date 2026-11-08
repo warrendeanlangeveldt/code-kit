@@ -2,6 +2,10 @@
 
 What changed in each release of code-kit, newest first. Versions follow the plugin manifest and the npm package `@warren-dean/code-kit`. Each release is also on [GitHub Releases](https://github.com/warrendeanlangeveldt/code-kit/releases).
 
+## Unreleased
+
+- **Existing code brought to the standards.** An existing codebase got a baseline of its layer violations, and standards inferred from what the code already did, but nothing helped move it to the standards and principles it should follow. `/code-kit:conform` now suggests those too, with how much of the code breaks each. You approve each standard. Read-only agents then audit the code against it, layer by layer, and each breach goes in the baseline with its file and line, on the branch that adopts the standard; breaches recorded anywhere else are refused, and they only ever shrink. `code-kit conform plan` drafts a refactor pathway: a conformance milestone per standard, required ones and structure first, each going through the layers others import before their callers, with tests that pin down behaviour written first and nothing weakened. A story that changes a file with a recorded breach fixes it there: verify refuses the branch until it's fixed and taken out of the baseline (`code-kit conform fixed`), which any lane may commit. `code-kit conform` shows the progress, and `next` says when a project with code has no standards, or a standard has breaches no story covers. Lane agents get the new instructions when `code-kit next` brings theirs up to date.
+
 ## 0.34.0 (2026-11-08)
 
 - **The loop no longer cuts into a conversation.** It prompted the lead as soon as each turn ended, so when you were talking with the lead about something else, the next step landed a minute after its answer to you. The reading of the lead's reply is now given what you said and tells a conversation from asking it to carry on; after a conversation, the loop waits until you've been quiet for `harness.loop.quietMinutes` (10 by default), and the band says so, with **Carry on**.

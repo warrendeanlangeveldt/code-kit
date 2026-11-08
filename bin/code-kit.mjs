@@ -70,8 +70,23 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, posix, resolve } from 'node:path';
-import { BASELINE_FILE, loadBaseline } from '../hooks/lib/baseline.mjs';
+import { isAbsolute, join, posix, resolve } from 'node:path';
+import {
+  BASELINE_FILE,
+  loadBaseline,
+  writeBaseline as saveBaseline,
+} from '../hooks/lib/baseline.mjs';
+import {
+  breachList,
+  conformProblems,
+  conformance,
+  nextStoryNumber,
+  refactorPathway,
+  storyLeft,
+  storyText,
+  withBreach,
+  withoutBreach,
+} from '../hooks/lib/conform.mjs';
 import { matchesAny } from '../hooks/lib/glob.mjs';
 import {
   CONFIG_FILE,
@@ -250,6 +265,7 @@ import { COST_APPROVAL, costReport, infraFiles, money } from '../hooks/lib/costs
 import {
   appliesTo,
   projectStandards,
+  standardsFile,
   readInherited,
   standardLine,
   writeInherited,
@@ -310,6 +326,7 @@ const expectedGiven = option('--expected');
 const commandGiven = option('--command');
 const refusalGiven = option('--refusal');
 const ruleGiven = option('--rule');
+const breachGiven = option('--breach');
 const optionsGiven = [];
 for (let o = option('--option'); o !== undefined; o = option('--option')) optionsGiven.push(o);
 const FLAGS = [
@@ -501,8 +518,8 @@ function baseline() {
   out(`${count} violation(s) in ${Object.keys(found).length} file(s).`);
   if (!writeBaseline) return;
   const { keep, refused } = toRecord(found);
-  const body = { recordedAt: new Date().toISOString(), layers: keep };
-  writeFileSync(BASELINE_FILE, `${JSON.stringify(body, null, 2)}\n`);
+  // The standards' breaches (spec 30) stay as conform keeps them.
+  saveBaseline('.', { layers: keep });
   out(
     `Recorded ${Object.values(keep).flat().length} in ${BASELINE_FILE}: these don't block; new ones do.`,
   );
@@ -2334,6 +2351,8 @@ function next() {
       lead: { session: lead.id, step: step.step, args: step.args ?? null },
       args: null,
       then: [],
+      // The notes that name a skill are the lead's steps too.
+      attention: step.attention.filter((a) => !a.includes('/code-kit:')),
       why: `This is a working session: session ${shortSession(lead.id)} leads the project, and the next step, ${step.step}${step.args ? ` ${step.args}` : ''}, is the lead's (${step.why}). Here, do a task of your own, in a worktree of your own: record it with \`code-kit task "<what>" --touches "<globs>"\` first. To lead from this session instead, ask the person to make it the lead.`,
     };
   if (flag('--json')) return out(JSON.stringify(step, null, 2));
@@ -3266,6 +3285,147 @@ function worktreesCommand() {
  * organisation's team provider supplies) and what's wrong with them (STD-1, STD-6); `--for <path>...`
  * keeps the ones for those files' layers, as a review reads them (STD-4). Exits 1 on a problem.
  */
+// Spec 30: the code against the project's standards. With nothing more, where each standard stands:
+// its recorded breaches, the refactor stories conforming to it, and what's left to plan (CONF-3).
+// `record` and `fixed` keep the breaches (CONF-2); `plan` drafts the conformance milestone (CONF-4);
+// `--for <path>...` and `--story <id>` say what a lane must fix (CONF-5, CONF-4).
+function conformCommand() {
+  const { config } = load();
+  const root = resolve('.');
+  const { standards } = projectStandards(root, config);
+  const { standards: breaches } = loadBaseline(root);
+  const stories = config.docs?.plan ? readStories(root, config.docs.plan) : [];
+  const [sub, ...ids] = rest;
+  const named = (id) =>
+    standards.find((s) => s.id === id) ??
+    die(
+      `${id} isn't one of the project's standards (${standardsFile(config)}). Add it there first, with the person's standards approval; then record its breaches.`,
+    );
+  const fileArg = (f) => {
+    const rel = posix.normalize(String(f ?? '').replace(/\\/g, '/'));
+    if (!rel || rel.startsWith('..') || isAbsolute(rel))
+      die(`${f} isn't a path in the project: give it from the project's root.`);
+    return rel;
+  };
+  const cli = 'code-kit';
+  if (sub === 'record') {
+    if (ids.length !== 2 || !breachGiven?.trim())
+      die('Usage: code-kit conform record <standard> <path> --breach "what breaks it, and where"');
+    const s = named(ids[0]);
+    const rel = fileArg(ids[1]);
+    if (s.applied === 'enforced')
+      die(
+        `${s.id} is enforced by ${s.enforcedBy ?? 'a rule'}, which finds its breaches itself: the layer rules' go in the baseline with \`code-kit baseline --write\`. Record breaches only for checked and advice standards. Nothing was recorded.`,
+      );
+    if (!existsSync(rel)) die(`${rel} doesn't exist here. Nothing was recorded.`);
+    saveBaseline('.', { standards: withBreach(breaches, s.id, rel, breachGiven.trim()) });
+    return out(
+      `Recorded a breach of ${s.id} in ${rel}. Breaches are only recorded on the branch that adopts ${s.id} (adds it to ${standardsFile(config)}, or tightens it), with the person's standards approval; verify refuses one recorded anywhere else.`,
+    );
+  }
+  if (sub === 'fixed') {
+    if (ids.length !== 2) die('Usage: code-kit conform fixed <standard> <path> [--breach "…"]');
+    const rel = fileArg(ids[1]);
+    const { breaches: left, removed } = withoutBreach(breaches, ids[0], rel, breachGiven ?? null);
+    if (!removed)
+      die(
+        `No breach of ${ids[0]} is recorded for ${rel}${breachGiven ? ' in those words' : ''}. Nothing changed.`,
+      );
+    saveBaseline('.', { standards: left });
+    return out(
+      `Took ${removed} breach${removed === 1 ? '' : 'es'} of ${ids[0]} in ${rel} out of ${BASELINE_FILE}. Commit it with the fix; the review checks the file now meets ${ids[0]}.`,
+    );
+  }
+  if (sub === 'plan') {
+    const chosen = ids.length ? ids.map(named) : standards.filter((s) => breaches[s.id]);
+    // CONF-6: the pathway: standards in order, each one's stories through the layers in order.
+    const drafts = refactorPathway(chosen, breaches, config, {
+      next: nextStoryNumber(stories),
+      stories,
+    });
+    if (flag('--json'))
+      return out(
+        JSON.stringify(
+          drafts.map((p) => ({
+            standard: p.standard.id,
+            milestone: p.milestone,
+            stories: p.stories,
+          })),
+          null,
+          2,
+        ),
+      );
+    if (!drafts.length)
+      return out(
+        'Nothing to plan: every recorded breach is in an open refactor story already, or none is recorded. Audit a standard with /code-kit:conform <standard>.',
+      );
+    out(
+      `The refactor pathway: a conformance milestone per standard, required ones first and structure before detail, each going through the layers others import first. For the plan (${config.docs?.plan ?? 'docs.plan'}); the person decides where the milestones go among the others, and the stories are dispatched like any other.\n`,
+    );
+    for (const p of drafts)
+      out(
+        `## ${p.milestone}\n\n${p.stories.map((st) => storyText(st, p.standard)).join('\n\n')}\n`,
+      );
+    return;
+  }
+  if (sub && !flag('--for')) return usage();
+  // CONF-5: what a lane must fix in the files it changes; CONF-4: what a refactor story has left.
+  if (flag('--for') || storyGiven) {
+    let left;
+    if (storyGiven) {
+      const story = stories.find((s) => s.id === storyGiven.toUpperCase());
+      if (!story) die(`${storyGiven} isn't in the plan.`);
+      if (!story.conforms.length) die(`${story.id} conforms to no standard (no **Conforms:**).`);
+      left = storyLeft(story, breaches, config);
+    } else {
+      const files = new Set(rest.map(fileArg));
+      left = breachList(breaches).filter((b) => files.has(b.file));
+    }
+    if (flag('--json')) return out(JSON.stringify(left, null, 2));
+    if (!left.length) return out('No breaches recorded there.');
+    for (const b of left) out(`${b.file}: ${b.id} ${b.breach}`);
+    return out(
+      `Fix each, keeping what the code does, then run \`${cli} conform fixed <standard> <path>\` for it and commit the baseline with the fix.`,
+    );
+  }
+  const summary = conformance(standards, breaches, stories);
+  const known = new Set(standards.map((s) => s.id));
+  const problems = [
+    ...conformProblems(standards, breaches, (f) => existsSync(f)),
+    ...stories
+      .filter((s) => s.conforms.some((id) => !known.has(id)))
+      .map(
+        (s) =>
+          `${s.id} conforms to ${s.conforms.filter((id) => !known.has(id)).join(', ')}, which the standards don't have`,
+      ),
+  ];
+  if (flag('--json')) {
+    out(JSON.stringify({ standards: summary, problems }, null, 2));
+    if (problems.length) process.exit(1);
+    return;
+  }
+  if (!standards.length)
+    return out(
+      `This project has no standards yet (${standardsFile(config)}). /code-kit:conform suggests them, the ones the code already follows and the ones it should move to, and the person approves each.`,
+    );
+  const breached = summary.filter((s) => s.breaches);
+  out(
+    breached.length
+      ? `${breached.length} of ${summary.length} standards have recorded breaches:`
+      : `No breaches are recorded against the ${summary.length} standards. That shows conformance only for a standard that was audited: audit one with /code-kit:conform <standard>.`,
+  );
+  for (const s of breached) {
+    const planned = s.stories.filter((st) => st.status !== 'done');
+    out(
+      `  ${s.id} ${s.title} (${s.level}, ${s.applied}): ${s.breaches} breach${s.breaches === 1 ? '' : 'es'} in ${s.files.length} file${s.files.length === 1 ? '' : 's'}${planned.length ? `; ${planned.map((st) => `${st.id} ${st.status}`).join(', ')}` : ''}${s.unplanned.length ? `; not planned yet: ${s.unplanned.slice(0, 3).join(', ')}${s.unplanned.length > 3 ? `, and ${s.unplanned.length - 3} more` : ''}` : ''}`,
+    );
+  }
+  if (breached.some((s) => s.unplanned.length))
+    out(`Draft the refactor stories with \`${cli} conform plan\`.`);
+  for (const p of problems) out(`  Problem: ${p}`);
+  if (problems.length) process.exit(1);
+}
+
 function standardsCommand() {
   const { raw, config } = load();
   const root = resolve('.');
@@ -3474,6 +3634,7 @@ const commands = {
   check,
   designs: designsCommand,
   standards: standardsCommand,
+  conform: conformCommand,
   worktrees: worktreesCommand,
   instructions: instructionsCommand,
   loop: loopCommand,
@@ -3525,6 +3686,8 @@ function usage() {
       '              | next [--base ref] [--json] | adapters | trace <path>... [--json]\n' +
       '              | instructions [--write] [--json] | instructions show lead|lane [<lane>]\n' +
       '              | standards [--json] [--for <path>...] | designs [<story>] [--json]\n' +
+      '              | conform [--json] [--for <path>...] [--story <id>] | conform plan [<standard>...] [--json]\n' +
+      '              | conform record <standard> <path> --breach "…" | conform fixed <standard> <path> [--breach "…"]\n' +
       '              | designs evidence <story> <screen file or name> <state> <screenshot.png>\n' +
       '              | worktrees [--json] | worktrees release|discard <branch> | worktrees prune [--quiet]\n' +
       '              | approve <name>... --reason "…" [--lane name]   [--config file]\n' +
