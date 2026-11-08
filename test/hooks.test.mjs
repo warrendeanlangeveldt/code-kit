@@ -1016,6 +1016,19 @@ try {
     ['a command that writes as well', 'node -e 1 > .claude/state/n.txt && git commit -m x'],
   ])
     expect(`a commit after ${what} still counts`, bash(command), 2, 'this commit runs after');
+  // Setting the shell's own options writes no file.
+  for (const command of [
+    'set -o pipefail && git add notes.txt && git commit -m x',
+    'set -euo pipefail; git commit -m x',
+    'set +x && git commit -m x',
+  ])
+    expect(`a commit after the shell's options are set passes: ${command}`, bash(command), 0);
+  expect(
+    'but one that redirects still counts',
+    bash('set -o pipefail > notes.txt && git commit -m x'),
+    2,
+    'this commit runs after',
+  );
   // code-kit's own commands that write only its state folder: by the CLI's path, or through a variable.
   for (const [what, command] of [
     [
@@ -9763,6 +9776,25 @@ else process.exit(1);
       0,
     );
 
+    // REG-2: Python's bare `assert x == y` statements count as assertions, as `assert(x)` calls do.
+    g.git('checkout', '-q', 'main');
+    g.git('checkout', '-q', '-b', 'web/st-8');
+    gPut(
+      'apps/office/test_totals.py',
+      'def test_totals():\n    assert(total(1) == 1)\n    assert(total(2) == 2)\n',
+    );
+    gCommit('ST-8 totals');
+    gPut(
+      'apps/office/test_totals.py',
+      'def test_totals():\n    assert total(1) == 1\n    assert total(2) == 2\n    assert total(3) == 3\n',
+    );
+    const pyRes = gBash('git add -A && git commit -m "bare asserts"', 'web-engineer');
+    expect(
+      'REG-2 a pytest file whose assert calls became bare assert statements, one more, is not weakened',
+      truth(pyRes.status === 0, pyRes.stderr),
+      0,
+    );
+    gCommit('ST-8 bare asserts');
     // REG-2: the commit hook refuses a weakened test, as a request the person can approve.
     g.git('checkout', '-q', 'main');
     g.git('checkout', '-q', '-b', 'web/st-4');
