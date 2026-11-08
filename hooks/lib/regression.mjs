@@ -35,8 +35,9 @@ const SKIPS = [
   /@(?:Disabled|Ignore)\b/,
 ];
 // `expect(` and its retrying and soft forms (`expect.poll(`, `expect.soft(`), each one assertion.
+// Python's and pytest's bare `assert x == y` statements count too, one per statement.
 const ASSERTION =
-  /\bexpect(?:\.(?:poll|soft))?\s*\(|\bassert\w*\s*[.(]|\bt\.(?:Error|Errorf|Fatal|Fatalf|Fail)\b|\bshould\.\w/g;
+  /\bexpect(?:\.(?:poll|soft))?\s*\(|\bassert\w*\s*[.(]|(?<=^|\n)[ \t]*assert[ \t]+(?=[^\s(.=])|\bt\.(?:Error|Errorf|Fatal|Fatalf|Fail)\b|\bshould\.\w/g;
 
 const skipLines = (text) =>
   String(text ?? '')
