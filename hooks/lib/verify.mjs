@@ -4,7 +4,13 @@
 import { execFileSync, spawnSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { BASELINE_FILE, baselineShrinks, loadBaseline, newProblems } from './baseline.mjs';
+import {
+  BASELINE_FILE,
+  baselineShrinks,
+  languagesOf,
+  loadBaseline,
+  newProblems,
+} from './baseline.mjs';
 import {
   LAYER_RULES,
   adoptedLayers,
@@ -25,7 +31,7 @@ import { entryProblems, freshEntries, readRegister, statesWithoutEvidence } from
 import { evidenceRecords } from './reviews.mjs';
 import { storyOfBranch } from './teamfacts.mjs';
 import { literalPath, matchesAny } from './glob.mjs';
-import { layerProblems } from './layers.mjs';
+import { languageOf, layerProblems } from './layers.mjs';
 import { STANDARDS_APPROVAL, standardsFile, standardsWeakenings } from './standards.mjs';
 import { TESTS_APPROVAL, branchWeakenings, fixOf, proveFix } from './regression.mjs';
 import {
@@ -327,7 +333,11 @@ export function verifyBranch({
   const baseline = loadBaseline(root);
   for (const f of present) {
     found.layers.push(
-      ...newProblems(f, layerProblems(f, readFileSync(join(root, f), 'utf8'), config), baseline),
+      ...newProblems(
+        f,
+        layerProblems(f, readFileSync(join(root, f), 'utf8'), config, { root }),
+        baseline,
+      ),
     );
     const screen = screenProblem(f, root, config);
     if (screen) found.design.push(screen.split('\n')[0]);
@@ -401,9 +411,14 @@ export function verifyBranch({
       // an unreadable config adopts nothing
     }
     const adopted = adoptedLayers(layersBefore, layersAfter);
+    // A language the base's baseline wasn't taken for is recorded the once, by the branch taking it.
+    const baseLanguages = languagesOf(
+      showAt(root, from, BASELINE_FILE) === null ? null : beforeRaw,
+    );
+    const newLanguage = (f) => baseLanguages && !baseLanguages.includes(languageOf(f));
     for (const [f, problems] of Object.entries(baseline.layers))
       for (const p of problems)
-        if (!(before[f] ?? []).includes(p) && !adoptedProblem(p, adopted))
+        if (!(before[f] ?? []).includes(p) && !adoptedProblem(p, adopted) && !newLanguage(f))
           found.baseline.push(`${BASELINE_FILE} gained ${p}; it only shrinks.`);
     // CONF-2: a standard's breaches are recorded only on the branch that adopts it.
     const stdText = (ref) => showAt(root, ref, standardsFile(config)) ?? '';

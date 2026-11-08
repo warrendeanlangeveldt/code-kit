@@ -3,7 +3,16 @@
 // old is refactored: in a conformance milestone of its own (CONF-4), and in every file a story changes
 // (CONF-5). Like the layers' baseline, the breaches only shrink, except for a standard the branch adopts.
 import { posix } from 'node:path';
-import { brokenLayerRule, CODE, importsOf, layerOf, targetOf } from './layers.mjs';
+import {
+  brokenLayerRule,
+  CODE,
+  PYTHON,
+  importsIn,
+  layerOf,
+  pythonIndex,
+  pythonTarget,
+  targetOf,
+} from './layers.mjs';
 import { laneOf } from './rules.mjs';
 import { parseStandards } from './standards.mjs';
 
@@ -418,12 +427,26 @@ export function adoptedProblem(problem, adopted) {
 export const SOURCE =
   /\.(ts|tsx|mts|cts|js|jsx|mjs|cjs|py|rb|go|java|kt|cs|php|swift|rs|vue|svelte)$/;
 
+/**
+ * CONF-7: the modules a text names in quotes, dotted ("jobs.cleanup", "app.tasks.run",
+ * "pkg.cli:main"): how Celery, a pyproject's scripts and plugin lists load a module by name. Each comes
+ * with its parent, for a name that ends in a function.
+ */
+export function namedModules(text) {
+  const out = new Set();
+  for (const m of text.matchAll(/["']([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)+)(?::[\w.]+)?["']/g)) {
+    out.add(m[1]);
+    out.add(m[1].replace(/\.[^.]+$/, ''));
+  }
+  return [...out];
+}
+
 /** CONF-7: the default size a file is measured as large over, in lines. */
 export const LARGE_LINES = 500;
 
 /** Entry points: what a framework, a runtime or a command line loads, and nothing imports. */
 const ENTRY =
-  /(^|\/)(index|main|app|server|cli|page|layout|route|loading|error|not-found|template|middleware|instrumentation|_app|_document|setup|vite-env\.d)\.[^/]+$|(^|\/)(bin|scripts|pages|app|routes|migrations|seeds?)\/|\.(config|d|setup)\.[^/]+$|(^|\/)\.[^/]+$/;
+  /(^|\/)(index|main|app|server|cli|page|layout|route|loading|error|not-found|template|middleware|instrumentation|_app|_document|setup|vite-env\.d|__init__|__main__|manage|conftest|wsgi|asgi|tasks|worker|celery|celery_app)\.[^/]+$|(^|\/)(bin|scripts|pages|routes|migrations|alembic|seeds?)\/|\.(config|d|setup)\.[^/]+$|(^|\/)\.[^/]+$/;
 
 /** Generated code: nobody refactors it by hand. */
 const GENERATED = /(^|\/)(generated|__generated__)\/|\.(gen|generated)\.[^/]+$/;
@@ -437,15 +460,23 @@ const ENV_FILE =
  * CONF-7: measured facts about the code's structure, the evidence for the structural standards: files
  * over `lines` lines (god modules), import cycles, files nothing imports (dead code, entry points left
  * out), and files that read the environment themselves (services not behind a provider). `files` are
- * [{ rel, source }], tests left out (generated code is left out here); `aliases` resolve imports as the layers do: an object, or a file's own
- * (its tsconfig's paths) from a function of its path.
+ * [{ rel, source }], tests left out (generated code is left out here); `aliases` resolve JavaScript and
+ * TypeScript imports as the layers do: an object, or a file's own (its tsconfig's paths) from a function
+ * of its path. Python's resolve against `python` (pythonIndex of the project's Python files, tests
+ * included), or the files given. `entries` are files something outside the code loads (a pyproject's
+ * scripts), not dead for want of an import. Type-only imports count as use, but make no cycle. A file
+ * only `tests` import is in `testsOnly`, not `unused`.
  */
-export function structureFacts(all, { aliases = {}, lines = LARGE_LINES } = {}) {
+export function structureFacts(
+  all,
+  { aliases = {}, lines = LARGE_LINES, python = null, entries = [], tests = [] } = {},
+) {
   const aliasesOf = typeof aliases === 'function' ? aliases : () => aliases;
   const files = all.filter((f) => !GENERATED.test(f.rel));
-  const code = files.filter((f) => CODE.test(f.rel));
+  const code = files.filter((f) => CODE.test(f.rel) || PYTHON.test(f.rel));
+  const py = python ?? pythonIndex(files.filter((f) => PYTHON.test(f.rel)).map((f) => f.rel));
   const byStem = new Map();
-  for (const f of code) {
+  for (const f of code.filter((c) => CODE.test(c.rel))) {
     const stem = f.rel.replace(/\.[^./]+$/, '');
     byStem.set(stem, f.rel);
     if (/\/index$/.test(stem)) byStem.set(stem.replace(/\/index$/, ''), f.rel);
@@ -453,13 +484,36 @@ export function structureFacts(all, { aliases = {}, lines = LARGE_LINES } = {}) 
   const resolveTo = (t) => byStem.get(t) ?? byStem.get(t.replace(/\.[^./]+$/, '')) ?? null;
   const edges = new Map(code.map((f) => [f.rel, new Set()]));
   const importedBy = new Map(code.map((f) => [f.rel, 0]));
+  // The measured file an import in `rel` points at, or null (a package, a namespace folder, a test).
+  const resolveFrom = (rel, spec) => {
+    let to;
+    if (PYTHON.test(rel)) to = pythonTarget(spec, rel, py);
+    else {
+      const t = targetOf(spec, rel, aliasesOf(rel));
+      to = t === null ? null : resolveTo(t);
+    }
+    return to && to !== rel && importedBy.has(to) ? to : null;
+  };
   for (const f of code)
-    for (const spec of importsOf(f.source)) {
-      const t = targetOf(spec, f.rel, aliasesOf(f.rel));
-      const to = t === null ? null : resolveTo(t);
-      if (!to || to === f.rel) continue;
-      edges.get(f.rel).add(to);
+    for (const { spec, typeOnly } of importsIn(f.source, f.rel)) {
+      const to = resolveFrom(f.rel, spec);
+      if (!to) continue;
+      if (!typeOnly) edges.get(f.rel).add(to);
       importedBy.set(to, importedBy.get(to) + 1);
+    }
+  // What only the tests import: kept for them, which is a different question from dead code.
+  const byTests = new Set();
+  for (const t of tests)
+    for (const { spec } of importsIn(t.source, t.rel)) {
+      const to = resolveFrom(t.rel, spec);
+      if (to) byTests.add(to);
+    }
+  // A Python module named in a string is loaded by name: used, though nothing imports it.
+  const loaded = new Set(entries);
+  for (const f of code.filter((c) => PYTHON.test(c.rel)))
+    for (const name of namedModules(f.source)) {
+      const t = pythonTarget(name, f.rel, py);
+      if (t && t !== f.rel) loaded.add(t);
     }
 
   // Tarjan's strongly connected components: each one of two or more files is an import cycle.
@@ -502,7 +556,23 @@ export function structureFacts(all, { aliases = {}, lines = LARGE_LINES } = {}) 
       .sort((a, b) => b.lines - a.lines),
     cycles,
     unused: code
-      .filter((f) => importedBy.get(f.rel) === 0 && !ENTRY.test(f.rel))
+      .filter(
+        (f) =>
+          importedBy.get(f.rel) === 0 &&
+          !ENTRY.test(f.rel) &&
+          !loaded.has(f.rel) &&
+          !byTests.has(f.rel),
+      )
+      .map((f) => f.rel)
+      .sort(),
+    testsOnly: code
+      .filter(
+        (f) =>
+          importedBy.get(f.rel) === 0 &&
+          !ENTRY.test(f.rel) &&
+          !loaded.has(f.rel) &&
+          byTests.has(f.rel),
+      )
       .map((f) => f.rel)
       .sort(),
     env: files

@@ -56,7 +56,7 @@ Write `.claude/code-kit.draft.json`. Follow `${CLAUDE_PLUGIN_ROOT}/README.md` â€
   - `denyPackages`: packages forbidden for that layer, for example `node:*` or a vendor SDK outside its adapter.
   - `label` (optional): what the layer delivers, in a few words ("API contract", "Data", "Service"), when its name doesn't say it.
   - Also add `importAliases` for path aliases in `tsconfig` `paths` that the graph can't see. Workspace package names are found automatically.
-  - The import check reads JavaScript and TypeScript. For another language, record the layers anyway (agents and spec-check use them), and say the import check doesn't cover that language yet.
+  - The import check reads JavaScript, TypeScript and Python. For another language, record the layers anyway (agents and spec-check use them), and say the import check doesn't cover that language yet.
 - **`lanes`:** one per documented or discovered ownership area. Each needs:
   - `agent`: a kebab-case agent name, for example `api-engineer`;
   - `paths` and `exclude`: every path must have exactly one owner.
@@ -152,7 +152,7 @@ Show the person:
 Once they approve (with any changes):
 
 1. Rename the draft to `.claude/code-kit.json`. From then on, every hook enforces it.
-2. If there are existing violations, run `baseline --write`. This writes `.claude/code-kit.baseline.json`.
+2. Run `baseline --write`, even with no violations. This writes `.claude/code-kit.baseline.json`: the existing violations, and the languages whose imports were read, so each is held to the rules from now on.
 3. If the project had local hooks in `.claude/settings.json` that the kit replaces, remove those hook entries and the local hook files. Keep the `permissions` block.
 4. Add `.claude/approvals/`, `.claude/state/` and `.claude/code-kit.draft.json` to `.gitignore`. Add `.claude/approval-log.jsonl merge=union` to `.gitattributes`: when lanes and the lead both log changes, merging keeps every entry instead of conflicting.
 5. Apply each active adapter's `setup` lines (ignore files, merge drivers, the CLAUDE.md note), and say which you applied.

@@ -4370,7 +4370,11 @@ test('CONF-7 to CONF-9 the structure measured, adopted layers, splits and moves'
   );
   assert.deepEqual(facts.cycles, [['src/a.ts', 'src/b.ts']]);
   assert.deepEqual(facts.large, [{ file: 'src/big.py', lines: 12 }]);
-  assert.deepEqual(facts.unused, ['src/c.ts', 'src/config.ts'], 'entry points are left out');
+  assert.deepEqual(
+    facts.unused,
+    ['src/big.py', 'src/c.ts', 'src/config.ts'],
+    'entry points are left out',
+  );
   assert.deepEqual(facts.env, [{ file: 'src/b.ts', lines: [2] }]);
   assert.equal(factBreaches(facts, 'cycles').length, 2);
   assert.match(factBreaches(facts, 'large')[0].breach, /^12 lines, over 10/);
@@ -4448,4 +4452,66 @@ test('CONF-7 to CONF-9 the structure measured, adopted layers, splits and moves'
     'layers',
     'the layer rules come first',
   );
+});
+
+test('Python imports: read past strings and comments, resolved, and adopted once', async () => {
+  const { importsIn, pythonIndex, pythonTarget, importsOf } =
+    await import('../hooks/lib/layers.mjs');
+  const { newProblems, languagesOf } = await import('../hooks/lib/baseline.mjs');
+  const found = importsIn(
+    [
+      '"""import fake"""',
+      'from __future__ import annotations',
+      'import os, pkg.ai as ai',
+      'from typing import TYPE_CHECKING',
+      'if TYPE_CHECKING:',
+      '    from app.models import User',
+      'from . import helpers',
+      'from ..services.billing import (',
+      '    charge,',
+      ')',
+      "x = 'from evil import x'  # import nope",
+    ].join('\n'),
+    'svc/app/routers/a.py',
+  );
+  const specs = found.map((i) => i.spec);
+  assert.ok(specs.includes('os') && specs.includes('pkg.ai') && specs.includes('.helpers'));
+  assert.ok(specs.includes('..services.billing'));
+  assert.ok(!specs.some((s) => /fake|evil|nope|__future__/.test(s)), specs.join());
+  assert.equal(found.find((i) => i.spec === 'app.models').typeOnly, true);
+  assert.equal(found.find((i) => i.spec === '..services.billing.charge').optional, true);
+  assert.deepEqual(
+    importsIn("import type { A } from './a';\nimport { b } from './b';\n").map((i) => i.typeOnly),
+    [true, false],
+    "TypeScript's import type",
+  );
+  assert.deepEqual(importsOf("import { b } from './b';\n"), ['./b']);
+
+  const index = pythonIndex([
+    'svc/app/__init__.py',
+    'svc/app/models/__init__.py',
+    'svc/app/routers/a.py',
+    'svc/app/routers/helpers.py',
+    'svc/app/services/billing.py',
+    'libs/core/src/pkg/__init__.py',
+    'libs/core/src/pkg/ai/__init__.py',
+  ]);
+  const at = (spec) => pythonTarget(spec, 'svc/app/routers/a.py', index);
+  assert.equal(at('app.models'), 'svc/app/models/__init__.py', 'from the folder a service runs in');
+  assert.equal(
+    at('pkg.ai'),
+    'libs/core/src/pkg/ai/__init__.py',
+    'a src layout, by its top package',
+  );
+  assert.equal(at('.helpers'), 'svc/app/routers/helpers.py');
+  assert.equal(at('..services.billing'), 'svc/app/services/billing.py');
+  assert.equal(at('.missing'), '', 'a relative name that is no module');
+  assert.equal(at('os'), null, 'a package');
+
+  assert.deepEqual(languagesOf({ layers: {} }), ['js'], 'a baseline taken before Python was read');
+  assert.deepEqual(languagesOf(null), ['js']);
+  const before = { layers: {}, languages: ['js'] };
+  assert.deepEqual(newProblems('a.py', ['x'], before), [], 'Python not held yet');
+  assert.deepEqual(newProblems('a.ts', ['x'], before), ['x']);
+  assert.deepEqual(newProblems('a.py', ['x'], { layers: {}, languages: ['js', 'py'] }), ['x']);
 });

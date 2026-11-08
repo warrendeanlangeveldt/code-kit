@@ -5,7 +5,15 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { join, posix } from 'node:path';
 import { matchesAny } from './glob.mjs';
-import { CODE, importsOf, layerOf, targetOf } from './layers.mjs';
+import {
+  importsOf,
+  languageOf,
+  layerOf,
+  PYTHON,
+  pythonIndex,
+  pythonTarget,
+  targetOf,
+} from './layers.mjs';
 import { isTestFile } from './testfiles.mjs';
 
 const git = (root, ...args) => {
@@ -22,7 +30,7 @@ const git = (root, ...args) => {
 
 /** Files that are the build's own code: not the plan, the specs, or the tools' state. */
 const KIT = /^(\.claude|\.ctx|\.github)\//;
-const isCode = (rel) => CODE.test(rel) && !KIT.test(rel);
+const isCode = (rel) => Boolean(languageOf(rel)) && !KIT.test(rel);
 
 /**
  * Every story's files from one pass over the history: { id: Set of files }, from the commits on any
@@ -99,8 +107,17 @@ const EXTENSIONS = [
   '/index.js',
 ];
 
+// Each file set's Python index, built once.
+const indexes = new WeakMap();
+
 /** The file in `files` an import specifier in `rel` points at, or null. */
 function resolveIn(spec, rel, aliases, files) {
+  if (PYTHON.test(rel)) {
+    if (!indexes.has(files))
+      indexes.set(files, pythonIndex([...files].filter((f) => PYTHON.test(f))));
+    const found = pythonTarget(spec, rel, indexes.get(files));
+    return found && files.has(found) ? found : null;
+  }
   const target = targetOf(spec, rel, aliases);
   if (!target) return null;
   // `./x.js` in TypeScript source names `./x.ts`.
@@ -145,7 +162,7 @@ export function storyMap(root, story, config, from) {
     }
     const imports = [
       ...new Set(
-        importsOf(source)
+        importsOf(source, rel)
           .map((spec) => resolveIn(spec, rel, aliases, set))
           .filter((t) => t && t !== rel),
       ),
@@ -236,7 +253,7 @@ export function projectMap(root, config, tracked, { depth = 3, most = 60 } = {})
     } catch {
       // unreadable: no imports
     }
-    for (const spec of importsOf(source)) {
+    for (const spec of importsOf(source, rel)) {
       const target = resolveIn(spec, rel, aliases, set);
       if (target && folderOf(target) !== path) node.imports.add(folderOf(target));
     }

@@ -22,6 +22,7 @@ import { ciFindings } from './ci.mjs';
 import { costReport, infraFiles, money } from './costs.mjs';
 import { loadBaseline } from './baseline.mjs';
 import { LAYER_RULES, conformance } from './conform.mjs';
+import { layerOf, pythonFiles } from './layers.mjs';
 import { projectStandards } from './standards.mjs';
 import { storyModels } from './dispatches.mjs';
 import { pickPerLane } from './schedule.mjs';
@@ -349,6 +350,15 @@ export function nextStep(root, base) {
     attention.push(
       `The plan's status lines are out of date for ${status.drift.map((d) => d.story).join(', ')}.`,
     );
+  // The layer rules read Python now: a baseline taken before has its Python violations to record.
+  const { languages } = loadBaseline(root);
+  if (languages && !languages.includes('py') && config.layers.length) {
+    const held = [...pythonFiles(root).files].filter((f) => layerOf(f, config.layers)).length;
+    if (held)
+      attention.push(
+        `code-kit now reads Python imports for the layer rules, and ${held} Python file${held === 1 ? ' is' : 's are'} in a layer, but no baseline records their violations yet (one taken before covers JavaScript and TypeScript alone), so the rules don't hold them. On a lead branch, run \`code-kit baseline --write\` to record their violations as they are, and commit the baseline: from then on, new ones are refused.`,
+      );
+  }
   // Spec 30: existing code against the standards: none yet, or breaches no refactor story covers.
   attention.push(...conformAttention(root, config, plan ? readStories(root, plan) : []));
 

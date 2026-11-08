@@ -11658,6 +11658,173 @@ else process.exit(1);
     m.git('checkout', '-q', '-f', 'main');
   }
 
+  // --- Python imports: the layer rules, adopted once by the baseline, and the measure -------------
+  {
+    const p = newRepo();
+    cleanups.push(p.dir);
+    const pCli = (...args) =>
+      spawnSync('node', [kitCli, ...args], {
+        cwd: p.dir,
+        encoding: 'utf8',
+        env: { ...process.env, CLAUDE_PROJECT_DIR: p.dir },
+      });
+    const pWrite = (rel, content) =>
+      spawnSync('node', [join(hooks, 'guard-paths.mjs')], {
+        input: JSON.stringify({
+          cwd: p.dir,
+          tool_name: 'Write',
+          tool_input: { file_path: join(p.dir, rel), content },
+        }),
+        env: { ...process.env, CLAUDE_PROJECT_DIR: p.dir },
+        encoding: 'utf8',
+      });
+    const put = (rel, text) => {
+      mkdirSync(join(p.dir, dirname(rel)), { recursive: true });
+      writeFileSync(join(p.dir, rel), text);
+    };
+    const cfg = JSON.parse(fixture);
+    cfg.layers.find((l) => l.name === 'schemas').denyPackages = ['sqlalchemy'];
+    put('.claude/code-kit.json', JSON.stringify(cfg, null, 2));
+    put('packages/domain/src/domain/__init__.py', '');
+    put('packages/domain/src/domain/rules.py', 'RULE = 1\n');
+    put('packages/schemas/src/schemas/__init__.py', '');
+    put('packages/schemas/src/schemas/legacy.py', 'from domain.rules import RULE\n\nA = RULE\n');
+    // A baseline taken before code-kit read Python: no languages in it.
+    put('.claude/code-kit.baseline.json', '{ "layers": {} }\n');
+    put(
+      'docs/spec/plan.md',
+      '# Plan\n\n## Launch\n\n### ST-1 Schemas\n\n**Lane:** lead\n**Requirements:** none\n**Status:** done\n',
+    );
+    p.git('add', '-A');
+    p.git('commit', '-q', '-m', 'the code as it is');
+
+    expect(
+      'a Python import into another layer is read as a violation',
+      truth(
+        /packages\/schemas\/src\/schemas\/legacy\.py \(schemas\) imports domain\.rules \(domain\)/.test(
+          pCli('baseline').stdout,
+        ),
+        pCli('baseline').stdout,
+      ),
+      0,
+    );
+    expect(
+      'a baseline taken before code-kit read Python doesn’t hold Python to the rules yet',
+      pWrite('packages/schemas/src/schemas/fresh.py', 'from domain import rules\n'),
+      0,
+    );
+    expect(
+      '… and next tells the lead to record their violations',
+      truth(
+        JSON.parse(pCli('next', '--json').stdout).attention.some((a) =>
+          a.includes('code-kit now reads Python imports'),
+        ),
+      ),
+      0,
+    );
+
+    // The branch that takes the baseline for Python records its violations, the once.
+    p.git('checkout', '-q', '-b', 'lead/python-layers');
+    const taken = pCli('baseline', '--write');
+    const recorded = JSON.parse(
+      readFileSync(join(p.dir, '.claude/code-kit.baseline.json'), 'utf8'),
+    );
+    expect(
+      'baseline --write records the Python violations, and that Python is read',
+      truth(
+        taken.status === 0 &&
+          recorded.languages.includes('py') &&
+          recorded.layers['packages/schemas/src/schemas/legacy.py']?.length === 1,
+        taken.stdout + taken.stderr + JSON.stringify(recorded),
+      ),
+      0,
+    );
+    p.git('add', '-A');
+    p.git('commit', '-q', '-m', 'the baseline, Python included');
+    const pVerified = pCli('verify', '--base', 'main', '--no-checks');
+    expect(
+      '… and verify accepts the branch that takes it',
+      truth(!/gained/.test(pVerified.stdout), pVerified.stdout),
+      0,
+    );
+
+    // From then on, new Python violations are refused before they're written.
+    expect(
+      'a Python write importing another layer is refused',
+      pWrite('packages/schemas/src/schemas/fresh.py', 'from domain import rules\n'),
+      2,
+      'fresh.py (schemas) imports domain (domain)',
+    );
+    expect(
+      'a package the layer may not use is refused',
+      pWrite('packages/schemas/src/schemas/db.py', 'import sqlalchemy.orm as orm\n'),
+      2,
+      'may not import the package sqlalchemy',
+    );
+    expect(
+      'an import named only in a docstring or comment isn’t one',
+      pWrite(
+        'packages/schemas/src/schemas/doc.py',
+        '"""Use it as:\nfrom domain import rules\n"""\n# import domain\nX = "import domain"\n',
+      ),
+      0,
+    );
+    expect(
+      'a relative import within the layer goes through',
+      pWrite(
+        'packages/schemas/src/schemas/near.py',
+        'from . import legacy\nfrom .legacy import A\n',
+      ),
+      0,
+    );
+    expect(
+      'an old violation stays excused when its file is edited',
+      pWrite(
+        'packages/schemas/src/schemas/legacy.py',
+        'from domain.rules import RULE\n\nA = RULE\nB = 2\n',
+      ),
+      0,
+    );
+
+    // The measure reads Python: cycles, type-only imports, modules loaded by name, and tests' own.
+    put('packages/schemas/src/schemas/a.py', 'from schemas import b\n');
+    put(
+      'packages/schemas/src/schemas/b.py',
+      'from typing import TYPE_CHECKING\nfrom schemas import a\nif TYPE_CHECKING:\n    from schemas import typed\n',
+    );
+    put('packages/schemas/src/schemas/typed.py', 'from schemas import b\n');
+    put('packages/schemas/src/schemas/registry.py', 'JOBS = ["schemas.job"]\n');
+    put('packages/schemas/src/schemas/job.py', 'def run():\n    return 1\n');
+    put('packages/schemas/src/schemas/helper.py', 'H = 1\n');
+    put('packages/schemas/tests/test_helper.py', 'from schemas.helper import H\n');
+    put('packages/schemas/src/schemas/orphan.py', 'O = 1\n');
+    p.git('add', '-A');
+    const pyFacts = JSON.parse(pCli('conform', 'measure', '--json').stdout);
+    expect(
+      'measure finds a Python import cycle, not one made by a type-only import',
+      truth(
+        pyFacts.cycles.some(
+          (c) => c.join() === 'packages/schemas/src/schemas/a.py,packages/schemas/src/schemas/b.py',
+        ) && !pyFacts.cycles.some((c) => c.includes('packages/schemas/src/schemas/typed.py')),
+        JSON.stringify(pyFacts.cycles),
+      ),
+      0,
+    );
+    expect(
+      'measure counts a module named in a string as loaded, and tells test-only modules from dead ones',
+      truth(
+        pyFacts.unused.includes('packages/schemas/src/schemas/orphan.py') &&
+          !pyFacts.unused.includes('packages/schemas/src/schemas/job.py') &&
+          !pyFacts.unused.includes('packages/schemas/src/schemas/typed.py') &&
+          !pyFacts.unused.includes('packages/schemas/src/schemas/helper.py') &&
+          pyFacts.testsOnly.includes('packages/schemas/src/schemas/helper.py'),
+        JSON.stringify({ unused: pyFacts.unused, testsOnly: pyFacts.testsOnly }),
+      ),
+      0,
+    );
+    p.git('checkout', '-q', '-f', 'main');
+  }
+
   // --- HUBR-1 to HUBR-8: a hosted team provider, through its adapter in code-kit -------------------
   {
     const root = mkdtempSync(join(tmpdir(), 'ck-hub-'));

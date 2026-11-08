@@ -87,6 +87,7 @@ import {
   conformProblems,
   conformance,
   factBreaches,
+  namedModules,
   nextStoryNumber,
   refactorPathway,
   reshapeLeft,
@@ -111,7 +112,17 @@ import {
   withApprovalSetting,
 } from '../hooks/lib/config.mjs';
 import { diffConfigs, ownershipMoves } from '../hooks/lib/diff.mjs';
-import { CODE, importsOf, layerOf, layerProblems, targetOf } from '../hooks/lib/layers.mjs';
+import {
+  LANGUAGES,
+  PYTHON,
+  importsOf,
+  languageOf,
+  layerOf,
+  layerProblems,
+  pythonIndex,
+  pythonTarget,
+  targetOf,
+} from '../hooks/lib/layers.mjs';
 import {
   ADAPTERS,
   activeAdapters,
@@ -505,8 +516,8 @@ function diff() {
 /** Every layer violation in tracked code, by file. */
 function violations(config) {
   const found = {};
-  for (const rel of tracked().filter((f) => CODE.test(f) && existsSync(f))) {
-    const problems = layerProblems(rel, read(rel), config);
+  for (const rel of tracked().filter((f) => languageOf(f) && existsSync(f))) {
+    const problems = layerProblems(rel, read(rel), config, { root: '.' });
     if (problems.length) found[rel] = problems;
   }
   return found;
@@ -515,7 +526,7 @@ function violations(config) {
 /** What to record: everything at adoption; afterwards only what was already recorded (it only shrinks). */
 function toRecord(found, config) {
   if (!existsSync(BASELINE_FILE)) return { keep: found, refused: [] };
-  const before = loadBaseline('.').layers;
+  const { layers: before, languages } = loadBaseline('.');
   // CONF-8: the layers this branch adopts (new, or with a changed rule) may record their violations.
   const from = findBase(config, false);
   let baseLayers = null;
@@ -537,8 +548,10 @@ function toRecord(found, config) {
   const keep = {};
   const refused = [];
   for (const [rel, problems] of Object.entries(found)) {
+    // A language the baseline wasn't taken for has its violations recorded now, the once.
+    const newLanguage = !languages.includes(languageOf(rel));
     const known = problems.filter(
-      (p) => (before[rel] ?? []).includes(p) || adoptedProblem(p, adopted),
+      (p) => newLanguage || (before[rel] ?? []).includes(p) || adoptedProblem(p, adopted),
     );
     if (known.length) keep[rel] = known;
     refused.push(...problems.filter((p) => !known.includes(p)));
@@ -555,7 +568,7 @@ function baseline() {
   if (!writeBaseline) return;
   const { keep, refused } = toRecord(found, config);
   // The standards' breaches (spec 30) stay as conform keeps them.
-  saveBaseline('.', { layers: keep });
+  saveBaseline('.', { layers: keep, languages: LANGUAGES });
   out(
     `Recorded ${Object.values(keep).flat().length} in ${BASELINE_FILE}: these don't block; new ones do.`,
   );
@@ -587,9 +600,12 @@ function graph() {
   const folderOf = (p) => (stems.has(p) || files.includes(p) ? posix.dirname(p) : p);
   const folder = (p) => folderOf(p).split('/').slice(0, depth).join('/');
   const edges = new Map();
-  for (const rel of files.filter((f) => CODE.test(f) && existsSync(f))) {
-    for (const spec of importsOf(read(rel))) {
-      const target = targetOf(spec, rel, known);
+  const python = pythonIndex(files.filter((f) => PYTHON.test(f)));
+  for (const rel of files.filter((f) => languageOf(f) && existsSync(f))) {
+    for (const spec of importsOf(read(rel), rel)) {
+      const target = PYTHON.test(rel)
+        ? pythonTarget(spec, rel, python)
+        : targetOf(spec, rel, known);
       const real =
         target &&
         (stems.has(target) || files.some((f) => f === target || f.startsWith(`${target}/`)));
@@ -3360,9 +3376,22 @@ function conformCommand() {
       tracked().filter((f) => /(^|\/)[tj]sconfig(\.[^/]+)?\.json$/.test(f)),
       (f) => (existsSync(f) ? read(f) : null),
     );
+    // Python: every tracked module resolves (tests too), and a pyproject's scripts are loaded by name.
+    const python = pythonIndex(tracked().filter((f) => PYTHON.test(f)));
+    // …and so are the modules a project's settings name: Celery's includes, plugin lists, workflows.
+    const entries = tracked()
+      .filter((f) => /\.(toml|cfg|ini|ya?ml)$/.test(f) && existsSync(f))
+      .flatMap((f) => namedModules(read(f)).map((name) => pythonTarget(name, f, python)))
+      .filter(Boolean);
+    const tests = tracked()
+      .filter((f) => SOURCE.test(f) && isTestFile(f, config) && existsSync(f))
+      .map((rel) => ({ rel, source: read(rel) }));
     return structureFacts(files, {
       aliases: (rel) => ({ ...known, ...own(rel) }),
       lines: limit,
+      python,
+      entries,
+      tests,
     });
   };
   if (sub === 'measure') {
@@ -3386,6 +3415,9 @@ function conformCommand() {
     );
     out(
       `Imported by nothing (entry points left out): ${facts.unused.length}${facts.unused.length ? `: ${few(facts.unused)}` : ''}`,
+    );
+    out(
+      `Imported only by tests: ${facts.testsOnly.length}${facts.testsOnly.length ? `: ${few(facts.testsOnly)}` : ''}`,
     );
     out(
       `Reading the environment themselves: ${facts.env.length}${facts.env.length ? `: ${few(facts.env.map((f) => f.file))}` : ''}`,

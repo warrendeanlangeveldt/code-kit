@@ -99,7 +99,11 @@ const baseline = loadBaseline(project);
 const layers = changed
   .filter((f) => existsSync(join(root, f)))
   .flatMap((f) =>
-    newProblems(f, layerProblems(f, readFileSync(join(root, f), 'utf8'), config), baseline),
+    newProblems(
+      f,
+      layerProblems(f, readFileSync(join(root, f), 'utf8'), config, { root }),
+      baseline,
+    ),
   );
 if (layers.length)
   fail(

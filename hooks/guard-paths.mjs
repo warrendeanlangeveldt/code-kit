@@ -90,10 +90,12 @@ const file = join(root, rel);
 const before = existsSync(file) ? readFileSync(file, 'utf8') : null;
 const after = textAfter(before);
 if (after !== null) {
-  const existing = new Set(before === null ? [] : layerProblems(rel, before, config));
-  const added = newProblems(rel, layerProblems(rel, after, config), loadBaseline(project)).filter(
-    (p) => !existing.has(p),
-  );
+  const existing = new Set(before === null ? [] : layerProblems(rel, before, config, { root }));
+  const added = newProblems(
+    rel,
+    layerProblems(rel, after, config, { root }),
+    loadBaseline(project),
+  ).filter((p) => !existing.has(p));
   if (added.length)
     block(
       `Blocked: this edit would break the layer rules (.claude/code-kit.json › layers):\n  ${added.join('\n  ')}\nDepend only on the layers listed, or ask the lead to change the rule.${noteFor(root, config, added.map(brokenLayerRule))}`,
