@@ -841,10 +841,12 @@ const BEFORE_COMMIT = new RegExp(
 // Setting shell variables (`f=docs/x.md`, `export MSG="…"`) writes no file, unless a value runs a
 // command. What a later `git add "$f"` stages can't be read, so it counts as every changed file.
 const ASSIGNS_ONLY = /^(?:export\s+)?[A-Za-z_]\w*=\S*(?:\s+[A-Za-z_]\w*=\S*)*$/;
-// Nor does setting the shell's own options (`set -euo pipefail`, `set +x`).
+// Nor does setting the shell's own options (`set -euo pipefail`, `set +x`), or unsetting variables.
 const SHELL_OPTIONS = /^set(?:\s+[-+][a-zA-Z]+(?:\s+[a-z]+)?)+\s*$/;
+const UNSETS = /^unset(?:\s+-[vn])?(?:\s+[A-Za-z_]\w*)+\s*$/;
 const assignsOnly = (c) =>
-  (ASSIGNS_ONLY.test(c.code) || SHELL_OPTIONS.test(c.code)) && !/`|\$\(|<\(|[<>]/.test(c.text);
+  (ASSIGNS_ONLY.test(c.code) || SHELL_OPTIONS.test(c.code) || UNSETS.test(c.code)) &&
+  !/`|\$\(|<\(|[<>]/.test(c.text);
 // A tool's command that writes only the tool's own records (an adapter's `shell.records`), which any
 // actor may write and no check covers, with no redirect of its own.
 const recordsOnly = (c) =>

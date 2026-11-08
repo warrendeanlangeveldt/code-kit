@@ -1027,8 +1027,16 @@ try {
     'set -o pipefail && git add notes.txt && git commit -m x',
     'set -euo pipefail; git commit -m x',
     'set +x && git commit -m x',
+    'unset SOME_API_KEY && git add notes.txt && git commit -m x',
+    'unset -v A B; git commit -m x',
   ])
     expect(`a commit after the shell's options are set passes: ${command}`, bash(command), 0);
+  expect(
+    'and an unset that redirects still counts',
+    bash('unset A > notes.txt && git commit -m x'),
+    2,
+    'this commit runs after',
+  );
   expect(
     'but one that redirects still counts',
     bash('set -o pipefail > notes.txt && git commit -m x'),
