@@ -4,6 +4,7 @@ What changed in each release of code-kit, newest first. Versions follow the plug
 
 ## Unreleased
 
+- **A pause from another tool pauses the loop.** `code-kit loop pause` recorded a pause that other tools read, but a session already running the loop only read it when it started, so it carried on prompting. It now reads the recorded pause as it reads the project, and stops taking new steps within seconds; the band says the loop is paused, and Resume stays yours.
 - **`unset`, then a commit.** Unsetting a variable (`unset NAME`, `unset -v A B`) before a commit in the same command was refused as a command that may write files. It writes nothing, like setting one, so it passes now; with a redirect it still counts.
 - **Reading the approval log beside a heredoc.** `python3 - <<'EOF' … EOF` and then `grep -c … .claude/approval-log.jsonl` in the same command was refused as a possible write to the log, though `python3 -c '…'` before the same read passed: any heredoc in the line made code-kit judge the whole line as one command. A heredoc whose body doesn't name the log is now judged like any other command that doesn't, so the read passes; one whose body names it is still judged whole.
 - **git's read-only plumbing before a commit.** `git check-ignore -q <path> && git commit …` was refused as a write the commit's checks can't see. `check-ignore`, `check-attr`, `ls-tree`, `rev-list`, `merge-base`, `describe`, `name-rev`, `show-ref`, `for-each-ref` and `cherry` only read, and now pass like `git status` and `git log`; redirected into the checkout, they still count.
