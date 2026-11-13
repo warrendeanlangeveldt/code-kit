@@ -5,26 +5,34 @@
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { breachesOf } from './conform.mjs';
+import { LANGUAGES, languageOf } from './layers.mjs';
 
 export const BASELINE_FILE = '.claude/code-kit.baseline.json';
 
 /**
- * { layers: { file: [problem, ...] }, standards: { id: { file: [breach, ...] } } }; empty when there is
- * no baseline.
+ * The languages a baseline's layer violations were taken for. One taken before code-kit read Python, or
+ * none at all (a project set up then), was taken for JavaScript and TypeScript alone: a language it
+ * wasn't taken for is held to the rules once `code-kit baseline --write` records its violations.
+ */
+export const languagesOf = (raw) => (Array.isArray(raw?.languages) ? raw.languages : ['js']);
+
+/**
+ * { layers: { file: [problem, ...] }, standards: { id: { file: [breach, ...] } }, languages }; empty
+ * when there is no baseline.
  */
 export function loadBaseline(projectDir) {
   const file = join(projectDir, BASELINE_FILE);
-  if (!existsSync(file)) return { layers: {}, standards: {} };
+  if (!existsSync(file)) return { layers: {}, standards: {}, languages: languagesOf(null) };
   try {
     const raw = JSON.parse(readFileSync(file, 'utf8'));
-    return { layers: raw.layers ?? {}, standards: breachesOf(raw) };
+    return { layers: raw.layers ?? {}, standards: breachesOf(raw), languages: languagesOf(raw) };
   } catch {
-    return { layers: {}, standards: {} }; // an unreadable baseline excuses nothing
+    return { layers: {}, standards: {}, languages: LANGUAGES }; // an unreadable baseline excuses nothing
   }
 }
 
 /** The baseline written back with what changed; what it held otherwise is kept as it was. */
-export function writeBaseline(projectDir, { layers, standards }) {
+export function writeBaseline(projectDir, { layers, standards, languages }) {
   const file = join(projectDir, BASELINE_FILE);
   let raw = {};
   try {
@@ -34,6 +42,7 @@ export function writeBaseline(projectDir, { layers, standards }) {
   }
   const body = { ...raw, recordedAt: new Date().toISOString() };
   if (layers) body.layers = layers;
+  if (languages) body.languages = languages;
   if (standards) {
     if (Object.keys(standards).length) body.standards = standards;
     else delete body.standards;
@@ -69,6 +78,12 @@ export function baselineShrinks(beforeText, afterText) {
   return true;
 }
 
-/** The problems in `rel` that the baseline doesn't already record. */
+/**
+ * The problems in `rel` that the baseline doesn't already record. A file in a language the baseline
+ * wasn't taken for has none yet: its old violations were never recorded, so the rules hold it once
+ * `code-kit baseline --write` records them.
+ */
 export const newProblems = (rel, problems, baseline) =>
-  problems.filter((p) => !(baseline.layers[rel] ?? []).includes(p));
+  !(baseline.languages ?? LANGUAGES).includes(languageOf(rel))
+    ? []
+    : problems.filter((p) => !(baseline.layers[rel] ?? []).includes(p));

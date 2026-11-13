@@ -102,7 +102,7 @@ A branch that changes a file the base's baseline records breaking a standard fix
 
 ### CONF-7 The structure measured
 
-`code-kit conform measure [--json] [--lines N]` measures the tracked source, tests left out: files over N lines (500 by default), import cycles among the JavaScript and TypeScript files, those files nothing imports (entry points such as pages, routes, scripts and configuration left out), and files that read the environment outside the configuration's own files. The skill suggests the structural standards from it: one responsibility per module, service providers, no import cycles, no dead code, beside one place for each rule and modules by feature, which the audit judges. `code-kit conform record <standard> --measured <large|cycles|unused|env>` records one kind as the standard's breaches, on the branch that adopts it (CONF-2).
+`code-kit conform measure [--json] [--lines N]` measures the tracked source, tests left out: files over N lines (500 by default), import cycles among the JavaScript, TypeScript and Python files (a type-only import makes none), those files nothing imports (entry points such as pages, routes, scripts, `__main__` and Celery modules left out, and a Python module a string or a project's settings name counted as loaded), those only tests import, and files that read the environment outside the configuration's own files. The skill suggests the structural standards from it: one responsibility per module, service providers, no import cycles, no dead code, beside one place for each rule and modules by feature, which the audit judges. `code-kit conform record <standard> --measured <large|cycles|unused|env>` records one kind as the standard's breaches, on the branch that adopts it (CONF-2).
 
 **Acceptance**
 

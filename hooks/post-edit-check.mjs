@@ -27,7 +27,7 @@ if (root === projectWorktrees(project)[0]) noteWrite(project, input.session_id, 
 noteEditing(project, input.session_id, rel);
 
 // Violations recorded in the baseline (brownfield code as it was adopted) don't block; new ones do.
-const layers = layerProblems(rel, readFileSync(join(root, rel), 'utf8'), config);
+const layers = layerProblems(rel, readFileSync(join(root, rel), 'utf8'), config, { root });
 const problems = newProblems(rel, layers, loadBaseline(project));
 // STD-4: a layer rule a project standard names says which standard it is.
 const note = problems.length ? noteFor(root, config, problems.map(brokenLayerRule)) : '';
