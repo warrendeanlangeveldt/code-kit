@@ -2,8 +2,10 @@
 
 What changed in each release of code-kit, newest first. Versions follow the plugin manifest and the npm package `@warren-dean/code-kit`. Each release is also on [GitHub Releases](https://github.com/warrendeanlangeveldt/code-kit/releases).
 
-## Unreleased
+## 0.35.0 (2026-11-13)
 
+- **Reading the approval log beside a helper function.** A command that defined a short name for code-kit's command line (`ck() { node …/code-kit.mjs "$@"; }`) and also read `.claude/approval-log.jsonl` with `tail` or `grep` was refused as a possible write to the log, though the read never called the function. A function now stops the read only when the read calls it. One that shadows a reader, writes the log, or defines an alias or exports a variable in its body is still refused.
+- **Lane agents change files with Edit and Write.** In its own worktree, a lane agent's shell command is refused when Claude Code can't prove it stays inside that worktree, and writes through a heredoc (`cat > file <<EOF`, `python3 - <<EOF`) were the usual case, each costing the lane a step. The lane instructions now say to change files with the Edit and Write tools and keep the shell for running things. Projects are asked once to bring their instructions up to date.
 - **A pause from another tool pauses the loop.** `code-kit loop pause` recorded a pause that other tools read, but a session already running the loop only read it when it started, so it carried on prompting. It now reads the recorded pause as it reads the project, and stops taking new steps within seconds; the band says the loop is paused, and Resume stays yours.
 - **`unset`, then a commit.** Unsetting a variable (`unset NAME`, `unset -v A B`) before a commit in the same command was refused as a command that may write files. It writes nothing, like setting one, so it passes now; with a redirect it still counts.
 - **Reading the approval log beside a heredoc.** `python3 - <<'EOF' … EOF` and then `grep -c … .claude/approval-log.jsonl` in the same command was refused as a possible write to the log, though `python3 -c '…'` before the same read passed: any heredoc in the line made code-kit judge the whole line as one command. A heredoc whose body doesn't name the log is now judged like any other command that doesn't, so the read passes; one whose body names it is still judged whole.
