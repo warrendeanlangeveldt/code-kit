@@ -2457,6 +2457,25 @@ test('LOOP-6 the pause is recorded for other tools, and a new session starts wit
   ]);
 });
 
+test('LOOP-6 a pause another tool records in the project pauses this session’s loop too', async ($, on) => {
+  const w = project();
+  w.next = { step: 'review', args: 'ST-4', then: [] };
+  const clock = await start($, on, w);
+  await leadTurn($);
+  await settle(clock);
+  expect(w.prompts).toEqual(['Review ST-4: run /code-kit:review ST-4.']);
+  // Another tool runs `code-kit loop pause` here; the session reads it as it next reads the project.
+  w.loopPaused = true;
+  await clock.advance(60_000);
+  w.next = { step: 'dispatch', args: 'ST-9', then: [] };
+  await leadTurn($, 't-2');
+  await settle(clock);
+  expect(w.prompts).toEqual(['Review ST-4: run /code-kit:review ST-4.']);
+  const ui = await bandUi($);
+  expect(await ui.find({ type: 'Text', text: 'loop paused' })).toBeDefined();
+  await ui.unmount();
+});
+
 // It steps the clock through tens of minutes of the mod's 2-second refresh, each tick a real round of
 // stubbed CLI runs: about 1.5 to 3 seconds locally, and more on a shared CI runner.
 test(

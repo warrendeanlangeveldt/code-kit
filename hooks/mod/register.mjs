@@ -421,12 +421,18 @@ export function register(on) {
           boardSynced = at;
           $.process.run(['node', cli, 'team', 'board'], { cwd, timeoutMs: 120000 }).catch(() => {});
         }
+        const recorded = await json('loop', '--session', session).catch(() => null);
         // LOOP-10: while another session runs the loop, whether it still does (its lease lapses as it ends).
         if (!lease.mine) {
-          const recorded = await json('loop', '--session', session).catch(() => null);
           const lead = recorded?.lead ?? null;
           lease.other = lead && lead.session !== session ? lead : null;
           role = recorded?.role ?? role;
+        }
+        // LOOP-6: a pause another tool recorded in the project (`code-kit loop pause`) pauses this loop too.
+        if (recorded?.paused && !loop.paused) {
+          loop.paused = true;
+          loop.proposal = null;
+          $.ui.invalidate('ui.render');
         }
         // SESS-4: a working session's own task, for its band.
         const task =
@@ -686,6 +692,8 @@ export function register(on) {
           // TEAM-7: a live provider (the hub's helper) rewrites the team's state as events arrive.
           await stamp('.claude/state/team.json'),
           await stamp('.claude/state/merge-queue.json'),
+          // LOOP-6: a pause recorded by another tool.
+          await stamp('.claude/state/loop.json'),
           await listing('.claude/approvals'),
           await listing('.claude/state/stop-blocks'),
           [...agentsAtWork(await $.agent.list().catch(() => []))].sort().join(','),
