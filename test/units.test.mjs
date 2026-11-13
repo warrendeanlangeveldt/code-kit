@@ -4232,7 +4232,7 @@ test('ONB-8 the instructions version is raised whenever what they say changes', 
       version: INSTRUCTIONS_VERSION,
       rendered: createHash('sha256').update(rendered).digest('hex'),
     },
-    { version: 13, rendered: '61e60c980d0e4dd6d4214036687aa6ead2a38b7754d76b864ac3ed474f5e617e' },
+    { version: 14, rendered: 'be8dc80aca6cdce21824211bd685bdd952422325938627aba3cd482aacef1402' },
     'The instructions changed: raise INSTRUCTIONS_VERSION in hooks/lib/instructions.mjs, then set this version and hash.',
   );
 });

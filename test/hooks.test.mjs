@@ -624,6 +624,12 @@ try {
     'K=/x/code-kit.mjs S=/tmp/y; git diff main -- .claude/approval-log.jsonl | grep "^+"',
   ])
     expect(`the log may be read beside a variable: ${read}`, bash(read, 'web-engineer'), 0);
+  // So does a helper function the read doesn't call.
+  for (const read of [
+    'git log --oneline -1; ck() { node /x/code-kit.mjs "$@"; }; ck status 2>&1 | grep -i untraced | head -20; tail -3 .claude/approval-log.jsonl | cut -c1-260',
+    'ck() { node "$HOME/x/code-kit.mjs" "$@"; } && git status --short && tail -n 1 .claude/approval-log.jsonl | cut -c1-260 && ck task done; ck who',
+  ])
+    expect(`the log may be read beside a function: ${read}`, bash(read, 'web-engineer'), 0);
   for (const write of [
     'PATH=/tmp/x:$PATH; tail .claude/approval-log.jsonl',
     'path[1]=/tmp/x; tail .claude/approval-log.jsonl',
@@ -654,6 +660,11 @@ try {
     'tail(){ tee "$@"; }; tail .claude/approval-log.jsonl',
     'export PATH=/tmp/x:$PATH; tail .claude/approval-log.jsonl',
     'alias tail=tee; tail .claude/approval-log.jsonl',
+    'function tail { tee "$@"; }; tail .claude/approval-log.jsonl',
+    'w() { cat > "$1"; }; echo x | w .claude/approval-log.jsonl',
+    'ck() { alias tail=tee; }; ck; tail .claude/approval-log.jsonl',
+    'ck() { export PATH=/tmp/x; }; ck && tail .claude/approval-log.jsonl',
+    'ck() { echo x >> .claude/approval-log.jsonl; }; ck',
     "ls; python3 - <<'EOF'\nopen('.claude/approval-log.jsonl', 'a')\nEOF",
     "tail .claude/approval-log.jsonl; python3 - <<'EOF'\nopen('.claude/approval-log.jsonl', 'a')\nEOF",
     'tail .claude/approval-log.jsonl; bash <<EOF\necho x >> .claude/approval-log.jsonl',
