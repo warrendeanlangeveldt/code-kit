@@ -2,8 +2,9 @@
 
 What changed in each release of code-kit, newest first. Versions follow the plugin manifest and the npm package `@warren-dean/code-kit`. Each release is also on [GitHub Releases](https://github.com/warrendeanlangeveldt/code-kit/releases).
 
-## Unreleased
+## 0.37.0 (2026-11-15)
 
+- **The README covers every feature: what it does, how to use it and why.** It was checked against every spec and the code. Added: why streams exist and how to turn them on in a project that started as one, the usage-limit wait, branches merged together, standards, the QA lane, design hand-over, the plan's extra story lines, what a fix's test must show, teams when GitHub can't be reached, vibe's how and why, and every hook. The settings' Approvals section is in `/harness`; there's no Settings tab.
 - **Each stream's lead sees its own stream in the mod.** The panes showed the whole project to every session, so a stream's lead saw the other streams' lanes, stories and milestone as if it ran them. Now the Build panel, the Lanes panel, what's ready and the Trail are the stream's own, each named for it, with a line per other stream (who leads it and what its lanes are on) and one for the shared core lanes. A session that leads nothing offers **Lead `<stream>`** for each stream, and the Code map labels each layer core or its stream's module.
 - **A stream's loop gets its own stream's step.** The mod asked `code-kit next` without naming its session, so in a project built as streams a stream's lead could be prompted with the project's next step, another stream's story among them. It now names the session, and each lead's loop gets only its own stream's work.
 
