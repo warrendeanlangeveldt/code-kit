@@ -6,11 +6,12 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { loadBaseline, newProblems } from './lib/baseline.mjs';
 import { CONFIG_FILE } from './lib/config.mjs';
-import { brokenLayerRule, layerProblems } from './lib/layers.mjs';
+import { brokenLayerRule, layerProblems, targetOf } from './lib/layers.mjs';
+import { recordRefusedImport } from './lib/promote.mjs';
 import { noteFor } from './lib/standards.mjs';
 import { block, start } from './lib/hook.mjs';
 import { teamOf, teamProvider, teamRefusal, whoami } from './lib/team.mjs';
-import { sessionWriteProblem } from './lib/sessions.mjs';
+import { sessionWriteProblem, streamWriteProblem } from './lib/sessions.mjs';
 import { spawnSync } from 'node:child_process';
 import {
   actorFor,
@@ -39,6 +40,16 @@ if (error) {
 
 const problem = writeProblem(actorFor(input, root, config), rel, root, config);
 if (problem) block(`Blocked: ${problem}`);
+
+// STRM-4: a stream's lead writes its own stream's plan and specs, not another stream's.
+const streamed = streamWriteProblem(
+  project,
+  config,
+  actorFor(input, root, config),
+  rel,
+  input.session_id,
+);
+if (streamed) block(`Blocked: ${streamed}`);
 
 // SESS-4, SESS-5: another session's task leases the path, or a working session writes where it shouldn't.
 const shared = sessionWriteProblem({
@@ -94,6 +105,14 @@ if (after !== null) {
   const added = newProblems(rel, layerProblems(rel, after, config), loadBaseline(project)).filter(
     (p) => !existing.has(p),
   );
+  // PROM-1, signal 2: an import of another stream's module asks for a capability core could own.
+  for (const p of added) {
+    const m = p.match(/^(\S+) \([^()]+\) imports (\S+) \([^()]+\); \S+ is the \S+ stream's module/);
+    if (m) {
+      const target = targetOf(m[2], rel, config.importAliases);
+      if (target) recordRefusedImport(project, config, { file: rel, target, spec: m[2] });
+    }
+  }
   if (added.length)
     block(
       `Blocked: this edit would break the layer rules (.claude/code-kit.json › layers):\n  ${added.join('\n  ')}\nDepend only on the layers listed, or ask the lead to change the rule.${noteFor(root, config, added.map(brokenLayerRule))}`,

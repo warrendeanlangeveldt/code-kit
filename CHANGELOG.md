@@ -2,6 +2,12 @@
 
 What changed in each release of code-kit, newest first. Versions follow the plugin manifest and the npm package `@warren-dean/code-kit`. Each release is also on [GitHub Releases](https://github.com/warrendeanlangeveldt/code-kit/releases).
 
+## Unreleased
+
+- **Streams: several product lines in one product.** A product with separate product lines in one repository can now be built by a squad, or a session, per line at once. Declare them as `streams` in the config: each stream has its own lead session (`/code-kit:lead <stream>`), plan file, specs and lanes, and each lead's loop dispatches only its own stream's stories, so two sessions no longer fight over one lead. Layers become a core per technical layer and a module per stream: a module may use core and its own stream's modules, never another stream's, and core uses no module; the hooks refuse both and say to ask for it in core rather than copy it. Core is owned by a platform stream, which the others ask with `code-kit core ask`, or, without one, its lanes are shared and taken in turns. A project without `streams` works as before.
+- **Code that belongs in core is noticed.** With streams, code-kit raises a candidate for core when it sees the same code in two streams' modules (names aside), a refused import of another stream's module, a copy into a module, module code that repeats core, or a requirement another stream's spec already has. `code-kit promote` lists them, the platform's lead decides each with `/code-kit:promote`, and a promotion is a platform story. The review checks what a branch repeats, and `harness.promote.coreClones: "refuse"` makes verify refuse module code that copies core.
+- **Setup asks about product lines.** `/code-kit:spec-design` and `/code-kit:init` ask once whether the product has separate product lines, and only then lay out core and modules; a project that started as one can add streams later, with the code moved in stories.
+
 ## 0.35.0 (2026-11-13)
 
 - **Reading the approval log beside a helper function.** A command that defined a short name for code-kit's command line (`ck() { node …/code-kit.mjs "$@"; }`) and also read `.claude/approval-log.jsonl` with `tail` or `grep` was refused as a possible write to the log, though the read never called the function. A function now stops the read only when the read calls it. One that shadows a reader, writes the log, or defines an alias or exports a variable in its body is still refused.

@@ -12,6 +12,7 @@ import { matchesAny } from './glob.mjs';
 import { CLI, projectWorktrees } from './rules.mjs';
 import { shortSession } from './laneclaims.mjs';
 import { isHandle } from './teamfacts.mjs';
+import { hasStreams, otherStreamsPlan, otherStreamsSpec } from './streams.mjs';
 
 export { shortSession };
 export const SESSIONS_DIR = '.claude/state/sessions';
@@ -100,9 +101,37 @@ export function sessions(root, now = Date.now()) {
     .sort((a, b) => Date.parse(b.started) - Date.parse(a.started));
 }
 
-/** SESS-2: the live lead session, or null. */
-export const leadSession = (root, now = Date.now()) =>
-  sessions(root, now).find((s) => s.live && s.role === 'lead') ?? null;
+const leads = (root, now) => sessions(root, now).filter((s) => s.live && s.role === 'lead');
+
+/**
+ * SESS-2, STRM-2: the live lead session of `stream`, or null: the session leading that stream, or else
+ * one leading with no stream of its own, which leads every stream that has no lead (and the whole project
+ * without streams).
+ */
+export const leadSession = (root, now = Date.now(), stream = null) => {
+  const live = leads(root, now);
+  return (
+    (stream ? live.find((s) => (s.stream ?? null) === stream) : null) ??
+    live.find((s) => !s.stream) ??
+    (stream ? null : (live[0] ?? null))
+  );
+};
+
+/** STRM-2: the live session leading exactly `stream` (null: leading with no stream of its own), or null. */
+const ownLead = (root, now, stream) =>
+  leads(root, now).find((s) => (s.stream ?? null) === (stream ?? null)) ?? null;
+
+/** STRM-2: every live lead session: [{ ...record }], the longest-leading first. */
+export const leadSessions = (root, now = Date.now()) =>
+  leads(root, now).sort(
+    (a, b) => Date.parse(a.leadSince ?? a.started) - Date.parse(b.leadSince ?? b.started),
+  );
+
+/**
+ * STRM-2: the lead that writes in the main checkout: the one leading longest. Every other stream's lead
+ * works in a worktree of its own.
+ */
+export const mainCheckoutLead = (root, now = Date.now()) => leadSessions(root, now)[0] ?? null;
 
 /**
  * SESS-2: a session starting (or resumed). It's the lead when no other live session is; otherwise a
@@ -113,12 +142,19 @@ export const leadSession = (root, now = Date.now()) =>
 export function startSession(root, id, now = Date.now(), { model = null } = {}) {
   const at = new Date(now).toISOString();
   const had = readSession(root, id);
-  const lead = leadSession(root, now);
+  // STRM-2: a session of a stream leads it when nobody else does; one with no stream yet leads only when
+  // no session leads anything.
+  const stream = had?.stream ?? null;
+  const lead = stream ? ownLead(root, now, stream) : (leads(root, now)[0] ?? null);
+  const role = lead && lead.id !== id ? 'working' : 'lead';
   return write(root, {
     id,
     person: had?.person ?? personHere(root),
     login: loginHere(root) ?? had?.login ?? null,
-    role: lead && lead.id !== id ? 'working' : 'lead',
+    stream,
+    role,
+    leadSince:
+      role === 'lead' ? (had?.role === 'lead' && had.leadSince ? had.leadSince : at) : null,
     started: had?.started ?? at,
     seen: at,
     ended: null,
@@ -138,15 +174,15 @@ export function seeSession(root, id, now = Date.now(), facts = () => ({})) {
   if (!id) return null;
   const had = readSession(root, id);
   if (!had || had.ended) return startSession(root, id, now, facts());
-  // A lead that went quiet past SESSION_LIVE_MS, while another session took the lead, works now.
-  const lead = had.role === 'lead' ? leadSession(root, now) : null;
+  // A lead that went quiet past SESSION_LIVE_MS, while another session took its stream's lead, works now.
+  const lead = had.role === 'lead' ? ownLead(root, now, had.stream ?? null) : null;
   const demoted = lead && lead.id !== id;
   if (!demoted && now - Date.parse(had.seen) < SEEN_EVERY_MS) return had;
   const { model } = facts();
   return write(root, {
     ...had,
     seen: new Date(now).toISOString(),
-    ...(demoted ? { role: 'working' } : {}),
+    ...(demoted ? { role: 'working', leadSince: null } : {}),
     ...(model ? { model } : {}),
   });
 }
@@ -170,12 +206,35 @@ export function endSession(root, id, now = Date.now()) {
   return write(root, { ...had, ended: new Date(now).toISOString() });
 }
 
-/** SESS-2: the person chose this session to lead: it does, and the session that led becomes a working one. */
-export function makeLead(root, id, now = Date.now()) {
-  for (const s of sessions(root, now))
-    if (s.role === 'lead' && s.id !== id) write(root, { ...strip(s), role: 'working' });
+/**
+ * SESS-2, STRM-2: the person chose this session to lead `stream` (or, with none, the project, or the
+ * stream it already belongs to): it does, and the session that led that stream becomes a working one.
+ * The leads of other streams lead on.
+ */
+export function makeLead(root, id, now = Date.now(), stream = undefined) {
   const had = readSession(root, id) ?? startSession(root, id, now);
-  return write(root, { ...had, role: 'lead', seen: new Date(now).toISOString(), ended: null });
+  const mine = stream === undefined ? (had.stream ?? null) : stream;
+  for (const s of sessions(root, now))
+    if (s.role === 'lead' && s.id !== id && (s.stream ?? null) === mine)
+      write(root, { ...strip(s), role: 'working', leadSince: null });
+  const at = new Date(now).toISOString();
+  return write(root, {
+    ...had,
+    stream: mine,
+    role: 'lead',
+    leadSince:
+      had.role === 'lead' && (had.stream ?? null) === mine && had.leadSince ? had.leadSince : at,
+    seen: at,
+    ended: null,
+  });
+}
+
+/** STRM-2: a working session joins `stream`: its task and next step are that stream's. */
+export function joinStream(root, id, stream, now = Date.now()) {
+  const had = readSession(root, id) ?? startSession(root, id, now);
+  if (had.role === 'lead' && (had.stream ?? null) !== stream)
+    return makeLead(root, id, now, stream);
+  return write(root, { ...had, stream });
 }
 
 const strip = ({ live: _live, ...r }) => r;
@@ -254,10 +313,35 @@ export function sessionWriteProblem({ project, root, rel, actor, session, now = 
   const leased = taskRefusal(project, session, rel, now);
   if (leased) return leased;
   const me = readSession(project, session);
-  if (actor?.kind !== 'lead' || me?.role !== 'working') return null;
+  if (actor?.kind !== 'lead') return null;
+  // STRM-2: one lead writes in the main checkout; every other stream's lead works in its own worktree.
+  if (me?.role === 'lead' && root === main(project)) {
+    const holder = mainCheckoutLead(project, now);
+    if (holder && holder.id !== session)
+      return `${rel} is in the main checkout, where the ${holder.stream ?? 'project'} lead (${memberOf(holder)}) works: two leads in one checkout block each other's git. Lead the ${me.stream ?? 'project'} stream from a worktree of your own on its lead branch (lead/${me.stream ?? 'work'}): start the session with \`claude --worktree\`, or move it into one (EnterWorktree).`;
+    return null;
+  }
+  if (me?.role !== 'working') return null;
   if (root === main(project))
     return `this is a working session (another session leads the project), and ${rel} is in the main checkout, which every session shares: your uncommitted files there would block the other sessions' git. Work in a worktree of your own: start the session with \`claude --worktree\`, or move it into one (EnterWorktree), then record your task and go on.`;
   if (!me.task)
     return `this is a working session (another session leads the project): record what you're doing before you change code, so the other sessions see it and leave your files alone:\n  node "${CLI}" task "<what you're doing, in a line>" --touches "<globs of the paths you'll change>"`;
   return null;
+}
+
+/**
+ * STRM-4: why a stream's lead may not write `rel`: another stream's plan or spec is that stream's
+ * lead's. A lead with no stream of its own, and every other actor, are judged as before.
+ */
+export function streamWriteProblem(project, config, actor, rel, session, now = Date.now()) {
+  if (actor?.kind !== 'lead' || !session || !rel || !hasStreams(config)) return null;
+  const me = readSession(project, session);
+  if (me?.role !== 'lead') return null;
+  const theirs =
+    otherStreamsPlan(config, rel, me.stream) ?? otherStreamsSpec(config, rel, me.stream);
+  if (!theirs) return null;
+  const lead = leadSession(project, now, theirs);
+  // A lead with no stream of its own writes the plans of the streams without a lead of theirs.
+  if (!me.stream && !(lead?.stream === theirs && lead.id !== session)) return null;
+  return `${rel} is the ${theirs} stream's${lead && lead.stream === theirs ? `, led by ${memberOf(lead)}` : ''}, and this session leads ${me.stream ?? 'the streams without a lead of their own'}. Each stream's lead writes its own plan and specs. Ask the ${theirs} lead for the change, or, for something both streams need from core, \`node "${CLI}" core ask "<what>" --story <ST-n>\`.`;
 }

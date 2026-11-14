@@ -14,6 +14,8 @@ import { evidenceRecords } from './reviews.mjs';
 import { storyOfBranch } from './teamfacts.mjs';
 import { literalPath, matchesAny } from './glob.mjs';
 import { layerProblems } from './layers.mjs';
+import { cloneCandidate, scanForPromotions } from './promote.mjs';
+import { hasStreams } from './streams.mjs';
 import { STANDARDS_APPROVAL, standardsFile, standardsWeakenings } from './standards.mjs';
 import { TESTS_APPROVAL, branchWeakenings, fixOf, proveFix } from './regression.mjs';
 import {
@@ -313,6 +315,18 @@ export function verifyBranch({
     );
     const screen = screenProblem(f, root, config);
     if (screen) found.design.push(screen.split('\n')[0]);
+  }
+
+  // PROM-4: with promote.coreClones at refuse, module code the branch adds that repeats core is refused.
+  if (hasStreams(config) && config.harness.promote.coreClones === 'refuse' && present.length) {
+    const { clones } = scanForPromotions(root, config, {
+      files: present,
+      ref: 'HEAD',
+      record: false,
+    });
+    for (const c of clones.map(cloneCandidate))
+      if (c.signal === 'core-clone')
+        found.layers.push(`${c.what}: use core's instead of a copy (harness.promote.coreClones).`);
   }
 
   // HAND-2: each register entry the branch adds or changes, and each approved design whose files it

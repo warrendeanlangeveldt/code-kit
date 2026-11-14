@@ -60,13 +60,15 @@ A stream's lanes own its modules, so two streams never share a lane. A module ma
 
 ## Data
 
-| Entity     | Where                                    | Fields                                                                                                                                                                         |
-| ---------- | ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Stream     | `.claude/code-kit.json` `streams.<name>` | `{ label?, lanes, plan, specs?, platform? }`: its lanes (names under `lanes`), its plan file, the spec files it builds, and whether it owns core                               |
-| Layer      | `layers[]`                               | today's `{ name, paths, mayImport, … }`, plus `stream?`: a layer with a stream is that stream's module; one without is core                                                    |
-| Session    | `.claude/state/sessions/<id>.json`       | today's fields, plus `stream`: the stream it leads or works in; null in a project without streams                                                                              |
-| Lane claim | `.claude/state/lanes.json`               | unchanged; core's lanes, when the streams share them, add `stream`: whose turn it is                                                                                           |
-| Promotion  | `.claude/state/promotions.jsonl`         | id, what (the code: files and symbols), where it is (each stream's copy or user), evidence (the signals, PROM-1), raised, decided `{ at, by, how: promoted \| rejected, why }` |
+| Entity       | Where                                    | Fields                                                                                                                                                                         |
+| ------------ | ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Stream       | `.claude/code-kit.json` `streams.<name>` | `{ label?, lanes, plan, specs?, platform? }`: its lanes (names under `lanes`), its plan file, the spec files it builds, and whether it owns core                               |
+| Layer        | `layers[]`                               | today's `{ name, paths, mayImport, … }`, plus `stream?`: a layer with a stream is that stream's module; one without is core                                                    |
+| Session      | `.claude/state/sessions/<id>.json`       | today's fields, plus `stream`: the stream it leads or works in; null in a project without streams                                                                              |
+| Lane claim   | `.claude/state/lanes/<lane>.json`        | unchanged                                                                                                                                                                      |
+| Lane turn    | `.claude/state/lane-turns.json`          | for each core lane the streams share, the stream it last ran a story for (STRM-6)                                                                                              |
+| Core request | `.claude/state/core-requests.jsonl`      | id (`C-n`), stream, session, story, what, why, and the platform's decision `{ at, by, how: accepted \| declined, story, reason }` (STRM-7)                                     |
+| Promotion    | `.claude/state/promotions.jsonl`         | id, what (the code: files and symbols), where it is (each stream's copy or user), evidence (the signals, PROM-1), raised, decided `{ at, by, how: promoted \| rejected, why }` |
 
 A clone is found by tokens, not text: each file's code is read as tokens with names and literals masked (comments, strings and whitespace out), so a copy with renamed variables still matches, and matching runs of at least `harness.promote.tokens` tokens (default 60) are found by hashing every window of them. It reads JavaScript, TypeScript and Python, as the layer rules do, with no dependencies.
 
@@ -74,7 +76,7 @@ A clone is found by tokens, not text: each file's code is read as tokens with na
 
 ### STRM-1 Streams in the config
 
-`streams` names the project's streams, each with its lanes, its plan and its specs. Every lane belongs to exactly one stream; `code-kit check` refuses a lane in two streams or in none. A project without `streams` is one stream holding every lane, and nothing changes for it. `code-kit streams [--json]` lists each stream, its lanes, its lead session and what it's building.
+`streams` names the project's streams, each with its lanes, its plan (a file or folder inside `docs.plan`) and its specs. A lane belongs to at most one stream; `code-kit check` refuses a lane in two streams. A lane in no stream is a core lane the streams share (STRM-6); with a platform stream, every lane must be in a stream. A project without `streams` is one stream holding every lane, and nothing changes for it. `code-kit streams [--json]` lists each stream, its lanes, its lead session and what it's building.
 
 **Acceptance**
 
@@ -83,7 +85,7 @@ A clone is found by tokens, not text: each file's code is read as tokens with na
 
 ### STRM-2 One lead per stream
 
-A stream has at most one lead session. `/code-kit:lead <stream>` makes the session its stream's lead; a session started while another stream's lead is live asks which stream it's for (or is a working session, as SESS-2 says, when it doesn't say). One lead may write in the main checkout; every other stream's lead works in a worktree on its own lead branch (`lead/<stream>`), whose plan and spec changes reach the base through the merge queue like any branch (SESS-5). A working session belongs to one stream, and its task leases paths in it.
+A stream has at most one lead session. `/code-kit:lead <stream>` gives the person `code-kit sessions lead <stream>`, which makes the session its stream's lead (choosing it is the person's act, as SESS-2's Lead from here is). A session started while another lead is live is a working session until the person names its stream. A lead with no stream of its own leads every stream that has none, so one session alone still leads the whole project. One lead may write in the main checkout; every other stream's lead works in a worktree on its own lead branch (`lead/<stream>`), whose plan and spec changes reach the base through the merge queue like any branch (SESS-5). A working session belongs to one stream, and its task leases paths in it.
 
 **Acceptance**
 
@@ -187,7 +189,7 @@ The platform lead decides each candidate. Promoted: it becomes a story in the pl
 
 ### PROM-4 Core stays core
 
-A promotion that would make core depend on a stream's concepts (import a module, or name a stream's types) is refused at review, with what to move with it or what to leave behind. A required standard may make a clone of core a refusal at verify, not only a review finding (spec 22).
+A promotion that would make core depend on a stream's concepts (import a module, or name a stream's types) is refused at review, with what to move with it or what to leave behind. With `harness.promote.coreClones` at `refuse`, verify refuses a branch whose module code repeats core's, not only notes it for the review; a standard can name that rule as checked (spec 22).
 
 **Acceptance**
 

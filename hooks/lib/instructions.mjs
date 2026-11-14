@@ -13,9 +13,10 @@ import {
   standardsFile,
 } from './standards.mjs';
 import { registerFile } from './costs.mjs';
+import { platformOf, sharedLanes, streamsOf } from './streams.mjs';
 
 /** The version of code-kit's instructions: raised whenever the templates' rules change. */
-export const INSTRUCTIONS_VERSION = 14;
+export const INSTRUCTIONS_VERSION = 15;
 
 const TEMPLATES = fileURLToPath(new URL('../../templates/', import.meta.url));
 const BEGIN = (v) => `<!-- code-kit:begin v${v} -->`;
@@ -69,6 +70,15 @@ function factsOf(root, config, lane = null) {
     'docs.plan': config.docs?.plan ?? 'the plan',
     'docs.principles': config.docs?.principles ?? "the project's principles",
     'docs.standards': standardsFile(config),
+    // Spec 31: the streams, and who owns core.
+    streams: streamsOf(config)
+      .map((st) => `${st.name} (${st.lanes.join(', ') || 'no lanes'})`)
+      .join('; '),
+    platform: platformOf(config)
+      ? `, owned by the ${platformOf(config).name} stream: a stream that needs core changed asks it with \`code-kit core ask "<what>" --story ST-n\`, and its story waits on the decision`
+      : sharedLanes(config).length
+        ? `, built on core's lanes (${sharedLanes(config).join(', ')}), which the streams take in turns`
+        : '',
     // Spec 29: the running budget and its register.
     cost: Boolean(config.cost),
     'docs.costs': registerFile(config),

@@ -61,6 +61,12 @@ Write `.claude/code-kit.draft.json`. Follow `${CLAUDE_PLUGIN_ROOT}/README.md` â€
   - `agent`: a kebab-case agent name, for example `api-engineer`;
   - `paths` and `exclude`: every path must have exactly one owner.
   - `label` (optional): what the lane delivers, in a few words ("Screens", "Tests"), when its name doesn't say it.
+- **`streams` (spec 31), only when the product has separate product lines:** the architecture says so (a core and a module per line), or, without specs, ask once: "Do separate teams, or sessions, build separate product lines of this product?" If not, leave `streams` out: one lead runs every lane, as before. If so:
+  - `docs.plan` is a folder (`docs/plan/`) and each stream has its own plan file in it;
+  - `"streams": { "<line>": { "label", "lanes", "plan", "specs" } }`, each lane in exactly one stream: a line's lanes own its modules (`api-<line>`, `web-<line>`);
+  - each module's layer gets `"stream": "<line>"`; core's layers have none. The import check then refuses a module importing another line's module, and core importing a module;
+  - core's lanes go in a stream with `"platform": true` when the person wants a team to own core (its lead decides what goes into core, and the other streams ask it with `code-kit core ask`); otherwise they're in no stream, and the streams take them in turns;
+  - each stream's lead runs in its own session: `/code-kit:lead <stream>`; the first one leads from the main checkout, the others from a worktree each.
 - **A QA lane:** when lanes own screens, or the plan's journeys cross lanes, a `qa` lane with a `test-engineer` agent owning the end-to-end suites (the plan's work split names them; brownfield: the folders the existing end-to-end tests live in), even if the docs forgot it. Its agent's proving command runs the suites. Add a `checks` entry for them scoped by `files` to the suites, so verify runs them when they change. Unit tests stay with each lane.
 - **`setup`:** `3`, the version of this setup, so `code-kit next` can tell an older project what re-running init adds.
 - **`lead.paths`:** contracts, specs, design, root config, and anything the docs reserve for the lead.
@@ -195,7 +201,8 @@ Re-run whenever the build has moved on: new apps or packages, folders that moved
 
    `diff` lists lanes, layers, checks and rules that were added (`+`), removed (`-`) or changed (`~`), and how many files change owner, route by route. Explain each change in a sentence, with where it came from: the doc section, or the folder in the repository.
 
-4. **Also propose:**
+4. **Adding streams to a project that started as one (spec 31):** when the person now builds separate product lines, draft `streams` as in section 2, splitting each technical lane into a core lane and a lane per line, and each layer into core and a module per line. Where the code isn't split into those folders yet, don't move it in the update: write the move as stories (in the platform's plan, or the lead's own), lower layers first, a few files each, every story switching the code that imports what it moved, and say so in the diff. Until a story moves a file, the file stays with the lane that owns it today.
+5. **Also propose:**
    - agent files for new lanes, and updates to agents whose paths changed, and to the security reviewer when the specs' threat models changed;
    - **project skills**, by reading the recipes in the docs again and comparing them with `.claude/skills/`:
      - a new skill for each recipe the docs now describe that has none;
@@ -204,7 +211,7 @@ Re-run whenever the build has moved on: new apps or packages, folders that moved
      - the matching **Skills to use** changes on every lane agent whose paths each recipe touches;
      - skills the person wrote themselves, with no recipe behind them, stay as they are;
    - a smaller baseline when `baseline` shows violations were fixed. It only ever shrinks.
-5. **On approval:**
+6. **On approval:**
    1. Replace `.claude/code-kit.json` with the draft and delete the draft.
    2. Write or update the agents, and write, update or remove the project skills as approved, together.
    3. Run `baseline --write` if it shrank.

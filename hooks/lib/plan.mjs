@@ -14,6 +14,7 @@ import { waitingStories } from './questions.mjs';
 import { sentBack } from './reviews.mjs';
 import { isTestFile } from './testfiles.mjs';
 import { WORKTREES_DIR } from './worktrees.mjs';
+import { streamOfLane, streamOfPlanFile } from './streams.mjs';
 
 export const REQUIREMENT = /\b(?!ST-)([A-Z][A-Z0-9]*-\d+)\b/g;
 const STORY_HEADING = /^###\s+(ST-\d+)\b\s*(.*)$/;
@@ -520,7 +521,7 @@ export function storyStates(root, stories, base, { designing = null } = {}) {
 }
 
 /** Gaps between specs, plan and tests, as sentences. */
-export function traceProblems(requirements, stories, lanes) {
+export function traceProblems(requirements, stories, lanes, config = null) {
   const problems = [];
   const ids = new Set(requirements.map((r) => r.id));
   const seen = new Set();
@@ -528,10 +529,23 @@ export function traceProblems(requirements, stories, lanes) {
     if (seen.has(r.id)) problems.push(`${r.id} is defined more than once (${r.file})`);
     seen.add(r.id);
   }
-  const storyIds = new Set();
+  const storyIds = new Map();
   for (const s of stories) {
-    if (storyIds.has(s.id)) problems.push(`${s.id} is in the plan more than once`);
-    storyIds.add(s.id);
+    // STRM-4: an id is the project's, across every stream's plan.
+    if (storyIds.has(s.id))
+      problems.push(
+        storyIds.get(s.id) === s.file
+          ? `${s.id} is in the plan more than once`
+          : `${s.id} is in two plans, ${storyIds.get(s.id)} and ${s.file}: a story id is the project's, across every stream`,
+      );
+    storyIds.set(s.id, s.file);
+    // STRM-4: a story on a stream's lane belongs in that stream's plan.
+    const byLane = config ? streamOfLane(config, s.lane) : null;
+    const byFile = config ? streamOfPlanFile(config, s.file) : null;
+    if (byLane && byFile && byLane !== byFile)
+      problems.push(
+        `${s.id} is in the ${byFile} stream's plan, but its lane, ${s.lane}, is the ${byLane} stream's: move it to that stream's plan, or give it a lane of ${byFile}'s`,
+      );
     if (!s.lane) problems.push(`${s.id} has no **Lane:**`);
     else if (s.lane !== LEAD && s.lane !== DESIGN && !lanes.includes(s.lane))
       problems.push(`${s.id} names an unknown lane "${s.lane}"`);
@@ -591,7 +605,7 @@ export function buildStatus(root, config, base, files) {
     designing: stillDesigning(root, config, requirements),
   });
   const tested = testedRequirements(root, files, specs, config);
-  const problems = traceProblems(requirements, stories, Object.keys(config.lanes));
+  const problems = traceProblems(requirements, stories, Object.keys(config.lanes), config);
   const byRequirement = requirements.map((r) => {
     const covering = stories.filter((s) => s.state !== DROPPED && s.requirements.includes(r.id));
     let state = 'no story';

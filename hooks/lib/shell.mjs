@@ -134,7 +134,7 @@ const CODE_KIT_READS = new RegExp(
 );
 
 /** A command's words, quotes taken off. */
-const wordsOf = (text) =>
+export const wordsOf = (text) =>
   (text.match(/'[^']*'|"(?:\\.|[^"\\])*"|\S+/g) ?? []).map((w) =>
     w.replace(/^(['"])(.*)\1$/s, '$2'),
   );
