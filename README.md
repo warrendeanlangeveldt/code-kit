@@ -407,7 +407,7 @@ Once init has switched the rules on, the lead runs the build in a loop:
 
 You can open several Claude Code sessions in one project: one building the plan, others auditing, checking merges or looking into something ad hoc. code-kit treats each session as a member of the team, as it treats each developer in a team:
 
-- **One lead session.** The loop runs there, and the plan's stories are dispatched from it. The first session to start leads; one started while it's open is a working session. When the lead session ends, no other takes over by itself: the next session to start leads, or you choose one with **Lead from here** or `/code-kit:lead`. `code-kit who` says which this session is.
+- **One lead session.** The loop runs there, and the plan's stories are dispatched from it. The first session to start leads; one started while it's open is a working session. When the lead session ends, no other takes over by itself: the next session to start leads, or you choose one: type `/code-kit:lead` in the session you want, and it leads from that moment (or use **Lead from here** in its band). An agent can't move the lead itself; typing the command is your choice. `code-kit who` says which this session is.
 - **Working sessions stay quiet.** Their band shows only their own: their refusals and held calls, their lead's questions, their task. No loop prompts, no other session's decisions or notifications. Every rule still applies.
 - **Ad hoc work records a task.** A working session records what it's doing before it changes code, with the paths it'll change: `code-kit task "Integration readiness" --touches "src/integrations/**"`. The task leases those paths: another session's agents writing there are refused, naming the session and its task. `code-kit sessions` lists the sessions and their tasks; `task done` ends one, and `task take <session>` moves a task whose session ended to yours.
 - **Each in its own worktree.** A working session that changes code works in a worktree of its own (`claude --worktree`); its writes in the main checkout are refused, so its uncommitted files never block another session's git. Where git does refuse because of another session's uncommitted files, code-kit says whose they are.
@@ -419,13 +419,22 @@ Spec: `docs/specs/23-the-team.md`.
 
 One product in one repository can have separate product lines (offerings for different users, each with its own roadmap) built by separate squads, or sessions, at once. Declare them as `streams` in the config, and the project is built as a modular monolith: per technical layer, a **core** the streams share and a **module** per stream.
 
-- **A lead per stream.** Each stream has its own lead session, plan file, specs and lanes, and they lead at once: `/code-kit:lead <stream>`. Each lead's loop and `code-kit next` give it only its own stream's stories, and it writes only its own stream's plan and specs. The first lead works in the main checkout, the others in a worktree each, on `lead/<stream>`.
+**Why.** Without streams a project has one lead, one plan and lanes cut by technical layer. Two sessions meant for two product lines fight over the lead, the lead's loop hands each the other line's stories, and one line's API story holds the API lane while the other line's waits. Streams add the second axis, the product line (Team Topologies' stream-aligned teams, with a platform team owning what they build on), so each line moves at its own pace while the code stays one codebase, and what the lines share is built once, in core.
+
+- **A lead per stream.** Each stream has its own lead session, plan file, specs and lanes, and they lead at once: type `/code-kit:lead <stream>` in the session that should lead it. Each lead's loop and `code-kit next` give it only its own stream's stories, and it writes only its own stream's plan and specs. The first lead works in the main checkout, the others in a worktree each, on `lead/<stream>`.
 - **Streams kept apart.** A layer with `stream` is that stream's module; one without is core. A module may import core and its own stream's modules, never another stream's, and core never imports a module: the hooks refuse both, and the refusal says to ask for it in core rather than copy it.
 - **Core has one owner.** A stream with `platform: true` owns core's lanes: the other streams ask it for changes with `code-kit core ask "<what>" --story ST-n`, and their story waits on its decision. Without a platform stream, core's lanes are in no stream, and the streams take them in turns.
 - **Shared capability noticed.** code-kit raises a candidate for core when it sees the same code in two streams' modules (names aside), an import of another stream's module refused, a copy into a module, module code that repeats core, or a requirement another stream's spec already has. `code-kit promote` lists them; the platform's lead decides each (`/code-kit:promote`), and a promotion is a platform story. Set `harness.promote.coreClones` to `refuse` and verify refuses a branch whose module code repeats core's.
 - **Project-wide still.** One merge queue, one approval log, one set of standards and checks.
 
 A project without `streams` is one stream holding every lane, and works as before. `spec-design` and `init` ask once whether the product has separate product lines, and only then lay out core and modules.
+
+**Turning streams on in a project that started as one:**
+
+1. Run `/code-kit:init`. When the brief, specs or plan name more than one product line, it asks whether separate squads or sessions build them (or tell it so). On a yes it drafts `streams`, a lane per line in each technical layer, a module layer per line, and a plan file per stream under `docs/plan/`, and shows the difference before anything is enforced.
+2. Where the code isn't split into core and modules yet, init doesn't move it: it writes the move as stories, lower layers first, a few files each. Until a story moves a file, it stays with the lane that owns it today.
+3. Open a session per stream and type `/code-kit:lead <stream>` in each. The first leads from the main checkout; each other moves into a worktree on `lead/<stream>`.
+4. `code-kit streams` lists the streams, their lanes and leads; `code-kit who` says which stream this session leads.
 
 Spec: `docs/specs/31-streams-and-platform.md`.
 
@@ -516,7 +525,7 @@ code-kit cost [--json]                                         # each environmen
 code-kit decisions [--json] [--all]                          # what waits on you in this session, and a count in each other one; --all lists every session's
 code-kit who                                                 # which session this is, whether it leads the project, and its task
 code-kit sessions [--json]                                   # the sessions working the project, which one leads, and each one's task
-code-kit sessions lead [stream]                              # make this session the lead, or its stream's lead (the person's own act, as Lead from here)
+code-kit sessions lead [stream]                              # make this session the lead, or its stream's lead (the person's own act: /code-kit:lead runs it as they send it)
 code-kit sessions stream <name>                              # a working session joins a stream (the person's own act)
 code-kit streams [--json]                                    # the project's streams: each one's lanes, plan and lead, and the core lanes they share
 code-kit core [--json]                                       # change requests to core; core ask "<what>" --story ST-n asks the platform, core accept <id> --story ST-n | core decline <id> --reason "…" decides
