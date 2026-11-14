@@ -8710,6 +8710,34 @@ else process.exit(1);
     );
     tCli(B, 'sessions', 'lead', 'studio');
     tHook('session.mjs', { session_id: C }, ['end']);
+    // STRM-10: what the mod scopes a stream lead's views to.
+    const scoped = JSON.parse(tCli(B, 'streams', '--json').stdout);
+    const studioRow = scoped.streams.find((x) => x.name === 'studio');
+    expect(
+      "STRM-10 streams --json names this session's stream, with its stories and requirements, and the shared lanes",
+      truth(
+        scoped.mine.join() === 'studio' &&
+          studioRow.stories.join() === 'ST-2,ST-4' &&
+          studioRow.requirements.join() === 'STU-1,STU-2' &&
+          scoped.shared.map((x) => x.lane).join() === 'api-core',
+        JSON.stringify(scoped),
+      ),
+      0,
+    );
+    expect(
+      'STRM-10 check --json names the streams, for the mod',
+      truth(JSON.parse(tCli(null, 'check', '--json').stdout).streams.join() === 'shop,studio'),
+      0,
+    );
+    const owners = JSON.parse(tCli(null, 'map', 'project', '--json').stdout).owners ?? {};
+    expect(
+      "STRM-10 the code map says whose each layer is: core or a stream's module",
+      truth(
+        owners.core === 'core' && owners.shop === 'shop' && owners.studio === 'studio',
+        JSON.stringify(owners),
+      ),
+      0,
+    );
     expect(
       "STRM-2 a stream's loop runs in its own lead, beside the other stream's",
       tCli(null, 'loop', 'lead', '--session', B),

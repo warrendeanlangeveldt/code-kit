@@ -241,9 +241,12 @@ import {
   coreRequests,
   decideCore,
   hasStreams,
+  heldByCore,
+  lastTurn,
   platformOf,
   sharedLanes,
   streamOfLane,
+  streamOfStory,
   streamsOf,
 } from '../hooks/lib/streams.mjs';
 import {
@@ -388,6 +391,8 @@ function checkJson() {
     Object.entries(config.lanes).map(([name, l]) => [name, { agent: l.agent, paths: l.paths }]),
   );
   report.adapters = config.adapters;
+  // STRM-10: the streams' names, for the mod to read them.
+  report.streams = streamsOf(config).map((st) => st.name);
   report.docs = config.docs ?? null;
   report.harness = config.harness;
   // The harness settings the person chose, as opposed to defaults: the mod asks before acting on autonomy.
@@ -3652,8 +3657,21 @@ function streamsCommand() {
   const root = resolve('.');
   const all = streamsOf(config);
   const claims = laneClaims(root);
+  // STRM-10: what the mod scopes a stream lead's views to: each stream's stories and requirements, the
+  // stories core holds, and what it asks of core or has to decide for it.
+  const stories = config.docs?.plan ? readStories(root, config.docs.plan) : [];
+  const requirements = config.docs?.specs ? readRequirements(root, config.docs.specs) : [];
+  const held = heldByCore(
+    root,
+    stories.map((s) => ({ id: s.id, state: s.status })),
+  );
+  const asks = coreRequests(root).filter((r) => r.state === 'open');
+  const candidates = promotions(root).filter((c) => c.state === 'open');
+  const me = callerSession ? readSession(root, callerSession) : null;
   const rows = all.map((st) => {
     const lead = leadSession(root, Date.now(), st.name);
+    const own = stories.filter((s) => streamOfStory(config, s) === st.name);
+    const cited = new Set(own.flatMap((s) => s.requirements));
     return {
       ...st,
       lead: lead
@@ -3662,13 +3680,28 @@ function streamsCommand() {
       running: claims
         .filter((c) => st.lanes.includes(c.lane))
         .map((c) => ({ lane: c.lane, story: c.story })),
+      stories: own.map((s) => s.id),
+      requirements: requirements
+        .filter((r) => cited.has(r.id) || (st.specs.length && matchesAny(r.file, st.specs)))
+        .map((r) => r.id),
+      held: own.filter((s) => held.has(s.id)).map((s) => ({ story: s.id, why: held.get(s.id) })),
+      asks: asks.filter((r) => r.stream === st.name).map((r) => r.id),
+      toDecide: [
+        ...(st.platform ? asks.map((r) => r.id) : []),
+        ...candidates.filter((c) => decidedFor(config, c) === st.name).map((c) => c.id),
+      ],
     };
   });
   const shared = sharedLanes(config).map((lane) => ({
     lane,
     running: claims.find((c) => c.lane === lane)?.story ?? null,
+    turn: lastTurn(root, lane),
   }));
-  if (flag('--json')) return out(JSON.stringify({ streams: rows, shared }, null, 2));
+  // The streams this session leads, or, a working session's, the one it works in.
+  const mine = rows
+    .filter((r) => (callerSession && r.lead?.session === callerSession) || r.name === me?.stream)
+    .map((r) => r.name);
+  if (flag('--json')) return out(JSON.stringify({ streams: rows, shared, mine }, null, 2));
   if (!all.length)
     return out(
       "This project isn't built as streams: one lead runs every lane. docs/specs/31-streams-and-platform.md says how to add them.",
