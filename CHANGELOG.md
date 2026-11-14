@@ -2,6 +2,10 @@
 
 What changed in each release of code-kit, newest first. Versions follow the plugin manifest and the npm package `@warren-dean/code-kit`. Each release is also on [GitHub Releases](https://github.com/warrendeanlangeveldt/code-kit/releases).
 
+## Unreleased
+
+- **Re-running init asks about product lines.** `/code-kit:init` asked whether the product has separate product lines only on a project with no specs, or drafted streams when the architecture already laid out a core and modules. A project whose brief or specs name several product lines, with code laid out by technical role, was never asked. init now asks once, naming the lines it found, on a first run and on every re-run while the config has no `streams`.
+
 ## 0.36.0 (2026-11-14)
 
 - **Streams: several product lines in one product.** A product with separate product lines in one repository can now be built by a squad, or a session, per line at once. Declare them as `streams` in the config: each stream has its own lead session (`/code-kit:lead <stream>`), plan file, specs and lanes, and each lead's loop dispatches only its own stream's stories, so two sessions no longer fight over one lead. Layers become a core per technical layer and a module per stream: a module may use core and its own stream's modules, never another stream's, and core uses no module; the hooks refuse both and say to ask for it in core rather than copy it. Core is owned by a platform stream, which the others ask with `code-kit core ask`, or, without one, its lanes are shared and taken in turns. A project without `streams` works as before.
