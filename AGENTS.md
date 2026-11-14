@@ -4,7 +4,7 @@ code-kit is a Claude Code plugin: hooks (`hooks/`), skills (`skills/<name>/SKILL
 
 ## Layout
 
-- `hooks/*.mjs`: one file per hook event, wired in `hooks/hooks.json` (`guard-agent.mjs` claims a lane as its agent starts, and notes the lane for `worktree-create.mjs`, which gives a lane agent its lane's worktree; `worktree-done.mjs` takes away an unchanged agent's own worktree as it stops; `session.mjs` records a session as the lead or a working one as it starts, and frees its lanes as it ends). Each reads the tool call from stdin, and exits 2 with a message to refuse it. `act.mjs` writes the event log: each tool call before and after it runs, and a lane agent handing back (spec 26).
+- `hooks/*.mjs`: one file per hook event, wired in `hooks/hooks.json` (`guard-agent.mjs` claims a lane as its agent starts, and notes the lane for `worktree-create.mjs`, which gives a lane agent its lane's worktree; `worktree-done.mjs` takes away an unchanged agent's own worktree as it stops; `session.mjs` records a session as the lead or a working one as it starts, and frees its lanes as it ends; `lead-prompt.mjs` makes a session the lead, of the stream named, when the person types `/code-kit:lead [stream]`). Each reads the tool call from stdin, and exits 2 with a message to refuse it. `act.mjs` writes the event log: each tool call before and after it runs, and a lane agent handing back (spec 26).
 - `hooks/lib/`: the shared rules.
   - `rules.mjs`: who may write where;
   - `config.mjs`: loading and validation;

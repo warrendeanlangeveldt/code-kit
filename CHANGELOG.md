@@ -2,6 +2,10 @@
 
 What changed in each release of code-kit, newest first. Versions follow the plugin manifest and the npm package `@warren-dean/code-kit`. Each release is also on [GitHub Releases](https://github.com/warrendeanlangeveldt/code-kit/releases).
 
+## Unreleased
+
+- **`/code-kit:lead` moves the lead itself.** Typing `/code-kit:lead` (or `/code-kit:lead <stream>`) answered with which session leads and a `!` command for you to run, since the hooks refuse moving the lead from an agent. Typing the command is already your choice, so code-kit now records this session as the lead, of the stream you named, as the prompt arrives; the skill confirms it, says what it means, and moves into a worktree when another stream's lead holds the main checkout. A stream that doesn't exist changes nothing, and the answer names the streams.
+
 ## 0.36.0 (2026-11-14)
 
 - **Streams: several product lines in one product.** A product with separate product lines in one repository can now be built by a squad, or a session, per line at once. Declare them as `streams` in the config: each stream has its own lead session (`/code-kit:lead <stream>`), plan file, specs and lanes, and each lead's loop dispatches only its own stream's stories, so two sessions no longer fight over one lead. Layers become a core per technical layer and a module per stream: a module may use core and its own stream's modules, never another stream's, and core uses no module; the hooks refuse both and say to ask for it in core rather than copy it. Core is owned by a platform stream, which the others ask with `code-kit core ask`, or, without one, its lanes are shared and taken in turns. A project without `streams` works as before.

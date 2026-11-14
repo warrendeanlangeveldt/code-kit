@@ -246,7 +246,7 @@ if (
   runs(cmd, new RegExp(String.raw`^${CODE_KIT}\s+sessions\s+(lead|beat|stream)\b`))
 )
   block(
-    `Blocked: which session leads the project is recorded by code-kit, and choosing it is the person's own act (Lead from here, in the code-kit band, or \`code-kit sessions lead\` in their terminal). Carry on with your work.\nCommand: ${cmd}`,
+    `Blocked: which session leads the project is recorded by code-kit, and choosing it is the person's own act (they type \`/code-kit:lead\`, with the stream in a project built as streams, or use Lead from here in the code-kit band). Carry on with your work.\nCommand: ${cmd}`,
   );
 // TEAM-9: handing someone's claim to someone else is the tech lead's own decision too.
 if (runs(cmd, new RegExp(String.raw`^${CODE_KIT}\s+team\s+reassign\b`)))
