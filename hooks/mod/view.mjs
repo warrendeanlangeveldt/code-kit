@@ -301,6 +301,7 @@ export function bandLines({
   working = false,
   task = null,
   elsewhere = [],
+  streams = null,
 }) {
   // SESS-3: a working session's lines are only its own: no queue, reviews or team. The build's own
   // progress, the loop's state and the agents at work are the Build panel's and the band's one line
@@ -549,6 +550,15 @@ export function bandLines({
       text: `Milestone done: ${plural(loop.doneCount, 'story', 'stories')} merged`,
       actions: [{ id: 'dismissDone', label: 'Dismiss' }],
     });
+  else if ((loop?.state === 'elsewhere' || loop?.state === 'unled') && streams?.streams?.length)
+    // STRM-10: in a project built as streams, a stream to lead from here, each with who leads it now.
+    for (const s of streams.streams.filter((x) => !(streams.mine ?? []).includes(x.name)))
+      lines.push({
+        kind: 'loop',
+        text: `${s.label ?? s.name}: ${s.lead ? `led by ${s.lead.member}` : 'no session leads it'}`,
+        stream: s.name,
+        actions: [{ id: 'leadHere', label: `Lead ${s.name}` }],
+      });
   else if (loop?.state === 'elsewhere' || loop?.state === 'unled')
     // SESS-2: another session leads the project, or none does; this one never prompts its lead.
     lines.push({

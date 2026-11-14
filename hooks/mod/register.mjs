@@ -109,6 +109,14 @@ import { goalOf, nextText } from './mission.mjs';
 import { contextOf, decisionCards, decisionKey, newDecisions } from './decisions.mjs';
 import { DEFAULT_TEAM_UI, TEAM_ID, teamFrame } from './teamview.mjs';
 import { glowOf, mapStoryOf, touchOf } from './codemap.mjs';
+import {
+  scopeOf,
+  scopeWord,
+  scopedCheck,
+  scopedState,
+  scopedStatus,
+  streamLines,
+} from './streamview.mjs';
 import { harnessSettings } from '../lib/harness.mjs';
 import {
   REVIEW_WAIT_MS,
@@ -378,6 +386,12 @@ export function register(on) {
         const valid = Boolean(check?.valid);
         const status = valid ? await json('status') : null;
         const nextStep = valid ? await json('next', '--session', session) : null;
+        // STRM-10: in a project built as streams, this session's views are its own streams'.
+        const streams =
+          valid && check.streams?.length
+            ? await json('streams', '--session', session).catch(() => null)
+            : null;
+        const scope = scopeOf(streams);
         const all = valid ? await json('requests') : null;
         // OWN-1: this session's decisions, and how many wait in each other session; null from a code-kit
         // that can't say, where every open decision shows.
@@ -443,11 +457,16 @@ export function register(on) {
         const atWork = agentsAtWork(await $.agent.list().catch(() => []));
         const before = { state: model.state, status: model.status, queue: model.queue };
         model = {
-          state: projectState(check, status, nextStep, atWork),
+          state: scopedState(
+            projectState(scopedCheck(check, scope), scopedStatus(status, scope), nextStep, atWork),
+            scope,
+          ),
           requests,
           stops,
           queue,
-          status,
+          status: scopedStatus(status, scope),
+          streams,
+          scope,
           timeline,
           adapters,
           check,
@@ -1381,7 +1400,18 @@ export function register(on) {
         return lease.mine;
       },
       // LOOP-10: the person moves the loop to this session; the other stops prompting its lead.
-      leadHere: async () => {
+      leadHere: async (line) => {
+        // STRM-10: a stream chosen to lead from here becomes this session's stream first.
+        if (line?.stream) {
+          const ran = await $.process
+            .run(['node', cli, 'sessions', 'lead', line.stream, '--session', session], { cwd })
+            .catch(() => ({ exitCode: 1, stderr: '', stdout: '' }));
+          if (ran.exitCode !== 0) {
+            notice = `This session couldn't lead ${line.stream}: ${firstLine(ran) || 'code-kit sessions lead failed'}.`;
+            $.ui.invalidate('ui.render');
+            return;
+          }
+        }
         if (!(await act.lead({ take: true }))) {
           notice = "This session couldn't take the loop: code-kit loop lead failed.";
           $.ui.invalidate('ui.render');
@@ -3164,6 +3194,8 @@ export function register(on) {
       {
         state,
         status: model.status ?? null,
+        scope: scopeWord(model.scope),
+        streams: streamLines(model.streams, model.scope),
         loop: loopView,
         needs,
         live,
@@ -3283,6 +3315,7 @@ export function register(on) {
       {
         state: stateNow(),
         status: model.status ?? null,
+        scope: scopeWord(model.scope),
         loop: { ...loopNow(now), queue: model.queue ?? [] },
         needs: needsOf(linesNow(now)),
         leadBusy: Boolean(leadTurn),

@@ -65,6 +65,8 @@ export function layout(map, width = 100) {
   // A gutter of GUTTER cells left of each column carries the imports between files of one layer.
   const columns = layers.map((layer, i) => ({
     layer,
+    // STRM-10: a column says whose layer it is, core or a stream's module.
+    label: map.owners?.[layer] ? `${layer} · ${map.owners[layer]}` : layer,
     x: GUTTER + i * (colW + COL_GAP),
     width: colW,
   }));
@@ -118,7 +120,7 @@ export function mapRows(map, { glow = {}, selected = null, width = 100 } = {}) {
     grid[y][x] = { ch, style, ...(lane ? { lane } : {}) };
   };
   for (const c of L.columns) {
-    const label = fit(c.layer, c.width);
+    const label = fit(c.label ?? c.layer, c.width);
     [...label].forEach((ch, i) => put(c.x + i, 0, ch, 'dim'));
   }
   // Edges first, so the boxes draw over their ends: from the importer's side to the imported's.
@@ -248,7 +250,7 @@ export function mapSvg(map, { glow = {}, selected = null, tints = {}, width = 10
   const parts = [];
   for (const c of L.columns)
     parts.push(
-      `<text x="${10 + c.x * CW}" y="${10 + RH * 0.8}" fill="#7f8c8d" font-size="11">${esc(c.layer)}</text>`,
+      `<text x="${10 + c.x * CW}" y="${10 + RH * 0.8}" fill="#7f8c8d" font-size="11">${esc(c.label ?? c.layer)}</text>`,
     );
   for (const f of map.files)
     for (const target of f.imports) {

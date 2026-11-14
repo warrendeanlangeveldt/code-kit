@@ -127,6 +127,12 @@ export function laneOfFile(rel, config) {
     : null;
 }
 
+/** STRM-10: each layer's owner in a project built as streams: its stream, or `core`; {} without streams. */
+function ownersOf(config) {
+  if (!config.streams) return {};
+  return Object.fromEntries(config.layers.map((l) => [l.name, l.stream ?? 'core']));
+}
+
 /**
  * MAP-1: a story's code: { story, layers, files: [{ path, layer, lane, imports }] }. `layers` are the
  * config's layers in their order, then `tests` and `other` where any file falls there; each file's
@@ -160,6 +166,8 @@ export function storyMap(root, story, config, from) {
   return {
     story: { id: story.id, title: story.title, lane: story.lane, state: story.state },
     layers,
+    // STRM-10: in a project built as streams, whose each layer is: a stream's module, or core.
+    owners: ownersOf(config),
     files,
   };
 }
@@ -255,6 +263,8 @@ export function projectMap(root, config, tracked, { depth = 3, most = 60 } = {})
   return {
     story: { id: PROJECT, title: 'The whole project', lane: null, state: null },
     layers,
+    // STRM-10: in a project built as streams, whose each layer is: a stream's module, or core.
+    owners: ownersOf(config),
     files,
   };
 }
