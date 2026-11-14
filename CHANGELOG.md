@@ -2,6 +2,10 @@
 
 What changed in each release of code-kit, newest first. Versions follow the plugin manifest and the npm package `@warren-dean/code-kit`. Each release is also on [GitHub Releases](https://github.com/warrendeanlangeveldt/code-kit/releases).
 
+## Unreleased
+
+- **A stream's loop gets its own stream's step.** The mod asked `code-kit next` without naming its session, so in a project built as streams a stream's lead could be prompted with the project's next step, another stream's story among them. It now names the session, and each lead's loop gets only its own stream's work.
+
 ## 0.36.1 (2026-11-14)
 
 - **`/code-kit:lead` moves the lead itself.** Typing `/code-kit:lead` (or `/code-kit:lead <stream>`) answered with which session leads and a `!` command for you to run, since the hooks refuse moving the lead from an agent. Typing the command is already your choice, so code-kit now records this session as the lead, of the stream you named, as the prompt arrives; the skill confirms it, says what it means, and moves into a worktree when another stream's lead holds the main checkout. A stream that doesn't exist changes nothing, and the answer names the streams.

@@ -377,7 +377,7 @@ export function register(on) {
         const check = parseJson(ran.stdout);
         const valid = Boolean(check?.valid);
         const status = valid ? await json('status') : null;
-        const nextStep = valid ? await json('next') : null;
+        const nextStep = valid ? await json('next', '--session', session) : null;
         const all = valid ? await json('requests') : null;
         // OWN-1: this session's decisions, and how many wait in each other session; null from a code-kit
         // that can't say, where every open decision shows.
@@ -1816,7 +1816,9 @@ export function register(on) {
           }
           return act.submit(prompt, 'restart', story);
         }
-        const ran = await $.process.run(['node', cli, 'next', '--json'], { cwd });
+        const ran = await $.process.run(['node', cli, 'next', '--json', '--session', session], {
+          cwd,
+        });
         // LOOP-13: a parked story stays out of the step until what it waits on moves.
         await act.unpark();
         // LOOP-9: never a story an agent is already at work on, building or reviewing it.
