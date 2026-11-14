@@ -8672,6 +8672,44 @@ else process.exit(1);
       truth(tCli(B, 'who').stdout.includes('the lead session of the studio stream')),
       0,
     );
+    // SESS-2, STRM-2: the person typing /code-kit:lead <stream> is their choice, recorded as it arrives.
+    const C = 'cccc3103-studio';
+    begin(C);
+    const typed = tHook('lead-prompt.mjs', { session_id: C, prompt: '/code-kit:lead studio' });
+    const typedNote = JSON.parse(typed.stdout || '{}').hookSpecificOutput?.additionalContext ?? '';
+    expect(
+      "/code-kit:lead <stream> typed by the person makes the session that stream's lead, and says where to lead from",
+      truth(
+        roleOf(C) === 'lead' &&
+          roleOf(B) === 'working' &&
+          roleOf(A) === 'lead' &&
+          typedNote.includes('leads the studio stream') &&
+          typedNote.includes('lead/studio'),
+        `${roleOf(A)} ${roleOf(B)} ${roleOf(C)} ${typedNote}`,
+      ),
+      0,
+    );
+    const unknown = tHook('lead-prompt.mjs', { session_id: C, prompt: '/code-kit:lead nowhere' });
+    expect(
+      '/code-kit:lead with a stream that does not exist changes nothing, and names the streams',
+      truth(
+        roleOf(C) === 'lead' &&
+          unknown.stdout.includes('no stream') &&
+          unknown.stdout.includes('shop, studio'),
+        unknown.stdout,
+      ),
+      0,
+    );
+    expect(
+      'another prompt is left alone',
+      truth(
+        tHook('lead-prompt.mjs', { session_id: B, prompt: 'lead the studio work from here' })
+          .stdout === '' && roleOf(B) === 'working',
+      ),
+      0,
+    );
+    tCli(B, 'sessions', 'lead', 'studio');
+    tHook('session.mjs', { session_id: C }, ['end']);
     expect(
       "STRM-2 a stream's loop runs in its own lead, beside the other stream's",
       tCli(null, 'loop', 'lead', '--session', B),
