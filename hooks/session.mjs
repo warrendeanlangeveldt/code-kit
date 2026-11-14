@@ -11,6 +11,7 @@ import { loadConfig } from './lib/config.mjs';
 import { releaseSession } from './lib/laneclaims.mjs';
 import { modelOf } from './lib/hook.mjs';
 import { endSession, startSession } from './lib/sessions.mjs';
+import { hasStreams } from './lib/streams.mjs';
 import { projectDir } from './lib/rules.mjs';
 
 let input = {};
@@ -33,6 +34,13 @@ if (config && session && process.argv[2] === 'start') {
     detached: true,
     stdio: 'ignore',
   }).unref();
+  // PROM-1: in a project built as streams, module code that belongs in core is looked for, in the background.
+  if (hasStreams(config))
+    spawn(process.execPath, [cli, 'promote', 'scan', '--quiet'], {
+      cwd: project,
+      detached: true,
+      stdio: 'ignore',
+    }).unref();
   // DUR-4: what an agent left open when the last session stopped is checked against git, in the background.
   spawn(process.execPath, [cli, 'reconcile'], {
     cwd: project,

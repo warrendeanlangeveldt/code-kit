@@ -1,6 +1,6 @@
 ---
 name: decide
-description: The lead decides what a lane asked for and couldn't do itself (a new package, a migration, a protected file, a UX question) against the story's requirements, the spec, the principles and the architecture. Approves it, answers the lane with something that fits better, or takes it to the person only when it crosses a guardrail. Use when code-kit's loop or `code-kit next` says a lane waits on your decision, when a lane hands back a change request, or when the person runs /code-kit:decide [request numbers].
+description: The lead decides what a lane asked for and couldn't do itself (a new package, a migration, a protected file, a UX question), and, as a platform's lead, what a stream asks of core, against the story's requirements, the spec, the principles and the architecture. Approves it, answers the lane with something that fits better, or takes it to the person only when it crosses a guardrail. Use when code-kit's loop or `code-kit next` says a lane waits on your decision, when a lane hands back a change request, or when the person runs /code-kit:decide [request numbers].
 ---
 
 # Decide a lane's request
@@ -57,6 +57,13 @@ For each, read the lane's change request (its report, in `.claude/state/reports/
 
 A request `by: "person"` is a guardrail the lane hit: a spec, a contract, a design, CI, a weakened test, or the running budget. A `cost` request (a commit over the budget, spec 29) is the person's under vibe too, and never goes to them bare: first look for what fits the budget (a smaller size, a cheaper tier or provider, one environment instead of two, a service the story can do without at launch), and send the lane back with it if one does. If none fits, ask them with each option that comes closest, what it gives up and what it saves a month, and the over-budget one with its cost (`code-kit ask … --option …`; under vibe, `--needs payment`). Check the lane really needs it first: often the story can be done inside the guardrail, and you tell the lane how and drop the request. If it does need it, the request is already waiting for the person, in their band and the pane's Needs you. Add your recommendation with `ask` when the choice isn't obvious from the request alone.
 
-## 5. Report
+## 5. Change requests to core
+
+In a project built as streams with a platform stream (spec 31), a stream that needs core changed asks the platform (`code-kit core ask`), and its story waits. As the platform's lead, `core --json` lists them; ids are `C-n`. Judge each as you would a lane's request: the asking story's requirements need it, core doesn't already do it, and core can own it without knowing the stream (no stream's types, data or rules). Then:
+
+- **Accept it** with the platform story that builds it, written in the platform's plan: `code-kit core accept C-n --story ST-n`. The asking story waits for that story to merge.
+- **Decline it** with why, and what the stream can do instead: `code-kit core decline C-n --reason "…"`. The asking story no longer waits.
+
+## 6. Report
 
 One line per request: what was asked, what you decided, and why. "ST-138: pillow approved for api (MED-5 needs HEIC decoding; nothing installed reads HEIC)." Then carry on with the build.

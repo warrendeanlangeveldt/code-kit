@@ -3,6 +3,7 @@
 import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { VIBE, harnessProblems, harnessSettings } from './harness.mjs';
+import { streamProblems } from './streamconfig.mjs';
 import { teamProblems } from './team.mjs';
 import { join } from 'node:path';
 import { DEFAULT_REGISTER } from './costs.mjs';
@@ -95,6 +96,8 @@ export function withDefaults(c) {
       .map((e) => ({ glob: e.glob, reviewer: e.reviewer })),
     protected: [KIT, ...(c.protected ?? []).filter((p) => p.glob !== KIT.glob)],
     layers: c.layers ?? [],
+    // Spec 31: the project's streams; none is one stream holding every lane.
+    streams: c.streams ?? null,
     importAliases: c.importAliases ?? {},
     shell: { block: c.shell?.block ?? [], restricted: c.shell?.restricted ?? [] },
     execution: { unrepeatable: c.execution?.unrepeatable ?? [] },
@@ -407,6 +410,7 @@ export function validate(c) {
   });
   if (c.designGate !== undefined) validateDesignGate(c.designGate, need);
   validateLayers(c, need, each);
+  p.push(...streamProblems(c));
   if (c.shell !== undefined) validateShell(c.shell, lanes, need);
   each('postEdit', (e, at) => {
     need(
@@ -561,6 +565,10 @@ function validateLayers(c, need, each) {
     need(
       l.denyPackages === undefined || isList(l.denyPackages),
       `${at}.denyPackages must be a list of globs`,
+    );
+    need(
+      l.stream === undefined || isStr(l.stream),
+      `${at}.stream must name the stream whose module the layer is (leave it out for core)`,
     );
     need(
       l.label === undefined || isLabel(l.label),

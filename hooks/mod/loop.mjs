@@ -4,6 +4,7 @@
 
 /** The steps the loop hands the lead; the rest (spec-design, init, check) wait for the person. */
 const LEAD_STEPS = new Set([
+  'promote',
   'reconcile',
   'instructions',
   'decide',
@@ -171,6 +172,11 @@ export function leadPrompt(step, { cli = 'code-kit' } = {}) {
     return ids.length
       ? `${step.why ?? 'A lane waits on your decision.'} Run /code-kit:decide ${ids.join(' ')}.`
       : null;
+  // PROM-2: candidates for core, decided by the lead whose they are (the platform's, in a project with one).
+  if (step.step === 'promote')
+    return ids.length
+      ? `${step.why ?? `${ids.join(', ')} are proposed for core.`} Run /code-kit:promote ${ids.join(' ')}.`
+      : null;
   // ONB-3: a companion set up before any coding.
   if (step.step === 'setup')
     return ids.length
@@ -214,6 +220,7 @@ export function stepLabel(step) {
     {
       reconcile: 'Reconcile',
       decide: 'Decide requests',
+      promote: 'Decide for core',
       instructions: 'Update the instructions',
       dispatch: 'Dispatch',
       review: 'Review',

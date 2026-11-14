@@ -16,6 +16,13 @@ import { commandsOf, readsOnly, runs, withoutHeredocs } from '../hooks/lib/shell
 import { storyMerges } from '../hooks/lib/queue.mjs';
 import { INSTRUCTIONS_VERSION, agentRules, leadSection } from '../hooks/lib/instructions.mjs';
 import { createHash } from 'node:crypto';
+import {
+  ownerStreamOf,
+  sharedLanes,
+  streamOfStory,
+  streamProblems,
+} from '../hooks/lib/streams.mjs';
+import { cloneCandidate, findClones, tokensOf } from '../hooks/lib/promote.mjs';
 import { publishTitle } from '../hooks/lib/publish.mjs';
 import {
   NOT_CODE_KIT,
@@ -1208,6 +1215,7 @@ test('SET-1 the harness settings: defaults, validation and typed values', async 
       lanes: { model: null, contextLimit: 250000 },
     },
     slices: { open: 1 },
+    promote: { tokens: 60, coreClones: 'note' },
     background: { pauseAtPercent: 80 },
     compact: { at: 40, milestone: 'ask' },
     notify: { on: true },
@@ -4232,7 +4240,92 @@ test('ONB-8 the instructions version is raised whenever what they say changes', 
       version: INSTRUCTIONS_VERSION,
       rendered: createHash('sha256').update(rendered).digest('hex'),
     },
-    { version: 14, rendered: 'be8dc80aca6cdce21824211bd685bdd952422325938627aba3cd482aacef1402' },
+    { version: 15, rendered: 'be8dc80aca6cdce21824211bd685bdd952422325938627aba3cd482aacef1402' },
     'The instructions changed: raise INSTRUCTIONS_VERSION in hooks/lib/instructions.mjs, then set this version and hash.',
+  );
+});
+
+// Spec 31: the stream model, the pure parts.
+const streamed = {
+  version: 1,
+  docs: { plan: 'docs/plan' },
+  lead: { paths: ['docs/**'] },
+  lanes: {
+    'api-a': { agent: 'a-engineer', paths: ['src/a/**'] },
+    'api-b': { agent: 'b-engineer', paths: ['src/b/**'] },
+    'api-core': { agent: 'core-engineer', paths: ['src/core/**'] },
+  },
+  layers: [
+    { name: 'core', paths: ['src/core/**'], mayImport: [] },
+    { name: 'a', stream: 'a', paths: ['src/a/**'], mayImport: ['core', 'b'] },
+    { name: 'b', stream: 'b', paths: ['src/b/**'], mayImport: ['core'] },
+  ],
+  streams: {
+    a: { lanes: ['api-a'], plan: 'docs/plan/a.md' },
+    b: { lanes: ['api-b'], plan: 'docs/plan/b.md' },
+  },
+};
+
+test('STRM-1 streams in the config: a lane in no stream is a shared core lane; what is wrong is named', () => {
+  const config = withDefaults(streamed);
+  assert.deepEqual(validate(streamed), []);
+  assert.deepEqual(sharedLanes(config), ['api-core']);
+  assert.equal(ownerStreamOf(config, 'src/a/x.ts'), 'a');
+  assert.equal(ownerStreamOf(config, 'src/core/x.ts'), 'core');
+  assert.equal(streamOfStory(config, { lane: 'api-core', file: 'docs/plan/b.md' }), 'b');
+  assert.deepEqual(streamProblems({ layers: [{ name: 'x', stream: 'a' }] }).length, 1);
+  const platform = {
+    ...streamed,
+    streams: { ...streamed.streams, p: { lanes: [], plan: 'docs/plan/p.md', platform: true } },
+  };
+  assert.match(streamProblems(platform).join(' '), /"api-core" is in no stream/);
+  assert.match(
+    streamProblems({
+      ...streamed,
+      streams: { a: { lanes: ['api-a'], plan: 'elsewhere.md' } },
+    }).join(' '),
+    /inside docs.plan/,
+  );
+});
+
+test('STRM-5 a module may use core and its own stream, never another stream; core uses no module', () => {
+  const config = withDefaults(streamed);
+  assert.match(
+    layerProblems('src/a/x.ts', "import { y } from '../b/y';", config).join(' '),
+    /b is the b stream's module/,
+  );
+  assert.match(
+    layerProblems('src/core/x.ts', "import { y } from '../a/y';", config).join(' '),
+    /core never depends on a stream's module/,
+  );
+  assert.deepEqual(layerProblems('src/a/x.ts', "import { y } from '../core/y';", config), []);
+});
+
+test('PROM-1 clones are found by tokens: names, literals, comments and imports aside', () => {
+  const body = (f, a, b) =>
+    `import x from 'y';\n// ${f}\nexport function ${f}(${a}) {\n  let ${b} = 0;\n  for (const r of ${a}) { if (r.n > 1 && r.m) ${b} += r.n * r.m; }\n  return Math.round(${b} * 100) / 100;\n}\n`;
+  assert.ok(!tokensOf(body('f', 'a', 'b'), 'x.ts').some((t) => t.t === 'import'));
+  assert.equal(tokensOf('"""doc\nmore"""\nx = 1\n', 'x.py').length, 3);
+  const texts = {
+    'src/a/t.ts': body('one', 'rows', 's'),
+    'src/b/t.ts': body('two', 'items', 'acc'),
+  };
+  const clones = findClones(texts, (f) => f.split('/')[1], { tokens: 30 });
+  assert.equal(clones.length, 1);
+  const c = cloneCandidate(clones[0]);
+  assert.equal(c.signal, 'clone');
+  assert.deepEqual(c.streams, ['a', 'b']);
+  assert.match(c.what, /\(one\) and src\/b\/t.ts:3-7 \(two\)/);
+  // The same file twice in one stream is no clone across streams.
+  assert.deepEqual(
+    findClones(texts, () => 'a', { tokens: 30 }),
+    [],
+  );
+});
+
+test('PROM-2 the loop prompts the deciding lead to run the promote skill', () => {
+  assert.match(
+    leadPrompt({ step: 'promote', args: 'P-1 P-2', why: 'P-1 and P-2 are proposed for core.' }),
+    /Run \/code-kit:promote P-1 P-2\./,
   );
 });

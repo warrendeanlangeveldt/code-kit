@@ -22,6 +22,17 @@ import { ciFindings } from './ci.mjs';
 import { costReport, infraFiles, money } from './costs.mjs';
 import { storyModels } from './dispatches.mjs';
 import { pickPerLane } from './schedule.mjs';
+import { leadSessions } from './sessions.mjs';
+import { decidedFor, promotions } from './promote.mjs';
+import {
+  coreRequests,
+  hasStreams,
+  heldByCore,
+  lanesToGiveWay,
+  platformOf,
+  streamOfLane,
+  streamOfStory,
+} from './streams.mjs';
 import { reconcileAll } from './events.mjs';
 import { readCache, teamOf } from './team.mjs';
 import { driftHoldWords, driftHolds, driftUnchecked, storyOfBranch } from './teamfacts.mjs';
@@ -133,7 +144,13 @@ const hasMarkdown = (dir) => {
  * review), `merge` (the head of the merge queue, where the lead merges), `wait` (lanes are
  * building) or `done`. `base(config)` resolves the branch lanes merge into.
  */
-export function nextStep(root, base) {
+/**
+ * The next step for the lead. STRM-3: with `stream`, in a project built as streams, only that stream's
+ * stories (a lead with no stream leads every stream without a lead of its own); `projectWide` is whether
+ * this lead also takes the steps for the whole project (code-kit's instructions and rules, the merge
+ * queue, setup), which belong to the lead in the main checkout.
+ */
+export function nextStep(root, base, { stream = null, projectWide = true } = {}) {
   const attention = [];
   // ASK-4: the brief's open questions, for the person's Decisions tab.
   let briefQuestions = [];
@@ -273,7 +290,7 @@ export function nextStep(root, base) {
     // read and validated above; nothing to add
   }
   const [setup] = pendingSetup(raw, root);
-  if (setup) return result('setup', setup.why, { args: setup.skill });
+  if (setup && projectWide) return result('setup', setup.why, { args: setup.skill });
   // ONB-5: a project set up before setup did all of this is told what re-running init adds; when
   // ONB-6 finds what it's missing, no new story starts until init has added it.
   const older = (raw?.setup ?? 1) < SETUP_VERSION;
@@ -304,7 +321,7 @@ export function nextStep(root, base) {
   } catch {
     // an unreadable log: recovery falls back to git, as before
   }
-  if (unsettled.length) {
+  if (unsettled.length && projectWide) {
     const stories = [...new Set(unsettled.map((u) => u.story))];
     return result(
       'reconcile',
@@ -404,6 +421,27 @@ export function nextStep(root, base) {
   // ONB-2: design stories, designed with the person before any screen that depends on them is built.
   const forDesign = readyStories.filter((s) => buildable(s) && s.lane === DESIGN).map((s) => s.id);
   const unbuildable = readyStories.filter((s) => !buildable(s)).map((s) => s.id);
+  // STRM-3: a stream's lead gets its own stream's stories; one leading with no stream of its own gets
+  // those of every stream that has no lead.
+  const streamed = hasStreams(config);
+  const streamOf = new Map(status.stories.map((s) => [s.id, streamOfStory(config, s)]));
+  const led = new Set(leadSessions(root).flatMap((l) => (l.stream ? [l.stream] : [])));
+  const mine = (id) =>
+    !streamed || (stream ? streamOf.get(id) === stream : !led.has(streamOf.get(id)));
+  // STRM-6: every stream's waiting stories, for whose turn a shared core lane is.
+  const othersWaiting = streamed
+    ? [...fixes, ...ready].map((id) => ({
+        lane: status.stories.find((s) => s.id === id)?.lane,
+        stream: streamOf.get(id),
+      }))
+    : [];
+  // STRM-7: a story waiting on a change request to core waits for the platform's decision, or its story.
+  const coreHeld = streamed ? heldByCore(root, status.stories) : new Map();
+  for (const list of [review, building, blocked, fixes, ready, forLead, forDesign, unbuildable])
+    list.splice(0, list.length, ...list.filter(mine));
+  for (const list of [fixes, ready, forLead])
+    list.splice(0, list.length, ...list.filter((id) => !coreHeld.has(id)));
+  for (const [id, why] of coreHeld) if (mine(id)) attention.push(`${why}.`);
   // ONB-6: work already started finishes; nothing new starts until init has filled the gaps.
   const held = gaps.length
     ? [...ready, ...forDesign, ...forLead].sort((a, b) => a.slice(3) - b.slice(3))
@@ -443,7 +481,7 @@ export function nextStep(root, base) {
     attention.push(
       `code-kit's instructions in ${ahead.map((f) => f.file).join(', ')} come from a newer code-kit than this session's: don't write them back. Run /plugin marketplace update code-kit and restart Claude Code.`,
     );
-  if (behind.length) {
+  if (behind.length && projectWide) {
     const legacy = behind.filter((f) => f.state === 'legacy');
     return result(
       'instructions',
@@ -453,7 +491,10 @@ export function nextStep(root, base) {
   }
   // HELM-4: a lane waiting on something the lead decides goes first: the lane can't go on without it.
   const forLeadToDecide = openRequests(root).flatMap((r, i) =>
-    r.lane && decidedBy(r.names, config, { kind: 'lane', lane: r.lane }) === 'lead'
+    r.lane &&
+    decidedBy(r.names, config, { kind: 'lane', lane: r.lane }) === 'lead' &&
+    // STRM-3: a lane's request is its own stream's lead's; a shared core lane's, any lead's.
+    (!streamed || [stream, null].includes(streamOfLane(config, r.lane)) || !stream)
       ? [{ ...r, n: i + 1 }]
       : [],
   );
@@ -463,6 +504,18 @@ export function nextStep(root, base) {
       `${forLeadToDecide.map((r, i) => `${i ? 'the' : 'The'} ${r.lane} lane asks for ${r.names.map((n) => n.replace(/^dep-/, '').replaceAll('+', '/')).join(', ')}`).join('; ')}: yours to decide, against the story's requirements, the spec and the principles.`,
       { args: forLeadToDecide.map((r) => r.n).join(' ') },
     );
+  // STRM-7: a stream's story waits on the platform's decision: the platform's lead decides it first.
+  const platform = streamed ? platformOf(config) : null;
+  const asksOfCore =
+    platform && (stream === platform.name || (!stream && !led.has(platform.name)))
+      ? coreRequests(root).filter((r) => r.state === 'open')
+      : [];
+  if (asksOfCore.length)
+    return result(
+      'decide',
+      `${asksOfCore.map((r) => `${r.stream ?? 'A'} stream's ${r.story} asks core for ${r.what} (${r.id})`).join('; ')}: the platform's to decide. Accept each with the platform story that builds it, or decline it with why.`,
+      { args: asksOfCore.map((r) => r.id).join(' ') },
+    );
   // The merge queue (spec 09): branches the lead's review passed. Under autonomy, where the base's
   // committed rules delegate merges, the lead merges the head first, so dependents see it; otherwise
   // the person does, and always the first merge, which brings code-kit's rules onto the base.
@@ -470,7 +523,7 @@ export function nextStep(root, base) {
   const leadMerges = delegation.delegated && actsAlone(config.harness.autonomy);
   // SETUP-2: a base with no rules committed (a project set up before setup committed them there): the
   // lead puts the approved rules onto it, and the queue merges under them from then on.
-  if (queued.length && delegation.first && !queuePaused)
+  if (queued.length && delegation.first && !queuePaused && projectWide)
     return result(
       'rules',
       `${queued[0]} passed review and is next to merge, but ${delegation.into} has no code-kit rules committed yet. Put the rules the person approved onto it (code-kit queue rules); then the queue merges under them.`,
@@ -495,7 +548,7 @@ export function nextStep(root, base) {
     attention.push(
       `${h.branch} passed review and merges together with ${h.missing.join(', ')}: it waits until ${h.missing.length === 1 ? 'that is' : 'they are'} reviewed and queued.`,
     );
-  if (mergeHead && leadMerges && !merging && !queuePaused)
+  if (mergeHead && leadMerges && !merging && !queuePaused && projectWide)
     return result(
       'merge',
       `${mergeHead.branch} passed review and is next in the merge queue${queued.length > 1 ? ` (then ${queued.filter((b) => b !== mergeHead.branch).join(', ')})` : ''}.`,
@@ -531,6 +584,16 @@ export function nextStep(root, base) {
       .map((c) => c.lane),
     ...status.stories.filter((s) => s.state === 'in progress' && s.lane).map((s) => s.lane),
   ]);
+  // STRM-6: a shared core lane this stream ran last goes to another stream's waiting story first.
+  const giveWay = streamed ? lanesToGiveWay(root, config, stream ?? null, othersWaiting) : [];
+  for (const lane of giveWay) {
+    if (busy.has(lane)) continue;
+    busy.add(lane);
+    attention.push(
+      `The ${lane} lane is core's, shared by the streams, and ran this stream's story last: another stream's story goes first.`,
+    );
+  }
+
   const sched = pickPerLane(status.stories, {
     fixes,
     ready,
@@ -612,8 +675,34 @@ export function nextStep(root, base) {
       `${forLead.join(', ')} ${forLead.length === 1 ? 'is' : 'are'} the lead's own: build ${forLead.length === 1 ? 'it' : 'them'} on ${forLead.map((id) => `lead/${id.toLowerCase()}`).join(', ')}, then review like any branch.`,
       { args: forLead.join(' ') },
     );
+  // PROM-2: with nothing of its own to start, a lead decides the candidates for core that are its to
+  // decide: the platform's, or, without one, its own stream's.
+  const forCore = streamed
+    ? promotions(root).filter((c) => {
+        if (c.state !== 'open') return false;
+        const owner = decidedFor(config, c);
+        return stream ? owner === stream : !led.has(owner);
+      })
+    : [];
+  if (forCore.length)
+    return result(
+      'promote',
+      `${forCore.map((c) => c.id).join(', ')} ${forCore.length === 1 ? 'is' : 'are'} proposed for core: ${forCore
+        .slice(0, 3)
+        .map((c) => c.what)
+        .join(
+          '; ',
+        )}${forCore.length > 3 ? '; …' : ''}. Decide each: promote it with a platform story, or keep it in its module with why.`,
+      { args: forCore.map((c) => c.id).join(' ') },
+    );
   // ONB-6: with nothing in flight, the setup is brought up to date before the next story.
-  if (gaps.length && !building.length && !queued.length)
+  // STRM-3: another stream's lead brings the setup up to date, from the main checkout; this one waits.
+  if (gaps.length && !projectWide)
+    return result(
+      'wait',
+      `${missingWords} The lead in the main checkout brings it up to date with /code-kit:init; this stream's stories start after.`,
+    );
+  if (gaps.length && !building.length && !queued.length && projectWide)
     return result(
       'update',
       `${missingWords} Re-run /code-kit:init before the next story: it shows the person the difference before anything changes.`,
@@ -670,9 +759,11 @@ export function nextStep(root, base) {
       'wait',
       heldOnly ?? `${queued.join(', ')} ${queued.length === 1 ? 'waits' : 'wait'} to be merged.`,
     );
+  // STRM-3: a stream's lead counts its own stream's stories.
+  const own = status.stories.filter((x) => mine(x.id));
   return result(
     'done',
-    `All ${status.stories.length} stories are done; spec-design plans the next milestone or feature.`,
+    `All ${own.length} ${streamed && stream ? `of the ${stream} stream's ` : ''}stories are done; spec-design plans the next milestone or feature.`,
   );
 }
 

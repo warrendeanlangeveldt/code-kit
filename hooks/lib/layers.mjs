@@ -17,6 +17,14 @@ export function importsOf(source) {
   return [...found];
 }
 
+/** STRM-5: how an import from layer `from` to layer `to` crosses the streams: 'module', 'core' or null. */
+export function crossesStreams(from, to) {
+  if (!from || !to || from.name === to.name) return null;
+  if (from.stream && to.stream && from.stream !== to.stream) return 'module';
+  if (!from.stream && to.stream) return 'core';
+  return null;
+}
+
 export const layerOf = (rel, layers) => layers.find((l) => matchesAny(rel, l.paths));
 
 /** The repository path an import points at, or null for a package. */
@@ -46,6 +54,16 @@ export function layerProblems(rel, source, config) {
       continue;
     }
     const to = layerOf(target, config.layers) ?? layerOf(`${target}/index`, config.layers);
+    // STRM-5: a module uses core and its own stream's modules; core uses no module.
+    const crossing = to && crossesStreams(layer, to);
+    if (crossing) {
+      problems.push(
+        crossing === 'core'
+          ? `${rel} (${layer.name}) imports ${spec} (${to.name}); ${layer.name} is core, and core never depends on a stream's module (${to.name} is ${to.stream}'s). Move what core needs into core, or leave it in the module.`
+          : `${rel} (${layer.name}) imports ${spec} (${to.name}); ${to.name} is the ${to.stream} stream's module, and a stream's module may depend only on core and its own stream's modules. Use core's version if it has one; otherwise ask your lead for a change request to the platform to promote what you need into core. Don't copy it.`,
+      );
+      continue;
+    }
     if (to && !allowed.has(to.name)) {
       const may = layer.mayImport.length ? layer.mayImport.join(', ') : 'no other layer';
       problems.push(

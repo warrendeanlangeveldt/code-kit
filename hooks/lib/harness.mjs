@@ -106,6 +106,19 @@ export const SETTINGS = {
     about:
       "How many slices are in focus at once: a free lane builds an open slice's stories first, and may start the next slice only while fewer are open",
   },
+  'promote.tokens': {
+    default: 60,
+    problem: (v) =>
+      Number.isInteger(v) && v >= 20 && v <= 1000 ? null : 'must be a whole number from 20 to 1000',
+    about:
+      'How many tokens of code alike, names aside, make a clone a candidate for core, in a project built as streams',
+  },
+  'promote.coreClones': {
+    default: 'note',
+    problem: (v) => (['note', 'refuse'].includes(v) ? null : 'must be note or refuse'),
+    about:
+      "What verify does with a branch whose module code repeats core's: note it for the review, or refuse it",
+  },
   'background.pauseAtPercent': {
     default: 80,
     problem: (v) =>

@@ -8570,6 +8570,471 @@ else process.exit(1);
     );
   }
 
+  // --- Spec 31: streams and the platform ------------------------------------------------------------
+  {
+    const t = newRepo();
+    cleanups.push(t.dir);
+    const tPut = (rel, body = '') => {
+      mkdirSync(dirname(join(t.dir, rel)), { recursive: true });
+      writeFileSync(join(t.dir, rel), body);
+    };
+    const tHook = (name, input, args = []) =>
+      spawnSync('node', [join(hooks, name), ...args], {
+        input: JSON.stringify({ cwd: t.dir, ...input }),
+        env: { ...process.env, CLAUDE_PROJECT_DIR: t.dir },
+        encoding: 'utf8',
+      });
+    const tCli = (session, ...args) =>
+      spawnSync('node', [join(here, '..', 'bin', 'code-kit.mjs'), ...args], {
+        cwd: t.dir,
+        encoding: 'utf8',
+        env: { ...process.env, ...(session ? { CLAUDE_CODE_SESSION_ID: session } : {}) },
+      });
+    const lanes = {
+      'api-shop': { agent: 'shop-engineer', paths: ['src/shop/**'] },
+      'api-studio': { agent: 'studio-engineer', paths: ['src/studio/**'] },
+      'api-core': { agent: 'core-engineer', paths: ['src/core/**'] },
+    };
+    const layers = [
+      { name: 'core', paths: ['src/core/**'], mayImport: [] },
+      { name: 'shop', stream: 'shop', paths: ['src/shop/**'], mayImport: ['core'] },
+      { name: 'studio', stream: 'studio', paths: ['src/studio/**'], mayImport: ['core', 'shop'] },
+    ];
+    const streams = {
+      shop: { lanes: ['api-shop'], plan: 'docs/plan/shop.md', specs: ['docs/spec/01-shop.md'] },
+      studio: {
+        lanes: ['api-studio'],
+        plan: 'docs/plan/studio.md',
+        specs: ['docs/spec/02-studio.md'],
+      },
+    };
+    const configWith = (extra = {}) =>
+      JSON.stringify({
+        version: 1,
+        setup: 3,
+        docs: { specs: 'docs/spec', plan: 'docs/plan' },
+        lead: { paths: ['docs/**', 'CLAUDE.md', '.gitignore'] },
+        lanes,
+        layers,
+        streams,
+        approvals: { delegate: { dependencies: {} } },
+        ...extra,
+      });
+    tPut('.claude/code-kit.json', configWith());
+    tPut('docs/spec/01-shop.md', '# 01. Shop\n\n### SHOP-1 Round prices to the cent at checkout\n');
+    tPut(
+      'docs/spec/02-studio.md',
+      '# 02. Studio\n\n### STU-1 Round prices to the cent at checkout for bookings\n### STU-2 Book a room\n',
+    );
+    const story = (id, lane, req, deps = 'none') =>
+      `### ${id} ${id}\n\n**Lane:** ${lane}\n**Requirements:** ${req}\n**Depends on:** ${deps}\n**Status:** todo\n\n`;
+    tPut(
+      'docs/plan/shop.md',
+      `# Shop\n\n## M1\n\n${story('ST-1', 'api-shop', 'SHOP-1')}${story('ST-3', 'api-core', 'SHOP-1')}`,
+    );
+    tPut(
+      'docs/plan/studio.md',
+      `# Studio\n\n## M1\n\n${story('ST-2', 'api-studio', 'STU-1')}${story('ST-4', 'api-core', 'STU-2')}`,
+    );
+    t.git('add', '-A');
+    t.git('commit', '-q', '-m', 'streams');
+
+    // STRM-1: a lane is one stream's.
+    tPut(
+      '.claude/bad.json',
+      configWith({
+        streams: { ...streams, studio: { ...streams.studio, lanes: ['api-studio', 'api-shop'] } },
+      }),
+    );
+    expect(
+      'STRM-1 check refuses a lane in two streams, naming both',
+      tCli(null, 'check', '--config', '.claude/bad.json'),
+      1,
+      'the lane "api-shop" is in two streams, shop and studio',
+    );
+
+    const A = 'aaaa3101-shop';
+    const B = 'bbbb3102-studio';
+    const begin = (id) => tHook('session.mjs', { session_id: id }, ['start']);
+    const roleOf = (id) => JSON.parse(tCli(null, 'loop', '--json', '--session', id).stdout).role;
+    const nextOf = (id) => JSON.parse(tCli(id, 'next', '--json').stdout);
+    begin(A);
+    begin(B);
+    tCli(A, 'sessions', 'lead', 'shop');
+    tCli(B, 'sessions', 'lead', 'studio');
+    expect(
+      'STRM-2 two streams lead at once, each its own',
+      truth(roleOf(A) === 'lead' && roleOf(B) === 'lead', `${roleOf(A)} ${roleOf(B)}`),
+      0,
+    );
+    expect(
+      'STRM-2 who says which stream the session leads',
+      truth(tCli(B, 'who').stdout.includes('the lead session of the studio stream')),
+      0,
+    );
+    expect(
+      "STRM-2 a stream's loop runs in its own lead, beside the other stream's",
+      tCli(null, 'loop', 'lead', '--session', B),
+      0,
+    );
+    const second = tHook('guard-paths.mjs', {
+      session_id: B,
+      tool_input: { file_path: join(t.dir, 'docs/plan/studio.md') },
+    });
+    expect(
+      "STRM-2 the second stream's lead writing in the main checkout is refused, saying to use a worktree",
+      truth(
+        second.status === 2 &&
+          second.stderr.includes('the shop lead') &&
+          second.stderr.includes('lead/studio'),
+        second.stderr,
+      ),
+      0,
+    );
+    expect(
+      "STRM-4 a stream's lead may not write another stream's plan, which names that stream",
+      tHook('guard-paths.mjs', {
+        session_id: A,
+        tool_input: { file_path: join(t.dir, 'docs/plan/studio.md') },
+      }),
+      2,
+      'docs/plan/studio.md is the studio stream',
+    );
+    expect(
+      "STRM-4 nor another stream's spec",
+      tHook('guard-paths.mjs', {
+        session_id: A,
+        tool_input: { file_path: join(t.dir, 'docs/spec/02-studio.md') },
+      }),
+      2,
+      'the studio stream',
+    );
+    expect(
+      'STRM-4 its own plan it writes',
+      tHook('guard-paths.mjs', {
+        session_id: A,
+        tool_input: { file_path: join(t.dir, 'docs/plan/shop.md') },
+      }),
+      0,
+    );
+    const [nextA, nextB] = [nextOf(A), nextOf(B)];
+    expect(
+      "STRM-3 each stream's lead is offered its own stream's stories only",
+      truth(
+        nextA.step === 'dispatch' &&
+          nextA.args.split(' ').includes('ST-1') &&
+          !nextA.args.includes('ST-2') &&
+          nextB.args.split(' ').includes('ST-2') &&
+          !nextB.args.includes('ST-1'),
+        JSON.stringify([nextA, nextB]),
+      ),
+      0,
+    );
+
+    // STRM-2, STRM-6: a stream's lanes are started by its own lead; a shared core lane by any.
+    const startAgent = (session, agent, description) =>
+      tHook('guard-agent.mjs', {
+        session_id: session,
+        tool_input: { subagent_type: agent, description, prompt: 'x' },
+      });
+    expect(
+      "STRM-2 a stream's lead starting another stream's lane agent is refused, naming that stream",
+      startAgent(A, 'studio-engineer', 'Build ST-2'),
+      2,
+      'the api-studio lane is the studio stream',
+    );
+    expect(
+      'STRM-6 a shared core lane is started by either lead',
+      startAgent(A, 'core-engineer', 'Build ST-3'),
+      0,
+    );
+    // A session leading with no stream of its own keeps to the streams without a lead of theirs.
+    const G = 'dddd3104-general';
+    begin(G);
+    tCli(G, 'sessions', 'lead');
+    expect(
+      'STRM-2 a lead with no stream may not start the lane of a stream that has its own lead',
+      startAgent(G, 'studio-engineer', 'Build ST-2'),
+      2,
+      'the streams without a lead of their own',
+    );
+    expect(
+      "STRM-4 nor write that stream's plan",
+      tHook('guard-paths.mjs', {
+        session_id: G,
+        tool_input: { file_path: join(t.dir, 'docs/plan/studio.md') },
+      }),
+      2,
+      'the studio stream',
+    );
+    tHook('session.mjs', { session_id: G }, ['end']);
+    tCli(null, 'lanes', 'release', 'api-core');
+    const turnA = nextOf(A);
+    const turnB = nextOf(B);
+    expect(
+      'STRM-6 the core lane the shop stream ran last goes to the studio stream next',
+      truth(
+        !turnA.args.includes('ST-3') &&
+          turnA.attention.some((x) => x.includes('api-core lane is core')) &&
+          turnB.args.includes('ST-4'),
+        JSON.stringify([turnA, turnB]),
+      ),
+      0,
+    );
+
+    // STRM-5: a module uses core and its own stream's modules; core uses no module.
+    tPut(
+      '.claude/state/spec-check/main.md',
+      '# Spec check\n\n| Requirement | Status | Where | Note |\n| --- | --- | --- | --- |\n| STU-1 | missing | | |\n',
+    );
+    const write = (agent, rel, content) =>
+      tHook('guard-paths.mjs', {
+        session_id: B,
+        agent_type: agent,
+        tool_name: 'Write',
+        tool_input: { file_path: join(t.dir, rel), content },
+      });
+    const crossing = write(
+      'studio-engineer',
+      'src/studio/book.ts',
+      "import { cart } from '../shop/cart';\nexport const book = cart;\n",
+    );
+    expect(
+      "STRM-5 a module importing another stream's module is refused, though mayImport lists it, saying not to copy",
+      truth(
+        crossing.status === 2 &&
+          crossing.stderr.includes("shop is the shop stream's module") &&
+          crossing.stderr.includes("Don't copy it"),
+        crossing.stderr,
+      ),
+      0,
+    );
+    expect(
+      'STRM-5 core importing a module is refused',
+      write('core-engineer', 'src/core/price.ts', "import { cart } from '../shop/cart';\n"),
+      2,
+      'core never depends on a stream',
+    );
+    expect(
+      'STRM-5 a module importing core passes',
+      write(
+        'studio-engineer',
+        'src/studio/book.ts',
+        "import { price } from '../core/price';\nexport const book = price;\n",
+      ),
+      0,
+    );
+    expect(
+      'PROM-1 the refused import is a candidate for core, naming what was wanted',
+      truth(
+        JSON.parse(tCli(null, 'promote', '--json').stdout).some(
+          (c) => c.kind === 'import' && c.what.includes('src/shop/cart'),
+        ),
+      ),
+      0,
+    );
+
+    // PROM-1: the same code in two streams, names aside, is a candidate; so is a copy, and a repeated requirement.
+    const rounding = (fn, items, sum) =>
+      `export function ${fn}(${items}) {\n  let ${sum} = 0;\n  for (const line of ${items}) {\n    if (line.price > 0 && line.quantity > 0) ${sum} += line.price * line.quantity;\n    if (line.discount) ${sum} -= line.discount;\n  }\n  const cents = Math.round(${sum} * 100);\n  return { cents, display: (cents / 100).toFixed(2) };\n}\n`;
+    tPut('src/shop/total.ts', rounding('cartTotal', 'lines', 'total'));
+    tPut('src/studio/total.ts', rounding('bookingTotal', 'rows', 'acc'));
+    tPut('src/core/price.ts', 'export const price = 1;\n');
+    t.git('add', '-A');
+    t.git('commit', '-q', '-m', 'two totals');
+    tPut(
+      '.claude/state/events/ST-2.jsonl',
+      `${JSON.stringify({ phase: 'end', kind: 'run', target: `cp /elsewhere/kit/widgets.ts ${join(t.dir, '.claude/worktrees/lane-studio/src/studio/widgets.ts')}`, result: { ok: true } })}\n`,
+    );
+    expect('PROM-1 promote scan looks for candidates', tCli(null, 'promote', 'scan'), 0);
+    const listed = JSON.parse(tCli(null, 'promote', '--json').stdout);
+    const clone = listed.find((c) => c.kind === 'clone');
+    expect(
+      'PROM-1 a renamed copy in two streams is one candidate naming both files and functions',
+      truth(
+        clone &&
+          clone.where.includes('src/shop/total.ts') &&
+          clone.where.includes('src/studio/total.ts') &&
+          clone.what.includes('cartTotal') &&
+          clone.what.includes('bookingTotal'),
+        JSON.stringify(listed),
+      ),
+      0,
+    );
+    expect(
+      'PROM-1 a copy into a module from outside the project is a candidate',
+      truth(
+        listed.some(
+          (c) =>
+            c.kind === 'copy' &&
+            c.what.includes('src/studio/widgets.ts') &&
+            c.what.includes('outside'),
+        ),
+        JSON.stringify(listed),
+      ),
+      0,
+    );
+    const repeats = tCli(B, 'promote', '--story', 'ST-2');
+    expect(
+      "PROM-1 a story's requirement another stream's spec already has is listed",
+      truth(
+        repeats.stdout.includes("STU-1 repeats shop's SHOP-1"),
+        repeats.stdout + repeats.stderr,
+      ),
+      0,
+    );
+    const alone = 'export function only(x) {\n' + '  return x;\n'.repeat(40) + '}\n';
+    tPut('src/shop/alone.ts', alone);
+    t.git('add', '-A');
+    t.git('commit', '-q', '-m', 'one stream only');
+    tCli(null, 'promote', 'scan');
+    expect(
+      'PROM-1 code only one stream has is no candidate',
+      truth(
+        !JSON.parse(tCli(null, 'promote', '--json').stdout).some((c) =>
+          c.where.includes('src/shop/alone.ts'),
+        ),
+      ),
+      0,
+    );
+    // PROM-3: without a platform, the stream it touches decides; a rejected candidate isn't raised again.
+    expect(
+      'PROM-3 a candidate is rejected with why',
+      tCli(A, 'promote', 'reject', clone.id, '--reason', 'alike by accident'),
+      0,
+    );
+    tCli(null, 'promote', 'scan');
+    expect(
+      'PROM-3 found again with the same evidence, it stays rejected',
+      truth(
+        JSON.parse(tCli(null, 'promote', '--json').stdout).find((c) => c.id === clone.id).state ===
+          'rejected',
+      ),
+      0,
+    );
+
+    // STRM-7, STRM-8: with a platform stream, core is its own; the streams ask it.
+    tPut(
+      '.claude/code-kit.json',
+      configWith({
+        streams: {
+          ...streams,
+          platform: { lanes: ['api-core'], plan: 'docs/plan/platform.md', platform: true },
+        },
+      }),
+    );
+    tPut('docs/plan/shop.md', `# Shop\n\n## M1\n\n${story('ST-1', 'api-shop', 'SHOP-1')}`);
+    tPut('docs/plan/studio.md', `# Studio\n\n## M1\n\n${story('ST-2', 'api-studio', 'STU-1')}`);
+    tPut(
+      'docs/plan/platform.md',
+      `# Platform\n\n## M1\n\n${story('ST-3', 'api-core', 'SHOP-1')}${story('ST-4', 'api-core', 'STU-2')}`,
+    );
+    t.git('add', '-A');
+    t.git('commit', '-q', '-m', 'a platform');
+    const P = 'cccc3103-platform';
+    begin(P);
+    tCli(P, 'sessions', 'lead', 'platform');
+    expect(
+      "STRM-6 with a platform, a stream's lead starting a core lane agent is refused, saying to ask the platform",
+      startAgent(B, 'core-engineer', 'Build ST-4'),
+      2,
+      'core ask',
+    );
+    expect(
+      "STRM-8 a stream's lead approving for a core lane is refused: it's the platform's",
+      tCli(B, 'approve', 'dep-zod', '--lane', 'api-core', '--delegated', '--reason', 'x'),
+      1,
+      'which owns core',
+    );
+    const asked = tCli(B, 'core', 'ask', 'a shared price rule', '--story', 'ST-2');
+    expect(
+      'STRM-7 a stream asks core for what its story needs',
+      truth(asked.status === 0 && asked.stdout.includes('C-1'), asked.stdout + asked.stderr),
+      0,
+    );
+    const waitingB = nextOf(B);
+    expect(
+      "STRM-7 the asking story waits on the platform's decision",
+      truth(
+        !(waitingB.args ?? '').includes('ST-2') &&
+          waitingB.attention.some((x) =>
+            x.includes("ST-2 waits on the platform's decision on C-1"),
+          ),
+        JSON.stringify(waitingB),
+      ),
+      0,
+    );
+    const decideP = nextOf(P);
+    expect(
+      "STRM-7 the platform's lead is asked to decide it",
+      truth(decideP.step === 'decide' && decideP.args === 'C-1', JSON.stringify(decideP)),
+      0,
+    );
+    expect(
+      'STRM-7 a stream lead may not decide it',
+      tCli(B, 'core', 'accept', 'C-1', '--story', 'ST-3'),
+      1,
+      "the platform's to decide",
+    );
+    expect(
+      'STRM-7 the platform accepts it with the story that builds it',
+      tCli(P, 'core', 'accept', 'C-1', '--story', 'ST-3'),
+      0,
+    );
+    expect(
+      'STRM-7 the asking story then waits for that story',
+      truth(nextOf(B).attention.some((x) => x.includes('ST-2 waits for ST-3'))),
+      0,
+    );
+    // PROM-2: with a platform, it decides the candidates for core.
+    expect(
+      "PROM-2 the platform's lead is offered the open candidates",
+      truth(
+        JSON.parse(tCli(null, 'promote', '--json').stdout).some((c) => c.state === 'open') &&
+          tCli(B, 'promote', 'accept', 'P-1', '--story', 'ST-4').status === 1,
+      ),
+      0,
+    );
+
+    // PROM-4: with promote.coreClones at refuse, a branch whose module code repeats core's fails verify.
+    tPut('src/core/round.ts', rounding('roundLines', 'lines', 'total'));
+    t.git('add', '-A');
+    t.git('commit', '-q', '-m', 'core rounding');
+    tPut(
+      '.claude/code-kit.json',
+      configWith({
+        streams: {
+          ...streams,
+          platform: { lanes: ['api-core'], plan: 'docs/plan/platform.md', platform: true },
+        },
+        harness: { promote: { coreClones: 'refuse' } },
+      }),
+    );
+    t.git('add', '-A');
+    t.git('commit', '-q', '-m', 'refuse core clones');
+    t.git('checkout', '-q', '-b', 'api-studio/st-2');
+    tPut('src/studio/again.ts', rounding('studioRound', 'items', 'sum'));
+    t.git('add', '-A');
+    t.git('commit', '-q', '-m', 'ST-2: rounding again');
+    const verified = tCli(null, 'verify', '--base', 'main', '--no-checks');
+    expect(
+      "PROM-4 verify refuses module code that repeats core's, naming core's file",
+      truth(
+        verified.status !== 0 &&
+          `${verified.stdout}${verified.stderr}`.includes("repeats core's src/core/round.ts"),
+        verified.stdout + verified.stderr,
+      ),
+      0,
+    );
+    const reviewed = tCli(null, 'promote', 'scan', '--branch', 'api-studio/st-2');
+    expect(
+      "PROM-2 a review's scan of the branch says to use core's",
+      truth(reviewed.stdout.includes("use core's"), reviewed.stdout + reviewed.stderr),
+      0,
+    );
+    t.git('checkout', '-q', 'main');
+  }
+
   // --- SESS-1 to SESS-5: sessions as members of the team ------------------------------------------
   {
     const t = newRepo();

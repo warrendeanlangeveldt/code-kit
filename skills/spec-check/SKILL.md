@@ -18,7 +18,8 @@ The project's specs are in the folder named by `docs.specs` in `.claude/code-kit
 | Requirement | Status (done / partial / missing / conflicts) | Where | Note |
 | ----------- | --------------------------------------------- | ----- | ---- |
 
-6. **List questions** for the lead wherever the spec is missing, ambiguous, or contradicts the code or another spec. Don't resolve them by guessing.
+6. **In a project built as streams** (the config has `streams`), run `node "${CLAUDE_PLUGIN_ROOT}/bin/code-kit.mjs" promote --story <ST-n>`: it lists each requirement of the story that another stream's spec already has. Don't build it again: note it in the table, and ask the lead whether it comes from core (a change request to the platform) or from that stream.
+7. **List questions** for the lead wherever the spec is missing, ambiguous, or contradicts the code or another spec. Don't resolve them by guessing.
 
 ## Output
 
