@@ -85,7 +85,7 @@ A clone is found by tokens, not text: each file's code is read as tokens with na
 
 ### STRM-2 One lead per stream
 
-A stream has at most one lead session. `/code-kit:lead <stream>` gives the person `code-kit sessions lead <stream>`, which makes the session its stream's lead (choosing it is the person's act, as SESS-2's Lead from here is). A session started while another lead is live is a working session until the person names its stream. A lead with no stream of its own leads every stream that has none, so one session alone still leads the whole project. One lead may write in the main checkout; every other stream's lead works in a worktree on its own lead branch (`lead/<stream>`), whose plan and spec changes reach the base through the merge queue like any branch (SESS-5). A working session belongs to one stream, and its task leases paths in it.
+A stream has at most one lead session. The person typing `/code-kit:lead <stream>` makes the session its stream's lead as the prompt arrives (code-kit runs `code-kit sessions lead <stream>` for it; choosing it is the person's act, as SESS-2's Lead from here is, so an agent can't). A session started while another lead is live is a working session until the person names its stream. A lead with no stream of its own leads every stream that has none, so one session alone still leads the whole project. One lead may write in the main checkout; every other stream's lead works in a worktree on its own lead branch (`lead/<stream>`), whose plan and spec changes reach the base through the merge queue like any branch (SESS-5). A working session belongs to one stream, and its task leases paths in it.
 
 **Acceptance**
 
