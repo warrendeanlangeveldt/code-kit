@@ -2,9 +2,10 @@
 
 What changed in each release of code-kit, newest first. Versions follow the plugin manifest and the npm package `@warren-dean/code-kit`. Each release is also on [GitHub Releases](https://github.com/warrendeanlangeveldt/code-kit/releases).
 
-## Unreleased
+## 0.36.1 (2026-11-14)
 
 - **`/code-kit:lead` moves the lead itself.** Typing `/code-kit:lead` (or `/code-kit:lead <stream>`) answered with which session leads and a `!` command for you to run, since the hooks refuse moving the lead from an agent. Typing the command is already your choice, so code-kit now records this session as the lead, of the stream you named, as the prompt arrives; the skill confirms it, says what it means, and moves into a worktree when another stream's lead holds the main checkout. A stream that doesn't exist changes nothing, and the answer names the streams.
+- **Re-running init asks about product lines.** `/code-kit:init` asked whether the product has separate product lines only on a project with no specs, or drafted streams when the architecture already laid out a core and modules. A project whose brief or specs name several product lines, with code laid out by technical role, was never asked. init now asks once, naming the lines it found, on a first run and on every re-run while the config has no `streams`.
 
 ## 0.36.0 (2026-11-14)
 

@@ -61,7 +61,7 @@ Write `.claude/code-kit.draft.json`. Follow `${CLAUDE_PLUGIN_ROOT}/README.md` â€
   - `agent`: a kebab-case agent name, for example `api-engineer`;
   - `paths` and `exclude`: every path must have exactly one owner.
   - `label` (optional): what the lane delivers, in a few words ("Screens", "Tests"), when its name doesn't say it.
-- **`streams` (spec 31), only when the product has separate product lines:** the architecture says so (a core and a module per line), or, without specs, ask once: "Do separate teams, or sessions, build separate product lines of this product?" If not, leave `streams` out: one lead runs every lane, as before. If so:
+- **`streams` (spec 31), only when the product has separate product lines:** when the architecture lays out a core and a module per line, draft them. When the brief, the specs or the plan name more than one product line or offering (for different users, on a shared platform), or there are no specs, ask once: "Do separate teams, or sessions, build separate product lines of this product?", naming the lines you found. If not, leave `streams` out: one lead runs every lane, as before. If so:
   - `docs.plan` is a folder (`docs/plan/`) and each stream has its own plan file in it;
   - `"streams": { "<line>": { "label", "lanes", "plan", "specs" } }`, each lane in exactly one stream: a line's lanes own its modules (`api-<line>`, `web-<line>`);
   - each module's layer gets `"stream": "<line>"`; core's layers have none. The import check then refuses a module importing another line's module, and core importing a module;
@@ -191,6 +191,7 @@ Re-run whenever the build has moved on: new apps or packages, folders that moved
    - the security reviewer (`.claude/agents/security-reviewer.md`), unless the product handles no sign-in, personal data, payments, outside input or secrets; and, as a proposal for the person, a threat model and security requirements for each spec that lacks them (spec-design's section 4);
    - `"adapters": { "<name>": true }` for a companion that's installed but not set up, which is then set up before any code.
    - project standards, when the project has no `docs/standards.md`: suggest them as section 2's Standards describes, moving the engineering rules out of `docs/principles.md`, and protect the file.
+   - streams, when the config has no `streams` (whatever its `setup`) and the brief, the specs or the plan name more than one product line: ask the question section 2 gives, naming the lines, and on a yes draft them as section 4 describes.
    - a running budget, when the config has no `cost` (whatever its `setup`): ask the person for it as section 2 describes. Then cost what's already defined in the infrastructure files, or deployed, into `docs/costs.md`, a row per paid thing at its real size, and run `code-kit cost`. When it's over the budget, bring the person options that fit (spec-design's architecture step lists the kinds), each with what it gives up and what it saves a month, and record their choice in the brief's decision log; the stories that bring it within budget go in the plan.
 3. **Show the difference:**
 
@@ -201,7 +202,7 @@ Re-run whenever the build has moved on: new apps or packages, folders that moved
 
    `diff` lists lanes, layers, checks and rules that were added (`+`), removed (`-`) or changed (`~`), and how many files change owner, route by route. Explain each change in a sentence, with where it came from: the doc section, or the folder in the repository.
 
-4. **Adding streams to a project that started as one (spec 31):** when the person now builds separate product lines, draft `streams` as in section 2, splitting each technical lane into a core lane and a lane per line, and each layer into core and a module per line. Where the code isn't split into those folders yet, don't move it in the update: write the move as stories (in the platform's plan, or the lead's own), lower layers first, a few files each, every story switching the code that imports what it moved, and say so in the diff. Until a story moves a file, the file stays with the lane that owns it today.
+4. **Adding streams to a project that started as one (spec 31):** when the person says they now build separate product lines, or answers yes to the question above, draft `streams` as in section 2, splitting each technical lane into a core lane and a lane per line, and each layer into core and a module per line. Where the code isn't split into those folders yet, don't move it in the update: write the move as stories (in the platform's plan, or the lead's own), lower layers first, a few files each, every story switching the code that imports what it moved, and say so in the diff. Until a story moves a file, the file stays with the lane that owns it today.
 5. **Also propose:**
    - agent files for new lanes, and updates to agents whose paths changed, and to the security reviewer when the specs' threat models changed;
    - **project skills**, by reading the recipes in the docs again and comparing them with `.claude/skills/`:
