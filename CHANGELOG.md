@@ -4,6 +4,7 @@ What changed in each release of code-kit, newest first. Versions follow the plug
 
 ## Unreleased
 
+- **Each stream's lead sees its own stream in the mod.** The panes showed the whole project to every session, so a stream's lead saw the other streams' lanes, stories and milestone as if it ran them. Now the Build panel, the Lanes panel, what's ready and the Trail are the stream's own, each named for it, with a line per other stream (who leads it and what its lanes are on) and one for the shared core lanes. A session that leads nothing offers **Lead `<stream>`** for each stream, and the Code map labels each layer core or its stream's module.
 - **A stream's loop gets its own stream's step.** The mod asked `code-kit next` without naming its session, so in a project built as streams a stream's lead could be prompted with the project's next step, another stream's story among them. It now names the session, and each lead's loop gets only its own stream's work.
 
 ## 0.36.1 (2026-11-14)
