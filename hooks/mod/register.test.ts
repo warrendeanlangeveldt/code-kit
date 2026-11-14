@@ -183,6 +183,7 @@ function project() {
     // The CLI commands that never answer: their run rejects, as one past its time does.
     timesOut: new Set<string>(),
     duringNext: null as null | (() => unknown), // run while `code-kit next` runs, after it read
+    nextArgs: [] as string[][], // each `code-kit next` the mod ran, its arguments
   };
 }
 type World = ReturnType<typeof project>;
@@ -211,6 +212,7 @@ function stub(on: any, w: World) {
         }),
       );
     if (sub === 'next') {
+      w.nextArgs.push([...argv.slice(3)]);
       const shown = JSON.stringify(w.next);
       // What happens while `next` runs, after it read the project.
       const during = w.duringNext;
@@ -2276,6 +2278,9 @@ test('LOOP-1 and LOOP-2 with the lead idle, the loop dispatches every ready stor
   expect(w.prompts).toEqual([
     'Dispatch ST-9, ST-10, ST-11, ST-12: run /code-kit:dispatch ST-9 ST-10 ST-11 ST-12.',
   ]);
+  // STRM-3: every `next` names this session, so a stream's lead is given only its own stream's step.
+  expect(w.nextArgs.length).toBeGreaterThan(0);
+  expect(w.nextArgs.every((args) => args.join(' ').includes('--session s1'))).toBe(true);
   await lanes($);
   const ui = await pane($, PANE);
   // UI-5: the step is in the Log.
