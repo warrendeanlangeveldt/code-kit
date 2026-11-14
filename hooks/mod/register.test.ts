@@ -183,6 +183,8 @@ function project() {
     // The CLI commands that never answer: their run rejects, as one past its time does.
     timesOut: new Set<string>(),
     duringNext: null as null | (() => unknown), // run while `code-kit next` runs, after it read
+    nextArgs: [] as string[][], // each `code-kit next` the mod ran, its arguments
+    streams: null as any, // STRM-10: `code-kit streams --json --session`
   };
 }
 type World = ReturnType<typeof project>;
@@ -211,6 +213,7 @@ function stub(on: any, w: World) {
         }),
       );
     if (sub === 'next') {
+      w.nextArgs.push([...argv.slice(3)]);
       const shown = JSON.stringify(w.next);
       // What happens while `next` runs, after it read the project.
       const during = w.duringNext;
@@ -259,6 +262,8 @@ function stub(on: any, w: World) {
     if (sub === 'task') return ran(0, JSON.stringify(w.task));
     if (sub === 'decisions')
       return w.decisions ? ran(0, JSON.stringify(w.decisions)) : ran(1, '', 'unexpected decisions');
+    if (sub === 'streams')
+      return ran(0, JSON.stringify(w.streams ?? { streams: [], shared: [], mine: [] }));
     if (sub === 'sessions') {
       w.acts.push([...argv.slice(2)]);
       return ran(0, 'Seen.');
@@ -2276,6 +2281,9 @@ test('LOOP-1 and LOOP-2 with the lead idle, the loop dispatches every ready stor
   expect(w.prompts).toEqual([
     'Dispatch ST-9, ST-10, ST-11, ST-12: run /code-kit:dispatch ST-9 ST-10 ST-11 ST-12.',
   ]);
+  // STRM-3: every `next` names this session, so a stream's lead is given only its own stream's step.
+  expect(w.nextArgs.length).toBeGreaterThan(0);
+  expect(w.nextArgs.every((args) => args.join(' ').includes('--session s1'))).toBe(true);
   await lanes($);
   const ui = await pane($, PANE);
   // UI-5: the step is in the Log.
@@ -2909,6 +2917,72 @@ test('SESS-2 with no session leading, a working session says so and offers Lead 
   ).toBeDefined();
   expect(await ui.find({ key: 'band-leadHere' })).toBeDefined();
   await ui.unmount();
+});
+
+// STRM-10: a project built as streams, with this session leading shop.
+const twoStreams = (mine: string[]) => ({
+  mine,
+  streams: [
+    {
+      name: 'shop',
+      lanes: ['web'],
+      stories: ['ST-4', 'ST-6'],
+      requirements: [],
+      lead: mine.includes('shop') ? { session: 's1', member: 'me/s1', own: true } : null,
+      running: [],
+      held: [{ story: 'ST-6', why: "ST-6 waits on the platform's decision on C-1 (a price API)" }],
+      toDecide: [],
+    },
+    {
+      name: 'studio',
+      lanes: ['api'],
+      stories: ['ST-7'],
+      requirements: [],
+      lead: { session: 's-other', member: 'kim/s-other', own: true },
+      running: [{ lane: 'api', story: 'ST-7' }],
+      held: [],
+      toDecide: [],
+    },
+  ],
+  shared: [{ lane: 'core', running: null, turn: 'studio' }],
+});
+
+test("STRM-10 a stream's lead sees its own stream: its lanes and the shared ones, the other stream a line, what core holds", async ($, on) => {
+  const w = project();
+  (w.check as any).streams = ['shop', 'studio'];
+  w.streams = twoStreams(['shop']);
+  await start($, on, w);
+  await lanes($);
+  const ui = await pane($, PANE);
+  const all = await textsOf(ui);
+  expect(all).toMatch(/Lanes: shop/);
+  expect(all).toMatch(/Build: shop/);
+  expect(await ui.find({ key: 'lane-api' })).toBeUndefined();
+  expect(all).toMatch(/studio · led by kim\/s-other · api ST-7/);
+  expect(all).toMatch(/core, shared in turns: core \(studio's turn last\)/);
+  expect(all).toMatch(/ST-6 waits on the platform's decision on C-1/);
+  // The ready line is its own stream's: ST-7 and ST-9 aren't shop's.
+  expect(all).toMatch(/ready: ST-6 \(the lead's own\)\n/);
+  await ui.unmount();
+});
+
+test('STRM-10 a working session offers each stream to lead from here, and leading one names it', async ($, on) => {
+  const w = project();
+  w.role = 'working';
+  (w.check as any).streams = ['shop', 'studio'];
+  w.streams = twoStreams([]);
+  const clock = await start($, on, w);
+  await settle(clock);
+  const ui = await bandUi($);
+  expect(await ui.find({ type: 'Text', text: 'shop: no session leads it' })).toBeDefined();
+  await press($, 'band-leadHere');
+  await settle(clock);
+  expect(w.acts).toContainEqual(['sessions', 'lead', 'shop', '--session', 's1']);
+  await ui.unmount();
+  await lanes($);
+  const p = await pane($, PANE);
+  expect(await textsOf(p)).toMatch(/studio · led by kim\/s-other · api ST-7/);
+  await p.unmount();
 });
 
 test('SESS-1 the mod says the session is still there every minute', async ($, on) => {

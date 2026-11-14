@@ -153,6 +153,16 @@ One merge queue merges every stream's branches onto one base, and each batch run
 - Given a brief naming two product lines on a shared platform, then init's draft has two streams, a module layer per stream in each technical layer, and core layers without a stream.
 - Given a brief with one product line, then init's draft has no `streams`.
 
+### STRM-10 Each lead sees its own stream
+
+In the code-kit mod, a session that leads a stream (or works in one) sees that stream's build: the Build panel's milestone and bar count its stories and requirements, the Lanes panel draws its lanes and the shared core lanes, what's ready is its own, and the Trail is its requirements'. Each panel's name says the stream ("Lanes: play"), and so does the band's build line. The rest of the project is a line per other stream (its lead and what its lanes are on) and one for the shared core lanes (what each is on, and whose turn it was last). The stream's stories core holds, and what its lead has to decide for core, are a line each. A session that leads nothing sees the whole project, and offers each other stream to lead from here, with who leads it now; choosing one makes the session that stream's lead. The Code map labels each layer core or its stream's module.
+
+**Acceptance**
+
+- Given a session leading `a`, then its Lanes panel draws `a`'s lanes and the shared core lanes, not `b`'s, and a line says who leads `b` and what its lanes are on.
+- Given a working session in a project with streams, then the band offers **Lead `a`** and **Lead `b`**, and pressing one makes the session that stream's lead.
+- Given a project with streams, then the Code map's columns say core, or the stream whose module the layer is.
+
 ### PROM-1 Signals that module code belongs in core
 
 code-kit records a promotion candidate when it sees:
