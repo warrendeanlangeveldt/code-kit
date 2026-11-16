@@ -6659,6 +6659,18 @@ const op = process.argv[2]; let input = ''; process.stdin.on('data', (d) => (inp
     'may depend on schemas',
   );
   expect(
+    'a layer that names one file holds the imports of it written without its extension',
+    edited('packages/domain/src/d.ts', "import { R } from '../../registry';\n", 'ai-engineer'),
+    2,
+    'may depend on schemas',
+  );
+  expect(
+    'and with the .js a TypeScript import gives it',
+    edited('packages/domain/src/e.ts', "import { R } from '../../registry.js';\n", 'ai-engineer'),
+    2,
+    'may depend on schemas',
+  );
+  expect(
     'domain may not import I/O packages',
     edited('packages/domain/src/c.ts', "import { readFileSync } from 'node:fs';\n", 'ai-engineer'),
     2,
@@ -6681,6 +6693,8 @@ const op = process.argv[2]; let input = ''; process.stdin.on('data', (d) => (inp
     'packages/domain/src/a.ts',
     'packages/domain/src/b.ts',
     'packages/domain/src/c.ts',
+    'packages/domain/src/d.ts',
+    'packages/domain/src/e.ts',
     'workers/providers/p.ts',
     'workers/services/s.ts',
     'docs/a.lint',
