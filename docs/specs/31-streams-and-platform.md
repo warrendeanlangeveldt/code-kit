@@ -70,7 +70,7 @@ A stream's lanes own its modules, so two streams never share a lane. A module ma
 | Core request | `.claude/state/core-requests.jsonl`      | id (`C-n`), stream, session, story, what, why, and the platform's decision `{ at, by, how: accepted \| declined, story, reason }` (STRM-7)                                     |
 | Promotion    | `.claude/state/promotions.jsonl`         | id, what (the code: files and symbols), where it is (each stream's copy or user), evidence (the signals, PROM-1), raised, decided `{ at, by, how: promoted \| rejected, why }` |
 
-A clone is found by tokens, not text: each file's code is read as tokens with names and literals masked (comments, strings and whitespace out), so a copy with renamed variables still matches, and matching runs of at least `harness.promote.tokens` tokens (default 60) are found by hashing every window of them. It reads JavaScript, TypeScript and Python, as the layer rules do, with no dependencies.
+A clone is found by tokens, not text: each file's code is read as tokens with names and literals masked (comments, strings and whitespace out), so a copy with renamed variables still matches, and matching runs of at least `harness.promote.tokens` tokens (default 100) are found by hashing every window of them. It reads JavaScript, TypeScript and Python, as the layer rules do, with no dependencies.
 
 ## Requirements
 
@@ -85,7 +85,7 @@ A clone is found by tokens, not text: each file's code is read as tokens with na
 
 ### STRM-2 One lead per stream
 
-A stream has at most one lead session. The person typing `/code-kit:lead <stream>` makes the session its stream's lead as the prompt arrives (code-kit runs `code-kit sessions lead <stream>` for it; choosing it is the person's act, as SESS-2's Lead from here is, so an agent can't). A session started while another lead is live is a working session until the person names its stream. A lead with no stream of its own leads every stream that has none, so one session alone still leads the whole project. One lead may write in the main checkout; every other stream's lead works in a worktree on its own lead branch (`lead/<stream>`), whose plan and spec changes reach the base through the merge queue like any branch (SESS-5). A working session belongs to one stream, and its task leases paths in it.
+A stream has at most one lead session. The person typing `/code-kit:lead <stream>` makes the session its stream's lead as the prompt arrives (code-kit runs `code-kit sessions lead <stream>` for it; choosing it is the person's act, as SESS-2's Lead from here is, so an agent can't). A session started while another lead is live is a working session until the person names its stream. A lead with no stream of its own leads every stream that has none, so one session alone still leads the whole project. One lead may write in the main checkout; every other stream's lead works in a worktree on its own lead branch (`lead/<stream>`), whose plan and spec changes reach the base through the merge queue like any branch (SESS-5). That worktree is the lead's for good: it stays when its branch merges, and the lead's commands there (`defer`, say) read its plan as well as the main checkout's. A working session belongs to one stream, and its task leases paths in it.
 
 **Acceptance**
 
@@ -94,11 +94,12 @@ A stream has at most one lead session. The person typing `/code-kit:lead <stream
 
 ### STRM-3 The loop and `next` run per stream
 
-A stream's lead gets only its stream's work: `next` offers its stream's ready stories to its stream's lanes, the loop prompts it only for those, and its band's mission rows describe its stream. A decision is still owned by the session that raised it (OWN-1). `status` and the trail read every stream, each under its own heading.
+A stream's lead gets only its stream's work: `next` offers its stream's ready stories to its stream's lanes, the loop prompts it only for those, and its band's mission rows describe its stream. The merge queue is the project's (spec 09): the lead in the main checkout merges its head first, and another stream's lead merges it whenever its own steps are only waiting, so the queue never waits on one session's own work. A decision is still owned by the session that raised it (OWN-1). `status` and the trail read every stream, each under its own heading.
 
 **Acceptance**
 
 - Given a story ready in each stream, then stream `a`'s lead is offered `a`'s story only, and `b`'s lead `b`'s.
+- Given a branch at the head of the merge queue and stream `b`'s lead (not in the main checkout) with only waiting to do, then `b`'s lead is offered the merge; one merge runs at a time across the leads.
 
 ### STRM-4 A plan per stream
 
@@ -127,6 +128,10 @@ A stream with `platform: true` owns core: core's lanes are its lanes, and its le
 
 - Given no platform stream, a core story ready in each of `a` and `b`, and `a`'s last on the core lane, then `next` offers the core lane `b`'s story.
 - Given a platform stream, then a stream's lead isn't offered core stories, and starting a core lane's agent from it is refused, naming the platform's lead.
+
+A shared list in core (an allow-list of routes, a catalogue of lines, a registry) is a file every stream's story adds entries to. Making each addition a change request to core costs a core story, a core lane and a merge together for one line, so the config can name such a file a shared list: an `anyActor` entry with `"adds": true`, and its reviewer. Any lane adds entries to it in its own branch; changing or removing what's already there stays its owner's, refused as the edit is made and again by `verify`, with a change request to core for it.
+
+- Given `src/core/allow.ts` a shared list, when `b`'s lane adds a line to it, then the edit passes; when it changes a line already there, then it's refused, saying the file is a shared list and to ask core; and a branch of `b`'s that takes a line out fails verify, naming the line.
 
 ### STRM-7 Change requests to core
 
@@ -182,11 +187,15 @@ Generic code that only one stream uses is not a candidate, however general it lo
 
 ### PROM-2 Candidates are seen where they're decided
 
-`code-kit promote [--json]` lists the open candidates, each with its evidence and how many streams it touches. The lead's review of a branch notes any it adds: "this repeats core's X: use it" for a clone of core, "this matches `b`'s X: proposed for core" for a clone across streams. `next` offers the platform lead (or, without one, each stream's lead in turn) to decide open candidates when no story waits on them.
+`code-kit promote [--json]` lists the open candidates, each with its evidence and how many streams it touches. The lead's review of a branch notes any it adds: "this repeats core's X: use it" for a clone of core, "this matches `b`'s X: proposed for core" for a clone across streams. `next` offers the platform lead (or, without one, each stream's lead in turn) to decide open candidates when no story waits on them. A module's code that repeats core's is its own stream's lead's to decide, not the platform's: core has the code already, and switching to it is the module's work.
+
+A candidate is worth a lead's attention only when it's real, so the clones are kept few: one candidate per pair of files, however many runs they share; tests left out, since they repeat their setup by nature; and runs of at least 100 tokens by default (`harness.promote.tokens`). A scan of the whole project withdraws each open clone it no longer finds, the code having changed or the rules, and one found again opens again.
 
 **Acceptance**
 
 - Given a branch that adds a clone of core code, then its review lists it as a finding naming core's file.
+- Given module code in `a` that repeats core's, then the candidate is `a`'s lead's to decide.
+- Given two streams' tests alike, then no candidate is raised; given an open clone the code no longer has, then a scan of the whole project withdraws it.
 
 ### PROM-3 A promotion is platform work
 

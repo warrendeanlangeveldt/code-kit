@@ -107,7 +107,7 @@ export const SETTINGS = {
       "How many slices are in focus at once: a free lane builds an open slice's stories first, and may start the next slice only while fewer are open",
   },
   'promote.tokens': {
-    default: 60,
+    default: 100,
     problem: (v) =>
       Number.isInteger(v) && v >= 20 && v <= 1000 ? null : 'must be a whole number from 20 to 1000',
     about:

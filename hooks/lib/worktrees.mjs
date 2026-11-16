@@ -87,7 +87,8 @@ function hasOwnCommits(root, branch) {
 
 /**
  * LEAN-6: each worktree but the main checkout: { path, branch, story, merged, clean, changes, report,
- * kind, missing, locked: { reason, pid, live } | null, agentAtWork, here }. `here`: this command runs in
+ * kind, missing, locked: { reason, pid, live } | null, agentAtWork, here, streamLead }. `streamLead`: the
+ * stream whose lead works in it (on lead/<stream>, or its lead-<stream> folder), which stays. `here`: this command runs in
  * it (`cwd`, the process's own folder unless given), so taking it away would leave the shell nowhere. `kind` is `agent` (under
  * .claude/worktrees), `merge` (a temporary merge checkout) or `other` (one the person made). `clean` and
  * `changes` are null where they weren't read: an unmerged worktree stays whatever it holds (cleanOf reads it).
@@ -149,11 +150,17 @@ export function worktrees(root, config, now = Date.now(), cwd = cwdNow()) {
       const records = lines ? lines.filter(recordsOnly).length : 0;
       const lane = branch?.includes('/') ? branch.split('/')[0] : null;
       const report = branch ? `.claude/state/reports/${branch.replace(/[^\w.-]+/g, '_')}.md` : null;
+      // STRM-2: a stream's lead works from a worktree of its own, on lead/<stream>, for good.
+      const streamLead =
+        Object.keys(config?.streams ?? {}).find(
+          (name) => branch === `lead/${name}` || basename(path) === `lead-${name}`,
+        ) ?? null;
       return {
         path,
         branch,
         story,
         kind,
+        streamLead,
         missing,
         merged,
         clean: changes === null ? null : changes === 0 && records === 0,
@@ -226,6 +233,8 @@ export function keptBecause(w) {
   // A merge run from inside a lane's worktree mustn't take away the folder its own shell is in.
   if (w.here)
     return 'this command runs in it; it goes at the next merge or `code-kit worktrees prune` run from elsewhere';
+  if (w.streamLead)
+    return `it's the ${w.streamLead} stream's lead's own worktree, where that lead keeps working after its branch merges`;
   if (w.locked && !w.locked.pid)
     return `it's locked${w.locked.reason ? ` (${w.locked.reason})` : ''}`;
   if (!w.branch) return 'it has no branch checked out';

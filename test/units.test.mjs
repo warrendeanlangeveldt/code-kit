@@ -1215,7 +1215,7 @@ test('SET-1 the harness settings: defaults, validation and typed values', async 
       lanes: { model: null, contextLimit: 250000 },
     },
     slices: { open: 1 },
-    promote: { tokens: 60, coreClones: 'note' },
+    promote: { tokens: 100, coreClones: 'note' },
     background: { pauseAtPercent: 80 },
     compact: { at: 40, milestone: 'ask' },
     notify: { on: true },

@@ -6,7 +6,7 @@
 import { execFileSync, spawnSync } from 'node:child_process';
 import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { freshCheckout } from './checkout.mjs';
+import { freshCheckout, matchInstalls } from './checkout.mjs';
 import { runChecks } from './checks.mjs';
 import { isDependencyFile } from './dependencies.mjs';
 import { literalPath, matchesAny } from './glob.mjs';
@@ -250,7 +250,9 @@ export const onlyUnreachable = (output) =>
  * REG-1: whether a fix's tests prove its bug. In a fresh checkout of the branch (with its own copy of
  * the checkout's installs, after `regression.prepare`), the checks covering the tests it added
  * or changed must pass, and fail, as the bug, once every change outside the tests goes back to `from`.
- * Problems in words; empty when the tests prove it.
+ * Problems in words; empty when the tests prove it. Where the tests couldn't run at all (an install that
+ * failed, a tool that isn't installed, a run out of time), the list is marked `unrun`: that says nothing
+ * against the branch, so the queue keeps it in its place.
  */
 export function proveFix({ root, from, base, changed, config, fix }) {
   const what = `This branch fixes ${fix.what}${fix.story ? ` (${fix.story})` : ''}`;
@@ -292,17 +294,30 @@ export function proveFix({ root, from, base, changed, config, fix }) {
     ];
   const strict = { ...config, checks: covering.map((c) => ({ ...c, ifMissing: 'fail' })) };
   const actor = { kind: 'lead', label: 'lead' };
+  const unrun = (text) => Object.assign([text], { unrun: true });
   const { dir, remove } = freshCheckout(root, 'HEAD', { prefix: 'code-kit-fix-' });
   try {
     const prepare = config.regression?.prepare;
     if (prepare) {
       const res = spawnSync(prepare, { cwd: dir, shell: true, encoding: 'utf8', timeout: 900000 });
       if (res.status !== 0)
-        return [
+        return unrun(
           `regression.prepare (\`${prepare}\`) failed in a fresh checkout, so the fix's tests couldn't run:\n${`${res.stdout ?? ''}${res.stderr ?? ''}`.trim().split('\n').slice(-20).join('\n')}`,
-        ];
+        );
+    } else {
+      // As the queue's merged tree does (MQ-1): the installs copied in match this tree, or the
+      // project's install runs here first.
+      const installs = matchInstalls(dir, root);
+      if (installs.failed)
+        return unrun(
+          `The fix's tests couldn't run: the fresh checkout's ${installs.differ.join(', ')} differ from the installs copied in, and \`${installs.command}\` ${installs.failed.missing ? "isn't installed here" : 'failed'} there${installs.failed.output ? `:\n${installs.failed.output}` : '.'}`,
+        );
     }
     const { failure: withFix } = runChecks(strict, tests, dir, actor);
+    if (withFix?.missing || withFix?.timedOut)
+      return unrun(
+        `${what}, but its tests couldn't run in a fresh checkout of the branch (${withFix.title.replace(/ Fix it:$/, '')}). That says nothing against the fix; if they need an install or a build first, set regression.prepare.`,
+      );
     if (withFix)
       return [
         `${what}, but its tests don't pass in a fresh checkout of the branch (${withFix.title.replace(/ Fix it:$/, '')}), so code-kit can't tell whether they fail without it. If they need an install or a build first, set regression.prepare.${withFix.output ? `\n${String(withFix.output).trim().split('\n').slice(-20).join('\n')}` : ''}`,

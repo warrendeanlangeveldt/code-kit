@@ -18,6 +18,7 @@ import {
   projectWorktrees,
   relativeTo,
   worktreeRoot,
+  sharedListProblem,
   subagentOf,
   writeProblem,
 } from './lib/rules.mjs';
@@ -100,6 +101,9 @@ function textAfter(before) {
 const file = join(root, rel);
 const before = existsSync(file) ? readFileSync(file, 'utf8') : null;
 const after = textAfter(before);
+// STRM-6: a shared list takes additions from any lane; what's already there is its owner's.
+const listed = sharedListProblem(actorFor(input, root, config), rel, before, after, config);
+if (listed) block(`Blocked: ${listed}`);
 if (after !== null) {
   const existing = new Set(before === null ? [] : layerProblems(rel, before, config));
   const added = newProblems(rel, layerProblems(rel, after, config), loadBaseline(project)).filter(

@@ -108,15 +108,53 @@ export function markMerging(root, branch, pid, now = Date.now()) {
   );
 }
 
-/** Whether `entry` is being merged now: marked merging by a process still running. */
-export function mergingNow(entry) {
-  if (entry?.state !== 'merging' || !entry.pid) return false;
+const LOCK_FILE = '.claude/state/merge-queue.lock';
+const lockFile = (root) => join(projectWorktrees(root)[0] ?? root, LOCK_FILE);
+const running = (pid) => {
   try {
-    process.kill(entry.pid, 0);
+    process.kill(pid, 0);
     return true;
   } catch (e) {
     return e.code === 'EPERM';
   }
+};
+
+/**
+ * MQ-1: one merge at a time, whichever lead runs it: takes the queue's lock for process `pid`, created
+ * only if no other holds it, so two leads that read the same head can't both merge it. A lock whose
+ * process has ended is taken over. Returns null when taken, else the pid that holds it.
+ */
+export function takeMergeLock(root, pid = process.pid) {
+  const file = lockFile(root);
+  mkdirSync(dirname(file), { recursive: true });
+  for (let tries = 0; tries < 2; tries++) {
+    try {
+      writeFileSync(file, String(pid), { flag: 'wx' });
+      return null;
+    } catch (e) {
+      if (e.code !== 'EEXIST') throw e;
+      const holder = Number(readFileSync(file, 'utf8')) || null;
+      if (holder && holder !== pid && running(holder)) return holder;
+      rmSync(file, { force: true });
+    }
+  }
+  return Number(readFileSync(file, 'utf8')) || null;
+}
+
+/** Gives the queue's lock back, if `pid` holds it. */
+export function releaseMergeLock(root, pid = process.pid) {
+  const file = lockFile(root);
+  try {
+    if (Number(readFileSync(file, 'utf8')) === pid) rmSync(file, { force: true });
+  } catch {
+    // no lock
+  }
+}
+
+/** Whether `entry` is being merged now: marked merging by a process still running. */
+export function mergingNow(entry) {
+  if (entry?.state !== 'merging' || !entry.pid) return false;
+  return running(entry.pid);
 }
 
 /**

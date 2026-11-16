@@ -70,7 +70,10 @@ export function mergeDelegation(root, config, file = CONFIG_FILE) {
 /** The rules the hooks enforce: the project's config, the kit's defaults, and any active adapters. */
 export const effectiveConfig = (raw, root) => applyAdapters(withDefaults(raw), raw, root);
 
-/** An anyActor entry's glob: entries are globs, or { glob, reviewer } naming who reviews changes to it. */
+/**
+ * An anyActor entry's glob: entries are globs, or { glob, reviewer, adds } naming who reviews changes to
+ * it, and with `adds`, a shared list: any lane adds to it, and only its owner changes what's there.
+ */
 export const anyActorGlob = (e) => (typeof e === 'string' ? e : e?.glob);
 
 /**
@@ -94,6 +97,8 @@ export function withDefaults(c) {
     anyActorReviewers: (c.anyActor ?? [])
       .filter((e) => typeof e === 'object' && e?.reviewer)
       .map((e) => ({ glob: e.glob, reviewer: e.reviewer })),
+    // STRM-6: shared lists (an allow-list, a catalogue), which every stream's branches add entries to.
+    sharedLists: (c.anyActor ?? []).filter((e) => e?.adds === true).map((e) => e.glob),
     protected: [KIT, ...(c.protected ?? []).filter((p) => p.glob !== KIT.glob)],
     layers: c.layers ?? [],
     // Spec 31: the project's streams; none is one stream holding every lane.
@@ -397,9 +402,10 @@ export function validate(c) {
             isStr(e) ||
             (isObj(e) &&
               isStr(e.glob) &&
-              (e.reviewer === undefined || e.reviewer === 'lead' || lanes.includes(e.reviewer))),
+              (e.reviewer === undefined || e.reviewer === 'lead' || lanes.includes(e.reviewer)) &&
+              (e.adds === undefined || typeof e.adds === 'boolean')),
         )),
-    '"anyActor" must be a list of globs, or { "glob", "reviewer" } with the lead or a lane as reviewer',
+    '"anyActor" must be a list of globs, or { "glob", "reviewer", "adds" } with the lead or a lane as reviewer and "adds" true or false',
   );
   each('protected', (e, at) => {
     need(isStr(e.glob) && isStr(e.why), `${at} needs "glob" and "why"`);
