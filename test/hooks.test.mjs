@@ -5692,6 +5692,37 @@ const op = process.argv[2]; let input = ''; process.stdin.on('data', (d) => (inp
       ),
       0,
     );
+    zKit('queue', 'add', 'web/st-24');
+    zKit('queue', 'add', 'web/st-25');
+    zKit('queue', 'merge', '--delegated');
+    // A group whose one member no longer merges onto the base: that member goes back alone.
+    z.git('checkout', '-q', '-b', 'web/st-30', 'main');
+    writeFileSync(join(z.dir, 'apps/office/a.ts'), 'export const a = 30;\n');
+    z.git('commit', '-q', '-am', 'ST-30');
+    z.git('checkout', '-q', '-b', 'web/st-31', 'main');
+    writeFileSync(join(z.dir, 'apps/office/b.ts'), 'export const b = 31;\n');
+    z.git('add', '-A');
+    z.git('commit', '-q', '-m', 'ST-31');
+    z.git('checkout', '-q', 'main');
+    writeFileSync(join(z.dir, 'apps/office/a.ts'), 'export const a = 2;\n');
+    z.git('commit', '-q', '-am', 'a moves on');
+    zKit('queue', 'add', 'web/st-31', '--with', 'web/st-30');
+    zKit('queue', 'add', 'web/st-30');
+    const partly = zKit('queue', 'merge', '--delegated');
+    const after = JSON.parse(zKit('queue', '--json').stdout);
+    const stateOf = (b) => after.filter((e) => e.branch === b).at(-1)?.state;
+    expect(
+      'MQ-7 a member that conflicts with the base goes back alone; its partner keeps its place and its review',
+      truth(
+        partly.status === 1 &&
+          partly.stderr.includes('web/st-30 is sent back to its lane') &&
+          partly.stderr.includes('web/st-31 keeps its place') &&
+          stateOf('web/st-30') === 'sent back' &&
+          stateOf('web/st-31') === 'waiting',
+        partly.stdout + partly.stderr + JSON.stringify(after),
+      ),
+      0,
+    );
   }
 
   // --- the merge queue: in the order reviews passed, each verified against the base as it is then ---
@@ -5783,6 +5814,17 @@ const op = process.argv[2]; let input = ''; process.stdin.on('data', (d) => (inp
       1,
       'is being merged now',
     );
+    markMerging(q.dir, 'web/st-a', null);
+    // Two leads that read the same head at once: the one that takes the queue's lock merges.
+    writeFileSync(join(q.dir, '.claude/state/merge-queue.lock'), String(process.pid));
+    expect(
+      'MQ-1 a queue merge another lead has just started (it holds the lock) starts nothing',
+      qKit('queue', 'merge', '--delegated'),
+      1,
+      'Another queue merge',
+    );
+    // A lock left by a run that died is taken over.
+    writeFileSync(join(q.dir, '.claude/state/merge-queue.lock'), String(2 ** 22 + 12345));
     // A run that died leaves its mark behind: a process no longer running doesn't hold the head.
     markMerging(q.dir, 'web/st-a', 2 ** 22 + 12345);
     expect(
@@ -8902,9 +8944,12 @@ else process.exit(1);
 
     // PROM-1: the same code in two streams, names aside, is a candidate; so is a copy, and a repeated requirement.
     const rounding = (fn, items, sum) =>
-      `export function ${fn}(${items}) {\n  let ${sum} = 0;\n  for (const line of ${items}) {\n    if (line.price > 0 && line.quantity > 0) ${sum} += line.price * line.quantity;\n    if (line.discount) ${sum} -= line.discount;\n  }\n  const cents = Math.round(${sum} * 100);\n  return { cents, display: (cents / 100).toFixed(2) };\n}\n`;
+      `export function ${fn}(${items}) {\n  let ${sum} = 0;\n  for (const line of ${items}) {\n    if (line.price > 0 && line.quantity > 0) ${sum} += line.price * line.quantity;\n    if (line.discount) ${sum} -= line.discount;\n    if (line.tax && line.tax.rate > 0) ${sum} += line.price * line.quantity * line.tax.rate;\n  }\n  if (${sum} < 0) ${sum} = 0;\n  const cents = Math.round(${sum} * 100);\n  const whole = Math.floor(cents / 100);\n  return { cents, whole, display: (cents / 100).toFixed(2), free: cents === 0 };\n}\n`;
     tPut('src/shop/total.ts', rounding('cartTotal', 'lines', 'total'));
     tPut('src/studio/total.ts', rounding('bookingTotal', 'rows', 'acc'));
+    // Tests alike in two streams say nothing about where code belongs.
+    tPut('src/shop/total.test.ts', rounding('cartCase', 'lines', 'total'));
+    tPut('src/studio/total.test.ts', rounding('bookingCase', 'rows', 'acc'));
     tPut('src/core/price.ts', 'export const price = 1;\n');
     t.git('add', '-A');
     t.git('commit', '-q', '-m', 'two totals');
@@ -8923,6 +8968,14 @@ else process.exit(1);
           clone.where.includes('src/studio/total.ts') &&
           clone.what.includes('cartTotal') &&
           clone.what.includes('bookingTotal'),
+        JSON.stringify(listed),
+      ),
+      0,
+    );
+    expect(
+      "PROM-1 tests alike in two streams aren't a candidate",
+      truth(
+        !listed.some((c) => c.where.some((w) => w.endsWith('.test.ts'))),
         JSON.stringify(listed),
       ),
       0,
@@ -9099,6 +9152,130 @@ else process.exit(1);
       0,
     );
     t.git('checkout', '-q', 'main');
+
+    // PROM-2: module code that repeats core is its own stream's to switch, not the platform's to decide.
+    tCli(null, 'promote', 'scan');
+    const coreClone = () =>
+      JSON.parse(tCli(null, 'promote', '--json').stdout).find(
+        (c) => c.kind === 'core-clone' && c.where.includes('src/shop/total.ts'),
+      );
+    expect(
+      "PROM-2 a module's copy of core's code is its own stream's lead's to decide, not the platform's",
+      truth(coreClone()?.decides === 'shop', JSON.stringify(coreClone())),
+      0,
+    );
+    // A clone the code no longer has isn't left for anyone to decide.
+    tPut('src/shop/total.ts', 'export const cartTotal = (lines) => lines.length;\n');
+    t.git('add', '-A');
+    t.git('commit', '-q', '-m', 'shop totals its own way');
+    tCli(null, 'promote', 'scan');
+    expect(
+      'PROM-1 a whole-project scan withdraws an open clone it no longer finds',
+      truth(coreClone()?.state === 'withdrawn', JSON.stringify(coreClone())),
+      0,
+    );
+
+    // STRM-6: a shared list takes any lane's additions in its own branch; what's there is its owner's.
+    tPut('src/core/allow.ts', "export const allowed = [\n  '/shop',\n];\n");
+    tPut(
+      '.claude/code-kit.json',
+      configWith({
+        streams: {
+          ...streams,
+          platform: { lanes: ['api-core'], plan: 'docs/plan/platform.md', platform: true },
+        },
+        anyActor: [{ glob: 'src/core/allow.ts', reviewer: 'api-core', adds: true }],
+        approvals: { delegate: { dependencies: {}, merge: true } },
+        harness: { autonomy: 'autonomous' },
+      }),
+    );
+    t.git('add', '-A');
+    t.git('commit', '-q', '-m', 'a shared allow-list');
+    const listEdit = (old_string, new_string) =>
+      tHook('guard-paths.mjs', {
+        session_id: B,
+        agent_type: 'studio-engineer',
+        tool_name: 'Edit',
+        tool_input: { file_path: join(t.dir, 'src/core/allow.ts'), old_string, new_string },
+      });
+    expect(
+      "STRM-6 another stream's lane adds an entry to a shared list in core",
+      listEdit("  '/shop',\n", "  '/shop',\n  '/studio',\n"),
+      0,
+    );
+    expect(
+      "STRM-6 but may not change an entry already there, which is its owner's",
+      listEdit("  '/shop',\n", "  '/shop/all',\n"),
+      2,
+      'is a shared list',
+    );
+    t.git('checkout', '-q', '-b', 'api-studio/st-9');
+    tPut('src/core/allow.ts', "export const allowed = [\n  '/studio',\n];\n");
+    t.git('commit', '-q', '-am', 'ST-9: studio route');
+    const dropped = tCli(null, 'verify', '--base', 'main', '--no-checks');
+    expect(
+      'STRM-6 verify refuses a branch that takes an entry out of a shared list it does not own',
+      truth(
+        dropped.status !== 0 && `${dropped.stdout}${dropped.stderr}`.includes("'/shop'"),
+        dropped.stdout + dropped.stderr,
+      ),
+      0,
+    );
+    t.git('checkout', '-q', 'main');
+
+    // STRM-3: the merge queue is the project's: a stream's lead with nothing of its own merges its head.
+    t.git('checkout', '-q', '-b', 'api-shop/st-1');
+    tPut('src/shop/cart.ts', 'export const cart = [];\n');
+    t.git('add', '-A');
+    t.git('commit', '-q', '-m', 'ST-1: a cart');
+    t.git('checkout', '-q', 'main');
+    tCli(A, 'queue', 'add', 'api-shop/st-1');
+    tCli(B, 'defer', 'ST-2', '--reason', 'waits on the venue');
+    for (const c of JSON.parse(tCli(null, 'promote', '--json').stdout))
+      if (c.state === 'open' && c.decides === 'studio')
+        tCli(B, 'promote', 'reject', c.id, '--reason', 'kept on purpose');
+    const idle = nextOf(B);
+    expect(
+      "STRM-3 another stream's lead with only waiting to do is offered the merge queue's head",
+      truth(
+        idle.step === 'merge' &&
+          idle.args === 'api-shop/st-1' &&
+          idle.why.includes('any lead merges its head'),
+        JSON.stringify(idle),
+      ),
+      0,
+    );
+    tCli(B, 'defer', 'release', 'ST-2');
+    tCli(A, 'queue', 'drop', 'api-shop/st-1');
+
+    // STRM-2: a stream's lead keeps working in its own worktree after its lead branch merges.
+    const leadTree = join(t.dir, '.claude/worktrees/lead-studio');
+    t.git('worktree', 'add', '-q', '-b', 'lead/studio', leadTree, 'main');
+    writeFileSync(join(leadTree, 'docs/plan/studio.md'), '# Studio\n\nMore to come.\n');
+    spawnSync('git', ['-C', leadTree, 'commit', '-q', '-am', 'studio plan'], { encoding: 'utf8' });
+    t.git('merge', '-q', '--no-ff', '-m', 'Merge lead/studio', 'lead/studio');
+    // R-39: a story the stream's lead added in its own worktree is one it can hold from there.
+    writeFileSync(
+      join(leadTree, 'docs/plan/studio.md'),
+      `# Studio\n\n## M1\n\n${story('ST-77', 'api-studio', 'STU-2')}`,
+    );
+    spawnSync('git', ['-C', leadTree, 'commit', '-q', '-am', 'ST-77'], { encoding: 'utf8' });
+    const heldThere = spawnSync(
+      'node',
+      [join(here, '..', 'bin', 'code-kit.mjs'), 'defer', 'ST-77', '--reason', 'after the venue'],
+      { cwd: leadTree, encoding: 'utf8', env: { ...process.env, CLAUDE_CODE_SESSION_ID: B } },
+    );
+    expect(
+      "STRM-2 a stream's lead holds a story it added in its own worktree's plan",
+      truth(heldThere.status === 0, heldThere.stdout + heldThere.stderr),
+      0,
+    );
+    const pruned = tCli(null, 'worktrees', 'prune');
+    expect(
+      "STRM-2 a stream lead's own worktree stays after its lead branch merges",
+      truth(existsSync(leadTree), pruned.stdout + pruned.stderr),
+      0,
+    );
   }
 
   // --- SESS-1 to SESS-5: sessions as members of the team ------------------------------------------
@@ -10060,6 +10237,28 @@ else process.exit(1);
       truth(res.status === 0 && !said(res).includes('Fixes and their tests'), said(res)),
       0,
     );
+    // A fix check whose tool isn't installed in the fresh checkout couldn't run: that's no finding
+    // against the fix, so the merge queue keeps the branch in its place rather than send it back.
+    gConfig({
+      checks: [
+        {
+          name: 'office tests',
+          files: ['apps/office/**'],
+          run: ['code-kit-no-such-runner apps/office'],
+        },
+      ],
+    });
+    res = gVerify();
+    expect(
+      "REG-1 a fix check that couldn't run says so, and nothing against the fix",
+      truth(
+        said(res).includes("its tests couldn't run in a fresh checkout") &&
+          said(res).includes('says nothing against the fix'),
+        said(res),
+      ),
+      0,
+    );
+    gConfig();
 
     // REG-1: a fix whose test passes without it doesn't prove the bug.
     g.git('checkout', '-q', 'main');

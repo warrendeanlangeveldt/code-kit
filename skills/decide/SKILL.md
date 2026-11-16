@@ -64,6 +64,8 @@ In a project built as streams with a platform stream (spec 31), a stream that ne
 - **Accept it** with the platform story that builds it, written in the platform's plan: `code-kit core accept C-n --story ST-n`. The asking story waits for that story to merge.
 - **Decline it** with why, and what the stream can do instead: `code-kit core decline C-n --reason "…"`. The asking story no longer waits.
 
+When the ask is only a new entry in a list every stream adds to (an allow-list of routes, a catalogue of lines, a registry), the list is better as a shared list than as a stream of asks: propose to the person that the config name it one (`anyActor` with `"adds": true` and the owning lane as reviewer). Until it's changed, accept or decline the ask as usual; from then on, the stream's lane adds its entries in its own branch.
+
 ## 6. Report
 
 One line per request: what was asked, what you decided, and why. "ST-138: pillow approved for api (MED-5 needs HEIC decoding; nothing installed reads HEIC)." Then carry on with the build.

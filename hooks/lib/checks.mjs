@@ -73,6 +73,7 @@ function runCheck(check, files, root, actor, skipped) {
         if (check.ifMissing === 'fail')
           return {
             check: check.name,
+            missing: true,
             title: `${check.name}: \`${what}\` is not installed${where}. Install it so the check can run.`,
           };
         skipped.push({

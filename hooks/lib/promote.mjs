@@ -17,6 +17,7 @@ import {
 import { dirname, isAbsolute, join, relative } from 'node:path';
 import { CORE, hasStreams, ownerStreamOf, platformOf, streamsOf } from './streams.mjs';
 import { projectWorktrees } from './rules.mjs';
+import { isTestFile } from './testfiles.mjs';
 import { EVENTS_DIR } from './events.mjs';
 import { commandsOf, wordsOf } from './shell.mjs';
 
@@ -213,7 +214,8 @@ function append(root, record) {
 
 /**
  * Every candidate: [{ id, key, kind, what, where, streams, evidence, raised, state, decided }]. `state`
- * is open, promoted (with the platform story that moves it) or rejected (with why).
+ * is open, promoted (with the platform story that moves it), rejected (with why) or withdrawn (a scan of
+ * the whole project no longer found it).
  */
 export function promotions(root) {
   const byId = new Map();
@@ -227,7 +229,9 @@ export function promotions(root) {
         where: [...new Set([...had.where, ...r.where])],
         streams: [...new Set([...had.streams, ...r.streams])],
         evidence: [...had.evidence, r.evidence],
-        ...(had.state === 'rejected' && r.reopens ? { state: 'open', decided: null } : {}),
+        ...(['rejected', 'withdrawn'].includes(had.state) && r.reopens
+          ? { state: 'open', decided: null }
+          : {}),
       });
     if (r.kind === 'decide')
       byId.set(r.id, {
@@ -264,7 +268,9 @@ export function raise(root, { key, signal, what, where, streams, evidence }, now
   }
   const newWhere = where.filter((w) => !had.where.includes(w));
   const newStreams = streams.filter((s) => !had.streams.includes(s));
-  if (!newWhere.length && !newStreams.length) return null;
+  // A withdrawn clone found again is open again, as it was.
+  const back = had.state === 'withdrawn';
+  if (!newWhere.length && !newStreams.length && !back) return null;
   if (had.state === 'promoted') return null;
   append(root, {
     kind: 'evidence',
@@ -273,7 +279,7 @@ export function raise(root, { key, signal, what, where, streams, evidence }, now
     where: newWhere,
     streams: newStreams,
     evidence,
-    reopens: had.state === 'rejected',
+    reopens: had.state === 'rejected' || back,
   });
   return promotions(root).find((p) => p.id === had.id);
 }
@@ -301,13 +307,16 @@ export function decidePromotion(
 
 const sideWords = (s) => `${s.file}:${s.from}-${s.to}${s.symbol ? ` (${s.symbol})` : ''}`;
 
-/** PROM-1: a clone between two owners as a candidate's fields. */
+/**
+ * PROM-1: a clone between two owners as a candidate's fields. One candidate per pair of files: every run
+ * the two share is the same decision, and a symbol or line that moves doesn't make a new one.
+ */
 export function cloneCandidate(clone) {
   const sides = [clone.a, clone.b].sort((x, y) => x.file.localeCompare(y.file));
   const core = sides.find((s) => s.owner === CORE);
   const streams = [...new Set(sides.map((s) => s.owner).filter((o) => o !== CORE))];
   return {
-    key: `clone:${sides.map((s) => `${s.file}#${s.symbol ?? s.from}`).join('|')}`,
+    key: `clone:${sides.map((s) => s.file).join('|')}`,
     signal: core ? 'core-clone' : 'clone',
     what: core
       ? `${sideWords(sides.find((s) => s !== core))} repeats core's ${sideWords(core)}`
@@ -446,8 +455,9 @@ export function scanForPromotions(
   { files = null, ref = null, tokens = null, record = true, now = Date.now() } = {},
 ) {
   if (!hasStreams(config)) return { raised: [], clones: [] };
-  const size = tokens ?? config.harness?.promote?.tokens ?? 60;
-  const owner = (f) => ownerStreamOf(config, f);
+  const size = tokens ?? config.harness?.promote?.tokens ?? 100;
+  // Tests repeat their setup by nature: a test alike in two streams says nothing about where code belongs.
+  const owner = (f) => (isTestFile(f, config) ? null : ownerStreamOf(config, f));
   const sources = trackedSources(root, ref).filter((f) => owner(f));
   const texts = ref ? textsAt(root, ref, sources) : {};
   if (!ref)
@@ -462,9 +472,30 @@ export function scanForPromotions(
   let clones = findClones(texts, owner, { tokens: size });
   if (files) clones = clones.filter((c) => files.includes(c.a.file) || files.includes(c.b.file));
   const raised = [];
-  for (const c of record ? clones : []) {
-    const r = raise(root, cloneCandidate(c), now);
+  // One candidate per pair of files, from its longest run (findClones lists those first).
+  const byPair = new Map();
+  for (const c of clones) {
+    const candidate = cloneCandidate(c);
+    if (!byPair.has(candidate.key)) byPair.set(candidate.key, candidate);
+  }
+  for (const candidate of record ? byPair.values() : []) {
+    const r = raise(root, candidate, now);
     if (r) raised.push(r);
+  }
+  // A whole-project scan withdraws the open clones it no longer finds: the code changed, or the rules
+  // did (a bigger promote.tokens, tests left out), so nobody decides what isn't there.
+  if (!files && record) {
+    const found = new Set(byPair.keys());
+    for (const p of promotions(root))
+      if (p.state === 'open' && ['clone', 'core-clone'].includes(p.kind) && !found.has(p.key))
+        append(root, {
+          kind: 'decide',
+          id: p.id,
+          at: new Date(now).toISOString(),
+          how: 'withdrawn',
+          reason: 'no longer found by a scan of the whole project',
+          by: null,
+        });
   }
   if (!files && record)
     for (const copy of copiesIn(root, config)) {
@@ -548,7 +579,11 @@ export function repeatedRequirements(config, requirements, story, { at = 0.6 } =
   return out.sort((x, y) => y.score - x.score);
 }
 
-/** PROM-2: whose a candidate is to decide: the platform's lead, or, without one, a stream it touches. */
+/**
+ * PROM-2: whose a candidate is to decide: the platform's lead, or, without one, a stream it touches. A
+ * module's code that repeats core is its own stream's to switch to core's: core has it already.
+ */
 export function decidedFor(config, candidate) {
+  if (candidate.kind === 'core-clone' && candidate.streams[0]) return candidate.streams[0];
   return platformOf(config)?.name ?? candidate.streams[0] ?? null;
 }

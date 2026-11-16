@@ -272,7 +272,12 @@ export function freshCheckout(
   const emptied = installsFrom && dir === slot && installsOf(dir).length > 0 && hollow(dir);
   if (emptied)
     for (const rel of installsOf(dir)) rmSync(join(dir, rel), { recursive: true, force: true });
-  if (installsFrom && !installsOf(dir).length) {
+  // Each install the source has and the checkout lacks is copied, so a checkout holding one (a service's
+  // virtualenv) isn't left without another (the web app's node_modules).
+  const lacking = installsFrom
+    ? installsOf(installsFrom).filter((rel) => !existsSync(join(dir, rel)))
+    : [];
+  if (lacking.length) {
     copyInstalls(installsFrom, dir);
     // The copied installs were made for installsFrom's manifests and lockfiles.
     if (dir === slot) {

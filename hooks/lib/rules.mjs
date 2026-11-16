@@ -929,6 +929,38 @@ export function laneOf(rel, config) {
   );
 }
 
+/** The first line of `before` that `after` doesn't keep, in order, or null when it keeps them all. */
+export function droppedLine(before, after) {
+  const kept = (after ?? '').split('\n');
+  let at = 0;
+  for (const line of (before ?? '').split('\n')) {
+    while (at < kept.length && kept[at] !== line) at++;
+    if (at === kept.length) return line;
+    at++;
+  }
+  return null;
+}
+
+/**
+ * STRM-6: why a change to a shared list (an anyActor entry with `adds`) is refused, or null. Any lane
+ * adds entries to one in its own branch, where its story needs them, with no change request to core;
+ * changing or removing an entry already there is its owner's, as with any file it owns.
+ */
+export function sharedListProblem(actor, rel, before, after, config) {
+  if (!matchesAny(rel, config.sharedLists ?? []) || before === null || after === null) return null;
+  if (
+    actor.kind === 'lane' &&
+    matchesAny(rel, config.lanes[actor.lane]?.paths ?? []) &&
+    !matchesAny(rel, config.lanes[actor.lane]?.exclude ?? [])
+  )
+    return null;
+  if (actor.kind === 'lead' && matchesAny(rel, config.lead.paths)) return null;
+  const dropped = droppedLine(before, after);
+  if (dropped === null) return null;
+  const owner = ownerOf(rel, config) ?? 'its owner';
+  return `${rel} is a shared list: any lane adds entries to it, and only ${owner} changes or removes what's already there. This change ${dropped.trim() ? `changes or removes the line \`${dropped.trim().slice(0, 120)}\`` : 'takes out a blank line'}. Keep every existing line as it is and add yours beside them; if an existing entry must change, ask for it as a change to core.`;
+}
+
 /** Who reviews a change to a file any agent may write: the lane an anyActor entry names, else the lead. Null for other files. */
 export function reviewerOf(rel, config) {
   if (!matchesAny(rel, config.anyActor)) return null;

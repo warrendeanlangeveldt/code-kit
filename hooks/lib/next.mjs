@@ -161,19 +161,28 @@ export function nextStep(root, base, { stream = null, projectWide = true } = {})
   // LOOP-15, MQ-8: what the lead holds on purpose: stories, and the whole merge queue.
   let deferred = [];
   let queuePaused = null;
-  const result = (step, why, extra = {}) => ({
-    step,
-    why,
-    args: '',
-    then: [],
-    attention,
-    brief: briefQuestions,
-    worktrees: holdingTrees,
-    models,
-    deferred,
-    queuePaused,
-    ...extra,
-  });
+  // STRM-3: the merge queue's head, for another stream's lead to merge when it has nothing of its own.
+  let idleMerge = null;
+  const result = (step, why, extra = {}) =>
+    idleMerge && ['wait', 'done'].includes(step)
+      ? result(
+          'merge',
+          `${idleMerge.why} This stream has nothing of its own to do (${why.replace(/\.$/, '')}), so this lead merges it: the queue is the project's, and any lead merges its head.`,
+          { args: idleMerge.args },
+        )
+      : {
+          step,
+          why,
+          args: '',
+          then: [],
+          attention,
+          brief: briefQuestions,
+          worktrees: holdingTrees,
+          models,
+          deferred,
+          queuePaused,
+          ...extra,
+        };
   const isRepo = git(root, 'rev-parse', '--is-inside-work-tree') === 'true';
   if (!isRepo)
     attention.push('This folder is not a git repository yet; run `git init` before init.');
@@ -390,8 +399,8 @@ export function nextStep(root, base, { stream = null, projectWide = true } = {})
   );
   const driftNote = teamState ? driftUnchecked(teamState) : null;
   const heldByDrift = new Set(drifting.map((d) => d.branch));
-  // MQ-1: a queue merge running now (its verify takes minutes) isn't asked for again.
-  const merging = mergingNow(inQueue[0]) ? inQueue[0].branch : null;
+  // MQ-1: a queue merge running now (its verify takes minutes) isn't asked for again, by any lead.
+  const merging = inQueue.find(mergingNow)?.branch ?? null;
   const ids = (state) =>
     status.stories
       .filter((s) => s.state === state && !(state === 'review' && queued.includes(s.branch)))
@@ -548,12 +557,15 @@ export function nextStep(root, base, { stream = null, projectWide = true } = {})
     attention.push(
       `${h.branch} passed review and merges together with ${h.missing.join(', ')}: it waits until ${h.missing.length === 1 ? 'that is' : 'they are'} reviewed and queued.`,
     );
+  const mergeWhy =
+    mergeHead &&
+    `${mergeHead.branch} passed review and is next in the merge queue${queued.length > 1 ? ` (then ${queued.filter((b) => b !== mergeHead.branch).join(', ')})` : ''}.`;
   if (mergeHead && leadMerges && !merging && !queuePaused && projectWide)
-    return result(
-      'merge',
-      `${mergeHead.branch} passed review and is next in the merge queue${queued.length > 1 ? ` (then ${queued.filter((b) => b !== mergeHead.branch).join(', ')})` : ''}.`,
-      { args: mergeHead.branch },
-    );
+    return result('merge', mergeWhy, { args: mergeHead.branch });
+  // STRM-3: the main checkout's lead merges first, but one queue for every stream can't wait on one
+  // session's own work: another stream's lead merges the head whenever its own steps are only waiting.
+  if (mergeHead && leadMerges && !merging && !queuePaused && !projectWide)
+    idleMerge = { why: mergeWhy, args: mergeHead.branch };
   // HAND-6: a screen story whose screens' approved designs are only in a design tool can't be built:
   // the gate refuses each screen until the lead hands its design over. It waits, and the hand-over is
   // the step, rather than a lane dispatched to be refused.
