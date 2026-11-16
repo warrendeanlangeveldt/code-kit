@@ -2,7 +2,7 @@
 
 What changed in each release of code-kit, newest first. Versions follow the plugin manifest and the npm package `@warren-dean/code-kit`. Each release is also on [GitHub Releases](https://github.com/warrendeanlangeveldt/code-kit/releases).
 
-## Unreleased
+## 0.38.2 (2026-11-16)
 
 - **Layers that name one file.** A layer whose path is a single file (`server/routes.ts`) never matched the imports of it, which are written without the extension (`./routes`) or with the `.js` TypeScript gives them, so the layer rules let those imports through. They're now held to the rules like any other. A `routes*` pattern written to get round it still works.
 
