@@ -11454,7 +11454,7 @@ else process.exit(1);
           !existsSync(join(t.dir, '.claude/worktrees/lead-st66')) &&
           !t.git('worktree', 'list').includes('st-7') &&
           t.git('branch', '--list', 'api/st-6').includes('api/st-6'),
-        `${pruned.stdout}${pruned.stderr} locked:${existsSync(locked)} stray:${existsSync(join(t.dir, '.claude/worktrees/lead-st66'))} list:${t.git('worktree', 'list')} branch:${t.git('branch', '--list', 'api/st-6')}`,
+        `locked:${existsSync(locked)} stray:${existsSync(join(t.dir, '.claude/worktrees/lead-st66'))} branch:${t.git('branch', '--list', 'api/st-6').trim()} status:${pruned.status} list:${t.git('worktree', 'list').replace(/\n/g, ' | ')} out:${(pruned.stdout + pruned.stderr).replace(/\n/g, ' | ')}`,
       ),
       0,
     );
