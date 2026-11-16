@@ -30,6 +30,7 @@ import {
   heldByCore,
   lanesToGiveWay,
   platformOf,
+  sharedListsInWaiting,
   streamOfLane,
   streamOfStory,
 } from './streams.mjs';
@@ -435,6 +436,12 @@ export function nextStep(root, base, { stream = null, projectWide = true } = {})
   const streamed = hasStreams(config);
   const streamOf = new Map(status.stories.map((s) => [s.id, streamOfStory(config, s)]));
   const led = new Set(leadSessions(root).flatMap((l) => (l.stream ? [l.stream] : [])));
+  // STRM-6: a core file streams only ever add to is better as a shared list than a stream of asks.
+  if (streamed && (projectWide || stream === platformOf(config)?.name))
+    for (const f of sharedListsInWaiting(root, config, status.stories, from).slice(0, 3))
+      attention.push(
+        `${f.file} looks like a shared list: ${f.stories.length} stories of the ${f.streams.join(' and ')} streams (${f.stories.join(', ')}) only added lines to it. Propose to the person that the config name it one (anyActor: { "glob": "${f.file}", "reviewer": "${laneOf(f.file, config) ?? 'lead'}", "adds": true }), so each stream adds its entries in its own branch instead of asking core.`,
+      );
   const mine = (id) =>
     !streamed || (stream ? streamOf.get(id) === stream : !led.has(streamOf.get(id)));
   // STRM-6: every stream's waiting stories, for whose turn a shared core lane is.
