@@ -56,7 +56,7 @@ Write `.claude/code-kit.draft.json`. Follow `${CLAUDE_PLUGIN_ROOT}/README.md` â€
   - `denyPackages`: packages forbidden for that layer, for example `node:*` or a vendor SDK outside its adapter.
   - `label` (optional): what the layer delivers, in a few words ("API contract", "Data", "Service"), when its name doesn't say it.
   - Also add `importAliases` for path aliases in `tsconfig` `paths` that the graph can't see. Workspace package names are found automatically.
-  - The import check reads JavaScript and TypeScript. For another language, record the layers anyway (agents and spec-check use them), and say the import check doesn't cover that language yet.
+  - The import check reads JavaScript, TypeScript and Python. For another language, record the layers anyway (agents and spec-check use them), and say the import check doesn't cover that language yet.
 - **`lanes`:** one per documented or discovered ownership area. Each needs:
   - `agent`: a kebab-case agent name, for example `api-engineer`;
   - `paths` and `exclude`: every path must have exactly one owner.
@@ -98,6 +98,7 @@ After the layers, suggest the project's standards: named engineering rules every
 - **How firmly.** Mark a standard `enforced` only where a rule the draft already has refuses the change, and name it: `enforced by: layers (domain may not import infrastructure)`, `layers (web may not import the package pg)`, `protected (<approval>)`, `check (<name>)` or `shell (<words of its why>)`. code-kit then names the standard in that rule's refusal. Everything else review can judge is `checked`; the rest is `advice`.
 - **With specs**, suggest them from the architecture, the principles, the specs' threat models and the brief's decision log, each citing its source (`source: the threat model in docs/specs/03-payments.md`). A threat model saying card numbers are never stored is a `POL-` standard; a layer rule the architecture sets is an `ARC-` standard enforced by that layer rule. The engineering rules in `docs/principles.md` move into standards; principles keeps the definition of done, the commands and the privacy and residency targets.
 - **With no specs but code**, infer them from the code: the import graph (`graph`) for layering and import directions; naming and folder layout; the data-access pattern (repositories, direct queries, an ORM); the formatter's and linter's configs; the tests' shape and where they live. Count, don't guess: each inferred standard carries its evidence (`source: the code: 41 of 43 modules reach the database through *Repository classes`), names the files that don't follow it, and starts as `recommended`. A pattern the code follows inconsistently (3 of 5 services through repositories, 2 querying directly) isn't a standard yet: put it to the person as a choice, with both counts, and write the way they pick.
+- **Standards the code should move to**, which it doesn't follow yet (what the docs ask for, or the stack calls for): suggest them too, saying how much of the code breaks each, and once the setup is committed hand them to `/code-kit:conform`, which audits the code against each one adopted, records the breaches in the baseline and drafts the refactor pathway (spec 30). Don't record breaches in init itself.
 - **Protect the file.** Add `{ "glob": "docs/standards.md", "approval": "standards", "why": "the project's standards" }` to `protected`, before any broader glob that also covers `docs/`. The lead may approve adding a recommended standard if the person puts `standards` in `approvals.delegate.protected`; removing a standard, or weakening a required one, is always the person's, whatever the config delegates.
 - **Check it** once the config is written: `code-kit standards` reports a duplicate id, an unknown category, an enforced principle, or an `enforced by` that names no rule the config has. Each lane agent's rules then list the standards for its layers, one line each, and CLAUDE.md lists them all.
 
@@ -158,7 +159,7 @@ Show the person:
 Once they approve (with any changes):
 
 1. Rename the draft to `.claude/code-kit.json`. From then on, every hook enforces it.
-2. If there are existing violations, run `baseline --write`. This writes `.claude/code-kit.baseline.json`.
+2. Run `baseline --write`, even with no violations. This writes `.claude/code-kit.baseline.json`: the existing violations, and the languages whose imports were read, so each is held to the rules from now on.
 3. If the project had local hooks in `.claude/settings.json` that the kit replaces, remove those hook entries and the local hook files. Keep the `permissions` block.
 4. Add `.claude/approvals/`, `.claude/state/` and `.claude/code-kit.draft.json` to `.gitignore`. Add `.claude/approval-log.jsonl merge=union` to `.gitattributes`: when lanes and the lead both log changes, merging keeps every entry instead of conflicting.
 5. Apply each active adapter's `setup` lines (ignore files, merge drivers, the CLAUDE.md note), and say which you applied.

@@ -105,10 +105,12 @@ const after = textAfter(before);
 const listed = sharedListProblem(actorFor(input, root, config), rel, before, after, config);
 if (listed) block(`Blocked: ${listed}`);
 if (after !== null) {
-  const existing = new Set(before === null ? [] : layerProblems(rel, before, config));
-  const added = newProblems(rel, layerProblems(rel, after, config), loadBaseline(project)).filter(
-    (p) => !existing.has(p),
-  );
+  const existing = new Set(before === null ? [] : layerProblems(rel, before, config, { root }));
+  const added = newProblems(
+    rel,
+    layerProblems(rel, after, config, { root }),
+    loadBaseline(project),
+  ).filter((p) => !existing.has(p));
   // PROM-1, signal 2: an import of another stream's module asks for a capability core could own.
   for (const p of added) {
     const m = p.match(/^(\S+) \([^()]+\) imports (\S+) \([^()]+\); \S+ is the \S+ stream's module/);

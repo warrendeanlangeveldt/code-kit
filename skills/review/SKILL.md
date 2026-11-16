@@ -28,6 +28,7 @@ node "${CLAUDE_PLUGIN_ROOT}/bin/code-kit.mjs" verify --base <base>
 
 - that every protected change is in the approval log, which is append-only;
 - new layer violations, and a baseline that grew;
+- each standard's breach the branch took out of the baseline (`git diff <base> -- .claude/code-kit.baseline.json`): the file really meets the standard now, and does what it did before (spec 30). One taken out but still in the code is sent back;
 - screens without an approved design, or with one only in the design tool;
 - for a lane's branch that builds screens, each approved state the review hasn't yet compared and recorded ("Builds compared with their designs"): it lists the comparisons step 3 still owes, and clears as you record each screenshot, so it isn't a reason on its own to send the branch back;
 - committed secrets;

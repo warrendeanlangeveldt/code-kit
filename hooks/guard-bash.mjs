@@ -30,6 +30,7 @@ import {
 } from './lib/shell.mjs';
 import { block, start } from './lib/hook.mjs';
 import { CONFIG_FILE, committedConfig } from './lib/config.mjs';
+import { BASELINE_FILE, baselineShrinks } from './lib/baseline.mjs';
 import { laneOfBranch, storyOfBranch, teamOf, teamProvider, whoami } from './lib/team.mjs';
 import { entryProblems, freshEntries, readRegister } from './lib/designs.mjs';
 import { globToRegExp, matchesAny } from './lib/glob.mjs';
@@ -697,6 +698,14 @@ function recordApprovals() {
   for (const file of files) {
     // Concluding a merge: what arrives as the other branch has it was logged there, with its approvals.
     if (arrivesWithMerge(root, file, { staged: true })) continue;
+    // CONF-5: a baseline with entries only taken out (a breach fixed) excuses nothing new: anyone
+    // commits it. Both what's staged and what a later `git add` in the command would stage count.
+    if (file === BASELINE_FILE) {
+      const head = git('show', `HEAD:${file}`);
+      const now = existsSync(join(root, file)) ? readFileSync(join(root, file), 'utf8') : '';
+      if (head && baselineShrinks(head, git('show', `:${file}`)) && baselineShrinks(head, now))
+        continue;
+    }
     // A weakened standards file is the person's even where the config doesn't protect it.
     const entry =
       protectedEntry(file, config) ??

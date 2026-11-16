@@ -16,7 +16,7 @@ import { registerFile } from './costs.mjs';
 import { platformOf, sharedLanes, streamsOf } from './streams.mjs';
 
 /** The version of code-kit's instructions: raised whenever the templates' rules change. */
-export const INSTRUCTIONS_VERSION = 15;
+export const INSTRUCTIONS_VERSION = 16;
 
 const TEMPLATES = fileURLToPath(new URL('../../templates/', import.meta.url));
 const BEGIN = (v) => `<!-- code-kit:begin v${v} -->`;
