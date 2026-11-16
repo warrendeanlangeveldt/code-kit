@@ -3,7 +3,8 @@
 // per technical layer, a core and a module per stream. A layer with `stream` is that stream's module; one
 // without is core. A lane in no stream is a core lane the streams share, taken in turns; a stream with
 // `platform: true` owns core instead. A project without `streams` is one stream holding every lane.
-import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { matchesAny } from './glob.mjs';
 import { layerOf } from './layers.mjs';
@@ -241,4 +242,68 @@ export function heldByCore(root, stories) {
       );
   }
   return held;
+}
+
+/** STRM-6: how many stories, from how many streams, only adding to a core file make it a shared list in waiting. */
+export const SHARED_LIST_STORIES = 3;
+
+/**
+ * STRM-6: core files that look like shared lists: on `base`'s last 1000 commits, stories of at least two
+ * streams (a platform story built for a change request counts as the asking stream's) changed them only
+ * by adding lines, SHARED_LIST_STORIES stories or more, and the config doesn't name them shared lists yet.
+ * [{ file, stories, streams }], most stories first.
+ */
+export function sharedListsInWaiting(root, config, stories, base) {
+  if (!hasStreams(config) || !base) return [];
+  const asked = new Map(
+    coreRequests(root)
+      .filter((r) => r.state === 'accepted' && r.decided?.story && r.stream)
+      .map((r) => [r.decided.story, r.stream]),
+  );
+  const streamOf = new Map(stories.map((s) => [s.id, asked.get(s.id) ?? streamOfStory(config, s)]));
+  const log = spawnSync(
+    'git',
+    ['-C', root, 'log', '-n', '1000', '--no-merges', '--numstat', '--format=%x00%s%n%b%x01', base],
+    { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 },
+  );
+  if (log.status !== 0) return [];
+  // Per story, per file: lines added and removed across the commits that name it.
+  const touched = new Map();
+  for (const commit of log.stdout.split('\0').slice(1)) {
+    const [message, stat = ''] = commit.split('\x01');
+    const ids = [...new Set(message.match(/\bST-\d+\b/g) ?? [])].filter((id) => streamOf.get(id));
+    if (!ids.length) continue;
+    for (const line of stat.split('\n')) {
+      const [added, removed, file] = line.split('\t');
+      if (!file || added === '-') continue;
+      for (const id of ids) {
+        const key = `${id}\t${file}`;
+        const was = touched.get(key) ?? { added: 0, removed: 0 };
+        touched.set(key, {
+          added: was.added + Number(added),
+          removed: was.removed + Number(removed),
+        });
+      }
+    }
+  }
+  const files = new Map();
+  for (const [key, { added, removed }] of touched) {
+    const [id, file] = key.split('\t');
+    if (removed > 0 || added === 0) continue;
+    const f = files.get(file) ?? { file, stories: new Set(), streams: new Set() };
+    f.stories.add(id);
+    f.streams.add(streamOf.get(id));
+    files.set(file, f);
+  }
+  return [...files.values()]
+    .filter(
+      (f) =>
+        f.stories.size >= SHARED_LIST_STORIES &&
+        f.streams.size >= 2 &&
+        ownerStreamOf(config, f.file) === CORE &&
+        !matchesAny(f.file, config.sharedLists ?? []) &&
+        existsSync(join(root, f.file)),
+    )
+    .map((f) => ({ file: f.file, stories: [...f.stories].sort(), streams: [...f.streams].sort() }))
+    .sort((a, b) => b.stories.length - a.stories.length || a.file.localeCompare(b.file));
 }

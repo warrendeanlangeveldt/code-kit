@@ -9222,6 +9222,54 @@ else process.exit(1);
       0,
     );
     t.git('checkout', '-q', 'main');
+    // STRM-6: a core file stories of several streams only ever add to is offered as a shared list.
+    tPut('src/core/routes.ts', 'export const routes = [\n];\n');
+    t.git('add', '-A');
+    t.git('commit', '-q', '-m', 'core routes');
+    const routes = ['export const routes = ['];
+    for (const [id, route] of [
+      ['ST-1', '/cart'],
+      ['ST-3', '/prices'],
+      ['ST-4', '/venues'],
+    ]) {
+      routes.push(`  '${route}',`);
+      tPut('src/core/routes.ts', `${routes.join('\n')}\n];\n`);
+      t.git('commit', '-q', '-am', `${id}: the ${route} route`);
+    }
+    const looksShared = (id) =>
+      nextOf(id).attention.find((x) => x.includes('src/core/routes.ts looks like a shared list'));
+    expect(
+      'STRM-6 the platform lead is told a core file three stories of other streams only added to looks like a shared list',
+      truth(
+        /3 stories of the platform and shop and studio streams \(ST-1, ST-3, ST-4\)/.test(
+          looksShared(P) ?? '',
+        ) && looksShared(P).includes('"reviewer": "api-core", "adds": true'),
+        looksShared(P) ?? JSON.stringify(nextOf(P).attention),
+      ),
+      0,
+    );
+    expect(
+      "STRM-6 another stream's lead isn't: the config is the platform's and the person's",
+      truth(!looksShared(B)),
+      0,
+    );
+    tPut(
+      '.claude/code-kit.json',
+      configWith({
+        streams: {
+          ...streams,
+          platform: { lanes: ['api-core'], plan: 'docs/plan/platform.md', platform: true },
+        },
+        anyActor: [
+          { glob: 'src/core/allow.ts', reviewer: 'api-core', adds: true },
+          { glob: 'src/core/routes.ts', reviewer: 'api-core', adds: true },
+        ],
+        approvals: { delegate: { dependencies: {}, merge: true } },
+        harness: { autonomy: 'autonomous' },
+      }),
+    );
+    t.git('commit', '-q', '-am', 'routes a shared list');
+    expect('STRM-6 once the config names it, it is not offered again', truth(!looksShared(P)), 0);
 
     // STRM-3: the merge queue is the project's: a stream's lead with nothing of its own merges its head.
     t.git('checkout', '-q', '-b', 'api-shop/st-1');
