@@ -39,6 +39,27 @@ export function targetOf(spec, rel, aliases) {
     : posix.normalize(posix.join(aliases[prefix], spec.slice(prefix.length)));
 }
 
+const SOURCE_EXTENSIONS = ['.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.cjs'];
+
+/**
+ * The layer an import's target is in: the path as written, as a file with each source extension (a layer
+ * may name one file, and `./routes` imports `routes.ts`; `./routes.js` in TypeScript names `routes.ts`),
+ * or a folder's index.
+ */
+function layerOfImport(target, layers) {
+  const bare = target.replace(/\.(js|jsx|mjs|cjs)$/, '');
+  for (const candidate of [
+    target,
+    ...SOURCE_EXTENSIONS.map((ext) => `${bare}${ext}`),
+    `${target}/index`,
+    ...SOURCE_EXTENSIONS.map((ext) => `${target}/index${ext}`),
+  ]) {
+    const layer = layerOf(candidate, layers);
+    if (layer) return layer;
+  }
+  return null;
+}
+
 /** Every import in `source` (the file at repo path `rel`) that breaks the layer rules. */
 export function layerProblems(rel, source, config) {
   if (!CODE.test(rel) || config.layers.length === 0) return [];
@@ -53,7 +74,7 @@ export function layerProblems(rel, source, config) {
         problems.push(`${rel} (${layer.name}) may not import the package ${spec}.`);
       continue;
     }
-    const to = layerOf(target, config.layers) ?? layerOf(`${target}/index`, config.layers);
+    const to = layerOfImport(target, config.layers);
     // STRM-5: a module uses core and its own stream's modules; core uses no module.
     const crossing = to && crossesStreams(layer, to);
     if (crossing) {

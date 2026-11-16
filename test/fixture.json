@@ -84,7 +84,7 @@
     },
     {
       "name": "services",
-      "paths": ["**/services/**"],
+      "paths": ["**/services/**", "packages/registry.ts"],
       "mayImport": ["domain", "schemas"]
     },
     {

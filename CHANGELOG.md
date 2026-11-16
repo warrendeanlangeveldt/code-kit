@@ -2,6 +2,10 @@
 
 What changed in each release of code-kit, newest first. Versions follow the plugin manifest and the npm package `@warren-dean/code-kit`. Each release is also on [GitHub Releases](https://github.com/warrendeanlangeveldt/code-kit/releases).
 
+## Unreleased
+
+- **Layers that name one file.** A layer whose path is a single file (`server/routes.ts`) never matched the imports of it, which are written without the extension (`./routes`) or with the `.js` TypeScript gives them, so the layer rules let those imports through. They're now held to the rules like any other. A `routes*` pattern written to get round it still works.
+
 ## 0.38.1 (2026-11-16)
 
 - **Shared lists found from the history.** In a project built as streams, `code-kit next` now tells the platform's lead (or the lead in the main checkout) when a core file looks like a shared list: three stories of two or more streams changed it only by adding lines. It names the stories and gives the `anyActor` entry to propose to you, so a project set up before shared lists existed finds its own without re-running init.
