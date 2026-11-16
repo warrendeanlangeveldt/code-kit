@@ -152,11 +152,12 @@ One merge queue merges every stream's branches onto one base, and each batch run
 
 ### STRM-9 The setup question
 
-`/code-kit:spec-design` and `/code-kit:init` ask once whether the product has, or plans, separate product lines, or is platform capability others will build on. Yes: they draft the streams, lay the code out with a core and a module per stream from the start, write the layer rules that keep the streams apart, and give the platform stream (when the person wants one). No: one stream and a plain layout, as today. A project that started as one stream adds streams by running `/code-kit:init` again: it drafts the streams and lanes, and, where the code isn't yet split into core and modules, a conformance pathway (spec 30) whose stories move it, layer by layer, without stopping the build.
+`/code-kit:spec-design` and `/code-kit:init` ask once whether the product has, or plans, separate product lines, or is platform capability others will build on. Yes: they draft the streams, lay the code out with a core and a module per stream from the start, write the layer rules that keep the streams apart, and give the platform stream (when the person wants one). No: one stream and a plain layout, as today. A project that started as one stream adds streams by running `/code-kit:init` again: it drafts the streams and lanes, and, where the code isn't yet split into core and modules, a conformance pathway (spec 30) whose stories move it, layer by layer, without stopping the build. The branch that turns streams on records the imports that now cross streams in the baseline, and verify accepts them there (spec 30, CONF-8: a layer given a stream is a changed rule); after it, the baseline only shrinks, as the move stories take them out.
 
 **Acceptance**
 
 - Given a brief naming two product lines on a shared platform, then init's draft has two streams, a module layer per stream in each technical layer, and core layers without a stream.
+- Given a project already set up, with an interface file importing the domain, when a branch gives the domain layer one stream and the interface another, then `baseline --write` records the import as crossing streams and verify accepts the branch.
 - Given a brief with one product line, then init's draft has no `streams`.
 
 ### STRM-10 Each lead sees its own stream
