@@ -2,7 +2,7 @@
 
 What changed in each release of code-kit, newest first. Versions follow the plugin manifest and the npm package `@warren-dean/code-kit`. Each release is also on [GitHub Releases](https://github.com/warrendeanlangeveldt/code-kit/releases).
 
-## Unreleased
+## 0.38.0 (2026-11-16)
 
 - **Any stream's lead merges the queue.** In a project built as streams only the lead in the main checkout was given the merge step, so every stream's reviewed branches waited on that one session, while it worked on its own stream's stories: branches waited three to twelve hours, and dozens stood in the queue. Now another stream's lead merges the queue's head whenever its own stream has only waiting to do. One merge still runs at a time: a lock stops two leads starting one at once.
 - **A failed group sends back only the branch at fault.** When branches queued to merge together failed, every one went back to its lane, though most had nothing wrong, and each needed reviewing and queueing again. Now a member that doesn't merge onto the base, or breaks its own lane's rules, goes back alone, and its partners keep their places and their reviews. Only a failure of the merged tree's checks, which can't be pinned on one member, sends the group back together.
