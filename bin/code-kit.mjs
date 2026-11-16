@@ -146,7 +146,7 @@ import {
   withdrawQuestion,
 } from '../hooks/lib/questions.mjs';
 import { traceFile } from '../hooks/lib/trace.mjs';
-import { buildStatus, readStories, specCheckRows } from '../hooks/lib/plan.mjs';
+import { buildStatus, readRequirements, readStories, specCheckRows } from '../hooks/lib/plan.mjs';
 import {
   atViewport,
   designsFor,
@@ -181,7 +181,9 @@ import {
   markMerging,
   mergingNow,
   nextToMerge,
+  releaseMergeLock,
   setPartners,
+  takeMergeLock,
   pauseQueue,
   queuePause,
   readQueue,
@@ -262,7 +264,9 @@ import {
 import { laneClaim, laneClaims, releaseLane, shortSession } from '../hooks/lib/laneclaims.mjs';
 import { slicesOf } from '../hooks/lib/schedule.mjs';
 import {
+  joinStream,
   leadSession,
+  leadSessions,
   makeLead,
   memberOf,
   readSession,
@@ -272,6 +276,28 @@ import {
   takeTask,
 } from '../hooks/lib/sessions.mjs';
 import { globsOverlap } from '../hooks/lib/teamfacts.mjs';
+import {
+  askCore,
+  coreRequests,
+  decideCore,
+  hasStreams,
+  heldByCore,
+  lastTurn,
+  platformOf,
+  sharedLanes,
+  streamOfLane,
+  streamOfStory,
+  streamsOf,
+} from '../hooks/lib/streams.mjs';
+import {
+  cloneCandidate,
+  decidePromotion,
+  decidedFor,
+  promotions,
+  raise,
+  repeatedRequirements,
+  scanForPromotions,
+} from '../hooks/lib/promote.mjs';
 import {
   BUSY_MS,
   agentBusy,
@@ -411,6 +437,8 @@ function checkJson() {
     Object.entries(config.lanes).map(([name, l]) => [name, { agent: l.agent, paths: l.paths }]),
   );
   report.adapters = config.adapters;
+  // STRM-10: the streams' names, for the mod to read them.
+  report.streams = streamsOf(config).map((st) => st.name);
   report.docs = config.docs ?? null;
   report.harness = config.harness;
   // The harness settings the person chose, as opposed to defaults: the mod asks before acting on autonomy.
@@ -463,9 +491,11 @@ function whoAmI() {
         ? `Session ${shortSession(callerSession)}, which code-kit hasn't recorded yet.`
         : 'Not run from a Claude Code session, so no member of the team.',
     );
-  const lead = leadSession(root);
+  const lead = leadSession(root, Date.now(), me.stream ?? null);
+  // STRM-2: in a project built as streams, which stream the session leads or works in.
+  const of = me.stream ? ` of the ${me.stream} stream` : '';
   out(
-    `${memberOf(me)}: ${me.role === 'lead' ? 'the lead session' : `a working session${lead ? ` (${memberOf(lead)} leads)` : ' (no session leads now)'}`}${me.task ? `, working on "${me.task.title}"` : ''}.`,
+    `${memberOf(me)}: ${me.role === 'lead' ? `the lead session${of}` : `a working session${of}${lead ? ` (${memberOf(lead)} leads)` : ' (no session leads now)'}`}${me.task ? `, working on "${me.task.title}"` : ''}.`,
   );
 }
 
@@ -748,11 +778,15 @@ const firstMerge = (into, branch) =>
 
 /** Why a merge didn't happen: `refused` (the rules), `verify` (problems) or `conflict`. */
 class MergeStop extends Error {
-  /** `first`: the first problem's first line, for the queue's record of why (#57). */
-  constructor(kind, message, first = null) {
+  /**
+   * `first`: the first problem's first line, for the queue's record of why (#57). `at`: the group's
+   * branches the stop is down to, when it's known (MQ-7); null when it's the group's as a whole.
+   */
+  constructor(kind, message, first = null, at = null) {
     super(message);
     this.kind = kind;
     this.first = first;
+    this.at = at;
   }
 }
 
@@ -934,9 +968,9 @@ function mergeOne(branch, config, byPerson, commit = null, partners = []) {
       }
     }
   };
-  const fail = (message, kind = 'refused', first = null) => {
+  const fail = (message, kind = 'refused', first = null, at = null) => {
     cleanup();
-    throw new MergeStop(kind, message, first);
+    throw new MergeStop(kind, message, first, at);
   };
   const worktree = (b, detach) => {
     const dir = mkdtempSync(join(tmpdir(), 'code-kit-merge-'));
@@ -984,6 +1018,8 @@ function mergeOne(branch, config, byPerson, commit = null, partners = []) {
       fail(
         `Nothing was merged: ${branch} doesn't merge cleanly into ${into}. Merge ${into} into ${branch} and resolve it there, then merge again.\n${e.message}`,
         'conflict',
+        null,
+        [branch],
       );
     }
     temporary.push(fresh);
@@ -1007,11 +1043,20 @@ function mergeOne(branch, config, byPerson, commit = null, partners = []) {
       );
     for (const m of members) {
       const merged = mergeInto(verifyIn, m.tip);
-      if (merged.status !== 0)
-        fail(
-          `Nothing was merged: ${m.branch} doesn't merge cleanly with ${branch} on ${into}. Merge one into the other and resolve it there, then merge again.\n${`${merged.stdout ?? ''}${merged.stderr ?? ''}`.trim()}`,
-          'conflict',
-        );
+      if (merged.status === 0) continue;
+      // MQ-7: a member that doesn't merge onto the base alone is the one at fault; one that does
+      // conflicts with its partners, which the group resolves together.
+      const alone = freshCheckout(root, into, { prefix: 'code-kit-merge-', installsFrom: null });
+      temporary.push(alone);
+      const onBase = mergeInto(alone.dir, m.tip).status === 0;
+      fail(
+        onBase
+          ? `Nothing was merged: ${m.branch} doesn't merge cleanly with ${branch} on ${into}. Merge one into the other and resolve it there, then merge again.\n${`${merged.stdout ?? ''}${merged.stderr ?? ''}`.trim()}`
+          : `Nothing was merged: ${m.branch} doesn't merge cleanly into ${into}. Merge ${into} into ${m.branch} and resolve it there, then merge again.\n${`${merged.stdout ?? ''}${merged.stderr ?? ''}`.trim()}`,
+        'conflict',
+        null,
+        onBase ? null : [m.branch],
+      );
     }
     // MQ-1: the checks run with installs that match the merged tree, and say whose they were.
     const installs = matchInstalls(verifyIn, installsFrom, { prepare: config.regression?.prepare });
@@ -1030,7 +1075,7 @@ function mergeOne(branch, config, byPerson, commit = null, partners = []) {
         'installs',
       );
     const lane = members.length ? null : laneOfBranch(branch, config);
-    const { changed, found, skipped, unfinished } = verifyBranch({
+    const { changed, found, skipped, unrun } = verifyBranch({
       root: verifyIn,
       base: into,
       config,
@@ -1038,6 +1083,9 @@ function mergeOne(branch, config, byPerson, commit = null, partners = []) {
       checks: true,
       branch,
     });
+    // MQ-7: what the merged tree's checks found is the group's; what a member's own changes break is its.
+    const groupWide = Object.values(found).some((list) => list.length);
+    const faulty = new Set();
     // MQ-7: each member is still held to its own lane's paths, for its own changes alone: measured against
     // the base merged with its partners, so a lane's branch built on its lead partner's (as dispatch has
     // it) isn't held to the partner's files. A partner built on this member already holds the member's
@@ -1068,8 +1116,10 @@ function mergeOne(branch, config, byPerson, commit = null, partners = []) {
         fixes: false,
         branch: b.branch,
       });
-      for (const key of Object.keys(found))
+      for (const key of Object.keys(found)) {
         found[key].push(...held.found[key].map((p) => `${b.branch}: ${p}`));
+        if (held.found[key].length) faulty.add(b.branch);
+      }
     }
     const problems = [
       ...new Set(
@@ -1078,10 +1128,11 @@ function mergeOne(branch, config, byPerson, commit = null, partners = []) {
         ),
       ),
     ];
-    // #62: a check that only ran out of time says nothing against the branch: it's tried again.
-    if (problems.length === 1 && unfinished)
+    // #62: a check that only ran out of time, or couldn't run for want of an install, says nothing against
+    // the branch: it's tried again.
+    if (unrun && Object.values(found).flat().length === unrun)
       fail(
-        `Nothing was merged: a check on ${branch} didn't finish, which says nothing against the branch (checked in ${verifyIn}${installedWith ? `, ${installedWith}` : ''}):\n  ${problems[0]}\nIt stays at the head of the queue; merge again once fewer suites are running.`,
+        `Nothing was merged: ${unrun === 1 ? 'a check' : 'checks'} on ${branch} couldn't run or didn't finish, which says nothing against the branch (checked in ${verifyIn}${installedWith ? `, ${installedWith}` : ''}):\n  ${problems.join('\n  ')}\nIt stays at the head of the queue; make the install work, or merge again once fewer suites are running.`,
         'unfinished',
       );
     if (problems.length)
@@ -1089,6 +1140,7 @@ function mergeOne(branch, config, byPerson, commit = null, partners = []) {
         `Nothing was merged. code-kit verify found ${problems.length} problem(s) on ${branch} (checked in ${verifyIn}${installedWith ? `, ${installedWith}` : ''}):\n  ${problems.join('\n  ')}\nSend it back to its lane, or fix it, then merge again.`,
         'verify',
         problems[0].split('\n')[0],
+        members.length && !groupWide ? [...faulty] : null,
       );
     const mergeIn = checkedOut(into) ?? worktree(into, false);
     // Checked again now the verify is done: only changes to what the merge changes stop it.
@@ -1121,6 +1173,8 @@ function mergeOne(branch, config, byPerson, commit = null, partners = []) {
         fail(
           `Nothing was merged: ${b.branch} doesn't merge cleanly into ${into}. Merge ${into} into ${b.branch} and resolve it there, then merge again.\n${String(e.stderr ?? e.message).trim()}`,
           'conflict',
+          null,
+          [b.branch],
         );
       }
     }
@@ -1312,16 +1366,24 @@ function queue() {
       );
     }
     const group = [head, ...partners];
-    // One merge at a time: a second run while the first verifies would merge the same head twice.
-    if (mergingNow(head))
+    // One merge at a time, whichever lead runs it: a second run while the first verifies would merge
+    // onto a base the first is about to change, or merge the same head twice.
+    const merging = waiting(entries).find(mergingNow);
+    if (merging)
       die(
-        `${head.branch} is being merged now (queue merge, process ${head.pid}); nothing more was started. It says when it's done.`,
+        `${merging.branch} is being merged now (queue merge, process ${merging.pid}); nothing more was started. It says when it's done.`,
+      );
+    const holder = takeMergeLock(root);
+    if (holder)
+      die(
+        `Another queue merge (process ${holder}) has just started; nothing more was started. It says when it's done.`,
       );
     markMerging(root, head.branch, process.pid);
     // However this run ends without settling the head, it goes back to waiting in its place.
     process.on('exit', () => {
       if (readQueue(root).some((e) => e.branch === head.branch && e.state === 'merging'))
         markMerging(root, head.branch, null);
+      releaseMergeLock(root);
     });
     try {
       for (const p of partners) {
@@ -1371,17 +1433,20 @@ function queue() {
         e.kind === 'conflict'
           ? `conflicts with ${into}${after ? ` after ${after}` : ''}`
           : `fails verify against ${into}${after ? ` after ${after}` : ''}${e.first ? `: ${e.first}` : ''}`;
-      // A group goes back together: it only lands as one.
-      for (const m of group) {
+      // MQ-7: what's down to one member goes back alone, and its partners keep their places and their
+      // reviews, waiting for its fix; what's the merged tree's as a whole sends the group back together.
+      const back = e.at?.length ? group.filter((m) => e.at.includes(m.branch)) : group;
+      for (const m of back) {
         const sha = execFileSync('git', ['rev-parse', '--verify', `${m.branch}^{commit}`], {
           encoding: 'utf8',
         }).trim();
         recordSentBack(root, m.branch, sha, why);
         settle(root, m.branch, 'sent back', why);
       }
-      const names = group.map((m) => m.branch).join(', ');
+      const names = back.map((m) => m.branch).join(', ');
+      const kept = group.filter((m) => !back.includes(m)).map((m) => m.branch);
       die(
-        `${e.message}\n${names} ${group.length === 1 ? 'is sent back to its lane' : 'are sent back to their lanes'} (${why}) and ${group.length === 1 ? 'leaves' : 'leave'} the queue; ${group.length === 1 ? 'its fix rejoins' : 'their fixes rejoin'} after the next review.`,
+        `${e.message}\n${names} ${back.length === 1 ? 'is sent back to its lane' : 'are sent back to their lanes'} (${why}) and ${back.length === 1 ? 'leaves' : 'leave'} the queue; ${back.length === 1 ? 'its fix rejoins' : 'their fixes rejoin'} after the next review.${kept.length ? ` ${kept.join(', ')} ${kept.length === 1 ? 'keeps its' : 'keep their'} place${kept.length === 1 ? '' : 's'} and wait${kept.length === 1 ? 's' : ''} for ${back.length === 1 ? 'it' : 'them'}.` : ''}`,
       );
     }
   }
@@ -1722,16 +1787,38 @@ function sessionsCommand() {
   load();
   const root = resolve('.');
   const [sub] = rest;
-  if (sub === 'beat' || sub === 'lead') {
+  if (sub === 'beat' || sub === 'lead' || sub === 'stream') {
     if (!callerSession) die(`code-kit sessions ${sub} needs the session: --session <id>.`);
     if (sub === 'beat') return seeSession(root, callerSession) && out('Seen.');
-    const was = leadSession(root);
-    makeLead(root, callerSession);
+    // STRM-2: the stream it leads, or works in, by name.
+    const { config } = load();
+    const named = rest[1] ?? null;
+    const names = streamsOf(config).map((x) => x.name);
+    if (named && !names.includes(named))
+      die(
+        names.length
+          ? `There's no stream "${named}": the streams are ${names.join(', ')}.`
+          : `This project isn't built as streams, so there's no "${named}": lead it with \`code-kit sessions lead\`.`,
+      );
+    if (sub === 'stream') {
+      if (!named)
+        die(`code-kit sessions stream <name>: one of ${names.join(', ') || 'no streams'}.`);
+      const me = joinStream(root, callerSession, named);
+      return out(
+        `This session (${shortSession(callerSession)}) ${me.role === 'lead' ? 'leads' : 'works in'} the ${named} stream now.`,
+      );
+    }
+    const stream = named ?? readSession(root, callerSession)?.stream ?? null;
+    const was = leadSession(root, Date.now(), stream);
+    makeLead(root, callerSession, Date.now(), stream);
     return out(
-      `This session (${shortSession(callerSession)}) leads the project now${was && was.id !== callerSession ? `; ${shortSession(was.id)} is a working session` : ''}.`,
+      `This session (${shortSession(callerSession)}) leads ${stream ? `the ${stream} stream` : 'the project'} now${was && was.id !== callerSession && (was.stream ?? null) === stream ? `; ${shortSession(was.id)} is a working session` : ''}.`,
     );
   }
-  if (sub !== undefined) die('code-kit sessions [--json] | sessions lead | sessions beat');
+  if (sub !== undefined)
+    die(
+      'code-kit sessions [--json] | sessions lead [stream] | sessions stream <name> | sessions beat',
+    );
   const all = sessions(root).filter((s) => s.live || s.task);
   if (flag('--json'))
     return out(
@@ -1744,7 +1831,7 @@ function sessionsCommand() {
   if (!all.length) return out('No session is working this project.');
   for (const s of all)
     out(
-      `${pad(memberOf(s), 30)} ${pad(s.live ? s.role : 'ended', 8)} ${s.task ? `${s.task.title}${s.task.paths?.length ? ` (${s.task.paths.join(', ')})` : ''}${s.live ? '' : ', stale'}` : '-'}${s.id === callerSession ? '  ← this session' : ''}`,
+      `${pad(memberOf(s), 30)} ${pad(s.live ? s.role : 'ended', 8)} ${s.stream ? `${pad(s.stream, 10)} ` : ''}${s.task ? `${s.task.title}${s.task.paths?.length ? ` (${s.task.paths.join(', ')})` : ''}${s.live ? '' : ', stale'}` : '-'}${s.id === callerSession ? '  ← this session' : ''}`,
     );
 }
 
@@ -2059,7 +2146,11 @@ function deferCommand() {
   if (error) die(error);
   const plan = config.docs?.plan;
   if (plan) {
-    const known = new Set(readStories(root, plan).map((s) => s.id));
+    // STRM-2: a stream's lead adds its stories in its own worktree's plan, which reaches the main
+    // checkout only when its lead branch merges: both plans count.
+    const known = new Set(
+      [...new Set([resolve('.'), root])].flatMap((at) => readStories(at, plan).map((s) => s.id)),
+    );
     const unknown = stories.map((s) => s.toUpperCase()).filter((s) => !known.has(s));
     if (unknown.length)
       die(`There is no story ${unknown.join(', ')} in ${plan}; nothing was held.`);
@@ -2391,11 +2482,17 @@ function reconcileCommand(id) {
 
 function next() {
   const root = resolve('.');
-  let step = nextStep(root, (config) => findBase(config, false));
   // SESS-2: the project's steps are the lead's. A working session that asks is told whose they are,
-  // and what's its own, instead of being handed a dispatch or a review it may not do.
+  // and what's its own, instead of being handed a dispatch or a review it may not do. STRM-3: a lead
+  // gets its own stream's steps; the lead in the main checkout also takes the whole project's.
   const me = callerSession ? readSession(root, callerSession) : null;
-  const lead = leadSession(root);
+  const leads = leadSessions(root);
+  const projectWide = !me || leads.length < 2 || leads[0].id === me.id;
+  let step = nextStep(root, (config) => findBase(config, false), {
+    stream: me?.stream ?? null,
+    projectWide,
+  });
+  const lead = leadSession(root, Date.now(), me?.stream ?? null);
   if (me && lead && lead.id !== me.id && !['wait', 'done'].includes(step.step))
     step = {
       ...step,
@@ -2475,6 +2572,13 @@ async function approve(given) {
     );
   if (laneName !== undefined && !config.lanes[laneName])
     die(`There is no lane "${laneName}". Lanes: ${Object.keys(config.lanes).join(', ')}.`);
+  // STRM-8: a stream's lead approves for its own stream's lanes; core's, with a platform, is the platform's.
+  const approver = delegated && callerSession ? readSession(resolve('.'), callerSession) : null;
+  const laneStream = laneName ? streamOfLane(config, laneName) : null;
+  if (approver?.stream && laneStream && laneStream !== approver.stream)
+    die(
+      `Nothing was approved: the ${laneName} lane is the ${laneStream} stream's${platformOf(config)?.name === laneStream ? ', which owns core' : ''}, and this session leads ${approver.stream}. Its approvals are its own lead's${platformOf(config)?.name === laneStream ? `; ask it with code-kit core ask "<what>" --story ST-n` : ''}.`,
+    );
   const known = new Set([
     'kit',
     TESTS_APPROVAL,
@@ -3206,7 +3310,7 @@ function loopCommand() {
     die(
       'code-kit loop [--json] | loop pause | loop resume | loop lead --session <id> [--take] | loop release --session <id>',
     );
-  const state = readLoop(root);
+  const state = readLoop(root, Date.now(), sessionId);
   // SESS-2: with --session, whether that session leads the project or works in it.
   const role = sessionId ? (readSession(root, sessionId)?.role ?? null) : null;
   out(
@@ -3804,6 +3908,269 @@ function designEvidence(root, config, entries) {
   );
 }
 
+/**
+ * PROM-1 to PROM-3: module code that belongs in core. `promote` lists the candidates; `promote scan`
+ * looks for them (with --branch, in what the branch changes against the base: a review's findings);
+ * `promote --story ST-n` lists what other streams' specs already require that the story's repeat;
+ * `promote accept|reject` is the platform lead's decision.
+ */
+function promoteCommand() {
+  const { config } = load();
+  const root = resolve('.');
+  const [sub, id] = rest;
+  const stories = config.docs?.plan ? readStories(root, config.docs.plan) : [];
+  const done = new Set(stories.filter((st) => st.status === 'done').map((st) => st.id));
+  if (!hasStreams(config) && sub !== undefined)
+    die("This project isn't built as streams, so there's no core to promote code into.");
+  if (sub === 'scan') {
+    const base = branchName ? findBase(config, false) : null;
+    const files = branchName
+      ? execFileSync('git', ['-C', root, 'diff', '--name-only', `${base}...${branchName}`], {
+          encoding: 'utf8',
+        })
+          .split('\n')
+          .filter(Boolean)
+      : null;
+    // A review reads the branch as it's committed; its clones of another stream are candidates.
+    const r = scanForPromotions(root, config, { files, ref: branchName ?? null });
+    if (flag('--json')) return out(JSON.stringify(r, null, 2));
+    if (flag('--quiet')) return;
+    if (branchName) {
+      const mine = r.clones.map(cloneCandidate);
+      if (!mine.length)
+        return out(`${branchName} repeats no other stream's code, and no core code.`);
+      for (const c of mine)
+        out(
+          c.signal === 'core-clone'
+            ? `${c.what}: use core's.`
+            : `${c.what}: proposed for core (code-kit promote).`,
+        );
+      return;
+    }
+    return out(
+      r.raised.length
+        ? `${r.raised.length} candidate${r.raised.length === 1 ? '' : 's'} for core raised or added to: ${r.raised.map((c) => c.id).join(', ')}.`
+        : 'Nothing new for core.',
+    );
+  }
+  if (sub === 'accept' || sub === 'reject') {
+    const me = callerSession ? readSession(root, callerSession) : null;
+    const platform = platformOf(config);
+    const candidate = promotions(root).find((x) => x.id === id);
+    const owner = candidate ? decidedFor(config, candidate) : null;
+    if (me?.stream && owner && me.stream !== owner)
+      die(`${id} is the ${owner} lead's to decide${platform ? ': the platform owns core' : ''}.`);
+    const r = decidePromotion(root, id, {
+      how: sub === 'accept' ? 'promoted' : 'rejected',
+      story: storyGiven?.toUpperCase() ?? null,
+      reason: reason ?? null,
+      by: callerSession,
+    });
+    if (!r.ok) die(r.why);
+    return out(
+      sub === 'accept'
+        ? `Promoted ${id}: ${r.promotion.decided.story} moves it into core and switches each stream to it; it closes when that story merges.`
+        : `Rejected ${id}: ${reason.trim()}. It isn't proposed again until its evidence changes.`,
+    );
+  }
+  if (sub !== undefined)
+    die(
+      'code-kit promote [--json] [--story ST-n] | promote scan [--branch b] [--json|--quiet] | promote accept <id> --story ST-n | promote reject <id> --reason "…"',
+    );
+  if (storyGiven) {
+    const story = stories.find((st) => st.id.toUpperCase() === storyGiven.toUpperCase());
+    if (!story) die(`${config.docs?.plan ?? 'The plan'} has no story ${storyGiven}.`);
+    const found = config.docs?.specs
+      ? repeatedRequirements(config, readRequirements(root, config.docs.specs), story)
+      : [];
+    for (const m of found)
+      raise(root, {
+        key: `requirement:${[m.requirement, m.matches].sort().join('|')}`,
+        signal: 'requirement',
+        what: `${story.id}'s ${m.requirement} repeats ${m.stream}'s ${m.matches} (${m.title})`,
+        where: [m.file],
+        streams: [...new Set([m.stream, streamOfLane(config, story.lane)].filter(Boolean))],
+        evidence: `${Math.round(m.score * 100)}% alike`,
+      });
+    if (flag('--json')) return out(JSON.stringify(found, null, 2));
+    if (!found.length) return out(`No other stream's spec requires what ${story.id} does.`);
+    for (const m of found)
+      out(
+        `${m.requirement} repeats ${m.stream}'s ${m.matches} (${m.title}, ${m.file}): build it once, in core, or reuse ${m.stream}'s through the platform.`,
+      );
+    return;
+  }
+  const all = promotions(root).map((c) => ({
+    ...c,
+    state: c.state === 'promoted' && done.has(c.decided?.story) ? 'done' : c.state,
+    decides: decidedFor(config, c),
+  }));
+  if (flag('--json')) return out(JSON.stringify(all, null, 2));
+  const open = all.filter((c) => c.state === 'open');
+  if (!all.length) return out('No candidates for core.');
+  out(
+    open.length
+      ? `${open.length} candidate${open.length === 1 ? '' : 's'} for core:`
+      : 'No open candidates for core.',
+  );
+  for (const c of open)
+    out(
+      `  ${c.id} (${c.kind}, ${c.streams.join(' and ')}; the ${c.decides} lead decides): ${c.what}`,
+    );
+  for (const c of all.filter((x) => x.state !== 'open').slice(-10))
+    out(
+      `  ${c.id} ${c.state}${c.decided?.story ? ` as ${c.decided.story}` : ''}${c.decided?.reason ? `: ${c.decided.reason}` : ''}`,
+    );
+}
+
+/**
+ * STRM-1: the project's streams: each one's lanes, plan, lead session and what its lanes are running; the
+ * core lanes the streams share, and the stream that owns core.
+ */
+function streamsCommand() {
+  const { config } = load();
+  const root = resolve('.');
+  const all = streamsOf(config);
+  const claims = laneClaims(root);
+  // STRM-10: what the mod scopes a stream lead's views to: each stream's stories and requirements, the
+  // stories core holds, and what it asks of core or has to decide for it.
+  const stories = config.docs?.plan ? readStories(root, config.docs.plan) : [];
+  const requirements = config.docs?.specs ? readRequirements(root, config.docs.specs) : [];
+  const held = heldByCore(
+    root,
+    stories.map((s) => ({ id: s.id, state: s.status })),
+  );
+  const asks = coreRequests(root).filter((r) => r.state === 'open');
+  const candidates = promotions(root).filter((c) => c.state === 'open');
+  const me = callerSession ? readSession(root, callerSession) : null;
+  const rows = all.map((st) => {
+    const lead = leadSession(root, Date.now(), st.name);
+    const own = stories.filter((s) => streamOfStory(config, s) === st.name);
+    const cited = new Set(own.flatMap((s) => s.requirements));
+    return {
+      ...st,
+      lead: lead
+        ? { session: lead.id, member: memberOf(lead), own: lead.stream === st.name }
+        : null,
+      running: claims
+        .filter((c) => st.lanes.includes(c.lane))
+        .map((c) => ({ lane: c.lane, story: c.story })),
+      stories: own.map((s) => s.id),
+      requirements: requirements
+        .filter((r) => cited.has(r.id) || (st.specs.length && matchesAny(r.file, st.specs)))
+        .map((r) => r.id),
+      held: own.filter((s) => held.has(s.id)).map((s) => ({ story: s.id, why: held.get(s.id) })),
+      asks: asks.filter((r) => r.stream === st.name).map((r) => r.id),
+      toDecide: [
+        ...(st.platform ? asks.map((r) => r.id) : []),
+        ...candidates.filter((c) => decidedFor(config, c) === st.name).map((c) => c.id),
+      ],
+    };
+  });
+  const shared = sharedLanes(config).map((lane) => ({
+    lane,
+    running: claims.find((c) => c.lane === lane)?.story ?? null,
+    turn: lastTurn(root, lane),
+  }));
+  // The streams this session leads, or, a working session's, the one it works in.
+  const mine = rows
+    .filter((r) => (callerSession && r.lead?.session === callerSession) || r.name === me?.stream)
+    .map((r) => r.name);
+  if (flag('--json')) return out(JSON.stringify({ streams: rows, shared, mine }, null, 2));
+  if (!all.length)
+    return out(
+      "This project isn't built as streams: one lead runs every lane. docs/specs/31-streams-and-platform.md says how to add them.",
+    );
+  for (const r of rows) {
+    out(
+      `${r.name}${r.platform ? ' (platform: owns core)' : ''}: ${r.lanes.join(', ') || 'no lanes'}; plan ${r.plan}`,
+    );
+    out(
+      `  lead: ${r.lead ? `${r.lead.member}${r.lead.own ? '' : ', leading with no stream of its own'}` : 'none now (/code-kit:lead ' + r.name + ' in a session)'}`,
+    );
+    for (const x of r.running) out(`  ${x.lane}: ${x.story ?? 'a story'}`);
+  }
+  if (shared.length)
+    out(
+      `core, shared in turns: ${shared.map((x) => `${x.lane}${x.running ? ` (${x.running})` : ''}`).join(', ')}`,
+    );
+}
+
+/**
+ * STRM-7: change requests to core. With a platform stream, a stream's lead asks for what its story needs
+ * from core (`core ask`), the story waits, and the platform's lead accepts it with the story that builds
+ * it, or declines it with why.
+ */
+function coreCommand() {
+  const { config } = load();
+  const root = resolve('.');
+  const [sub, id] = rest;
+  const platform = platformOf(config);
+  const me = callerSession ? readSession(root, callerSession) : null;
+  if (sub === 'ask') {
+    const what = rest.slice(1).join(' ').trim();
+    if (!platform)
+      die(
+        hasStreams(config)
+          ? "Nothing was asked: there's no platform stream, so core's lanes are the streams' own, shared in turns. Plan the change as a story on a core lane in your stream's plan."
+          : "Nothing was asked: this project isn't built as streams, so core is the lead's.",
+      );
+    if (!storyGiven)
+      die('Name the story that needs it, with --story ST-n: it waits on the decision.');
+    if (me?.stream === platform.name)
+      die('This session leads the platform: core is yours to change.');
+    const r = askCore(root, {
+      stream: me?.stream ?? null,
+      session: callerSession,
+      story: storyGiven.toUpperCase(),
+      what,
+      why: whyGiven ?? null,
+    });
+    if (!r.ok) die(r.why);
+    const lead = leadSession(root, Date.now(), platform.name);
+    return out(
+      r.existed
+        ? `${r.request.id} already asks this; ${r.request.story} waits on it.`
+        : `Asked ${r.request.id} of the platform${lead ? ` (${memberOf(lead)})` : ' (no session leads it now: it waits for one)'}. ${r.request.story} waits on its decision; carry on with other stories.`,
+    );
+  }
+  if (sub === 'accept' || sub === 'decline') {
+    if (!platform) die("There's no platform stream to decide change requests to core.");
+    if (me && me.stream && me.stream !== platform.name)
+      die(
+        `${id ?? 'A change request'} is the platform's to decide, in the ${platform.name} lead's session.`,
+      );
+    const r = decideCore(root, id, {
+      how: sub === 'accept' ? 'accepted' : 'declined',
+      story: storyGiven?.toUpperCase() ?? null,
+      reason: reason ?? null,
+      by: callerSession,
+    });
+    if (!r.ok) die(r.why);
+    return out(
+      sub === 'accept'
+        ? `Accepted ${id}: ${r.request.decided.story} builds it, and ${r.request.story} waits for that story.`
+        : `Declined ${id}: ${reason.trim()}. ${r.request.story} no longer waits on it.`,
+    );
+  }
+  if (sub !== undefined)
+    die(
+      'code-kit core [--json] | core ask "<what>" --story ST-n [--why "…"] | core accept <id> --story ST-n | core decline <id> --reason "…"',
+    );
+  const all = coreRequests(root);
+  if (flag('--json')) return out(JSON.stringify(all, null, 2));
+  const open = all.filter((r) => r.state === 'open');
+  if (!all.length) return out('No change requests to core.');
+  for (const r of open)
+    out(
+      `${r.id} (${r.stream ?? 'a lead'}, for ${r.story}): ${r.what}${r.why ? `, because ${r.why}` : ''}`,
+    );
+  for (const r of all.filter((x) => x.state !== 'open').slice(-10))
+    out(
+      `${r.id} ${r.state}${r.decided.story ? ` as ${r.decided.story}` : ''}${r.decided.reason ? `: ${r.decided.reason}` : ''} (${r.what})`,
+    );
+}
+
 const commands = {
   check,
   designs: designsCommand,
@@ -3820,6 +4187,9 @@ const commands = {
   settings,
   lanes: lanesCommand,
   sessions: sessionsCommand,
+  streams: streamsCommand,
+  core: coreCommand,
+  promote: promoteCommand,
   decisions: decisionsCommand,
   task: taskCommand,
   hold: () => (rest.length === 1 ? hold(rest[0]) : usage()),
@@ -3876,7 +4246,9 @@ function usage() {
       '              | report [--json] | report send|discard <id>\n' +
       '              | stops [--session id] [--json] | sent-back <branch> [--reason "…"]\n' +
       '              | settings [--json] | settings set <key> <value> --reason "…" [--via pane]\n' +
-      '              | lanes [--json] | lanes release <lane> | sessions [--json] | sessions lead\n' +
+      '              | lanes [--json] | lanes release <lane> | sessions [--json] | sessions lead [stream] | sessions stream <name>\n' +
+      '              | promote [--json] [--story ST-n] | promote scan [--branch b] [--json|--quiet] | promote accept <id> --story ST-n | promote reject <id> --reason "…"\n' +
+      '              | streams [--json] | core [--json] | core ask "<what>" --story ST-n [--why "…"] | core accept <id> --story ST-n | core decline <id> --reason "…"\n' +
       '              | who | task "<what>" --touches globs | task done | task take <session>\n' +
       '              | decisions [--json] [--all]\n' +
       '              | ci check [--json] | ci usage [--days N] [--json] | release <version>\n' +

@@ -32,6 +32,8 @@ import { evidenceRecords } from './reviews.mjs';
 import { storyOfBranch } from './teamfacts.mjs';
 import { literalPath, matchesAny } from './glob.mjs';
 import { languageOf, layerProblems } from './layers.mjs';
+import { cloneCandidate, scanForPromotions } from './promote.mjs';
+import { hasStreams } from './streams.mjs';
 import { STANDARDS_APPROVAL, standardsFile, standardsWeakenings } from './standards.mjs';
 import { TESTS_APPROVAL, branchWeakenings, fixOf, proveFix } from './regression.mjs';
 import {
@@ -45,6 +47,7 @@ import {
   leadNeedsApproval,
   relayCommand,
   screenProblem,
+  sharedListProblem,
 } from './rules.mjs';
 
 const git = (root, ...args) =>
@@ -297,7 +300,21 @@ export function verifyBranch({
       found.protected.push(
         `${f} is ${guarded.why}, and the lead ${logged.get(f)?.approval === 'lead' ? 'changed it without' : 'changed it since it had'} the person's ${guarded.approval} approval. The lead merges here, so nobody else reviews it. Ask the person; once they approve it (they run \`! echo "<what you are approving>" > ${APPROVALS_DIR}/${guarded.approval}\`${config.approvals?.lead ? `, or you record their words with \`${relayCommand(guarded.approval)}\`` : ''}), record their approval for the file as it is with a commit of its own: \`git commit -m "Record the person's ${guarded.approval} approval for ${f}"\`. The commit hook logs it; the file doesn't need to change.`,
       );
-    if (matchesAny(f, config.anyActor)) continue;
+    if (matchesAny(f, config.anyActor)) {
+      // STRM-6: a branch adds to a shared list; what was there stays as it was, unless the branch owns it.
+      if (lane && (lane !== 'lead' || direct.has(f))) {
+        const actor = lane === 'lead' ? { kind: 'lead' } : { kind: 'lane', lane };
+        const listed = sharedListProblem(
+          actor,
+          f,
+          showAt(root, from, f),
+          showAt(root, 'HEAD', f),
+          config,
+        );
+        if (listed) found.ownership.push(listed);
+      }
+      continue;
+    }
     if (lane === 'lead') {
       // The lead's branch is held to the lead's paths for what it changes itself; lane work reaches it
       // by merging the lane's branch, which verify held to that lane.
@@ -341,6 +358,18 @@ export function verifyBranch({
     );
     const screen = screenProblem(f, root, config);
     if (screen) found.design.push(screen.split('\n')[0]);
+  }
+
+  // PROM-4: with promote.coreClones at refuse, module code the branch adds that repeats core is refused.
+  if (hasStreams(config) && config.harness.promote.coreClones === 'refuse' && present.length) {
+    const { clones } = scanForPromotions(root, config, {
+      files: present,
+      ref: 'HEAD',
+      record: false,
+    });
+    for (const c of clones.map(cloneCandidate))
+      if (c.signal === 'core-clone')
+        found.layers.push(`${c.what}: use core's instead of a copy (harness.promote.coreClones).`);
   }
 
   // HAND-2: each register entry the branch adds or changes, and each approved design whose files it
@@ -509,10 +538,16 @@ export function verifyBranch({
 
   // REG-1: a fix's tests fail without it, as the bug.
   const fix = fixes ? fixOf(root, branch ?? currentBranchOf(root), config) : null;
-  if (fix) found.regression.push(...proveFix({ root, from, base, changed, config, fix }));
+  // What couldn't run or finish says nothing against the branch (a fix check without its installs, a
+  // check out of time): counted, so a merge keeps the branch in its place when that's all there is.
+  let unrun = 0;
+  if (fix) {
+    const proved = proveFix({ root, from, base, changed, config, fix });
+    found.regression.push(...proved);
+    if (proved.unrun) unrun += proved.length;
+  }
 
   let skipped = [];
-  let unfinished = false;
   if (checks) {
     const actor = lane
       ? { kind: 'lane', lane, label: `${lane} lane branch` }
@@ -522,8 +557,11 @@ export function verifyBranch({
     const { failure } = ran;
     if (failure) {
       found.checks.push(`${failure.title}\n${failureOutput(failure.output)}`.trim());
-      unfinished = Boolean(failure.timedOut);
+      if (failure.timedOut) unrun++;
     }
   }
-  return { changed, found, skipped, unfinished, evidenceUnchecked };
+  // Whether every problem found is one that couldn't run or finish.
+  const total = Object.values(found).reduce((n, list) => n + list.length, 0);
+  const unfinished = unrun > 0 && total === unrun;
+  return { changed, found, skipped, unfinished, unrun, evidenceUnchecked };
 }

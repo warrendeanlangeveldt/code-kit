@@ -403,8 +403,10 @@ export const nextStoryNumber = (stories) =>
  * the branch that adopts them, as a standard's breaches are.
  */
 export function adoptedLayers(beforeLayers = [], afterLayers = []) {
+  // STRM-5: a layer given a stream is held to the streams' rule too, so that's a changed rule.
   const rule = (l) =>
     JSON.stringify({
+      stream: l.stream ?? null,
       paths: [...(l.paths ?? [])].sort(),
       mayImport: [...(l.mayImport ?? [])].sort(),
       denyPackages: [...(l.denyPackages ?? [])].sort(),

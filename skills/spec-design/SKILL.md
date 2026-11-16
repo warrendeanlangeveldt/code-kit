@@ -99,6 +99,7 @@ A spec answers what and why, not how: no framework, file or function names unles
 
 These are what `/code-kit:init` turns into enforced rules, so be concrete.
 
+- **Product lines (spec 31), asked once:** does the product have, or plan, separate product lines (offerings for different users, each with its own roadmap), or is it platform capability other products will build on? If yes, the architecture is a core per technical layer plus a module per product line (`api/core`, `api/<line>`), a module never imports another line's module, and core never imports a module; the plan has a plan file per line under `docs/plan/` and, when the person wants a team to own core, one for the platform. If no, a plain layout, as below; streams can be added later. Don't guess seams the brief doesn't show: a product split along lines it never follows makes every feature cross them.
 - **`docs/architecture.md`:**
   - the components (apps, services, packages, jobs) and what each is for;
   - the **layers**, the folders each will live in, and which layers each may depend on (for example `ui → application → domain`, with adapters implementing the domain's ports);

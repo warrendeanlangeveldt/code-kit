@@ -14,7 +14,8 @@ import { claimLane, shortSession } from './lib/laneclaims.mjs';
 import { dropNextLane, mainCheckout, nextLane, noteNextLane } from './lib/lanetrees.mjs';
 import { readStories, storyBranch } from './lib/plan.mjs';
 import { agentFileModel } from './lib/schedule.mjs';
-import { memberOf, readSession } from './lib/sessions.mjs';
+import { leadSession, memberOf, readSession } from './lib/sessions.mjs';
+import { hasStreams, platformOf, recordTurn, streamOfLane, streamOfStory } from './lib/streams.mjs';
 
 const { input, project, config, error } = start();
 // A broken config is reported by the other hooks; it doesn't stop agents starting.
@@ -38,6 +39,33 @@ if (isolated && !noteNextLane(main, { lane: lane ?? null, story: lane ? story : 
 }
 if (!lane) process.exit(0);
 const session = input.session_id ?? null;
+// STRM-2, STRM-6: a stream's lanes are started by its own lead; a shared core lane by any stream's.
+const me = session ? readSession(project, session) : null;
+const laneStream = streamOfLane(config, lane);
+// A lead with no stream of its own leads the streams without a lead of theirs, not the others.
+const theirs = laneStream ? leadSession(project, Date.now(), laneStream) : null;
+const othersLane =
+  laneStream &&
+  (me?.stream ? laneStream !== me.stream : theirs?.stream === laneStream && theirs.id !== session);
+if (hasStreams(config) && me?.role === 'lead' && othersLane) {
+  if (isolated) dropNextLane(main);
+  block(
+    `Blocked: the ${lane} lane is the ${laneStream} stream's${platformOf(config)?.name === laneStream ? ', which owns core' : ''}, and this session leads ${me.stream ?? 'the streams without a lead of their own'}. A stream's lanes are started by its own lead${theirs ? ` (${memberOf(theirs)})` : ''}.
+` +
+      (platformOf(config)?.name === laneStream
+        ? `For a change to core, ask the platform: node "${CLI}" core ask "<what the story needs>" --story <ST-n>`
+        : `Hand the ${laneStream} lead what you need, or build it in your own stream's lanes.`),
+  );
+}
+const storyStream =
+  story && config.docs?.plan
+    ? (streamOfStory(
+        config,
+        readStories(project, config.docs.plan).find((s) => s.id === story),
+      ) ??
+      me?.stream ??
+      null)
+    : (me?.stream ?? null);
 const claimed = claimLane(project, { lane, story, session });
 if (!claimed.ok) {
   if (isolated) dropNextLane(main);
@@ -55,6 +83,9 @@ if (!claimed.ok) {
       `Start ${story ?? 'this story'} when ${c.story ?? 'that story'} is finished, or dispatch a ready story in another lane meanwhile. If that agent has stopped and the lane is free, release it first:\n  node "${CLI}" lanes release ${lane}`,
   );
 }
+
+// STRM-6: a shared core lane notes whose turn it ran, so the other streams' stories go next.
+if (!laneStream && hasStreams(config)) recordTurn(project, lane, storyStream);
 
 // SCHED-3: what it runs on. The lead's call wins, then the lane's agent file, then the setting: `story` is
 // the model the story's size gives, which the mod sets where the call names none (SET-4).

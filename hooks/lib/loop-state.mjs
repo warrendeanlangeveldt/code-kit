@@ -40,9 +40,10 @@ const liveLead = (state, now) => {
  * SESS-2: where sessions are recorded, the lead session is the lead; the lease is for a session code-kit's
  * session hook never saw.
  */
-export function readLoop(root, now = Date.now()) {
+export function readLoop(root, now = Date.now(), session = null) {
   const state = readRaw(root);
-  const lead = leadSession(root, now);
+  // STRM-2: a session's lead is its own stream's.
+  const lead = leadSession(root, now, readSession(root, session)?.stream ?? null);
   return {
     paused: state.paused === true,
     at: state.at ?? null,
@@ -62,7 +63,7 @@ export function claimLead(root, session, { take = false } = {}, now = Date.now()
   // SESS-2: the loop runs in the lead session; Lead from here (`take`) makes this session the lead.
   if (readSession(root, session)) {
     if (take) makeLead(root, session, now);
-    const lead = leadSession(root, now);
+    const lead = leadSession(root, now, readSession(root, session)?.stream ?? null);
     return lead?.id === session
       ? { ok: true, lead: null }
       : { ok: false, lead: lead ? { session: lead.id, at: lead.seen } : null };

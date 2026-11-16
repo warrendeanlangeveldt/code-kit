@@ -103,7 +103,7 @@ const ALWAYS = [
   ],
   [
     /approval-log\.jsonl/,
-    "The approval audit log is appended only by the commit hook; nobody edits it. A shell command may name it only to read it: git diff, log, show or blame, or cat, head, tail, grep, wc, jq, cut, sort, uniq, awk or sed -n printing lines, piped only into each other, with no redirect but 2>&1 or into /dev/null, no command's output in its arguments ($(…) or backticks) and no variable set before a command; other commands may come before or after it with ; or &&, if none defines a function or alias, exports a variable or sets one a command reads, such as PATH. Run the read in that form, or read the file with the Read tool, which can't write. To put it back as the last commit has it (after a `git revert --no-commit` or `git cherry-pick --no-commit` took entries out), run `git restore --staged --worktree .claude/approval-log.jsonl` in the same form, and commit in a command after it.",
+    "The approval audit log is appended only by the commit hook; nobody edits it. A shell command may name it only to read it: git diff, log, show or blame, or cat, head, tail, grep, wc, jq, cut, sort, uniq, awk or sed -n printing lines, piped only into each other, with no redirect but 2>&1 or into /dev/null, no command's output in its arguments ($(…) or backticks) and no variable set before a command; other commands may come before or after it with ; or &&, if none defines an alias or a function the read calls, exports a variable or sets one a command reads, such as PATH. Run the read in that form, or read the file with the Read tool, which can't write. To put it back as the last commit has it (after a `git revert --no-commit` or `git cherry-pick --no-commit` took entries out), run `git restore --staged --worktree .claude/approval-log.jsonl` in the same form, and commit in a command after it.",
     unreadNames(cmd, /approval-log\.jsonl/).join('\n'),
   ],
 ];
@@ -244,10 +244,10 @@ if (runs(cmd, new RegExp(String.raw`^${CODE_KIT}\s+loop\s+(pause|resume)\b`)))
 // the person's own act.
 if (
   runs(cmd, new RegExp(String.raw`^${CODE_KIT}\s+loop\s+(lead|release)\b`)) ||
-  runs(cmd, new RegExp(String.raw`^${CODE_KIT}\s+sessions\s+(lead|beat)\b`))
+  runs(cmd, new RegExp(String.raw`^${CODE_KIT}\s+sessions\s+(lead|beat|stream)\b`))
 )
   block(
-    `Blocked: which session leads the project is recorded by code-kit, and choosing it is the person's own act (Lead from here, in the code-kit band, or \`code-kit sessions lead\` in their terminal). Carry on with your work.\nCommand: ${cmd}`,
+    `Blocked: which session leads the project is recorded by code-kit, and choosing it is the person's own act (they type \`/code-kit:lead\`, with the stream in a project built as streams, or use Lead from here in the code-kit band). Carry on with your work.\nCommand: ${cmd}`,
   );
 // TEAM-9: handing someone's claim to someone else is the tech lead's own decision too.
 if (runs(cmd, new RegExp(String.raw`^${CODE_KIT}\s+team\s+reassign\b`)))
@@ -850,10 +850,12 @@ const BEFORE_COMMIT = new RegExp(
 // Setting shell variables (`f=docs/x.md`, `export MSG="…"`) writes no file, unless a value runs a
 // command. What a later `git add "$f"` stages can't be read, so it counts as every changed file.
 const ASSIGNS_ONLY = /^(?:export\s+)?[A-Za-z_]\w*=\S*(?:\s+[A-Za-z_]\w*=\S*)*$/;
-// Nor does setting the shell's own options (`set -euo pipefail`, `set +x`).
+// Nor does setting the shell's own options (`set -euo pipefail`, `set +x`), or unsetting variables.
 const SHELL_OPTIONS = /^set(?:\s+[-+][a-zA-Z]+(?:\s+[a-z]+)?)+\s*$/;
+const UNSETS = /^unset(?:\s+-[vn])?(?:\s+[A-Za-z_]\w*)+\s*$/;
 const assignsOnly = (c) =>
-  (ASSIGNS_ONLY.test(c.code) || SHELL_OPTIONS.test(c.code)) && !/`|\$\(|<\(|[<>]/.test(c.text);
+  (ASSIGNS_ONLY.test(c.code) || SHELL_OPTIONS.test(c.code) || UNSETS.test(c.code)) &&
+  !/`|\$\(|<\(|[<>]/.test(c.text);
 // A tool's command that writes only the tool's own records (an adapter's `shell.records`), which any
 // actor may write and no check covers, with no redirect of its own.
 const recordsOnly = (c) =>

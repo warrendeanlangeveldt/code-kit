@@ -3,6 +3,7 @@
 import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { VIBE, harnessProblems, harnessSettings } from './harness.mjs';
+import { streamProblems } from './streamconfig.mjs';
 import { teamProblems } from './team.mjs';
 import { join } from 'node:path';
 import { DEFAULT_REGISTER } from './costs.mjs';
@@ -69,7 +70,10 @@ export function mergeDelegation(root, config, file = CONFIG_FILE) {
 /** The rules the hooks enforce: the project's config, the kit's defaults, and any active adapters. */
 export const effectiveConfig = (raw, root) => applyAdapters(withDefaults(raw), raw, root);
 
-/** An anyActor entry's glob: entries are globs, or { glob, reviewer } naming who reviews changes to it. */
+/**
+ * An anyActor entry's glob: entries are globs, or { glob, reviewer, adds } naming who reviews changes to
+ * it, and with `adds`, a shared list: any lane adds to it, and only its owner changes what's there.
+ */
 export const anyActorGlob = (e) => (typeof e === 'string' ? e : e?.glob);
 
 /**
@@ -93,8 +97,12 @@ export function withDefaults(c) {
     anyActorReviewers: (c.anyActor ?? [])
       .filter((e) => typeof e === 'object' && e?.reviewer)
       .map((e) => ({ glob: e.glob, reviewer: e.reviewer })),
+    // STRM-6: shared lists (an allow-list, a catalogue), which every stream's branches add entries to.
+    sharedLists: (c.anyActor ?? []).filter((e) => e?.adds === true).map((e) => e.glob),
     protected: [KIT, ...(c.protected ?? []).filter((p) => p.glob !== KIT.glob)],
     layers: c.layers ?? [],
+    // Spec 31: the project's streams; none is one stream holding every lane.
+    streams: c.streams ?? null,
     importAliases: c.importAliases ?? {},
     shell: { block: c.shell?.block ?? [], restricted: c.shell?.restricted ?? [] },
     execution: { unrepeatable: c.execution?.unrepeatable ?? [] },
@@ -394,9 +402,10 @@ export function validate(c) {
             isStr(e) ||
             (isObj(e) &&
               isStr(e.glob) &&
-              (e.reviewer === undefined || e.reviewer === 'lead' || lanes.includes(e.reviewer))),
+              (e.reviewer === undefined || e.reviewer === 'lead' || lanes.includes(e.reviewer)) &&
+              (e.adds === undefined || typeof e.adds === 'boolean')),
         )),
-    '"anyActor" must be a list of globs, or { "glob", "reviewer" } with the lead or a lane as reviewer',
+    '"anyActor" must be a list of globs, or { "glob", "reviewer", "adds" } with the lead or a lane as reviewer and "adds" true or false',
   );
   each('protected', (e, at) => {
     need(isStr(e.glob) && isStr(e.why), `${at} needs "glob" and "why"`);
@@ -407,6 +416,7 @@ export function validate(c) {
   });
   if (c.designGate !== undefined) validateDesignGate(c.designGate, need);
   validateLayers(c, need, each);
+  p.push(...streamProblems(c));
   if (c.shell !== undefined) validateShell(c.shell, lanes, need);
   each('postEdit', (e, at) => {
     need(
@@ -561,6 +571,10 @@ function validateLayers(c, need, each) {
     need(
       l.denyPackages === undefined || isList(l.denyPackages),
       `${at}.denyPackages must be a list of globs`,
+    );
+    need(
+      l.stream === undefined || isStr(l.stream),
+      `${at}.stream must name the stream whose module the layer is (leave it out for core)`,
     );
     need(
       l.label === undefined || isLabel(l.label),

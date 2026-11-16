@@ -102,12 +102,13 @@ Autonomy (12) is `autonomous` (the default), `propose` or `off`.
 
 ### LOOP-6 Pause and resume
 
-The band shows the loop's state ("loop on", "loop paused") with a Pause or Resume key. Pausing stops new steps at once; a turn in progress finishes. The pause is recorded (`code-kit loop`), so another tool's background work in the project, such as Context Graph's card writer and curator, pauses with it; a new session starts with the loop running, unless another session that still runs the loop (LOOP-10) paused it.
+The band shows the loop's state ("loop on", "loop paused") with a Pause or Resume key. Pausing stops new steps at once; a turn in progress finishes. The pause is recorded (`code-kit loop`), so another tool's background work in the project, such as Context Graph's card writer and curator, pauses with it; a new session starts with the loop running, unless another session that still runs the loop (LOOP-10) paused it. It works the other way too: a pause another tool records (`code-kit loop pause`) pauses a running session's loop within seconds. Resuming stays the person's act, in the band.
 
 **Acceptance**
 
 - Given the loop running, when the person presses Pause, then no further prompt is submitted until Resume.
 - Given the loop paused, then `code-kit loop --json` reports it paused, and after Resume, running.
+- Given the loop running, when another tool runs `code-kit loop pause` in the project, then the session submits no further prompt and the band says the loop is paused.
 
 ### LOOP-7 Done
 

@@ -662,7 +662,8 @@ export function board(view, els, on) {
     children: [
       statusLine(
         'build',
-        'Build',
+        // STRM-10: a stream's lead builds its own stream.
+        view.scope ? `Build: ${view.scope}` : 'Build',
         loopWord,
         progress ? `${progress.tested}/${progress.total}` : null,
         loopWord === 'moving'
@@ -1168,7 +1169,7 @@ export function board(view, els, on) {
     children: [
       statusLine(
         'lanes',
-        'Lanes',
+        view.scope ? `Lanes: ${view.scope}` : 'Lanes',
         atWork.length
           ? `${atWork.length} at work${needle ? ` · filter "${ui.search}"` : ''}`
           : 'all resting',
@@ -1245,6 +1246,15 @@ export function board(view, els, on) {
             ),
           ]
         : []),
+      // STRM-10: the rest of the project, a line per other stream and one for the shared core lanes, and
+      // what core holds of this stream's.
+      ...(view.streams ?? []).map((l) =>
+        text(l.text, {
+          key: `stream-line-${l.key}`,
+          wrap: 'truncate-end',
+          ...(l.tone === 'note' ? { color: 'yellow' } : { dimColor: true }),
+        }),
+      ),
     ],
   });
 
@@ -1585,6 +1595,8 @@ export function bandOf(view, els, onAction) {
     flexDirection: 'row',
     columnGap: 1,
     children: [
+      // STRM-10: whose build the line is, in a project built as streams.
+      ...(view.scope ? [text(view.scope, { bold: true })] : []),
       ...(progress?.name ? [text(progress.name, { dimColor: true })] : []),
       ...(runs.length
         ? [
