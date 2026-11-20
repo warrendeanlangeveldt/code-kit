@@ -17,7 +17,7 @@ import {
   utimesSync,
   writeFileSync,
 } from 'node:fs';
-import { homedir, tmpdir } from 'node:os';
+import { devNull, homedir, tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { refusalCard } from '../hooks/mod/view.mjs';
@@ -29,6 +29,11 @@ import { keptCheckoutOf } from '../hooks/lib/checkout.mjs';
 
 // SESS-1: the CLI reads the calling session from Claude Code's environment; these tests say it themselves.
 delete process.env.CLAUDE_CODE_SESSION_ID;
+// The throwaway repositories ignore only what their own .gitignore says. A machine's global ignore file
+// (a cloud dev machine's ignores .env.* and build/) would keep the tests' files out of their commits.
+process.env.GIT_CONFIG_COUNT = '1';
+process.env.GIT_CONFIG_KEY_0 = 'core.excludesFile';
+process.env.GIT_CONFIG_VALUE_0 = devNull;
 
 const here = dirname(fileURLToPath(import.meta.url));
 const hooks = join(here, '..', 'hooks');
