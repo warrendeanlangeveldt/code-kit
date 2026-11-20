@@ -77,39 +77,46 @@ An example:
 
 The core reaches a machine through one module, which never names a platform. An adapter says its key, the options it takes, and these operations:
 
-| Operation | Given                                            | Answers                                                                |
-| --------- | ------------------------------------------------ | ---------------------------------------------------------------------- |
-| `ready`   | nothing                                          | The project's machine, made if it wasn't there                         |
-| `run`     | a command, the folder to run it in, a time limit | The exit status, whether it ran out of time, and the end of its output |
-| `put`     | a file on the computer, and where it goes        | Whether it arrived                                                     |
-| `start`   | a command and the folder to run it in            | A terminal session on the machine that stays when nobody is attached   |
-| `attach`  | a session                                        | The person's terminal joined to it, until they detach                  |
-| `end`     | a session                                        | Whether it ended                                                       |
-| `state`   | nothing                                          | The machine, the sessions open on it and since when                    |
-| `release` | nothing                                          | Whether the machine was removed                                        |
+| Operation | Given                                            | Answers                                                                                                                                            |
+| --------- | ------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `needs`   | nothing                                          | What the platform needs on the computer: for each, whether it's there, the command that installs it or signs in, and where that command comes from |
+| `ready`   | nothing                                          | The project's machine, made if it wasn't there                                                                                                     |
+| `run`     | a command, the folder to run it in, a time limit | The exit status, whether it ran out of time, and the end of its output                                                                             |
+| `put`     | a file on the computer, and where it goes        | Whether it arrived                                                                                                                                 |
+| `start`   | a command and the folder to run it in            | A terminal session on the machine that stays when nobody is attached                                                                               |
+| `attach`  | a session                                        | The person's terminal joined to it, until they detach                                                                                              |
+| `end`     | a session                                        | Whether it ended                                                                                                                                   |
+| `state`   | nothing                                          | The machine, the sessions open on it and since when                                                                                                |
+| `release` | nothing                                          | Whether the machine was removed                                                                                                                    |
 
-An adapter that can't reach its platform (its command line isn't installed, the person isn't signed in to it, the platform doesn't answer) says which, and every `cloud` command passes that on with what to do.
+`needs` is how code-kit learns what to ask the person for without knowing the platform: its command line, and a sign-in to it. An adapter that can't reach its platform for any other reason (the platform doesn't answer, the account can't make a machine) says which, and every `cloud` command passes that on with what to do.
 
 **Acceptance**
 
-- Given the platform's command line isn't installed on the computer, then `cloud up` says so and where to get it, and changes nothing.
+- Given an adapter whose `needs` names a command line that isn't installed, then `cloud up` asks about it by the name, command and source the adapter gave (CLOUD-3).
+- Given a platform that doesn't answer, then `cloud up` says so in the adapter's words and changes nothing.
 
 ### CLOUD-3 `cloud up` makes the machine ready
 
 `code-kit cloud up` is run by the person, on the computer, in the project. It can be run again at any point and does only what's left. In order:
 
-1. It stops if the move would leave work behind: stories running or queued here, decisions waiting on the person, lane branches that aren't on the remote, or merges into the base that aren't published (MQ-6). It names each and what to do with it.
-2. It makes the machine and clears what the platform's image would get wrong (CLOUD-11).
-3. It checks the two sign-ins and stops at each one that's missing, saying what the person does. For GitHub it starts gh's device sign-in on the machine and shows the code to enter at GitHub. For Claude it tells the person to run `code-kit cloud signin`, which attaches their terminal to Claude Code's own sign-in on the machine. code-kit never reads either credential.
-4. It clones the project from its remote, and sets the clone's git name and email to the ones the computer's clone uses.
-5. It installs code-kit there at the version the computer runs, and the plugins the project's own settings enable.
-6. It runs `prepare`, lists the `carry` files and copies them.
-7. It writes the marker on the computer and says how to open the lead's session.
+1. It checks what it needs on the computer: git, and whatever the adapter's `needs` lists. For each thing missing it shows the exact command that installs it or signs in, says where that comes from, and asks before running it. It never installs unasked, since the command downloads and runs someone else's program on the person's computer. A sign-in that needs the person's browser is run in their terminal, and code-kit reads nothing it stores. Declined, or run where there's no terminal to ask in (a Claude session running it for the person), it stops with the commands for the person to run themselves.
+2. It stops if the move would leave work behind: stories running or queued here, decisions waiting on the person, lane branches that aren't on the remote, or merges into the base that aren't published (MQ-6). It names each and what to do with it.
+3. It makes the machine and clears what the platform's image would get wrong (CLOUD-11).
+4. It checks the two sign-ins and stops at each one that's missing, saying what the person does. For GitHub it starts gh's device sign-in on the machine and shows the code to enter at GitHub. For Claude it tells the person to run `code-kit cloud signin`, which attaches their terminal to Claude Code's own sign-in on the machine. code-kit never reads either credential.
+5. It clones the project from its remote, and sets the clone's git name and email to the ones the computer's clone uses.
+6. It installs code-kit there at the version the computer runs, and the plugins the project's own settings enable.
+7. It runs `prepare`, lists the `carry` files and copies them.
+8. It writes the marker on the computer and says how to open the lead's session.
 
 It then names what the computer has for this project that the machine won't: plugins and MCP servers Claude Code lists on the computer and not on the machine, such as a design tool or a browser that runs on the computer.
 
 **Acceptance**
 
+- Given a computer without the platform's command line, then `up` shows the install command and its source and asks; on yes it installs, goes on to the sign-in, and carries on.
+- Given the person answers no, then nothing is installed, and `up` stops with the install and sign-in commands to run by hand.
+- Given `up` run by a Claude session with the command line missing, then it installs nothing and tells the session what to ask the person to run.
+- Given the command line installed and the person not signed in to the platform, then `up` asks only about the sign-in.
 - Given a story running on the computer, then `up` stops, names the story, and says to finish it or hand it back first.
 - Given a machine with no sign-in to Claude, then `up` stops after making it, says to run `cloud signin`, and a second `up` after the sign-in carries on from the clone.
 - Given `up` run twice on a ready machine, then the second run changes nothing and says it's ready.
@@ -188,7 +195,7 @@ A machine is a paid thing, so spec 29 applies. With `cloud` in the config and a 
 
 ### CLOUD-11 The Sprites adapter
 
-The adapter's key is `sprites`. It works through the `sprite` command the person installed and signed in to, in the organisation that sign-in selects, and never reads its token. A project has one Sprite, named from the project's folder and a hash of its remote's address, so a second computer finds the same one. Its `ready` makes the Sprite if there's none, empties the image's global git ignore (it ignores `.env.*`, `build/`, `dist/` and `target/`, which would leave a project's files out of commits made there), and replaces the image's git identity (`Sprite <noreply@sprites.dev>`). `start` and `attach` are the platform's terminal sessions, which keep running after a detach; `end` is its session kill; `state` lists its sessions. The status the platform reports read `cold` whether the Sprite was awake or not, so it isn't used.
+The adapter's key is `sprites`. It works through the `sprite` command, in the organisation the person's sign-in selects, and never reads its token. Its `needs` are that command, installed by Fly's own installer from sprites.dev (it checks the download against its SHA-256 and puts `sprite` in `~/.local/bin`), and `sprite login`, which opens the person's browser and has to run in a terminal. A project has one Sprite, named from the project's folder and a hash of its remote's address, so a second computer finds the same one. Its `ready` makes the Sprite if there's none, empties the image's global git ignore (it ignores `.env.*`, `build/`, `dist/` and `target/`, which would leave a project's files out of commits made there), and replaces the image's git identity (`Sprite <noreply@sprites.dev>`). `start` and `attach` are the platform's terminal sessions, which keep running after a detach; `end` is its session kill; `state` lists its sessions. The status the platform reports read `cold` whether the Sprite was awake or not, so it isn't used.
 
 **Acceptance**
 
