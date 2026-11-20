@@ -2,7 +2,7 @@
 
 Started on 2026-11-20 with Claude Code 2.1.310 and the Sprite CLI 2026-11-03, on a Mac Studio (M3 Ultra, 28 cores, 96 GB) running several code-kit projects at once. The spike has to answer three things: whether moving work to cloud machines would relieve that Mac, which platform fits (Fly's Sprites or Daytona), and whether the feature belongs in the hub.
 
-The platform and Claude Code facts below were read from the official docs on 2026-11-20. The Mac was measured. One Sprite was created and tested the same day, and [Tests on a Sprite](#tests-on-a-sprite) has what ran. The first feature it describes is specified in `docs/specs/32-checks-on-a-runner.md`.
+The platform and Claude Code facts below were read from the official docs on 2026-11-20. The Mac was measured. One Sprite was created and tested the same day, and [Tests on a Sprite](#tests-on-a-sprite) has what ran. The direction chosen from it is in [What was decided](#what-was-decided).
 
 ## What loads the Mac
 
@@ -98,6 +98,12 @@ The tests added three things a runner's setup has to do, whichever feature it se
 - Clear the machine's global git ignore. A Sprite's image ships one that ignores `.env.*`, `build/`, `dist/`, `target/` and `*.log`, so a project's `.env.example`, or a source folder named `build`, would be left out of a commit made there with nothing said.
 - Set the person's git name and email. A commit made on a Sprite is otherwise authored by `Sprite <noreply@sprites.dev>`.
 - Expect a check to behave differently there. Two of code-kit's own mod tests, which passed for the 0.39.0 release, run past their 5-second limit on a Sprite. Its cores or its newer Claude Code (2.1.319, against 2.1.310 on the Mac) could each be the cause, and either way a check that passes on one machine can fail on the other. A project's checks have to run in one place, the runner, for the queue's answer to mean the same thing each time.
+
+## What was decided
+
+Neither of the two features above is the one being built first. Both keep the lead on the person's computer, and the second then has to carry a lane's claim, its questions and its hand-back between machines. Moving the lead as well removes that: the whole project runs on one machine, its lane agents are the lead's sub-agents there as they are on a computer, and the computer only connects. That's `docs/specs/32-a-project-on-a-cloud-machine.md`. It needs nothing from assumption B, it takes all of a project's load off the computer where a checks runner takes part, and tests 4, 6 and 7 are its sign-in, its rules and its route to GitHub. A machine per lane stays the way to scale a project that outgrows one machine's 8 cores.
+
+Two things that spec depends on weren't tested here: a lead with lane agents and worktrees on a Sprite, and whether the Sprite stays awake while they wait on the model with nobody attached.
 
 ## What would make this the wrong call
 
