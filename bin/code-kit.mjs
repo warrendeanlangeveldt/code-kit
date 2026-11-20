@@ -57,6 +57,8 @@
 //                                    the lead holds the whole merge queue on purpose, and lets it go (MQ-8)
 //   defer <story>... --reason "…" [--until <date|ISO time>] | defer release <story>... | defer [--json]
 //                                    stories the lead holds on purpose: not dispatched, reviewed or merged (LOOP-15)
+//   cloud [--json] | cloud up | cloud signin | cloud open | cloud console | cloud stop | cloud down [--discard]
+//                                    the project's work on a cloud machine the person owns (spec 32)
 // --config <file> reads a draft (.claude/code-kit.draft.json) instead of .claude/code-kit.json.
 import { execFileSync, spawnSync } from 'node:child_process';
 import {
@@ -65,6 +67,7 @@ import {
   mkdtempSync,
   readdirSync,
   readFileSync,
+  readSync,
   rmSync,
   statSync,
   writeFileSync,
@@ -312,6 +315,21 @@ import { decisionsFor, openDecisions } from '../hooks/lib/decisionstore.mjs';
 import { WORKFLOWS_DIR, ciFindings, ciUsage, releaseBranch } from '../hooks/lib/ci.mjs';
 import { COST_APPROVAL, costReport, infraFiles, money } from '../hooks/lib/costs.mjs';
 import {
+  Stop,
+  carriedByGit,
+  cloudConsole,
+  cloudDown,
+  cloudOpen,
+  cloudSignin,
+  cloudStatus,
+  cloudStop,
+  cloudUp,
+  heldThere,
+  hereState,
+  watch,
+} from '../hooks/lib/cloud.mjs';
+import { cloudOf } from '../hooks/lib/cloudconfig.mjs';
+import {
   appliesTo,
   projectStandards,
   standardsFile,
@@ -396,6 +414,8 @@ const FLAGS = [
   '--take',
   '--dry-run',
   '--for',
+  '--discard',
+  '--once',
 ];
 const flag = (name) => args.includes(name);
 const writeBaseline = flag('--write');
@@ -464,6 +484,18 @@ function check() {
   for (const c of raw.checks ?? []) out(`Check ${c.name}: ${c.run.join(' && ')}`);
   if (!raw.docs?.specs) out('No docs.specs: lanes are not held to a spec-check report.');
   for (const name of load().config.adapters) out(`Adapter ${name}: active (see \`adapters\`)`);
+  // CLOUD-1: a platform the project's work can run on, and what it carries there.
+  const cloud = cloudOf(raw);
+  if (cloud) {
+    const travels = carriedByGit(resolve('.'), cloud.carry);
+    if (travels.length)
+      die(
+        `${file}: "cloud.carry" is for files git ignores, and git tracks ${travels.join(', ')}, which ${travels.length === 1 ? 'travels' : 'travel'} with the clone already. Take ${travels.length === 1 ? 'it' : 'them'} out.`,
+      );
+    out(
+      `Cloud: the project's work can run on ${cloud.adapter.label} (see \`cloud\`); idle sessions there end after ${cloud.idleMinutes} minutes${cloud.carry.length ? `; carries ${cloud.carry.join(', ')}` : ''}`,
+    );
+  }
   const team = teamOf(raw);
   if (team) {
     const me = whoami(resolve('.'));
@@ -4171,6 +4203,129 @@ function coreCommand() {
     );
 }
 
+/**
+ * Spec 32: the project's work on a cloud machine the person owns. `cloud` says where the work is and what
+ * the machine is doing; `up` makes the machine ready, `signin` and `console` join the person's terminal
+ * to it, `open` is the lead's session there, `stop` ends it so the machine sleeps, and `down` brings the
+ * project home. `here` and `watch` run on the machine itself.
+ */
+async function cloudCommand() {
+  const { config } = load();
+  const root = resolve('.');
+  const [sub, ...more] = rest;
+  const terminal = Boolean(process.stdin.isTTY && process.stdout.isTTY) && !process.env.CLAUDECODE;
+  const io = {
+    say: out,
+    terminal,
+    // A yes or no from the person at their terminal; null where there's none to ask in.
+    ask(question) {
+      if (!terminal) return null;
+      process.stdout.write(`${question} [y/N] `);
+      const answer = Buffer.alloc(256);
+      let read = 0;
+      try {
+        read = readSync(0, answer, 0, answer.length, null);
+      } catch {
+        return false;
+      }
+      return /^y(es)?$/i.test(answer.toString('utf8', 0, read).trim());
+    },
+    local: (cmd) => spawnSync(cmd, { shell: true, stdio: 'inherit' }).status ?? 1,
+  };
+  const gb = (bytes) => `${(bytes / 1024 ** 3).toFixed(1)} GB`;
+  try {
+    if (more.length) usage();
+    if (sub === 'here') return out(JSON.stringify(hereState(root, config), null, 2));
+    if (sub === 'watch') {
+      const ended = await watch(root, config, { once: flag('--once') });
+      return out(ended.ended ? `The lead's session ${ended.why}.` : `Watching: ${ended.why}.`);
+    }
+    if (sub === 'up') return cloudUp(root, config, io);
+    if (sub === 'signin') return process.exit(cloudSignin(root, config, io));
+    if (sub === 'console') return process.exit(cloudConsole(root, config));
+    if (sub === 'open') return process.exit(cloudOpen(root, config, io));
+    if (sub === 'stop') return cloudStop(root, config, io);
+    if (sub === 'down') return cloudDown(root, config, io, { discard: flag('--discard') });
+    if (sub !== undefined) usage();
+    const status = cloudStatus(root, config);
+    if (flag('--json')) return out(JSON.stringify(status, null, 2));
+    if (!status.platform)
+      return out(
+        `This project names no cloud platform, so its work runs on this computer. To move it to a machine of your own, name one in ${file}, such as "cloud": { "sprites": {} }, then: code-kit cloud up`,
+      );
+    if (status.here)
+      return out(`This is the project on its machine (${status.name}, ${status.platform}).`);
+    if (!status.reachable)
+      return die(
+        `${status.platform} didn't answer, so ${status.name} can't be read: ${status.why}`,
+      );
+    if (!status.up)
+      return out(
+        status.exists
+          ? `The project's work is on this computer. ${status.name} exists on ${status.platform}, from an earlier move or another computer: code-kit cloud up carries on with it.`
+          : `The project's work is on this computer. Move it to a machine of your own on ${status.platform}: code-kit cloud up`,
+      );
+    out(
+      `The project's work is on ${status.name} (${status.platform}), since ${String(status.since).slice(0, 10)}.`,
+    );
+    if (!status.exists)
+      return out(
+        `That machine isn't there any more. Bring the project home (code-kit cloud down), then make another if you want one (code-kit cloud up).`,
+      );
+    const s = status.state;
+    if (s.problem)
+      return die(`The machine didn't report: ${s.problem}. code-kit cloud up puts it right.`);
+    out(
+      s.claude.signedIn
+        ? `  Claude: signed in${s.claude.account ? ` (${s.claude.account})` : ''}${s.claude.ends ? `, until ${s.claude.ends.slice(0, 10)}` : ''}`
+        : '  Claude: not signed in. The person signs in: code-kit cloud signin',
+    );
+    out(
+      s.github.login
+        ? `  GitHub: ${s.github.login}${s.github.scopes.length ? `, with a token for ${s.github.scopes.join(', ')}${s.github.scopes.includes('repo') ? ' (every repository that account has)' : ''}` : ''}`
+        : '  GitHub: not signed in: code-kit cloud up',
+    );
+    if (s.apiKey)
+      out(
+        '  An ANTHROPIC_API_KEY is set there: Claude Code bills it in place of the subscription.',
+      );
+    const ours = s.sessions.map(
+      (x) => `${x.name} since ${x.since.slice(0, 16).replace('T', ' ')} UTC`,
+    );
+    const theirs = status.sessions.map((x) => `${x.command} (${x.started})`);
+    out(
+      ours.length || theirs.length
+        ? `  Open on it: ${[...ours, ...theirs].join('; ')}. It stays awake, and bills, while anything is open.`
+        : "  Nothing is open on it: it sleeps, and bills its disk only. Open the lead's session: code-kit cloud open",
+    );
+    if (s.ended && !ours.length)
+      out(
+        `  The last session there ${s.ended.why} (${String(s.ended.at).slice(0, 16).replace('T', ' ')} UTC).`,
+      );
+    for (const r of s.running) out(`  Working: ${r.story ?? 'a story'} in the ${r.lane} lane`);
+    if (s.merging) out('  The queue is merging.');
+    if (s.awake)
+      out(
+        `  Awake: ${(s.awake.seconds / 3600).toFixed(1)} hours this month, counted since ${s.awake.since.slice(0, 10)}`,
+      );
+    out(
+      `  Load ${s.load} on ${s.cores} cores; memory ${gb(s.memory.total - s.memory.free)} of ${gb(s.memory.total)}${s.disk ? `; disk ${gb(s.disk.used)} of ${gb(s.disk.size)}` : ''}`,
+    );
+    out(
+      `  code-kit ${s.version} there, ${status.version} here${s.version !== status.version ? ': code-kit cloud up brings it level' : ''}`,
+    );
+    const held = heldThere({ notOnRemote: s.notOnRemote });
+    out(
+      held.length
+        ? `  Not on the remote yet:\n${held.map((h) => `    ${h}`).join('\n')}`
+        : '  Everything there is on the remote.',
+    );
+  } catch (e) {
+    if (e instanceof Stop) die(e.message);
+    throw e;
+  }
+}
+
 const commands = {
   check,
   designs: designsCommand,
@@ -4207,6 +4362,7 @@ const commands = {
   'sent-back': () => (rest.length === 1 ? sentBackCommand(rest[0]) : usage()),
   ci: ciCommand,
   cost: () => (rest.length === 0 ? costCommand() : usage()),
+  cloud: cloudCommand,
   release: () => (rest.length === 1 ? releaseCommand(rest[0]) : usage()),
   replay: () => (rest.length === 1 ? replayCommand(rest[0]) : usage()),
   reconcile: () => (rest.length <= 1 ? reconcileCommand(rest[0]) : usage()),
@@ -4253,6 +4409,7 @@ function usage() {
       '              | decisions [--json] [--all]\n' +
       '              | ci check [--json] | ci usage [--days N] [--json] | release <version>\n' +
       '              | cost [--json]\n' +
+      '              | cloud [--json] | cloud up | cloud signin | cloud open | cloud console | cloud stop | cloud down [--discard]\n' +
       '              | hold <id> [--minutes N] | hold <id> --answer approved|refused\n' +
       '              | queue [--json] | queue add|drop <branch> | queue rules | queue merge --delegated|--person\n' +
       '              | queue pause --reason "…" | queue resume\n' +

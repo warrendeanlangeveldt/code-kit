@@ -7,6 +7,7 @@
 import { spawn } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { elsewhere, elsewhereWords } from './lib/cloud.mjs';
 import { loadConfig } from './lib/config.mjs';
 import { releaseSession } from './lib/laneclaims.mjs';
 import { modelOf } from './lib/hook.mjs';
@@ -26,6 +27,9 @@ const session = input.session_id ?? null;
 if (config && session && process.argv[2] === 'start') {
   // The model the session starts on, when Claude Code names it, or its transcript's (a resumed one).
   startSession(project, session, Date.now(), { model: modelOf(input) });
+  // CLOUD-6: a session starting here while the project's work is on its machine is told so.
+  const away = elsewhere(project);
+  if (away) process.stdout.write(`code-kit: ${elsewhereWords(away)}\n`);
   // LEAN-8: the worktrees left done with since the last session go, in the background: a project with
   // many of them never holds up a session's start.
   const cli = fileURLToPath(new URL('../bin/code-kit.mjs', import.meta.url));

@@ -5,6 +5,7 @@
 import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { cloudCostProblem } from './cloudconfig.mjs';
 import { matchesAny } from './glob.mjs';
 
 export const COST_APPROVAL = 'cost';
@@ -163,6 +164,9 @@ export function readCosts(text, config, now = Date.now()) {
         `${where}: ${dated === null ? 'its Basis has no date' : `its price was read ${Math.floor((now - dated) / 86_400_000)} days ago`}; recheck it and date the Basis (YYYY-MM-DD).`,
       );
   }
+  // CLOUD-10: a machine the project's work can run on is a paid thing, with a row of its own.
+  const machine = cloudCostProblem(config, rows, file);
+  if (machine) problems.push(machine);
   for (const e of environments)
     if (e.over > 0)
       problems.push(

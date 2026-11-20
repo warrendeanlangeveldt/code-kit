@@ -288,6 +288,11 @@ if (
   block(
     `Blocked: releasing worktrees is the lead's, which knows which stories are still at work. Finish your story and hand back.\nCommand: ${cmd}`,
   );
+// CLOUD-9: removing a cloud machine with work on it that isn't on the remote is the person's.
+if (runs(cmd, new RegExp(String.raw`^${CODE_KIT}\s+cloud\s+down\b.*--discard\b`)))
+  block(
+    `Blocked: removing the project's cloud machine with work on it that isn't on the remote is the person's own act, from their terminal. Tell them what \`cloud down\` said the machine holds, and carry on.\nCommand: ${cmd}`,
+  );
 // LEAN-8: discarding a worktree's uncommitted changes is the person's, from the band, whoever asks.
 if (runs(cmd, new RegExp(String.raw`^${CODE_KIT}\s+worktrees\s+discard\b`)))
   block(

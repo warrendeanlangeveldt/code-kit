@@ -5,6 +5,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { VIBE, harnessProblems, harnessSettings } from './harness.mjs';
 import { streamProblems } from './streamconfig.mjs';
 import { teamProblems } from './team.mjs';
+import { cloudProblems } from './cloudconfig.mjs';
 import { join } from 'node:path';
 import { DEFAULT_REGISTER } from './costs.mjs';
 import { ADAPTERS, applyAdapters } from './adapters/index.mjs';
@@ -130,6 +131,8 @@ export function withDefaults(c) {
           paths: c.cost.paths ?? [],
         }
       : null,
+    // Spec 32: the platform whose machine the project's work may run on, as the config has it.
+    cloud: c.cloud ?? null,
   };
 }
 
@@ -492,6 +495,7 @@ export function validate(c) {
   if (c.cost !== undefined) validateCost(c.cost, need);
   p.push(...harnessProblems(c.harness));
   p.push(...teamProblems(c));
+  p.push(...cloudProblems(c));
   return p;
 }
 

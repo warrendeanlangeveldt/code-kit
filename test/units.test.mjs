@@ -4608,3 +4608,148 @@ test('PROM-2 the loop prompts the deciding lead to run the promote skill', () =>
     /Run \/code-kit:promote P-1 P-2\./,
   );
 });
+
+// --- spec 32: a project on a cloud machine ----------------------------------------------------------
+const cloudLib = await import('../hooks/lib/cloud.mjs');
+const cloudConfig = await import('../hooks/lib/cloudconfig.mjs');
+const { sessionsOf } = await import('../hooks/lib/adapters/sprites.mjs');
+
+test('CLOUD-1 the cloud section names one platform, and its settings are checked', () => {
+  const problems = (cloud) => cloudConfig.cloudProblems({ cloud });
+  assert.deepEqual(problems(undefined), []);
+  assert.deepEqual(problems({ sprites: {} }), []);
+  assert.deepEqual(problems({ sprites: {}, prepare: 'npm i -g pnpm', carry: ['.env.local'] }), []);
+  assert.match(problems({})[0], /must name one platform \(sprites\)/);
+  assert.match(problems({ sprites: {}, prepare: 3 })[0], /"cloud.prepare" must be a command/);
+  assert.match(problems({ sprites: {}, carry: ['/etc/hosts'] })[0], /leaves the project's folder/);
+  assert.match(problems({ sprites: {}, idleMinutes: 4.5 })[0], /whole number of 5 or more/);
+  assert.equal(cloudConfig.cloudOf({ cloud: { sprites: {} } }).idleMinutes, 30);
+  assert.equal(cloudConfig.cloudOf({ cloud: { sprites: {}, idleMinutes: 10 } }).idleMinutes, 10);
+  assert.equal(cloudConfig.cloudOf({}), null);
+});
+
+test('CLOUD-11 a machine is named from the project and its remote, whichever form the address takes', () => {
+  const { machineName, httpsRemote, hostOf } = cloudLib;
+  assert.equal(httpsRemote('git@github.com:acme/app.git'), 'https://github.com/acme/app.git');
+  assert.equal(httpsRemote('ssh://git@github.com/acme/app.git'), 'https://github.com/acme/app.git');
+  assert.equal(httpsRemote('/srv/git/app.git'), '/srv/git/app.git');
+  assert.equal(hostOf('git@github.com:acme/app.git'), 'github.com');
+  assert.equal(hostOf('/srv/git/app.git'), null);
+  const dir = mkdtempSync(join(tmpdir(), 'My App_'));
+  try {
+    const a = machineName(dir, 'git@github.com:acme/app.git');
+    assert.equal(a, machineName(dir, 'https://github.com/Acme/App'));
+    assert.notEqual(a, machineName(dir, 'https://github.com/acme/other.git'));
+    assert.match(a, /^ck-my-app-[a-z0-9-]*-[0-9a-f]{8}$/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('CLOUD-7 a session is ended only when nothing runs and nothing has moved for idleMinutes', () => {
+  const now = Date.parse('2026-11-20T12:00:00Z');
+  const ago = (minutes) => now - minutes * 60_000;
+  const verdict = (facts) =>
+    cloudLib.idleVerdict({
+      idleMinutes: 30,
+      last: ago(45),
+      open: 0,
+      running: 0,
+      merging: false,
+      since: 0,
+      now,
+      ...facts,
+    });
+  assert.equal(verdict({}).end, true);
+  assert.equal(verdict({}).why, 'was ended after 30 idle minutes');
+  assert.equal(verdict({ last: ago(29) }).end, false);
+  // A test run of 40 minutes is one tool call, still running.
+  assert.equal(verdict({ open: 1 }).end, false);
+  assert.equal(verdict({ running: 2 }).why, '2 lanes working');
+  assert.equal(verdict({ merging: true }).end, false);
+  // A watcher that started ten minutes ago counts from then, whatever the record says.
+  assert.equal(verdict({ since: ago(10) }).end, false);
+  assert.equal(verdict({ last: null, since: ago(31) }).end, true);
+});
+
+test('CLOUD-8 awake time is added up from an uptime that stops while the machine sleeps', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'code-kit-awake-'));
+  try {
+    const at = (iso) => Date.parse(iso);
+    assert.equal(cloudLib.countAwake(dir, at('2026-11-20T10:00:00Z'), null), null);
+    assert.equal(cloudLib.countAwake(dir, at('2026-11-20T10:00:00Z'), 1000).seconds, 0);
+    // An hour later by the clock, the machine was awake for ten minutes of it.
+    assert.equal(cloudLib.countAwake(dir, at('2026-11-20T11:00:00Z'), 1600).seconds, 600);
+    // The platform started the count again: what it has counted since is added.
+    const restarted = cloudLib.countAwake(dir, at('2026-11-20T12:00:00Z'), 120);
+    assert.equal(restarted.seconds, 720);
+    assert.equal(restarted.since, '2026-11-20T10:00:00.000Z');
+    // A new month starts a new count.
+    const next = cloudLib.countAwake(dir, at('2026-12-01T00:10:00Z'), 500);
+    assert.deepEqual([next.month, next.seconds], ['2026-12', 0]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('CLOUD-8 next names an ended or ending Claude sign-in and a code-kit behind the computer’s', () => {
+  const now = Date.parse('2026-11-20T12:00:00Z');
+  const status = (state, version = '0.40.0') => ({ name: 'ck-app-1a2b3c4d', version, state });
+  const base = { version: '0.40.0', claude: { signedIn: true, ends: '2026-12-19T00:00:00.000Z' } };
+  assert.deepEqual(cloudLib.cloudAttention(status(base), now), []);
+  assert.deepEqual(cloudLib.cloudAttention(null, now), []);
+  assert.deepEqual(cloudLib.cloudAttention(status({ problem: 'x' }), now), []);
+  const ending = { ...base, claude: { signedIn: true, ends: '2026-11-22T00:00:00.000Z' } };
+  assert.match(cloudLib.cloudAttention(status(ending), now)[0], /ends on 2026-11-22.*cloud signin/);
+  const ended = { ...base, claude: { signedIn: false } };
+  assert.match(cloudLib.cloudAttention(status(ended), now)[0], /has ended.*cloud signin/);
+  const behind = { ...base, version: '0.39.0' };
+  assert.match(
+    cloudLib.cloudAttention(status(behind), now)[0],
+    /is 0\.39\.0, and 0\.40\.0 on this computer: code-kit cloud up/,
+  );
+});
+
+test('CLOUD-9 what down will not leave behind: running stories, unpushed branches, uncommitted files', () => {
+  assert.deepEqual(
+    cloudLib.heldThere({ running: [], notOnRemote: { branches: [], dirty: [] } }),
+    [],
+  );
+  const held = cloudLib.heldThere({
+    running: [{ lane: 'web', story: 'ST-4' }],
+    notOnRemote: {
+      branches: [
+        { branch: 'main', commits: 2, base: true },
+        { branch: 'web/st-9', commits: 1, base: false },
+      ],
+      dirty: [{ where: 'lane-web', files: 3 }],
+    },
+  });
+  assert.equal(held.length, 4);
+  assert.match(held[0], /ST-4 is running there in the web lane/);
+  assert.match(held[1], /main has 2 merges and commits there that aren't on the remote. Publish/);
+  assert.match(held[2], /web\/st-9 has 1 commit there that isn't on the remote/);
+  assert.match(held[3], /lane-web has 3 uncommitted files there/);
+});
+
+test('CLOUD-10 the machine’s row in the cost register is found by its platform', () => {
+  const config = { cloud: { sprites: {} }, cost: { currency: 'USD', monthly: { prod: 50 } } };
+  const row = (item, provider) => ({ item, provider });
+  assert.match(cloudConfig.cloudCostProblem(config, [], 'docs/costs.md'), /has no row for it/);
+  assert.equal(cloudConfig.cloudCostProblem(config, [row('Cloud machine', 'Sprites')]), null);
+  assert.equal(cloudConfig.cloudCostProblem(config, [row('Fly Sprites machine', 'Fly')]), null);
+  assert.equal(cloudConfig.cloudCostProblem({ cloud: { sprites: {} } }, []), null);
+  assert.equal(cloudConfig.cloudCostProblem({ cost: config.cost }, []), null);
+});
+
+test('CLOUD-11 the platform’s open sessions are read from its listing', () => {
+  const listing = [
+    'ID                Command           Workdir           Started           Activity          ',
+    '──────────────────────────────────────────────────────────────────────────────────────────',
+    '21005             claude            ~                 4h ago            30 B/s            ',
+    '',
+    'To attach to a session:',
+  ].join('\n');
+  assert.deepEqual(sessionsOf(listing), [{ id: '21005', command: 'claude', started: '4h ago' }]);
+  assert.deepEqual(sessionsOf('No active sessions found.\n'), []);
+});
