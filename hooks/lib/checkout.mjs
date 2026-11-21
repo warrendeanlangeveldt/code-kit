@@ -2,7 +2,9 @@
 // verify of a branch merged with the base as it is now (MQ-1), and the fix check's tree with the fix
 // taken out (REG-1). It's a temporary worktree with its own copy of the installs (node_modules and
 // the like): a link back to a worktree's installs resolves outside the checkout, which path-sensitive
-// tools refuse, and an install run in it would rewrite the worktree's own.
+// tools refuse, and an install run in it would rewrite the worktree's own. It also gets the ignored
+// files `.worktreeinclude` names, from the main checkout at every run, as a lane's worktree has them:
+// a check that reads an `.env` or generated content would otherwise fail here alone.
 // MQ-9: the checkout is kept between runs, one per project and use, with its installs: copying a
 // project's installs in and deleting them again on every merge is millions of files each time, which
 // keeps the machine's file-change tracking and search indexing busy. Each run checks out the tree it
@@ -14,6 +16,8 @@ import { createHash } from 'node:crypto';
 import { execFileSync, spawnSync } from 'node:child_process';
 import {
   closeSync,
+  constants,
+  copyFileSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -73,6 +77,32 @@ export function copyInstalls(root, dir) {
   }
 }
 
+/**
+ * Copies the files `.worktreeinclude` names (ignored files a checkout can't run without, such as `.env`
+ * or content the tests read) from the main checkout into another checkout, each one it lacks, as Claude
+ * Code does for the worktrees it makes itself. A copy-on-write clone where the filesystem has one.
+ */
+export function copyIncluded(main, dir) {
+  if (!existsSync(join(main, '.worktreeinclude'))) return;
+  let files = [];
+  try {
+    files = git(main, 'ls-files', '--others', '--ignored', '--exclude-from=.worktreeinclude').split(
+      '\n',
+    );
+  } catch {
+    return;
+  }
+  for (const f of files.filter(Boolean)) {
+    if (existsSync(join(dir, f))) continue;
+    try {
+      mkdirSync(dirname(join(dir, f)), { recursive: true });
+      copyFileSync(join(main, f), join(dir, f), constants.COPYFILE_FICLONE);
+    } catch {
+      // gone while being copied: the check that needs it says so
+    }
+  }
+}
+
 const real = (p) => {
   try {
     return realpathSync(p);
@@ -81,14 +111,19 @@ const real = (p) => {
   }
 };
 
-/** The kept checkout for `root` and this use (`prefix`), the project's main checkout's. */
-export function keptCheckoutOf(root, prefix) {
-  let main = root;
+/** The project's main checkout, whichever of its worktrees `root` is. */
+function mainOf(root) {
   try {
-    main = dirname(real(resolve(root, git(root, 'rev-parse', '--git-common-dir').trim())));
+    return dirname(real(resolve(root, git(root, 'rev-parse', '--git-common-dir').trim())));
   } catch {
     // not a repository: its own folder names it
+    return root;
   }
+}
+
+/** The kept checkout for `root` and this use (`prefix`), the project's main checkout's. */
+export function keptCheckoutOf(root, prefix) {
+  const main = mainOf(root);
   const id = createHash('sha256').update(real(main)).digest('hex').slice(0, 10);
   return join(CHECKOUTS_DIR, `${basename(main)}-${id}-${prefix.replace(/^code-kit-|-$/g, '')}`);
 }
@@ -266,6 +301,9 @@ export function freshCheckout(
       throw Object.assign(new Error(why || 'the merge conflicts'), { conflict: true });
     }
   }
+  // The kept checkout's were cleaned away with what its last run left, so these are the main checkout's
+  // as they are now.
+  copyIncluded(mainOf(root), dir);
   // MQ-9: the OS took files out of the kept installs: they can't be trusted, so they're copied again.
   // What they're copied from may be behind the base by now, so the stamp names nothing, and the
   // project's install runs over the copy for this tree.

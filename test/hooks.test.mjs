@@ -6408,6 +6408,54 @@ const op = process.argv[2]; let input = ''; process.stdin.on('data', (d) => (inp
       ),
       0,
     );
+    // A check that reads content git ignores: .worktreeinclude names it, so the merged tree's checkout
+    // has the main checkout's copy, as it is at each merge.
+    writeFileSync(
+      join(m.dir, '.gitignore'),
+      `${readFileSync(join(m.dir, '.gitignore'), 'utf8')}packs/\n`,
+    );
+    writeFileSync(join(m.dir, '.worktreeinclude'), 'packs/\n');
+    writeFileSync(
+      join(m.dir, '.claude/code-kit.json'),
+      JSON.stringify(
+        mConfig({
+          checks: [
+            {
+              name: 'content',
+              files: ['apps/office/**'],
+              run: ['test "$(cat packs/images/well.txt)" = "$(cat apps/office/expects.txt)"'],
+            },
+          ],
+        }),
+      ),
+    );
+    m.git('add', '-A');
+    m.git('commit', '-q', '-m', 'a check reads ignored content');
+    mkdirSync(join(m.dir, 'packs/images'), { recursive: true });
+    writeFileSync(join(m.dir, 'packs/images/well.txt'), 'one');
+    laneTree('web/st-36', { 'apps/office/expects.txt': 'one\n' });
+    mKit(m.dir, 'queue', 'add', 'web/st-36');
+    const included = mKit(m.dir, 'queue', 'merge', '--delegated');
+    expect(
+      'MQ-1 the merged tree has the ignored files .worktreeinclude names, from the main checkout',
+      truth(
+        included.status === 0 && stateOf('web/st-36') === 'merged',
+        included.stdout + included.stderr,
+      ),
+      0,
+    );
+    writeFileSync(join(m.dir, 'packs/images/well.txt'), 'two');
+    laneTree('web/st-37', { 'apps/office/expects.txt': 'two\n' });
+    mKit(m.dir, 'queue', 'add', 'web/st-37');
+    const includedAgain = mKit(m.dir, 'queue', 'merge', '--delegated');
+    expect(
+      'MQ-1 and at the next merge, as they are in the main checkout by then',
+      truth(
+        includedAgain.status === 0 && stateOf('web/st-37') === 'merged',
+        includedAgain.stdout + includedAgain.stderr,
+      ),
+      0,
+    );
     writeFileSync(join(m.dir, '.claude/code-kit.json'), JSON.stringify(mConfig()));
     m.git('commit', '-q', '-am', 'no checks');
 
@@ -11098,9 +11146,9 @@ else process.exit(1);
     cleanups.push(w.dir);
     writeFileSync(
       join(w.dir, '.gitignore'),
-      '.claude/approvals/\n.claude/state/\n.claude/worktrees/\nnode_modules/\n.env\n',
+      '.claude/approvals/\n.claude/state/\n.claude/worktrees/\nnode_modules/\n.env\npacks/\n',
     );
-    writeFileSync(join(w.dir, '.worktreeinclude'), '.env\n');
+    writeFileSync(join(w.dir, '.worktreeinclude'), '.env\npacks/\n');
     writeFileSync(join(w.dir, '.env'), 'KEY=local\n');
     w.git('add', '-A');
     w.git('commit', '-q', '-m', 'ignore worktrees');
@@ -11145,6 +11193,9 @@ else process.exit(1);
     execFileSync('git', ['-C', laneTree, 'switch', '-q', '-c', 'web/st-1', 'main']);
     mkdirSync(join(laneTree, 'node_modules/dep'), { recursive: true });
     writeFileSync(join(laneTree, 'node_modules/dep/index.js'), '1\n');
+    // Content the main checkout gained since: ignored, and named by .worktreeinclude.
+    mkdirSync(join(w.dir, 'packs/images'), { recursive: true });
+    writeFileSync(join(w.dir, 'packs/images/well.png'), 'well');
     releaseLane(w.dir, 'web', { session: 's1' });
     expect(
       'LEAN-10 the next story in the lane starts',
@@ -11161,6 +11212,11 @@ else process.exit(1);
           !existsSync(join(w.dir, '.claude/worktrees/agent-bbb')),
         second.stdout + second.stderr,
       ),
+      0,
+    );
+    expect(
+      'LEAN-10 with the files .worktreeinclude names that the main checkout has gained since',
+      truth(readFileSync(join(laneTree, 'packs/images/well.png'), 'utf8') === 'well'),
       0,
     );
     // Work its last agent left uncommitted stays where it is: the next agent gets a worktree of its own.

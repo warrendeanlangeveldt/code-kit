@@ -252,6 +252,8 @@ On 21 November 2026 one of the person's own projects was cloned onto a Sprite to
 - All 45 browser tests failed with a refused connection, because of the `localhost` address described under CLOUD-11. With Node taking IPv4 first, 39 passed and 6 waited for the search index. With the index there, those 6 passed too.
 - Through the platform's port forwarding, a listener on `127.0.0.1` answered and so did one on the Sprite's own address. One on `::1` didn't.
 
+The content has to reach more than the clone. A lane's worktree got the ignored files `.worktreeinclude` names, and the merge queue's checkout of the merged tree didn't, so this project's checks would have passed in a lane and failed at every merge, on a computer as on a machine. The queue's checkout now gets them too (MQ-1), and a lane's worktree gets the ones it lacks each time it's reused. A project lists such content twice: in `carry`, which the person agrees to send to the machine, and in `.worktreeinclude`, which spreads it from the clone to the worktrees there.
+
 `carry` took single files until this trial, and now takes folders. The address fix is in the adapter. Both are checked against the stand-in platform; the trial itself moved the content by hand, in the same way `carry` now does.
 
 ## Open questions

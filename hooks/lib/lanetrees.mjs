@@ -16,6 +16,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { dirname, join } from 'node:path';
+import { copyIncluded } from './checkout.mjs';
 import { matchesAny } from './glob.mjs';
 import { WORKTREES_DIR, keepAsPatch } from './worktrees.mjs';
 
@@ -89,28 +90,8 @@ const registered = (main, dir) =>
     .some((l) => l.startsWith('worktree ') && real(l.slice(9)) === real(dir));
 
 /**
- * Copies the files `.worktreeinclude` names (ignored files such as `.env`) from the main checkout into a
- * new worktree, as Claude Code does for the worktrees it makes itself, which a WorktreeCreate hook replaces.
- */
-export function copyIncluded(main, dir) {
-  if (!existsSync(join(main, '.worktreeinclude'))) return;
-  const files = git(
-    main,
-    'ls-files',
-    '--others',
-    '--ignored',
-    '--exclude-from=.worktreeinclude',
-  ).stdout.split('\n');
-  for (const f of files.filter(Boolean)) {
-    if (existsSync(join(dir, f))) continue;
-    mkdirSync(dirname(join(dir, f)), { recursive: true });
-    writeFileSync(join(dir, f), readFileSync(join(main, f)));
-  }
-}
-
-/**
  * The lane's worktree, ready for its next agent: made the first time; after that, the same folder with its
- * installs, its last story's records kept as a patch (an adapter's anyActor files, which a tool writes at
+ * installs, the files `.worktreeinclude` names that it lacks, its last story's records kept as a patch (an adapter's anyActor files, which a tool writes at
  * each turn's end) and put back, and HEAD detached at the main checkout's, so the agent makes or switches
  * to its story's branch as its brief says. Null where the last agent left work uncommitted: the agent then
  * gets a worktree of its own, as before, and the lane's stays as it was.
@@ -141,6 +122,8 @@ export function laneTree(main, lane, config, now = Date.now()) {
     git(dir, 'clean', '-fdq');
   }
   if (git(dir, 'switch', '--quiet', '--detach', head).status !== 0) return null;
+  // What `.worktreeinclude` has named, or the main checkout has gained, since the worktree was made.
+  copyIncluded(main, dir);
   return dir;
 }
 
