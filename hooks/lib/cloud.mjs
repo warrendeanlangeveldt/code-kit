@@ -555,13 +555,14 @@ export function cloudOpen(root, config, io) {
   let first = false;
   if (run(`tmux has-session -t ${LEAD_SESSION}`).status !== 0) {
     const ended = readJson0(run(`cat "${clone}/${ENDED_FILE}" 2>/dev/null`).stdout);
-    // The conversation an earlier session there left, which the new one continues.
+    // The conversation an earlier session there left, which the new one continues. No session is open,
+    // so no tool call is running: what a killed one left noted as running is cleared with the start.
     const before =
       run(
         `ls "$HOME/.claude/projects/$(cd "${clone}" && pwd | sed 's/[^A-Za-z0-9]/-/g')"/*.jsonl >/dev/null 2>&1`,
       ).status === 0;
     const started = run(
-      `rm -f "${clone}/${ENDED_FILE}"; mkdir -p "${clone}/${CLOUD_DIR}" && touch "${clone}/${LAST_FILE}" && tmux new-session -d -s ${LEAD_SESSION} -c "${clone}" ${quoted(`claude --permission-mode bypassPermissions${before ? ' --continue' : ''}`)}`,
+      `rm -f "${clone}/${ENDED_FILE}"; rm -rf "${clone}/${ACTS_DIR}"; mkdir -p "${clone}/${CLOUD_DIR}" && touch "${clone}/${LAST_FILE}" && tmux new-session -d -s ${LEAD_SESSION} -c "${clone}" ${quoted(`claude --permission-mode bypassPermissions${before ? ' --continue' : ''}`)}`,
     );
     if (started.status !== 0)
       stop(`The lead's session couldn't be started on ${name}: ${started.output}`);
@@ -734,8 +735,12 @@ export function cloudAttention(status, now = Date.now()) {
 // ---------------------------------------------------------------------------------------------------
 // The machine's side
 
+/** Whose a running tool call is, as its marker's name starts: the session, and its agent or `main`. */
+const actOwner = (session, agent) =>
+  `${session ?? 'session'}-${agent ?? 'main'}`.replace(/[^\w-]+/g, '_');
+
 /** A tool call starting or ending in the project on its machine, for the watcher (CLOUD-7). */
-export function noteAct(root, id, mode) {
+export function noteAct(root, id, mode, { session = null, agent = null } = {}) {
   const main = mainOf(root);
   if (!isMachine(main)) return;
   try {
@@ -743,13 +748,28 @@ export function noteAct(root, id, mode) {
     const file = join(
       main,
       ACTS_DIR,
-      createHash('sha256').update(String(id)).digest('hex').slice(0, 24),
+      `${actOwner(session, agent)}.${createHash('sha256').update(String(id)).digest('hex').slice(0, 24)}`,
     );
     if (mode === 'start') writeFileSync(file, '');
     else rmSync(file, { force: true });
     writeFileSync(join(main, LAST_FILE), '');
   } catch {
     // a read-only checkout: the watcher goes by what it can see
+  }
+}
+/**
+ * An agent's turn ending there (CLOUD-7): none of its tool calls is running any more. A call a guard
+ * refused gets a start and no end, and would count as running until it went stale.
+ */
+export function noteTurnEnd(root, { session = null, agent = null } = {}) {
+  const main = mainOf(root);
+  if (!isMachine(main)) return;
+  try {
+    const mine = `${actOwner(session, agent)}.`;
+    for (const f of readdirSync(join(main, ACTS_DIR)))
+      if (f.startsWith(mine)) rmSync(join(main, ACTS_DIR, f), { force: true });
+  } catch {
+    // no call was ever noted there
   }
 }
 /** The person sending a prompt there. */

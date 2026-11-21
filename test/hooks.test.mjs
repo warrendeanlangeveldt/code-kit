@@ -15012,14 +15012,15 @@ sys.exit(os.WEXITSTATUS(status))
     };
     const there = (...args) =>
       spawnSync('node', [kitCli, ...args], { cwd: clone, encoding: 'utf8', env: thereEnv });
-    const act = (mode) =>
+    const act = (mode, id = 'toolu_1', more = {}) =>
       spawnSync('node', [join(hooks, 'act.mjs'), mode], {
         input: JSON.stringify({
           cwd: clone,
           session_id: 'mmmm1111-s',
           tool_name: 'Bash',
-          tool_use_id: 'toolu_1',
+          tool_use_id: id,
           tool_input: { command: 'npm test' },
+          ...more,
         }),
         env: thereEnv,
         encoding: 'utf8',
@@ -15043,6 +15044,28 @@ sys.exit(os.WEXITSTATUS(status))
       0,
     );
     act('end');
+    // A call a guard refuses gets no end: it counts while its agent's turn goes on, and no longer.
+    const lane9 = { agent_id: 'agent-9', agent_type: 'web-engineer' };
+    act('start', 'toolu_refused');
+    act('start', 'toolu_lane', lane9);
+    const turnEnds = (more = {}) =>
+      spawnSync('node', [join(hooks, 'stop-check.mjs')], {
+        input: JSON.stringify({ cwd: clone, session_id: 'mmmm1111-s', ...more }),
+        env: thereEnv,
+        encoding: 'utf8',
+      });
+    const midTurn = here32().activity?.open;
+    turnEnds({ hook_event_name: 'Stop' });
+    const leadDone = here32().activity?.open;
+    turnEnds({ hook_event_name: 'SubagentStop', ...lane9 });
+    expect(
+      'CLOUD-7 a call a guard refused stops counting as running when its agent’s turn ends: the lead’s, then a lane agent’s',
+      truth(
+        midTurn === 2 && leadDone === 1 && here32().activity?.open === 0,
+        `${midTurn}, ${leadDone}, ${here32().activity?.open}`,
+      ),
+      0,
+    );
     idle(3);
     const quiet = there('cloud', 'watch', '--once');
     expect(
@@ -15070,6 +15093,8 @@ sys.exit(os.WEXITSTATUS(status))
     const conversations = join(mHome, '.claude/projects', clone.replace(/[^A-Za-z0-9]/g, '-'));
     mkdirSync(conversations, { recursive: true });
     writeFileSync(join(conversations, 'one.jsonl'), '{}\n');
+    // A call the ended session was killed in the middle of, which no new session is running.
+    act('start', 'toolu_killed');
     const reopened = cCli(['cloud', 'open']);
     expect(
       'CLOUD-7 the next open continues its conversation and says why the last one ended',
@@ -15077,6 +15102,7 @@ sys.exit(os.WEXITSTATUS(status))
         reopened.stdout.includes('The last session there was ended after 5 idle minutes') &&
           reopened.stdout.includes("It's running there with nobody attached") &&
           !reopened.stdout.includes('first-run questions') &&
+          here32().activity?.open === 0 &&
           leads().length === 2 &&
           leads()[1].endsWith('--continue'),
         `${both(reopened)}\n${leads().join('\n')}`,

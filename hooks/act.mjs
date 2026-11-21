@@ -63,6 +63,7 @@ try {
       input.tool_use_id ??
         `${input.session_id}:${input.agent_id}:${input.tool_name}:${JSON.stringify(input.tool_input)}`,
       mode === 'start' ? 'start' : 'end',
+      { session: input.session_id, agent: input.agent_id },
     );
   const who = actor.kind === 'lane' ? actor.lane : actor.kind === 'lead' ? 'lead' : actor.label;
   const ctx = { session: input.session_id ?? null, agent: input.agent_id ?? null, actor: who };
