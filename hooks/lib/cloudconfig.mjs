@@ -23,7 +23,7 @@ export function cloudProblems(c) {
   const p = [];
   if (cloud.prepare !== undefined && !isStr(cloud.prepare))
     p.push(
-      '"cloud.prepare" must be a command: what a new machine needs that its image lacks, such as "npm install -g pnpm"',
+      '"cloud.prepare" must be a command: what a new machine needs that its image lacks, such as "npx playwright install --with-deps chromium"',
     );
   if (cloud.carry !== undefined && !(Array.isArray(cloud.carry) && cloud.carry.every(isStr)))
     p.push(
