@@ -347,6 +347,14 @@ export function cloudUp(root, config, io) {
         `${name} is signed in to GitHub as ${there}, and this computer as ${here}. Work pushed from the machine would be ${there}'s. Sign the machine in as ${here} (code-kit cloud console, then gh auth logout and gh auth login), or switch this computer's gh to ${there}, and run this again.`,
       );
     io.say(`GitHub: signed in there as ${there}.`);
+    // git there asks GitHub's own command line for the credential. A device sign-in started with no
+    // terminal signs that command line in and leaves git as it was, so a clone would stop to ask for
+    // a username.
+    const wired = run('gh auth setup-git --hostname github.com');
+    if (wired.status !== 0)
+      stop(
+        `git on ${name} couldn't be set to use the GitHub sign-in there: ${wired.output.split('\n')[0] || `exit ${wired.status}`}. Run \`gh auth setup-git\` there yourself (code-kit cloud console), then run this again.`,
+      );
   } else if (host) {
     io.say(
       `The remote is on ${host}: git on the machine needs a credential for it, which is yours to set up there (code-kit cloud console).`,

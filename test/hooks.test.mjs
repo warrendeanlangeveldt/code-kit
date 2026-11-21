@@ -14560,6 +14560,17 @@ if (a[0] === 'plugin' && (a[1] === 'install' || a[1] === 'update')) fs.writeFile
 if (a[0] === 'api') { if (!login) process.exit(1); console.log(login); process.exit(0); }
 if (a[0] === 'auth' && a[1] === 'login') { console.log('! First copy your one-time code: ABCD-1234'); fs.writeFileSync(path.join(h, '.gh-login'), process.env.FAKE_GH_LOGIN || 'kim'); process.exit(0); }
 if (a[0] === 'auth' && a[1] === 'status') { if (!login) process.exit(1); console.log("  - Token scopes: 'gist', 'repo'"); process.exit(0); }
+if (a[0] === 'auth' && a[1] === 'setup-git') { if (!login) process.exit(1); fs.writeFileSync(path.join(h, '.gh-git-ready'), 'x'); process.exit(0); }
+`,
+    );
+    // git on a machine, which can't clone from GitHub until it's told to ask gh for the credential: a
+    // device sign-in started with no terminal signs gh in and leaves git as it was.
+    stub(
+      dirs.there,
+      'git',
+      `${head}const { spawnSync } = require('node:child_process');
+if (a.includes('clone') && read('.gh-git-ready') === null) { console.error("fatal: could not read Username for 'https://github.com': No such device or address"); process.exit(128); }
+process.exit(spawnSync(process.env.FAKE_REAL_GIT, a, { stdio: 'inherit' }).status ?? 1);
 `,
     );
     stub(
@@ -14591,6 +14602,7 @@ if (a[0] === 'attach') console.log('attached ' + t);
         FAKE_BIN: binDir,
         FAKE_PLUGIN_ROOT: join(here, '..'),
         FAKE_PLUGIN_VERSION: version,
+        FAKE_REAL_GIT: join(gitDir, 'git'),
         // The remote's address is GitHub's, and git reaches it on this disk.
         GIT_CONFIG_COUNT: '2',
         GIT_CONFIG_KEY_1: `url.${dirs.bare}.insteadOf`,
