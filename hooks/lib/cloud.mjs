@@ -551,6 +551,8 @@ export function cloudOpen(root, config, io) {
     stop(
       `${name} has no tmux, which keeps the lead's session running when nobody is attached. Add its install to "cloud.prepare" in the config (such as "sudo apt-get install -y tmux") and run \`code-kit cloud up\`.`,
     );
+  // A machine's first session waits at Claude Code's own first-run questions until the person answers.
+  let first = false;
   if (run(`tmux has-session -t ${LEAD_SESSION}`).status !== 0) {
     const ended = readJson0(run(`cat "${clone}/${ENDED_FILE}" 2>/dev/null`).stdout);
     // The conversation an earlier session there left, which the new one continues.
@@ -563,6 +565,7 @@ export function cloudOpen(root, config, io) {
     );
     if (started.status !== 0)
       stop(`The lead's session couldn't be started on ${name}: ${started.output}`);
+    first = !before;
     io.say(
       ended
         ? `The last session there ${ended.why}. Started a new one, which continues its conversation.`
@@ -577,7 +580,11 @@ export function cloudOpen(root, config, io) {
       `The watcher that lets ${name} sleep when nothing moves couldn't be started (${watching.output.split('\n')[0]}). End the session yourself when you're done: code-kit cloud stop`,
     );
   if (!io.terminal) {
-    io.say(`It's running there with nobody attached. Join it from a terminal: code-kit cloud open`);
+    io.say(
+      first
+        ? `It's the first session on ${name}, so Claude Code is waiting there at its first-run questions (its theme, whether to trust the folder, working without permission prompts). They're the person's to answer, and nothing runs until they do: ask them to run \`code-kit cloud open\` in their own terminal.`
+        : `It's running there with nobody attached. Join it from a terminal: code-kit cloud open`,
+    );
     return 0;
   }
   io.say('Leave it working with Ctrl-b then d. It carries on with nobody attached.');

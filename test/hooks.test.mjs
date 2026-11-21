@@ -14978,9 +14978,11 @@ sys.exit(os.WEXITSTATUS(status))
     const leads = () => tmuxLog().filter((l) => l.startsWith('new code-kit-lead '));
     const opened = cCli(['cloud', 'open']);
     expect(
-      'CLOUD-4 open starts Claude Code in the clone with permission prompts off, and the watcher beside it',
+      'CLOUD-4 open starts Claude Code in the clone with permission prompts off, and the watcher beside it; with no terminal, a first session is said to wait at its first-run questions',
       truth(
         opened.status === 0 &&
+          opened.stdout.includes('waiting there at its first-run questions') &&
+          opened.stdout.includes("the person's to answer") &&
           leads().length === 1 &&
           leads()[0].endsWith('claude --permission-mode bypassPermissions') &&
           tmuxLog().some((l) => l.startsWith('new code-kit-watch ') && l.includes('cloud watch')),
@@ -15073,6 +15075,8 @@ sys.exit(os.WEXITSTATUS(status))
       'CLOUD-7 the next open continues its conversation and says why the last one ended',
       truth(
         reopened.stdout.includes('The last session there was ended after 5 idle minutes') &&
+          reopened.stdout.includes("It's running there with nobody attached") &&
+          !reopened.stdout.includes('first-run questions') &&
           leads().length === 2 &&
           leads()[1].endsWith('--continue'),
         `${both(reopened)}\n${leads().join('\n')}`,
