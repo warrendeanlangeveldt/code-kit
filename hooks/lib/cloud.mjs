@@ -360,17 +360,27 @@ export function cloudUp(root, config, io) {
       `The remote is on ${host}: git on the machine needs a credential for it, which is yours to set up there (code-kit cloud console).`,
     );
   }
-  const auth = run('claude auth status');
-  let signedIn = false;
-  try {
-    signedIn = JSON.parse(auth.stdout.slice(auth.stdout.indexOf('{'))).loggedIn === true;
-  } catch {
-    signedIn = false;
+  const claudeIn = () => {
+    const auth = run('claude auth status');
+    try {
+      return JSON.parse(auth.stdout.slice(auth.stdout.indexOf('{'))).loggedIn === true;
+    } catch {
+      return false;
+    }
+  };
+  if (!claudeIn()) {
+    // The person's own sign-in: at their terminal, up joins them to it and carries on in the same run.
+    if (io.ask(`${name} isn't signed in to Claude. Sign in there now?`)) {
+      io.say(
+        'Claude Code asks you to open an address in your browser and paste a code back. code-kit sees none of it.',
+      );
+      adapter.terminal(name, 'claude auth login');
+    }
+    if (!claudeIn())
+      stop(
+        `${name} isn't signed in to Claude. Run \`code-kit cloud signin\` in your own terminal: it joins your terminal to Claude Code's sign-in on the machine, and code-kit never sees it. Then run \`code-kit cloud up\` again.`,
+      );
   }
-  if (!signedIn)
-    stop(
-      `${name} isn't signed in to Claude. Run \`code-kit cloud signin\` in your own terminal: it joins your terminal to Claude Code's sign-in on the machine, and code-kit never sees it. Then run \`code-kit cloud up\` again.`,
-    );
   io.say('Claude: signed in there.');
 
   // The clone, from the remote, with the computer's git name and email.
@@ -934,16 +944,27 @@ export function hereState(root, config, now = Date.now()) {
   };
 }
 
+/** How long each of the watcher's holds keeps the machine running: until its look after next. */
+export const HOLD_SECONDS = WATCH_SECONDS * 3;
+
 /**
- * CLOUD-7: the watcher, run on the machine beside the lead's session. Its look each minute is what keeps
- * the machine awake while the session is open: one left silent is suspended after a few minutes, and
- * work waiting quietly would stop with it. Each minute it counts the awake time and, when nothing has
- * moved for `idleMinutes`, ends the lead's session and itself, so the machine sleeps.
+ * CLOUD-7: the watcher, run on the machine beside the lead's session. While the session is open it asks
+ * the platform, through the adapter, to keep the machine running, and asks again each minute: a machine
+ * nobody is connected to is otherwise paused within the minute, with the work on it. Each minute it also
+ * counts the awake time and, when nothing has moved for `idleMinutes`, ends the lead's session, lets go
+ * of the hold and stops, so the machine sleeps. A watcher that dies leaves a hold that runs out by itself.
  */
 export async function watch(root, config, { once = false } = {}) {
   const main = mainOf(root);
   const cloud = cloudOf(config);
   const idleMinutes = cloud?.idleMinutes ?? 30;
+  const maySleep = () => cloud?.adapter.maySleep?.();
+  // Stopped from the computer (`cloud stop` ends its terminal session): the machine may sleep at once.
+  for (const signal of ['SIGHUP', 'SIGTERM', 'SIGINT'])
+    process.once(signal, () => {
+      maySleep();
+      process.exit(0);
+    });
   // A watcher counts idle time from when it started; a single look goes by what's recorded.
   const since = once ? 0 : Date.now();
   for (;;) {
@@ -960,12 +981,17 @@ export async function watch(root, config, { once = false } = {}) {
     });
     const open = spawnSync('tmux', ['has-session', '-t', LEAD_SESSION], { stdio: 'ignore' });
     // The session ended by itself (the person quit it): nothing left to watch.
-    if (open.status !== 0 && !once) return { ended: false, why: 'the session is gone' };
+    if (open.status !== 0 && !once) {
+      maySleep();
+      return { ended: false, why: 'the session is gone' };
+    }
     if (verdict.end) {
       writeJson(join(main, ENDED_FILE), { at: new Date(now).toISOString(), why: verdict.why });
       spawnSync('bash', ['-c', END_SESSIONS], { stdio: 'ignore' });
+      maySleep();
       return { ended: true, why: verdict.why };
     }
+    cloud?.adapter.stayAwake?.(HOLD_SECONDS);
     if (once) return { ended: false, why: verdict.why };
     await new Promise((r) => setTimeout(r, WATCH_SECONDS * 1000));
   }

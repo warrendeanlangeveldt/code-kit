@@ -1,6 +1,6 @@
 # 32. A project on a cloud machine
 
-**Status:** built, and not yet run end to end with a real project on a real machine
+**Status:** built, and run end to end with a throwaway project on a real Sprite (21 November 2026); not yet run with one of the person's own projects
 **Outcome:** A person can move a code-kit project's work onto a cloud machine they own: the lead session, its lane agents, their worktrees, the checks and the merge queue all run there on the person's own Claude subscription, the work reaches GitHub from there, and the person's computer only connects to it.
 **Actors:** the person (chooses the platform, signs in to Claude and GitHub on the machine, opens and closes the lead's session, sets the budget); the lead and its lane agents (work on the machine as they do on a computer); the merge queue
 **Depends on:** 05-lead-loop, 09-merge-queue, 23-the-team, 26-durable-lanes, 29-running-cost
@@ -77,15 +77,17 @@ An example:
 
 The core reaches a machine through one module, which never names a platform. An adapter says its key, the options it takes, and these operations:
 
-| Operation  | Given                                            | Answers                                                                                                                                            |
-| ---------- | ------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `needs`    | nothing                                          | What the platform needs on the computer: for each, whether it's there, the command that installs it or signs in, and where that command comes from |
-| `ready`    | nothing                                          | The project's machine, made if it wasn't there                                                                                                     |
-| `run`      | a command, the folder to run it in, a time limit | The exit status, whether it ran out of time, and the end of its output                                                                             |
-| `put`      | a file on the computer, and where it goes        | Whether it arrived                                                                                                                                 |
-| `terminal` | a command, and the folder to run it in           | The person's terminal joined to that command on the machine, until it ends or they detach                                                          |
-| `state`    | nothing                                          | The machine, the sessions open on it and since when                                                                                                |
-| `release`  | nothing                                          | Whether the machine was removed                                                                                                                    |
+| Operation   | Given                                            | Answers                                                                                                                                            |
+| ----------- | ------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `needs`     | nothing                                          | What the platform needs on the computer: for each, whether it's there, the command that installs it or signs in, and where that command comes from |
+| `ready`     | nothing                                          | The project's machine, made if it wasn't there                                                                                                     |
+| `run`       | a command, the folder to run it in, a time limit | The exit status, whether it ran out of time, and the end of its output                                                                             |
+| `put`       | a file on the computer, and where it goes        | Whether it arrived                                                                                                                                 |
+| `terminal`  | a command, and the folder to run it in           | The person's terminal joined to that command on the machine, until it ends or they detach                                                          |
+| `state`     | nothing                                          | The machine, the sessions open on it and since when                                                                                                |
+| `release`   | nothing                                          | Whether the machine was removed                                                                                                                    |
+| `stayAwake` | a number of seconds; run on the machine itself   | Whether the platform will keep the machine running that much longer with nobody connected (CLOUD-7)                                                |
+| `maySleep`  | nothing; run on the machine itself               | Whether that hold was let go                                                                                                                       |
 
 `needs` is how code-kit learns what to ask the person for without knowing the platform: its command line, and a sign-in to it. An adapter that can't reach its platform for any other reason (the platform doesn't answer, the account can't make a machine) says which, and every `cloud` command passes that on with what to do. The sessions code-kit keeps on a machine (the lead's, and the watcher's) are tmux sessions it starts through `run`, so they're the same on every platform, and a platform whose image has no tmux gets it from `prepare`.
 
@@ -101,7 +103,7 @@ The core reaches a machine through one module, which never names a platform. An 
 1. It checks what it needs on the computer: git, and whatever the adapter's `needs` lists. For each thing missing it shows the exact command that installs it or signs in, says where that comes from, and asks before running it. It never installs unasked, since the command downloads and runs someone else's program on the person's computer. A sign-in that needs the person's browser is run in their terminal, and code-kit reads nothing it stores. Declined, or run where there's no terminal to ask in (a Claude session running it for the person), it stops with the commands for the person to run themselves.
 2. It stops if the move would leave work behind: stories running or queued here, decisions waiting on the person, lane branches that aren't on the remote, or merges into the base that aren't published (MQ-6). It names each and what to do with it.
 3. It makes the machine and clears what the platform's image would get wrong (CLOUD-11).
-4. It checks the two sign-ins and stops at each one that's missing, saying what the person does. For GitHub it starts gh's device sign-in on the machine and shows the code to enter at GitHub. For Claude it tells the person to run `code-kit cloud signin`, which attaches their terminal to Claude Code's own sign-in on the machine. code-kit never reads either credential.
+4. It checks the two sign-ins, asks about each one that's missing, and carries on in the same run once the person has signed in. For GitHub it starts gh's device sign-in on the machine and shows the code to enter at GitHub, then sets git on the machine to use that sign-in, which a device sign-in started with no terminal leaves undone. For Claude it joins the person's terminal to Claude Code's own sign-in on the machine. Declined, or run where there's no terminal, it stops and says to run `code-kit cloud signin`, which is that same sign-in as a command of its own. code-kit never reads either credential.
 5. It clones the project from its remote, and sets the clone's git name and email to the ones the computer's clone uses.
 6. It installs code-kit there from its marketplace, or updates it when its version differs from the computer's, and installs the plugins the project's own settings enable.
 7. It runs `prepare`, lists the `carry` files and copies them.
@@ -116,18 +118,21 @@ It then names the plugins Claude Code lists on the computer and not on the machi
 - Given `up` run by a Claude session with the command line missing, then it installs nothing and tells the session what to ask the person to run.
 - Given the command line installed and the person not signed in to the platform, then `up` asks only about the sign-in.
 - Given a story running on the computer, then `up` stops, names the story, and says to finish it or hand it back first.
-- Given a machine with no sign-in to Claude, then `up` stops after making it, says to run `cloud signin`, and a second `up` after the sign-in carries on from the clone.
+- Given a machine with no sign-in to Claude and the person at a terminal, then `up` asks, joins them to Claude Code's sign-in on yes, and carries on to the clone in the same run.
+- Given the same machine and no terminal, or the person answers no, then `up` stops after making it, says to run `cloud signin`, and a second `up` after the sign-in carries on from the clone.
+- Given a machine signed in to GitHub by the device sign-in, then the clone that follows asks for no username.
 - Given `up` run twice on a ready machine, then the second run changes nothing and says it's ready.
 - Given an `ANTHROPIC_API_KEY` set on the machine, then `up` stops and says it would be used in place of the subscription, and to remove it.
 - Given a commit made on the machine afterwards, then its author is the name and email of the computer's clone.
 
 ### CLOUD-4 `cloud open` is the lead's session
 
-`code-kit cloud open` starts Claude Code in the project's clone on the machine, in a tmux session, with permission prompts off, and joins the person's terminal to it. A session already open there is joined, never started twice. Detaching (Ctrl-b, then d) leaves it working. Run where there's no terminal, it starts the session and says how to join it. Where an earlier session ended (CLOUD-7), the new one continues its conversation. It's the lead session because it's the first in that checkout (SESS-2), and its lane agents are its sub-agents with their worktrees on the machine, so every rule code-kit enforces on a computer is enforced there by the same hooks.
+`code-kit cloud open` starts Claude Code in the project's clone on the machine, in a tmux session, with permission prompts off, and joins the person's terminal to it. A session already open there is joined, never started twice. Detaching (Ctrl-b, then d) leaves it working. Run where there's no terminal, it starts the session and says how to join it. A machine's first session waits at Claude Code's own first-run questions (its theme, whether to trust the folder, working without permission prompts), which are the person's to answer, so a first `open` with no terminal says the session waits for them and that nothing runs until they join it. Where an earlier session ended (CLOUD-7), the new one continues its conversation. It's the lead session because it's the first in that checkout (SESS-2), and its lane agents are its sub-agents with their worktrees on the machine, so every rule code-kit enforces on a computer is enforced there by the same hooks.
 
 **Acceptance**
 
 - Given a ready machine with no session, then `open` starts one, and `code-kit sessions` there shows it as the lead.
+- Given a machine no session has run on and no terminal, then `open` starts the session and says it waits at Claude Code's first-run questions for the person.
 - Given the person detaches while two lanes are working, then both lanes finish their stories and the queue merges them with nobody attached.
 - Given `open` from a second computer signed in to the same platform account, then it joins the same session.
 - Given a lane agent on the machine that writes outside its lane, then it's refused with the message it would get on a computer.
@@ -152,13 +157,19 @@ While the marker is on the computer, the project is worked on its machine. A Cla
 
 ### CLOUD-7 An idle machine sleeps
 
-Two measurements on Sprites set what the watcher is for. A Sprite with a process waiting silently in a tmux session, and nobody attached, was suspended after about four minutes: a 240-second wait took 400, and went on only when something connected. Three Sprites with something happening at least once a minute (two seconds of CPU, a request, or a small Node tick) stayed awake for the nine minutes each was left. So `open` starts a watcher beside the lead's session, and it does two things. Its look each minute is what keeps the machine awake while the session is open, so work that waits quietly isn't frozen. And when no agent is running, the queue isn't merging, and there's been no tool call (DUR-1) and no prompt from the person for `idleMinutes`, it ends the lead's session and itself, and the machine sleeps. What waits on the person stays in its files, and the next `open` continues the conversation and says why the last one ended. `code-kit cloud stop` ends the session at once, from the computer.
+When a Sprite with nobody connected is paused can't be predicted from outside it. Fly's documentation says a Sprite pauses about 30 seconds after its activity stops, and counts as activity a request being served, a platform session producing output, and an open connection. A tmux session is none of those. Measured, it varied: in eight windows of four to nine minutes with nobody connected, a Sprite was paused in two (a silent wait in the spike, and an idle lead with the first watcher beside it, which ended that session five minutes late), and ran throughout in six, with a silent wait, a tick each minute, or an idle Claude Code on it. A pause stops everything on the machine, a lane's test run included, until something connects.
+
+The platform gives one way to rule a pause out: a hold the machine places on itself through its own management socket, which lasts an hour at most and is asked for again while the work goes on. So `open` starts a watcher beside the lead's session, and it does two things. Each minute it asks the adapter to keep the machine running for three minutes more (`stayAwake`), so work that waits quietly isn't frozen, and a watcher that dies leaves a hold that runs out by itself. And when no agent is running, the queue isn't merging, no tool call (DUR-1) is running, and there's been no tool call and no prompt from the person for `idleMinutes`, it ends the lead's session, lets go of the hold (`maySleep`) and stops, and the machine sleeps. What waits on the person stays in its files, and the next `open` continues the conversation and says why the last one ended. `code-kit cloud stop` ends the session at once, from the computer.
+
+A tool call counts as running from its start to its end. One that a guard refuses gets no end, so each is noted against its session and agent, and an agent's turn ending clears that agent's: otherwise a refused call would hold the session open until it went stale twelve hours later, which is what the first real run did. A new session starts with none noted.
 
 **Acceptance**
 
 - Given `idleMinutes` of 30, a finished milestone and nobody typing, then 30 minutes after the last tool call the session is gone from the machine's sessions.
 - Given a lane's test run that takes 40 minutes, then the session isn't ended while it runs.
 - Given a session ended as idle, then `open` continues its conversation and says it was ended after 30 idle minutes.
+- Given a tool call one of code-kit's guards refused, then once that agent's turn has ended it no longer counts as running, and the idle session is ended on time.
+- Given an open session with nobody connected, then the machine holds the platform's keep-running hold, renewed each minute, and holds none once the session has ended.
 - Given `cloud stop` while a lane is working, then it names the lane and the story and asks the person to confirm before it ends them.
 
 ### CLOUD-8 The person can see it
@@ -208,17 +219,30 @@ The adapter's key is `sprites`. It works through the `sprite` command, in the or
 - The adapter ran against the real platform: a Sprite made in 1.6 seconds and found again, commands with their exit status, a time limit that stops the command there, a file put, a tmux session that outlives the command that started it, and the Sprite removed.
 - The account used is on Fly's trial, which allows three Sprites. A person with more than three projects up needs a card on the account.
 
-The whole flow (`up`, `open`, a story built and merged there, `down`) has run against a stand-in for the platform in `test/hooks.test.mjs`, and not yet with a real project on a real Sprite.
+## The whole flow on a real Sprite
+
+On 21 November 2026 the whole flow ran with a throwaway project in a private repository: a word tally with one spec, a plan of three stories and two lanes, two of the stories able to run at once. code-kit on the Sprite was this branch's build, copied there by hand, since the released version has none of the machine's own commands.
+
+- `cloud up` run by a Claude session made the Sprite and stopped at the GitHub sign-in, installing nothing. With both sign-ins done by the person, it took 18 seconds from there to ready: the clone, the git name and email, and the marker on both sides.
+- On the computer, `next` answered `wait`, and `cloud` reported the sign-ins, what was open, load, memory, disk and that everything there was on the remote.
+- The person opened the lead's session, answered Claude Code's first-run questions and typed `/code-kit:next`. The lead started both lanes' agents at once in their worktrees, reviewed and merged their two stories through the queue, then the third, and pushed the base. That took six minutes. Pulled to the computer, its 11 tests pass and the command it built prints a file's tally.
+- `cloud stop` ended the session from the computer, `open` continued its conversation, the watcher ended it five minutes after its last tool call, and `cloud down` removed the Sprite and brought the project home.
+- The eight and a half minutes a lane agent's two tool calls took in the spike didn't happen again: three stories took six minutes in all.
+- The Sprite's image sets Claude Code's permission mode to `auto` in its own settings. The first session ran in that mode and the second, started the same way, with permission prompts off. Both worked without stopping to ask.
+- A later session started with a question from Claude Code about its display, which waited for an answer as the first-run questions do.
+
+It found four defects, each fixed with a check that failed first: the yes/no question at a real terminal was answered no before anything was typed; a device sign-in to GitHub left git on the machine unable to clone; a first `open` with no terminal said the session was running when it was waiting at the first-run questions; and two commands the guards refused kept the finished session from ever being ended as idle.
+
+What it didn't cover: a lane's work going on with nobody connected (the person's terminal was attached while the stories were built), the Claude sign-in offered by `up` in the same run (added after, and checked against the stand-in only), and installing code-kit there from its marketplace.
 
 ## Open questions
 
 | Question                                                                                                                                                                                                                                                                                                        | Owner  | Blocks                                   |
 | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------ | ---------------------------------------- |
 | A wait on a clock (the hold until Claude's usage limit resets, a parked story) counts as idle, so the session is ended and nothing takes it up again until the person opens it. On a computer the loop resumes by itself. Something has to wake the machine at that time: the computer when it's on, or the hub | Warren | unattended work across a usage limit     |
-| On the spike's Sprite a lane agent's two tool calls took eight and a half minutes, with the Sprite awake throughout. The cause isn't known: the model, or the machine                                                                                                                                           | Warren | none; the first real project measures it |
 | How many lanes one Sprite carries. Two of code-kit's own mod tests run out of time there, and a project's checks may need a longer `timeoutSeconds`                                                                                                                                                             | Warren | none; the first real project measures it |
 | Which memory figure Fly bills while a Sprite is awake: what's in use (about $18 a month if never asleep) or the 8 GB its policy reserves (about $129)? The usage API read zero five and a half hours into the spike                                                                                             | Warren | CLOUD-10's estimate                      |
 | How the person sees a web app running on the machine from their own browser. Sprites have an address and port forwarding; neither was tried                                                                                                                                                                     | Warren | reviewing screens built there            |
 | Design stories use a design tool on the person's computer, which a session on the machine can't reach. Do they stay on the computer, or does the design step work from exported files only?                                                                                                                     | Warren | design stories on the machine            |
-| A project whose checks need Docker (a local Postgres, Supabase's local stack) can't run them on a Sprite. A second adapter, or a hosted database for development?                                                                                                                                               | Warren | those projects                           |
+| A project whose checks need Docker (a local Postgres, Supabase's local stack). A Sprite comes without it; its image carries Fly's instructions for installing it as a service, which haven't been tried. Does that work, or is it a second adapter, or a hosted database for development?                       | Warren | those projects                           |
 | Claude Code's Remote Control as a second way to reach the lead's session, from a phone or the web. A browser sign-in can join it; a `setup-token` one can't                                                                                                                                                     | Warren | none                                     |

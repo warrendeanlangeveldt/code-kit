@@ -19,6 +19,23 @@ const sprite = (args, opts = {}) =>
 const said = (r) => `${r.stdout ?? ''}${r.stderr ?? ''}`.trim();
 const firstLine = (r) => said(r).split('\n')[0] || (r.error ? String(r.error.message) : '');
 
+// A Sprite's own management socket, and the one hold code-kit keeps through it.
+const SOCKET = '/.sprite/api.sock';
+const HOLD = 'http://sprite/v1/tasks/code-kit';
+function task(method, body = null) {
+  const r = spawnSync(
+    'curl',
+    [
+      ...['-s', '-o', '/dev/null', '-w', '%{http_code}', '--max-time', '10'],
+      ...['--unix-socket', SOCKET, '-X', method],
+      ...(body ? ['-H', 'Content-Type: application/json', '-d', JSON.stringify(body)] : []),
+      HOLD,
+    ],
+    { encoding: 'utf8' },
+  );
+  return r.status === 0 && /^2\d\d$/.test(r.stdout.trim());
+}
+
 /** The Sprites the sign-in's organisation holds, or null when the platform can't be asked. */
 function listed() {
   const r = sprite(['list']);
@@ -146,6 +163,19 @@ export default {
     if (!have.includes(name)) return { reachable: true, exists: false, sessions: [] };
     const r = sprite(['sessions', 'list', '-s', name]);
     return { reachable: true, exists: true, sessions: r.status === 0 ? sessionsOf(r.stdout) : [] };
+  },
+  /**
+   * Run on the Sprite itself: keeps it running for this many seconds more. A Sprite nobody is connected
+   * to is paused about half a minute after its last request, whatever is working on it, and a task held
+   * through its own management socket is what the platform gives to prevent that. One hold lasts an
+   * hour at most, so it's asked for again while the work goes on.
+   */
+  stayAwake(seconds) {
+    return task('PUT', { expire: Math.min(Math.max(Math.round(seconds), 1), 3600) });
+  },
+  /** Run on the Sprite itself: lets go of the hold, so it's paused once nothing is connected. */
+  maySleep() {
+    return task('DELETE');
   },
   release(name) {
     const have = listed();

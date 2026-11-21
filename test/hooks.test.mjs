@@ -14563,6 +14563,12 @@ if (a[0] === 'auth' && a[1] === 'status') { if (!login) process.exit(1); console
 if (a[0] === 'auth' && a[1] === 'setup-git') { if (!login) process.exit(1); fs.writeFileSync(path.join(h, '.gh-git-ready'), 'x'); process.exit(0); }
 `,
     );
+    // The machine's own management socket, as the adapter reaches it: each request is noted.
+    stub(
+      dirs.there,
+      'curl',
+      `${head}fs.appendFileSync(path.join(h, 'curl.log'), a.join(' ') + '\\n'); process.stdout.write('200');\n`,
+    );
     // git on a machine, which can't clone from GitHub until it's told to ask gh for the credential: a
     // device sign-in started with no terminal signs gh in and leaves git as it was.
     stub(
@@ -14757,7 +14763,7 @@ sys.exit(os.WEXITSTATUS(status))
       ),
       0,
     );
-    const agreed = atTerminal(['cloud', 'up'], 'y\ny\ny\n', envWith(dirs.noSprite));
+    const agreed = atTerminal(['cloud', 'up'], 'y\ny\ny\nn\n', envWith(dirs.noSprite));
     expect(
       'CLOUD-3 a yes installs it, goes on to the sign-in, makes the machine and starts the device sign-in to GitHub',
       truth(
@@ -14771,9 +14777,10 @@ sys.exit(os.WEXITSTATUS(status))
       0,
     );
     expect(
-      'CLOUD-3 and stops at the sign-in to Claude, which is the person’s own: cloud signin',
+      'CLOUD-3 and asks about the sign-in to Claude, which is the person’s own; declined, it stops with cloud signin',
       truth(
-        both(agreed).includes("isn't signed in to Claude") &&
+        both(agreed).includes('Sign in there now? [y/N]') &&
+          both(agreed).includes("isn't signed in to Claude") &&
           both(agreed).includes('code-kit cloud signin') &&
           !existsSync(join(c.dir, '.claude/state/cloud.json')),
         both(agreed),
@@ -14791,11 +14798,6 @@ sys.exit(os.WEXITSTATUS(status))
         both(noTerminal),
       ),
       0,
-    );
-    // The person signs in to Claude there; the sign-in ends in two days.
-    writeFileSync(
-      join(mHome, '.claude-signed-in'),
-      new Date(Date.now() + 2 * 86_400_000).toISOString(),
     );
 
     const keyed = cCli(['cloud', 'up'], envWith(dirs.bin, { ANTHROPIC_API_KEY: 'sk-test' }));
@@ -14839,7 +14841,24 @@ sys.exit(os.WEXITSTATUS(status))
     releaseLane(c.dir, 'web');
     cGit('branch', '-q', '-D', 'web/st-4');
 
-    const up = cCli(['cloud', 'up']);
+    // At their terminal the person says yes to Claude's sign-in, and the same run carries on.
+    const up = atTerminal(['cloud', 'up'], 'y\n', env);
+    expect(
+      'CLOUD-3 at a terminal, up joins the person to Claude’s own sign-in there and carries on in the same run',
+      truth(
+        up.stdout.includes("isn't signed in to Claude. Sign in there now? [y/N]") &&
+          readFileSync(join(mHome, 'claude.log'), 'utf8').includes('auth login') &&
+          up.stdout.includes('Claude: signed in there.') &&
+          up.stdout.includes('is ready'),
+        both(up),
+      ),
+      0,
+    );
+    // That sign-in ends in two days.
+    writeFileSync(
+      join(mHome, '.claude-signed-in'),
+      new Date(Date.now() + 2 * 86_400_000).toISOString(),
+    );
     const marker = () => {
       try {
         return JSON.parse(readFileSync(join(c.dir, '.claude/state/cloud.json'), 'utf8'));
@@ -15043,6 +15062,24 @@ sys.exit(os.WEXITSTATUS(status))
       ),
       0,
     );
+    const holds = () => {
+      try {
+        return readFileSync(join(mHome, 'curl.log'), 'utf8').split('\n').filter(Boolean);
+      } catch {
+        return [];
+      }
+    };
+    expect(
+      'CLOUD-7 while the session is open, the watcher asks the platform to keep the machine running until its look after next',
+      truth(
+        holds().length === 1 &&
+          holds()[0].includes('--unix-socket /.sprite/api.sock -X PUT') &&
+          holds()[0].includes('{"expire":180}') &&
+          holds()[0].endsWith('http://sprite/v1/tasks/code-kit'),
+        holds().join('\n'),
+      ),
+      0,
+    );
     act('end');
     // A call a guard refuses gets no end: it counts while its agent's turn goes on, and no longer.
     const lane9 = { agent_id: 'agent-9', agent_type: 'web-engineer' };
@@ -15081,10 +15118,11 @@ sys.exit(os.WEXITSTATUS(status))
     idle(6);
     const ended = there('cloud', 'watch', '--once');
     expect(
-      'CLOUD-7 after idleMinutes with nothing moving, the watcher ends the lead’s session',
+      'CLOUD-7 after idleMinutes with nothing moving, the watcher ends the lead’s session and lets go of the hold, so the machine sleeps',
       truth(
         ended.stdout.includes('was ended after 5 idle minutes') &&
-          !existsSync(join(mHome, '.tmux/code-kit-lead')),
+          !existsSync(join(mHome, '.tmux/code-kit-lead')) &&
+          holds().at(-1).includes('-X DELETE http://sprite/v1/tasks/code-kit'),
         both(ended),
       ),
       0,
