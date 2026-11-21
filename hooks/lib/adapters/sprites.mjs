@@ -2,7 +2,7 @@
 // It works through the `sprite` command the person installed and signed in to, in the organisation that
 // sign-in selects, and never reads its token. Nothing outside this folder names it.
 import { spawnSync } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { closeSync, existsSync, fstatSync, openSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
@@ -141,19 +141,40 @@ export default {
       output: said(r) || (r.error ? String(r.error.message) : ''),
     };
   },
+  /** A file sent as the input of a command there. The platform's own file upload is one request that
+   * it ends after 30 seconds, which a file of a few hundred megabytes doesn't fit in. */
   put(name, file, to) {
-    const r = sprite([
-      'exec',
-      '-s',
-      name,
-      '--no-stdin',
-      '--no-port-forward',
-      '--file',
-      `${file}:${to}`,
-      '--',
-      'true',
-    ]);
-    return { ok: r.status === 0, why: r.status === 0 ? null : firstLine(r) };
+    let from;
+    try {
+      from = openSync(file, 'r');
+    } catch (e) {
+      return { ok: false, why: String(e.message) };
+    }
+    try {
+      const r = sprite(
+        [
+          'exec',
+          '-s',
+          name,
+          '--stdin',
+          '--no-port-forward',
+          '--',
+          'bash',
+          '-c',
+          'cat > "$0" && wc -c < "$0"',
+          to,
+        ],
+        { stdio: [from, 'pipe', 'pipe'] },
+      );
+      if (r.status !== 0) return { ok: false, why: firstLine(r) };
+      const arrived = Number(r.stdout.trim().split('\n').pop());
+      const sent = fstatSync(from).size;
+      return arrived === sent
+        ? { ok: true, why: null }
+        : { ok: false, why: `${arrived || 0} of its ${sent} bytes arrived` };
+    } finally {
+      closeSync(from);
+    }
   },
   /** The person's terminal joined to a command on the Sprite, until it ends or they detach. */
   terminal(name, cmd, { cwd = null } = {}) {

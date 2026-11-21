@@ -14563,13 +14563,8 @@ if (a[0] === 'sessions') {
 }
 if (a[0] === 'exec') {
   const h = home(named());
-  for (let i = 0; i < a.length; i++)
-    if (a[i] === '--file') {
-      const [src, dest] = a[i + 1].split(':');
-      const to = dest.replace(/^~/, h);
-      fs.mkdirSync(path.dirname(to), { recursive: true });
-      fs.copyFileSync(src, to);
-    }
+  // A file arrives as a command's input; the connection can drop while it's sent.
+  if (a.includes('--stdin') && fs.existsSync(path.join(root, 'uploads-drop'))) { console.error('Error: connection lost'); process.exit(1); }
   const cmd = a.slice(a.indexOf('--') + 1);
   const r = spawnSync(cmd[0], cmd.slice(1), {
     stdio: 'inherit',
@@ -14976,7 +14971,7 @@ sys.exit(os.WEXITSTATUS(status))
     const puts = () =>
       readFileSync(join(dirs.sprites, 'calls.log'), 'utf8')
         .split('\n')
-        .filter((l) => l.includes('--file') && l.includes('arriving.tgz')).length;
+        .filter((l) => l.includes('--stdin') && l.includes('arriving.tgz')).length;
     const walked = (dir) =>
       readdirSync(dir, { recursive: true, withFileTypes: true })
         .filter((e) => e.isFile())
@@ -15433,6 +15428,36 @@ sys.exit(os.WEXITSTATUS(status))
       0,
     );
     expect('CLOUD-6 after down, a lane agent starts on the computer again', dispatchHere(), 0);
+
+    // What the project carries doesn't arrive: the machine isn't ready, and the work stays here.
+    releaseLane(c.dir, 'web');
+    writeFileSync(join(dirs.sprites, 'uploads-drop'), '');
+    const dropped = atTerminal(['cloud', 'up'], 'y\ny\n', env);
+    expect(
+      'CLOUD-3 when what it carries does not arrive, up stops, says what and why, and the project stays on the computer',
+      truth(
+        both(dropped).includes("packs/images couldn't be copied there: Error: connection lost") &&
+          both(dropped).includes("isn't ready: .env.local, packs/images didn't arrive") &&
+          !both(dropped).includes('is ready') &&
+          marker() === null,
+        both(dropped),
+      ),
+      0,
+    );
+    rmSync(join(dirs.sprites, 'uploads-drop'));
+    const arrived = cCli(['cloud', 'up']);
+    expect(
+      'CLOUD-3 and up run again copies what is missing and carries on',
+      truth(
+        arrived.status === 0 &&
+          arrived.stdout.includes('Copied packs/images there') &&
+          arrived.stdout.includes('is ready') &&
+          marker() !== null,
+        both(arrived),
+      ),
+      0,
+    );
+    cCli(['cloud', 'down']);
 
     // CLOUD-10: the machine is a paid thing, with a row in the cost register.
     const today = new Date().toISOString().slice(0, 10);

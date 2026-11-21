@@ -275,13 +275,13 @@ const sizeWords = (bytes) =>
 /**
  * CLOUD-3: a folder git ignores, copied into the clone as one archive, and again only when a file in it
  * was added, removed or written since. What the machine has there that this computer doesn't stays.
- * Returns the line to say.
+ * `{ ok, line }`: whether it's there now, and the line to say.
  */
 function carryFolder({ adapter, name, run, main, clone, folder }) {
   const { files, bytes, stamp } = folderListing(join(main, folder));
   const mark = `${clone}/${CARRIED_DIR}/${createHash('sha256').update(folder).digest('hex').slice(0, 16)}`;
   if (run(`cat "${mark}" 2>/dev/null`).stdout.trim() === stamp)
-    return `${folder} is there as it is here.`;
+    return { ok: true, line: `${folder} is there as it is here.` };
   const held = mkdtempSync(join(tmpdir(), 'code-kit-carry-'));
   try {
     const archive = join(held, 'carry.tgz');
@@ -291,20 +291,26 @@ function carryFolder({ adapter, name, run, main, clone, folder }) {
       env: { ...process.env, COPYFILE_DISABLE: '1' },
     });
     if (packed.status !== 0)
-      return `${folder} couldn't be packed to copy: ${`${packed.stderr ?? ''}`.trim().split('\n')[0] || packed.error?.message}`;
+      return {
+        ok: false,
+        line: `${folder} couldn't be packed to copy: ${`${packed.stderr ?? ''}`.trim().split('\n')[0] || packed.error?.message}`,
+      };
     // A file is put at a full path: the platform expands no ~ or $HOME in it.
     const to = run(
       `mkdir -p "${clone}/${CARRIED_DIR}" && printf %s "${clone}/${CARRIED_DIR}/arriving.tgz"`,
     ).stdout;
     const sent = to ? adapter.put(name, archive, to) : { ok: false, why: 'its folder' };
-    if (!sent.ok) return `${folder} couldn't be copied there: ${sent.why}`;
+    if (!sent.ok) return { ok: false, line: `${folder} couldn't be copied there: ${sent.why}` };
     const opened = run(
       `cd "${clone}" && tar -xzf "${to}" && rm -f "${to}" && printf %s ${stamp} > "${mark}"`,
       { timeoutSeconds: 1800 },
     );
     return opened.status === 0
-      ? `Copied ${folder} there: ${plural(files, 'file')}, ${sizeWords(bytes)}.`
-      : `${folder} reached ${name} and couldn't be unpacked there: ${opened.output}`;
+      ? { ok: true, line: `Copied ${folder} there: ${plural(files, 'file')}, ${sizeWords(bytes)}.` }
+      : {
+          ok: false,
+          line: `${folder} reached ${name} and couldn't be unpacked there: ${opened.output}`,
+        };
   } finally {
     rmSync(held, { recursive: true, force: true });
   }
@@ -567,20 +573,29 @@ export function cloudUp(root, config, io) {
       run(`mkdir -p "${clone}/${CLOUD_DIR}" && printf %s ${stamp} > "${clone}/${PREPARED_FILE}"`);
     }
   }
+  const notThere = [];
   for (const f of cloud.carry) {
     if (!existsSync(join(main, f))) {
       io.say(`"cloud.carry" names ${f}, which isn't on this computer: nothing to copy.`);
       continue;
     }
     if (isFolder(join(main, f))) {
-      io.say(carryFolder({ adapter, name, run, main, clone, folder: f }));
+      const carried = carryFolder({ adapter, name, run, main, clone, folder: f });
+      io.say(carried.line);
+      if (!carried.ok) notThere.push(f);
       continue;
     }
     // A file is put at a full path: the platform expands no ~ or $HOME in it.
     const to = run(`mkdir -p "$(dirname "${clone}/${f}")" && printf %s "${clone}/${f}"`).stdout;
     const sent = to ? adapter.put(name, join(main, f), to) : { ok: false, why: 'its folder' };
     io.say(sent.ok ? `Copied ${f} there.` : `${f} couldn't be copied there: ${sent.why}`);
+    if (!sent.ok) notThere.push(f);
   }
+  // The project can't run there without what it carries: its work stays here until that has arrived.
+  if (notThere.length)
+    stop(
+      `${name} isn't ready: ${notThere.join(', ')} didn't arrive (see above), and the project's checks may not pass there without ${notThere.length === 1 ? 'it' : 'them'}. The project's work stays on this computer. Run \`code-kit cloud up\` again: it copies what's missing and carries on.`,
+    );
 
   const since = marker?.since ?? new Date().toISOString();
   run(
