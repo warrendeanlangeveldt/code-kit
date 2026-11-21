@@ -318,7 +318,7 @@ import { WORKFLOWS_DIR, ciFindings, ciUsage, releaseBranch } from '../hooks/lib/
 import { COST_APPROVAL, costReport, infraFiles, money } from '../hooks/lib/costs.mjs';
 import {
   Stop,
-  carriedByGit,
+  carryProblem,
   cloudConsole,
   cloudDown,
   cloudOpen,
@@ -489,11 +489,8 @@ function check() {
   // CLOUD-1: a platform the project's work can run on, and what it carries there.
   const cloud = cloudOf(raw);
   if (cloud) {
-    const travels = carriedByGit(resolve('.'), cloud.carry);
-    if (travels.length)
-      die(
-        `${file}: "cloud.carry" is for files git ignores, and git tracks ${travels.join(', ')}, which ${travels.length === 1 ? 'travels' : 'travel'} with the clone already. Take ${travels.length === 1 ? 'it' : 'them'} out.`,
-      );
+    const travels = carryProblem(resolve('.'), cloud.carry);
+    if (travels) die(`${file}: ${travels}`);
     out(
       `Cloud: the project's work can run on ${cloud.adapter.label} (see \`cloud\`); idle sessions there end after ${cloud.idleMinutes} minutes${cloud.carry.length ? `; carries ${cloud.carry.join(', ')}` : ''}`,
     );

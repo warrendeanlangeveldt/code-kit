@@ -27,13 +27,13 @@ export function cloudProblems(c) {
     );
   if (cloud.carry !== undefined && !(Array.isArray(cloud.carry) && cloud.carry.every(isStr)))
     p.push(
-      '"cloud.carry" must be a list of paths: files git ignores that the project can\'t run without, such as ".env.local"',
+      '"cloud.carry" must be a list of paths: files and folders git ignores that the project can\'t run without, such as ".env.local"',
     );
   else
     for (const f of cloud.carry ?? [])
       if (!insideProject(f))
         p.push(
-          `"cloud.carry" holds ${JSON.stringify(f)}, which leaves the project's folder. It carries files inside the project only, by their path from its top.`,
+          `"cloud.carry" holds ${JSON.stringify(f)}, which leaves the project's folder. It carries files and folders inside the project only, by their path from its top.`,
         );
   if (
     cloud.idleMinutes !== undefined &&

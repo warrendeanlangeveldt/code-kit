@@ -1,6 +1,6 @@
 # 32. A project on a cloud machine
 
-**Status:** built, and run end to end with a throwaway project on a real Sprite (21 November 2026); not yet run with one of the person's own projects
+**Status:** built, and run end to end with a throwaway project on a real Sprite (21 November 2026). One of the person's own projects has had its checks run on a Sprite from a trial clone; it hasn't been moved there yet
 **Outcome:** A person can move a code-kit project's work onto a cloud machine they own: the lead session, its lane agents, their worktrees, the checks and the merge queue all run there on the person's own Claude subscription, the work reaches GitHub from there, and the person's computer only connects to it.
 **Actors:** the person (chooses the platform, signs in to Claude and GitHub on the machine, opens and closes the lead's session, sets the budget); the lead and its lane agents (work on the machine as they do on a computer); the merge queue
 **Depends on:** 05-lead-loop, 09-merge-queue, 23-the-team, 26-durable-lanes, 29-running-cost
@@ -49,12 +49,12 @@ One machine carries one project: 8 cores and 16 GB on a Sprite, and its cores lo
 
 ## Data
 
-| Entity   | Where                                               | Fields                                                                                                                                           |
-| -------- | --------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Cloud    | `.claude/code-kit.json` → `cloud`                   | `{ "<adapter>": { its options } }`, with `prepare` (a command), `carry` (paths of ignored files to copy there) and `idleMinutes` (30 unless set) |
-| Machine  | the platform, in the person's account               | its name (from the project), the project's clone, the installs, Claude Code with its plugins, the person's two sign-ins, the lead's session      |
-| Marker   | `.claude/state/cloud.json`, on the computer         | the machine's name, the adapter, when the project went up                                                                                        |
-| Activity | `.claude/state/cloud-activity.json`, on the machine | when the person last sent a prompt, when the watcher last looked, the awake seconds counted so far this month                                    |
+| Entity   | Where                                               | Fields                                                                                                                                                       |
+| -------- | --------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Cloud    | `.claude/code-kit.json` → `cloud`                   | `{ "<adapter>": { its options } }`, with `prepare` (a command), `carry` (paths of ignored files and folders to copy there) and `idleMinutes` (30 unless set) |
+| Machine  | the platform, in the person's account               | its name (from the project), the project's clone, the installs, Claude Code with its plugins, the person's two sign-ins, the lead's session                  |
+| Marker   | `.claude/state/cloud.json`, on the computer         | the machine's name, the adapter, when the project went up                                                                                                    |
+| Activity | `.claude/state/cloud-activity.json`, on the machine | when the person last sent a prompt, when the watcher last looked, the awake seconds counted so far this month                                                |
 
 An example:
 
@@ -66,12 +66,13 @@ An example:
 
 ### CLOUD-1 The config names the platform
 
-`cloud` names one adapter by its key, with its options, and may set `prepare`, `carry` and `idleMinutes`. Without `cloud`, nothing in this spec applies. `prepare` is a command run on a new machine, and again when the command changes: the tools the project needs that the platform's image lacks. `carry` lists files git ignores that the project can't run without. `check` names a `cloud` with no adapter or two, options an adapter doesn't take, a `carry` entry that git tracks or that leaves the project's folder, and an `idleMinutes` that isn't a whole number of 5 or more.
+`cloud` names one adapter by its key, with its options, and may set `prepare`, `carry` and `idleMinutes`. Without `cloud`, nothing in this spec applies. `prepare` is a command run on a new machine, and again when the command changes: the tools the project needs that the platform's image lacks. `carry` lists files and folders git ignores that the project can't run without, such as `.env.local` or a folder of generated content its tests read. `check` names a `cloud` with no adapter or two, options an adapter doesn't take, a `carry` entry that git tracks (or a folder git tracks part of) or that leaves the project's folder, and an `idleMinutes` that isn't a whole number of 5 or more.
 
 **Acceptance**
 
 - Given no `cloud`, then `code-kit cloud` says the project names no platform, and how to name one.
 - Given `"cloud": { "sprites": {}, "carry": ["src/app.ts"] }` where git tracks `src/app.ts`, then `check` says `carry` is for ignored files and that one already travels with the clone.
+- Given `carry` names a folder git tracks part of, then `check` says so, and to name the ignored files and folders inside it.
 
 ### CLOUD-2 The machine adapter
 
@@ -106,7 +107,7 @@ The core reaches a machine through one module, which never names a platform. An 
 4. It checks the two sign-ins, asks about each one that's missing, and carries on in the same run once the person has signed in. For GitHub it starts gh's device sign-in on the machine and shows the code to enter at GitHub, then sets git on the machine to use that sign-in, which a device sign-in started with no terminal leaves undone. For Claude it joins the person's terminal to Claude Code's own sign-in on the machine. Declined, or run where there's no terminal, it stops and says to run `code-kit cloud signin`, which is that same sign-in as a command of its own. code-kit never reads either credential.
 5. It clones the project from its remote, and sets the clone's git name and email to the ones the computer's clone uses.
 6. It installs code-kit there from its marketplace, or updates it when its version differs from the computer's, and installs the plugins the project's own settings enable.
-7. It runs `prepare`, lists the `carry` files and copies them.
+7. It runs `prepare` and copies what `carry` lists. A folder goes as one archive, and is copied again only when a file in it was added, removed or written since the last copy, so a later `up` doesn't send it twice. Files the machine has in that folder that the computer doesn't have are left there.
 8. It writes the marker on the computer and says how to open the lead's session.
 
 It then names the plugins Claude Code lists on the computer and not on the machine, and says that MCP servers and tools on the computer (a design tool, a browser) can't be reached from there. `code-kit cloud console` is a shell on the machine, for what only the person can put right there.
@@ -120,6 +121,9 @@ It then names the plugins Claude Code lists on the computer and not on the machi
 - Given a story running on the computer, then `up` stops, names the story, and says to finish it or hand it back first.
 - Given a machine with no sign-in to Claude and the person at a terminal, then `up` asks, joins them to Claude Code's sign-in on yes, and carries on to the clone in the same run.
 - Given the same machine and no terminal, or the person answers no, then `up` stops after making it, says to run `cloud signin`, and a second `up` after the sign-in carries on from the clone.
+- Given `carry` names an ignored folder with a folder inside it, then `up` copies every file in both to the same paths in the clone, and says how many files and how much.
+- Given that folder unchanged, then a second `up` says it's there as it is here and copies nothing.
+- Given a file changed in it on the computer and a file the machine made in it, then the next `up` copies the folder again and the machine's file is still there.
 - Given a machine signed in to GitHub by the device sign-in, then the clone that follows asks for no username.
 - Given `up` run twice on a ready machine, then the second run changes nothing and says it's ready.
 - Given an `ANTHROPIC_API_KEY` set on the machine, then `up` stops and says it would be used in place of the subscription, and to remove it.
@@ -206,11 +210,15 @@ A machine is a paid thing, so spec 29 applies. With `cloud` in the config and a 
 
 The adapter's key is `sprites`. It works through the `sprite` command, in the organisation the person's sign-in selects, and never reads its token. Its `needs` are that command, installed by Fly's own installer from sprites.dev (it checks the download against its SHA-256 and puts `sprite` in `~/.local/bin`), and `sprite login`, which opens the person's browser and has to run in a terminal. A project has one Sprite, named from the project's folder and a hash of its remote's address, so a second computer finds the same one. Its `ready` makes the Sprite if there's none, empties the image's global git ignore (it ignores `.env.*`, `build/`, `dist/` and `target/`, which would leave a project's files out of commits made there), and replaces the image's git identity (`Sprite <noreply@sprites.dev>`). `terminal` is `sprite exec --tty`, and `state` lists the platform's own sessions, which are the terminals joined to it. `put` names a full path, since the platform expands no `~` in one. The status the platform reports read `cold` whether the Sprite was awake or not, so it isn't used.
 
+A Sprite's hosts file gives `localhost` the Sprite's own network address (`fdf::1`) ahead of the loopback one, and Node takes the first address it's given. A dev server told to listen on `localhost`, which is Vite's default, then listens on that address, while a browser on the Sprite looks for `localhost` at `127.0.0.1` and `::1` only. Every browser test of one real project failed that way with a refused connection. So every command the adapter runs on a Sprite sets Node to take IPv4 addresses first (`--dns-result-order=ipv4first` in `NODE_OPTIONS`), and the lead's session and everything started from it inherit that. The server then listens on `127.0.0.1`, which the browser reaches and the platform's port forwarding reaches too. A machine that already sets an order keeps its own.
+
 **Acceptance**
 
 - Given a project with no Sprite, then `cloud up` makes one and names it.
 - Given two projects, then each has its own Sprite.
 - Given a tracked file `build/main.ts` changed by a lane on the Sprite, then its commit includes it.
+- Given the lead's session started on a Sprite, then it and the watcher have Node's IPv4-first order set.
+- Given a Sprite that sets an order of its own, then a command run there keeps it.
 
 ## What was tried on a Sprite
 
@@ -235,6 +243,17 @@ It found four defects, each fixed with a check that failed first: the yes/no que
 
 What it didn't cover: a lane's work going on with nobody connected (the person's terminal was attached while the stories were built), the Claude sign-in offered by `up` in the same run (added after, and checked against the stand-in only), and installing code-kit there from its marketplace.
 
+## A real project's checks on a Sprite
+
+On 21 November 2026 one of the person's own projects was cloned onto a Sprite to see what its checks need there, before moving it. It has four lanes, a Vite client, a Node API, and 45 browser tests that start both servers.
+
+- The clone took 4 seconds, its installs 13 seconds, and Playwright's browsers with their system packages 129 seconds.
+- 19 of its 483 client unit tests and one of its build tests failed, all for images git ignores. The project keeps 1.9 GB of ignored content. Its tests read 236 MB of that in 108 files (two folders of images and a search index), and none of the 1.6 GB that makes up most of it. With those three folders copied over, every unit test passed. The 224 MB archive of the images uploaded in about 30 seconds.
+- All 45 browser tests failed with a refused connection, because of the `localhost` address described under CLOUD-11. With Node taking IPv4 first, 39 passed and 6 waited for the search index. With the index there, those 6 passed too.
+- Through the platform's port forwarding, a listener on `127.0.0.1` answered and so did one on the Sprite's own address. One on `::1` didn't.
+
+`carry` took single files until this trial, and now takes folders. The address fix is in the adapter. Both are checked against the stand-in platform; the trial itself moved the content by hand, in the same way `carry` now does.
+
 ## Open questions
 
 | Question                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          | Owner  | Blocks                                   |
@@ -242,9 +261,9 @@ What it didn't cover: a lane's work going on with nobody connected (the person's
 | A wait on a clock (the hold until Claude's usage limit resets, a parked story) counts as idle, so the session is ended and nothing takes it up again until the person opens it. On a computer the loop resumes by itself. Something has to wake the machine at that time: the computer when it's on, or the hub                                                                                                                                                                                                                                                                   | Warren | unattended work across a usage limit     |
 | How many lanes one Sprite carries. Two of code-kit's own mod tests run out of time there, and a project's checks may need a longer `timeoutSeconds`                                                                                                                                                                                                                                                                                                                                                                                                                               | Warren | none; the first real project measures it |
 | Which memory figure Fly bills while a Sprite is awake: what's in use (about $18 a month if never asleep) or the 8 GB its policy reserves (about $129)? The usage API read zero five and a half hours into the spike                                                                                                                                                                                                                                                                                                                                                               | Warren | CLOUD-10's estimate                      |
-| How the person sees a web app running on the machine from their own browser. Sprites have an address and port forwarding; neither was tried                                                                                                                                                                                                                                                                                                                                                                                                                                       | Warren | reviewing screens built there            |
+| How the person sees a web app running on the machine from their own browser. The platform's port forwarding reached test listeners on `127.0.0.1` and on the Sprite's own address; code-kit has no command for it yet, and the Sprite's web address wasn't tried                                                                                                                                                                                                                                                                                                                  | Warren | reviewing screens built there            |
 | Design stories use a design tool on the person's computer, which a session on the machine can't reach. Do they stay on the computer, or does the design step work from exported files only?                                                                                                                                                                                                                                                                                                                                                                                       | Warren | design stories on the machine            |
 | A project whose checks need Docker (a local Postgres, Supabase's local stack). Docker installs on a Sprite by Fly's own instructions in half a minute, and containers, their ports and their networks work. Running a command inside a container whose process changed user fails, because root on a Sprite has no `CAP_SYS_PTRACE`, and that includes the Postgres image's health check, which stays unhealthy. So a stack that waits on health checks won't come up as it is. Postgres installed on the machine itself, a hosted database for development, or a second adapter? | Warren | those projects                           |
-| `carry` copies single files. A project whose tests read ignored content it generated (one tried holds 1.9 GB of it in 1,500 files, and 19 of its 483 unit tests fail without it) can't be proven on the machine until that content is there. Should `carry` take folders, and how much can the platform's file copy move?                                                                                                                                                                                                                                                         | Warren | those projects                           |
+| Ignored content made on the machine (generated images, a rebuilt index, an edited `.env.local`) isn't in git, so `cloud down` doesn't see it and removing the machine loses it. `carry` copies one way. Should `down` name carried paths that changed there, and bring them back?                                                                                                                                                                                                                                                                                                 | Warren | projects that generate content there     |
 | A project's toolchain on the platform's image. Trial clones of two real projects found: packages installed with `npm install -g` land off the PATH (pnpm works through `corepack enable --install-directory ~/.local/bin`); Python goes through pyenv, and a project pinned to a version that isn't installed hung there; npm blocks packages' install scripts. A trial clone that runs the project's checks before it moves would find these first. Should `cloud up` offer one?                                                                                                 | Warren | none                                     |
 | Claude Code's Remote Control as a second way to reach the lead's session, from a phone or the web. A browser sign-in can join it; a `setup-token` one can't                                                                                                                                                                                                                                                                                                                                                                                                                       | Warren | none                                     |

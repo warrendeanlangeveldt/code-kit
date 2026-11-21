@@ -10,13 +10,14 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import {
   existsSync,
   mkdirSync,
+  mkdtempSync,
   readFileSync,
   readdirSync,
   rmSync,
   statSync,
   writeFileSync,
 } from 'node:fs';
-import { cpus, freemem, loadavg, totalmem } from 'node:os';
+import { cpus, freemem, loadavg, tmpdir, totalmem } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { cloudOf } from './cloudconfig.mjs';
@@ -34,6 +35,7 @@ const LAST_FILE = `${CLOUD_DIR}/last`;
 const ENDED_FILE = `${CLOUD_DIR}/ended.json`;
 const AWAKE_FILE = `${CLOUD_DIR}/awake.json`;
 const PREPARED_FILE = `${CLOUD_DIR}/prepared`;
+const CARRIED_DIR = `${CLOUD_DIR}/carried`;
 /** On the computer: the machine's report as `cloud` last read it. */
 const STATUS_FILE = '.claude/state/cloud-status.json';
 /** The terminal sessions code-kit keeps on a machine: the lead's, and the watcher's. */
@@ -222,9 +224,90 @@ export function leftBehind(root, config) {
   return found;
 }
 
-/** CLOUD-1: the `carry` entries git tracks, which travel with the clone already. */
-export function carriedByGit(root, carry) {
-  return carry.filter((f) => git(mainOf(root), 'ls-files', '--error-unmatch', '--', f) !== null);
+const isFolder = (path) => {
+  try {
+    return statSync(path).isDirectory();
+  } catch {
+    return false;
+  }
+};
+
+/**
+ * CLOUD-1: what's wrong with the `carry` entries git tracks, or tracks part of, which travel with the
+ * clone already; null when it tracks none.
+ */
+export function carryProblem(root, carry) {
+  const main = mainOf(root);
+  const tracked = carry.filter((f) => git(main, 'ls-files', '--error-unmatch', '--', f) !== null);
+  if (!tracked.length) return null;
+  const folders = tracked.filter((f) => isFolder(join(main, f)));
+  const one = tracked.length === 1;
+  return `"cloud.carry" is for what git ignores, and git tracks ${tracked.map((f) => (folders.includes(f) ? `files in ${f}` : f)).join(', ')}, which ${one && !folders.length ? 'travels' : 'travel'} with the clone already. Take ${one ? 'it' : 'them'} out of "cloud.carry"${folders.length ? ', and name the ignored files and folders inside a folder git tracks part of' : ''}.`;
+}
+
+/** A folder's files: how many, their bytes, and a stamp that changes when one is added, removed or written. */
+function folderListing(dir) {
+  const hash = createHash('sha256');
+  let files = 0;
+  let bytes = 0;
+  const walk = (at, rel) => {
+    const entries = readdirSync(at, { withFileTypes: true });
+    for (const e of entries.sort((a, b) => (a.name < b.name ? -1 : 1))) {
+      if (e.isDirectory()) walk(join(at, e.name), `${rel}${e.name}/`);
+      else if (e.isFile()) {
+        const s = statSync(join(at, e.name));
+        files++;
+        bytes += s.size;
+        hash.update(`${rel}${e.name}\0${s.size}\0${Math.floor(s.mtimeMs)}\n`);
+      }
+    }
+  };
+  walk(dir, '');
+  return { files, bytes, stamp: hash.digest('hex') };
+}
+const sizeWords = (bytes) =>
+  bytes >= 1024 ** 3
+    ? `${(bytes / 1024 ** 3).toFixed(1)} GB`
+    : bytes >= 1024 ** 2
+      ? `${Math.round(bytes / 1024 ** 2)} MB`
+      : `${Math.max(1, Math.round(bytes / 1024))} KB`;
+
+/**
+ * CLOUD-3: a folder git ignores, copied into the clone as one archive, and again only when a file in it
+ * was added, removed or written since. What the machine has there that this computer doesn't stays.
+ * Returns the line to say.
+ */
+function carryFolder({ adapter, name, run, main, clone, folder }) {
+  const { files, bytes, stamp } = folderListing(join(main, folder));
+  const mark = `${clone}/${CARRIED_DIR}/${createHash('sha256').update(folder).digest('hex').slice(0, 16)}`;
+  if (run(`cat "${mark}" 2>/dev/null`).stdout.trim() === stamp)
+    return `${folder} is there as it is here.`;
+  const held = mkdtempSync(join(tmpdir(), 'code-kit-carry-'));
+  try {
+    const archive = join(held, 'carry.tgz');
+    // A Mac's tar otherwise writes each file's extended attributes as a second file beside it.
+    const packed = spawnSync('tar', ['--no-xattrs', '-czf', archive, '-C', main, folder], {
+      encoding: 'utf8',
+      env: { ...process.env, COPYFILE_DISABLE: '1' },
+    });
+    if (packed.status !== 0)
+      return `${folder} couldn't be packed to copy: ${`${packed.stderr ?? ''}`.trim().split('\n')[0] || packed.error?.message}`;
+    // A file is put at a full path: the platform expands no ~ or $HOME in it.
+    const to = run(
+      `mkdir -p "${clone}/${CARRIED_DIR}" && printf %s "${clone}/${CARRIED_DIR}/arriving.tgz"`,
+    ).stdout;
+    const sent = to ? adapter.put(name, archive, to) : { ok: false, why: 'its folder' };
+    if (!sent.ok) return `${folder} couldn't be copied there: ${sent.why}`;
+    const opened = run(
+      `cd "${clone}" && tar -xzf "${to}" && rm -f "${to}" && printf %s ${stamp} > "${mark}"`,
+      { timeoutSeconds: 1800 },
+    );
+    return opened.status === 0
+      ? `Copied ${folder} there: ${plural(files, 'file')}, ${sizeWords(bytes)}.`
+      : `${folder} reached ${name} and couldn't be unpacked there: ${opened.output}`;
+  } finally {
+    rmSync(held, { recursive: true, force: true });
+  }
 }
 
 /** The project's cloud settings, or a stop saying how to name a platform. */
@@ -311,11 +394,8 @@ export function cloudUp(root, config, io) {
   const main = mainOf(root);
   const cloud = cloudFor(config);
   const { adapter } = cloud;
-  const tracked = carriedByGit(main, cloud.carry);
-  if (tracked.length)
-    stop(
-      `"cloud.carry" is for files git ignores, and git tracks ${tracked.join(', ')}, which ${tracked.length === 1 ? 'travels' : 'travel'} with the clone already. Take ${tracked.length === 1 ? 'it' : 'them'} out of "cloud.carry".`,
-    );
+  const tracked = carryProblem(main, cloud.carry);
+  if (tracked) stop(tracked);
   ensureNeeds(adapter, io);
   const remote = remoteOf(main);
   if (!remote)
@@ -490,6 +570,10 @@ export function cloudUp(root, config, io) {
   for (const f of cloud.carry) {
     if (!existsSync(join(main, f))) {
       io.say(`"cloud.carry" names ${f}, which isn't on this computer: nothing to copy.`);
+      continue;
+    }
+    if (isFolder(join(main, f))) {
+      io.say(carryFolder({ adapter, name, run, main, clone, folder: f }));
       continue;
     }
     // A file is put at a full path: the platform expands no ~ or $HOME in it.

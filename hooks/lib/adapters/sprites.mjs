@@ -36,6 +36,14 @@ function task(method, body = null) {
   return r.status === 0 && /^2\d\d$/.test(r.stdout.trim());
 }
 
+// A Sprite's hosts file gives `localhost` the Sprite's own network address ahead of the loopback one,
+// and Node takes the first: a dev server told to listen on `localhost` listens where no browser on the
+// Sprite looks for it, and a project's browser tests find nothing there. With IPv4 first it listens on
+// 127.0.0.1, which the browser and the platform's port forwarding both reach. Every command code-kit
+// runs on a Sprite starts with this, and what it starts there inherits it; a project's own setting stays.
+const ON_SPRITE =
+  'case " ${NODE_OPTIONS:-} " in *" --dns-result-order="*) ;; *) export NODE_OPTIONS="${NODE_OPTIONS:+$NODE_OPTIONS }--dns-result-order=ipv4first" ;; esac; ';
+
 /** The Sprites the sign-in's organisation holds, or null when the platform can't be asked. */
 function listed() {
   const r = sprite(['list']);
@@ -117,7 +125,7 @@ export default {
         '--',
         'bash',
         '-c',
-        cmd,
+        `${ON_SPRITE}${cmd}`,
       ],
       {
         timeout: timeoutSeconds * 1000,
@@ -150,7 +158,17 @@ export default {
   /** The person's terminal joined to a command on the Sprite, until it ends or they detach. */
   terminal(name, cmd, { cwd = null } = {}) {
     const r = sprite(
-      ['exec', '-s', name, '--tty', ...(cwd ? ['--dir', cwd] : []), '--', 'bash', '-c', cmd],
+      [
+        'exec',
+        '-s',
+        name,
+        '--tty',
+        ...(cwd ? ['--dir', cwd] : []),
+        '--',
+        'bash',
+        '-c',
+        `${ON_SPRITE}${cmd}`,
+      ],
       { stdio: 'inherit' },
     );
     return r.status ?? 1;

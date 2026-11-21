@@ -14587,7 +14587,7 @@ fs.mkdirSync(dir, { recursive: true });
 const t = a[a.indexOf('-t') + 1];
 const s = a[a.indexOf('-s') + 1];
 if (a[0] === 'has-session') process.exit(fs.existsSync(path.join(dir, t)) ? 0 : 1);
-if (a[0] === 'new-session') { fs.writeFileSync(path.join(dir, s), ''); fs.appendFileSync(path.join(h, 'tmux.log'), 'new ' + s + ' ' + a[a.length - 1] + '\\n'); }
+if (a[0] === 'new-session') { fs.writeFileSync(path.join(dir, s), ''); fs.appendFileSync(path.join(h, 'tmux.log'), 'new ' + s + ' ' + a[a.length - 1] + '\\n'); fs.appendFileSync(path.join(h, 'tmux-env.log'), s + ' ' + (process.env.NODE_OPTIONS || '') + '\\n'); }
 if (a[0] === 'kill-session') fs.rmSync(path.join(dir, t), { force: true });
 if (a[0] === 'ls') for (const f of fs.readdirSync(dir)) console.log(f + ' ' + Math.floor(fs.statSync(path.join(dir, f)).mtimeMs / 1000));
 if (a[0] === 'attach') console.log('attached ' + t);
@@ -14680,18 +14680,36 @@ if (a[0] === 'attach') console.log('attached ' + t);
       truth(
         tracked.status !== 0 &&
           both(tracked).includes(
-            '"cloud.carry" is for files git ignores, and git tracks .gitignore',
+            '"cloud.carry" is for what git ignores, and git tracks .gitignore, which travels with the clone already',
           ),
         both(tracked),
       ),
       0,
     );
+    cPut('.claude/bad.json', withCloud({ sprites: {}, carry: ['.claude'] }));
+    const partly = cCli(['check', '--config', '.claude/bad.json']);
+    rmSync(join(c.dir, '.claude/bad.json'));
+    expect(
+      'CLOUD-1 and of a folder git tracks part of, to name the ignored files and folders inside it',
+      truth(
+        partly.status !== 0 &&
+          both(partly).includes('git tracks files in .claude, which travel') &&
+          both(partly).includes(
+            'name the ignored files and folders inside a folder git tracks part of',
+          ),
+        both(partly),
+      ),
+      0,
+    );
 
     const prepare = 'echo ran >> "$HOME/prepared.log"';
-    const cloud = { sprites: {}, prepare, carry: ['.env.local'], idleMinutes: 5 };
+    const cloud = { sprites: {}, prepare, carry: ['.env.local', 'packs/images'], idleMinutes: 5 };
     cPut('.claude/code-kit.json', withCloud(cloud));
-    cPut('.gitignore', '.claude/approvals/\n.claude/state/\n.env.local\n');
+    cPut('.gitignore', '.claude/approvals/\n.claude/state/\n.env.local\npacks/images/\n');
     cPut('.env.local', 'SECRET=1\n');
+    // Content the project's tests read and git ignores: a folder, with a folder inside it.
+    cPut('packs/images/hero.png', 'hero');
+    cPut('packs/images/place/well.png', 'well');
     cPut('build/main.ts', 'export const main = 1;\n');
     cGit('add', '-A');
     cGit('commit', '-q', '-m', 'the cloud platform');
@@ -14899,6 +14917,28 @@ sys.exit(os.WEXITSTATUS(status))
       ),
       0,
     );
+    const puts = () =>
+      readFileSync(join(dirs.sprites, 'calls.log'), 'utf8')
+        .split('\n')
+        .filter((l) => l.includes('--file') && l.includes('arriving.tgz')).length;
+    const walked = (dir) =>
+      readdirSync(dir, { recursive: true, withFileTypes: true })
+        .filter((e) => e.isFile())
+        .map((e) => e.name)
+        .sort();
+    expect(
+      'CLOUD-3 a carried folder is copied whole in one go, with nothing beside its files',
+      truth(
+        up.stdout.includes('Copied packs/images there: 2 files, 1 KB.') &&
+          readFileSync(join(clone, 'packs/images/hero.png'), 'utf8') === 'hero' &&
+          readFileSync(join(clone, 'packs/images/place/well.png'), 'utf8') === 'well' &&
+          walked(join(clone, 'packs')).join() === 'hero.png,well.png' &&
+          !existsSync(join(clone, '.claude/state/cloud/carried/arriving.tgz')) &&
+          puts() === 1,
+        `${up.stdout}\n${walked(join(clone, 'packs')).join()}`,
+      ),
+      0,
+    );
     expect(
       'CLOUD-3 and names the plugins on the computer that the machine does not have',
       truth(up.stdout.includes("aren't on the machine: arch-diagram@arch-diagram"), up.stdout),
@@ -14929,6 +14969,29 @@ sys.exit(os.WEXITSTATUS(status))
           readFileSync(join(mHome, 'prepared.log'), 'utf8') === 'ran\n' &&
           machines().length === 1,
         both(again),
+      ),
+      0,
+    );
+    expect(
+      'CLOUD-3 a carried folder that has not changed is not copied again',
+      truth(
+        again.stdout.includes('packs/images is there as it is here.') && puts() === 1,
+        again.stdout,
+      ),
+      0,
+    );
+    // An image made on the machine, and one changed on the computer since.
+    writeFileSync(join(clone, 'packs/images/made-there.png'), 'there');
+    cPut('packs/images/hero.png', 'a new hero');
+    const recopied = cCli(['cloud', 'up']);
+    expect(
+      'CLOUD-3 one that changed on the computer is copied again, and what the machine made in it stays',
+      truth(
+        recopied.stdout.includes('Copied packs/images there: 2 files') &&
+          puts() === 2 &&
+          readFileSync(join(clone, 'packs/images/hero.png'), 'utf8') === 'a new hero' &&
+          readFileSync(join(clone, 'packs/images/made-there.png'), 'utf8') === 'there',
+        recopied.stdout,
       ),
       0,
     );
@@ -15013,6 +15076,31 @@ sys.exit(os.WEXITSTATUS(status))
           tmuxLog().some((l) => l.startsWith('new code-kit-watch ') && l.includes('cloud watch')),
         `${both(opened)}\n${tmuxLog().join('\n')}`,
       ),
+      0,
+    );
+    expect(
+      'CLOUD-11 what code-kit starts on a Sprite has Node look for localhost at 127.0.0.1 first, where a browser there looks',
+      truth(
+        readFileSync(join(mHome, 'tmux-env.log'), 'utf8')
+          .split('\n')
+          .filter(Boolean)
+          .every((l) => l.split(' ').includes('--dns-result-order=ipv4first')),
+        readFileSync(join(mHome, 'tmux-env.log'), 'utf8'),
+      ),
+      0,
+    );
+    const ownOrder = spawnSync(
+      'node',
+      [
+        '--input-type=module',
+        '-e',
+        `import sprites from ${JSON.stringify(join(here, '..', 'hooks/lib/adapters/sprites.mjs'))}; process.stdout.write(sprites.run(${JSON.stringify(machine)}, 'printf %s "$NODE_OPTIONS"').stdout);`,
+      ],
+      { encoding: 'utf8', env: { ...env, NODE_OPTIONS: '--dns-result-order=verbatim' } },
+    );
+    expect(
+      'CLOUD-11 and an order the machine was given already stays',
+      truth(ownOrder.stdout === '--dns-result-order=verbatim', both(ownOrder)),
       0,
     );
     const joined = cCli(['cloud', 'open']);
