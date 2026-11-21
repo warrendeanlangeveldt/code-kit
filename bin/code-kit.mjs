@@ -62,9 +62,11 @@
 // --config <file> reads a draft (.claude/code-kit.draft.json) instead of .claude/code-kit.json.
 import { execFileSync, spawnSync } from 'node:child_process';
 import {
+  closeSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
+  openSync,
   readdirSync,
   readFileSync,
   readSync,
@@ -4204,6 +4206,37 @@ function coreCommand() {
 }
 
 /**
+ * The line the person types at their terminal, waited for. It's read from the terminal opened afresh:
+ * Node leaves its own standard input non-blocking, where a read with nothing typed yet fails at once
+ * (EAGAIN) in place of waiting. Where the terminal can't be opened by name, standard input is read, and
+ * tried again until there's a line.
+ */
+function typedLine() {
+  let fd = 0;
+  let own = false;
+  try {
+    fd = openSync('/dev/tty', 'r');
+    own = true;
+  } catch {
+    fd = 0;
+  }
+  const line = Buffer.alloc(256);
+  const pause = new Int32Array(new SharedArrayBuffer(4));
+  try {
+    for (;;) {
+      try {
+        return line.toString('utf8', 0, readSync(fd, line, 0, line.length, null));
+      } catch (e) {
+        if (e.code !== 'EAGAIN') return '';
+        Atomics.wait(pause, 0, 0, 100);
+      }
+    }
+  } finally {
+    if (own) closeSync(fd);
+  }
+}
+
+/**
  * Spec 32: the project's work on a cloud machine the person owns. `cloud` says where the work is and what
  * the machine is doing; `up` makes the machine ready, `signin` and `console` join the person's terminal
  * to it, `open` is the lead's session there, `stop` ends it so the machine sleeps, and `down` brings the
@@ -4221,14 +4254,7 @@ async function cloudCommand() {
     ask(question) {
       if (!terminal) return null;
       process.stdout.write(`${question} [y/N] `);
-      const answer = Buffer.alloc(256);
-      let read = 0;
-      try {
-        read = readSync(0, answer, 0, answer.length, null);
-      } catch {
-        return false;
-      }
-      return /^y(es)?$/i.test(answer.toString('utf8', 0, read).trim());
+      return /^y(es)?$/i.test(typedLine().trim());
     },
     local: (cmd) => spawnSync(cmd, { shell: true, stdio: 'inherit' }).status ?? 1,
   };

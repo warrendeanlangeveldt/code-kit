@@ -14700,14 +14700,16 @@ if (a[0] === 'attach') console.log('attached ' + t);
       0,
     );
     // A terminal, with the person's answers typed into it: python's pty, since Node has none of its own
-    // and `script` differs between systems. The answers wait in the terminal until each is asked for.
+    // and `script` differs between systems. Each answer is typed a moment after its question shows, as
+    // a person's is: one typed ahead would be waiting already, and wouldn't show a read that doesn't wait.
     const PTY = `
-import os, pty, sys
+import os, pty, sys, time
+answers = [a for a in sys.argv[1].split('\\n') if a]
 pid, fd = pty.fork()
 if pid == 0:
     os.execvp(sys.argv[2], sys.argv[2:])
-os.write(fd, sys.argv[1].encode())
 out = b''
+asked = 0
 while True:
     try:
         data = os.read(fd, 65536)
@@ -14716,6 +14718,10 @@ while True:
     if not data:
         break
     out += data
+    if answers and out.count(b'[y/N] ') > asked:
+        asked += 1
+        time.sleep(0.4)
+        os.write(fd, (answers.pop(0) + '\\n').encode())
 _, status = os.waitpid(pid, 0)
 sys.stdout.buffer.write(out)
 sys.exit(os.WEXITSTATUS(status))
