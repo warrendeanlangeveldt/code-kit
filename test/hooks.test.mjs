@@ -14823,6 +14823,11 @@ sys.exit(os.WEXITSTATUS(status))
     cPut('apps/office/lib/w.ts', 'export const w = 1;\n');
     cGit('add', '-A');
     cGit('commit', '-q', '-m', 'ST-4');
+    // A second story's branch started from the first: both of its unpushed commits are its own to push.
+    cGit('switch', '-q', '-c', 'web/st-5');
+    cPut('apps/office/lib/v.ts', 'export const v = 1;\n');
+    cGit('add', '-A');
+    cGit('commit', '-q', '-m', 'ST-5');
     cGit('switch', '-q', 'main');
     claimLane(c.dir, { lane: 'web', story: 'ST-4', session: 'cccc1111-s' });
     const leaving = cCli(['cloud', 'up']);
@@ -14833,13 +14838,14 @@ sys.exit(os.WEXITSTATUS(status))
           leaving.stderr.includes('Nothing was moved') &&
           leaving.stderr.includes('ST-4 is running in the web lane here') &&
           leaving.stderr.includes("web/st-4 has 1 commit that isn't on the remote") &&
+          leaving.stderr.includes("web/st-5 has 2 commits that aren't on the remote") &&
           !existsSync(clone),
         both(leaving),
       ),
       0,
     );
     releaseLane(c.dir, 'web');
-    cGit('branch', '-q', '-D', 'web/st-4');
+    cGit('branch', '-q', '-D', 'web/st-4', 'web/st-5');
 
     // At their terminal the person says yes to Claude's sign-in, and the same run carries on.
     const up = atTerminal(['cloud', 'up'], 'y\n', env);

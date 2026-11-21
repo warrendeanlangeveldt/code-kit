@@ -147,19 +147,45 @@ export function machineName(root, remote = remoteOf(mainOf(root))) {
 /** The project's clone on its machine, as the machine's shell says it. */
 export const cloneOf = (root) => `$HOME/projects/${folderOf(root)}`;
 
-/** The local branches with commits no remote branch holds: [{ branch, commits }]. */
+/**
+ * The local branches with commits no remote branch holds: [{ branch, commits }]. What the remote lacks
+ * is walked once and each branch counted from that, since asking git branch by branch takes minutes in
+ * a project with over a thousand of them.
+ */
 function unpushed(root) {
-  const names = (git(root, 'for-each-ref', '--format=%(refname:short)', 'refs/heads') ?? '')
+  const walk = spawnSync(
+    'git',
+    ['-C', root, 'rev-list', '--parents', '--branches', '--not', '--remotes=origin'],
+    { encoding: 'utf8', maxBuffer: 512 * 1024 * 1024 },
+  );
+  if (walk.status !== 0) return [];
+  const parents = new Map();
+  for (const line of walk.stdout.split('\n')) {
+    if (!line) continue;
+    const [commit, ...of] = line.split(' ');
+    parents.set(commit, of);
+  }
+  if (!parents.size) return [];
+  const reached = (tip) => {
+    const seen = new Set();
+    const todo = [tip];
+    while (todo.length) {
+      const commit = todo.pop();
+      if (seen.has(commit) || !parents.has(commit)) continue;
+      seen.add(commit);
+      todo.push(...parents.get(commit));
+    }
+    return seen.size;
+  };
+  return (git(root, 'for-each-ref', '--format=%(objectname) %(refname:short)', 'refs/heads') ?? '')
     .split('\n')
-    .filter(Boolean);
-  return names
-    .map((branch) => ({
-      branch,
-      commits: Number(
-        git(root, 'rev-list', '--count', `refs/heads/${branch}`, '--not', '--remotes=origin') ?? 0,
-      ),
+    .filter(Boolean)
+    .map((line) => ({
+      tip: line.slice(0, line.indexOf(' ')),
+      branch: line.slice(line.indexOf(' ') + 1),
     }))
-    .filter((b) => b.commits > 0);
+    .filter((b) => parents.has(b.tip))
+    .map((b) => ({ branch: b.branch, commits: reached(b.tip) }));
 }
 
 /**
