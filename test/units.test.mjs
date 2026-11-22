@@ -2197,6 +2197,71 @@ test("HUBR-2 a layer's or lane's deliverable kind: its label, or what its name g
   assert.equal(deliverableKind('web', '  Pages '), 'Pages');
 });
 
+test("TRACE-5 the specs' own ids: cited in backticks, and requirements where a spec names them", async () => {
+  const { citedIds, namedRequirements, specCheckRows } = await import('../hooks/lib/plan.mjs');
+  assert.deepEqual(
+    citedIds(
+      'BOOK-4, `A105` and `OP.Guide.open` (the `cancel` path), `EP.GET./v1/walks/{id}`, ST-3, `BOOK-4`',
+    ),
+    ['BOOK-4', 'A105', 'OP.Guide.open', 'EP.GET./v1/walks/{id}'],
+  );
+  assert.deepEqual(citedIds('none (A105 in the text)'), []);
+  const dir = mkdtempSync(join(tmpdir(), 'ck-named-'));
+  mkdirSync(join(dir, 'specs'));
+  writeFileSync(
+    join(dir, 'specs/01-traces.md'),
+    '# Traces\n\nThe walk (A105, then A107) calls MOD.study-thread.open first.\n\n- **T48** · The guided walk\n',
+  );
+  writeFileSync(
+    join(dir, 'specs/02-acceptance.md'),
+    '| Id | Given |\n|---|---|\n| A105 | the opening of a journey | x |\n| `MOD.study-thread` | MVP |\n',
+  );
+  writeFileSync(join(dir, 'specs/plan.md'), '# Plan\n\nA200 is only in the plan.\n');
+  assert.deepEqual(
+    namedRequirements(dir, 'specs', 'specs/plan.md', [
+      'A105',
+      'A107',
+      'T48',
+      'MOD.study-thread',
+      'A10',
+      'A200',
+      'BOOK-4',
+    ]),
+    [
+      // The spec with the line it opens, over an earlier one that mentions it.
+      {
+        id: 'A105',
+        title: 'the opening of a journey',
+        file: 'specs/02-acceptance.md',
+        removed: false,
+        named: true,
+      },
+      { id: 'A107', title: '', file: 'specs/01-traces.md', removed: false, named: true },
+      {
+        id: 'T48',
+        title: 'The guided walk',
+        file: 'specs/01-traces.md',
+        removed: false,
+        named: true,
+      },
+      // `MOD.study-thread.open` in the first spec is another id.
+      {
+        id: 'MOD.study-thread',
+        title: 'MVP',
+        file: 'specs/02-acceptance.md',
+        removed: false,
+        named: true,
+      },
+    ],
+  );
+  assert.equal(
+    specCheckRows(
+      '| Requirement | Status | Where | Note |\n|---|---|---|---|\n| `OP.Guide.open` opens | done | a.ts | |',
+    )[0].requirement,
+    'OP.Guide.open',
+  );
+});
+
 test("HUBR-2 each spec's id, title, outcome line and requirements, from the specs", async () => {
   const { readSpecs } = await import('../hooks/lib/plan.mjs');
   const dir = mkdtempSync(join(tmpdir(), 'ck-specs-'));

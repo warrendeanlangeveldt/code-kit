@@ -14,7 +14,7 @@ node "${CLAUDE_PLUGIN_ROOT}/bin/code-kit.mjs" status --json   # the same, to wor
 
 Add `--base <ref>` when the lanes branch from something other than the first protected branch, for example the lead's integration branch.
 
-It reads the specs (`### BOOK-4 …` headings), the plan (`### ST-n` stories with `**Lane:**`, `**Requirements:**`, `**Depends on:**` and `**Status:**`), git (each story's `<lane>/st-n` branch) and the tracked tests (which requirement IDs each names). If the config has no `docs.specs` or `docs.plan`, suggest the spec-design skill instead.
+It reads the specs (`### BOOK-4 …` headings, and the specs' own ids of another shape where a story cites them in backticks), the plan (`### ST-n` stories with `**Lane:**`, `**Requirements:**`, `**Depends on:**` and `**Status:**`), git (each story's `<lane>/st-n` branch) and the tracked tests (which requirement IDs each names). If the config has no `docs.specs` or `docs.plan`, suggest the spec-design skill instead.
 
 ## Report
 
@@ -28,7 +28,7 @@ Lead with the answer, in a few lines:
 3. **Risks:**
    - requirements marked done that no test names;
    - requirements in no story;
-   - stories citing requirements no spec defines;
+   - stories citing requirements no spec defines, or an id of the specs' own that no spec names;
    - stories whose branch has been in review a long time.
 
 Then the detail only if the person asks: the story table and the requirement table from the CLI.

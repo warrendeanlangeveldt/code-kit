@@ -79,7 +79,7 @@ Write the scope into the brief. `Status: scoped`.
 
 Write one spec per capability area from `${CLAUDE_PLUGIN_ROOT}/templates/spec.md`. Work through the areas one at a time, with a round of questions per area.
 
-Each requirement gets an ID (`<AREA>-<n>`, for example `BOOK-4`) and its own heading, `### BOOK-4 Short name`, which is how `code-kit status` finds it. `ST` is reserved for stories. Every requirement must be testable: someone reading it can say whether the code does it. For every area, work through:
+Each requirement gets an ID (`<AREA>-<n>`, for example `BOOK-4`) and its own heading, `### BOOK-4 Short name`, which is how `code-kit status` finds it. `ST` is reserved for stories. Specs that already have ids of their own keep them: leave them as they are, and cite them in the plan in backticks (`` **Requirements:** `A105`, `OP.Guide.open` ``), which is how `code-kit status` reads an id that isn't shaped like `BOOK-4`. Every requirement must be testable: someone reading it can say whether the code does it. For every area, work through:
 
 - **Behaviour:** what each actor can do, step by step, including what the system does in response.
 - **Data:** the entities, their fields, types, which are required, uniqueness, and who owns the data.

@@ -7836,6 +7836,70 @@ const op = process.argv[2]; let input = ''; process.stdin.on('data', (d) => (inp
   );
   expect('status prints a readable report', says(vCli('status'), 'Ready to dispatch: ST-2'), 0);
 
+  // TRACE-5: specs written before code-kit keep their own ids, cited in backticks.
+  vPut(
+    'docs/spec/12-acceptance.md',
+    '# 12. Acceptance\n\n| Id | Given | Then |\n|---|---|---|\n| A105 | the opening of a journey | it proposes a course |\n| A1050 | another | x |\n\nThe walk calls `Guide.open()`, which is OP.Guide.open in the lock.\n',
+  );
+  vPut(
+    'docs/spec/plan.md',
+    plan('review') +
+      '\n### ST-4 The walk\n\n**Lane:** web\n**Requirements:** `A105`, `OP.Guide.open` (the `cancel` path), `A999`\n**Status:** todo\n',
+  );
+  vPut('apps/office/e2e/walk.spec.ts', "test('the walk opens', () => {}); // @spec A105\n");
+  vPut('apps/office/e2e/other.spec.ts', "test('another', () => {}); // @spec A1050\n");
+  vCommit('a story on the specs own ids');
+  const own = JSON.parse(vCli('status', '--json').stdout);
+  const a105 = own.requirements.find((r) => r.id === 'A105');
+  const op = own.requirements.find((r) => r.id === 'OP.Guide.open');
+  expect(
+    "an id of the specs' own shape, cited in backticks, is a requirement where a spec names it",
+    truth(
+      a105?.file === 'docs/spec/12-acceptance.md' &&
+        a105.title === 'the opening of a journey' &&
+        a105.stories[0] === 'ST-4' &&
+        op?.file === 'docs/spec/12-acceptance.md' &&
+        own.stories.find((s) => s.id === 'ST-4').requirements.join() === 'A105,OP.Guide.open,A999',
+      JSON.stringify([a105, op]),
+    ),
+    0,
+  );
+  expect(
+    'it is tested by the tests that name it, and not by one naming a longer id',
+    truth(a105.tests.join() === 'apps/office/e2e/walk.spec.ts', JSON.stringify(a105.tests)),
+    0,
+  );
+  expect(
+    'one no spec names is a gap, and a word of code quoted beside the ids is not an id',
+    truth(
+      own.problems.some((p) => p.includes('ST-4 cites A999, which no spec names')) &&
+        !own.problems.some((p) => p.includes('cancel')) &&
+        !own.problems.some((p) => p.includes('A105')) &&
+        !own.requirements.some((r) => r.id === 'A1050'),
+      own.problems.join(' / '),
+    ),
+    0,
+  );
+  vPut(
+    'docs/spec/plan.md',
+    plan('review') +
+      '\n### ST-4 The walk\n\n**Lane:** data\n**Requirements:** `A105`, `OP.Guide.open`\n**Status:** todo\n',
+  );
+  vCommit('the plan cites what the specs name');
+  expect(
+    'and a story citing only ids the specs name is ready to dispatch',
+    truth(/Ready to dispatch: .*\bST-4\b/.test(vCli('status').stdout), vCli('status').stdout),
+    0,
+  );
+  const nextOwn = JSON.parse(vCli('next', '--json').stdout);
+  expect(
+    'next counts it among the stories that can start',
+    truth(nextOwn.step === 'dispatch' && /\bST-4\b/.test(nextOwn.why), JSON.stringify(nextOwn)),
+    0,
+  );
+  vPut('docs/spec/plan.md', plan('review'));
+  vCommit('the plan as it was');
+
   // --- adapters: another tool in the project adds its own rules ---------------------------------
   const c = newRepo();
   cleanups.push(c.dir);
