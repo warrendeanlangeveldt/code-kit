@@ -44,6 +44,9 @@ function task(method, body = null) {
 const ON_SPRITE =
   'case " ${NODE_OPTIONS:-} " in *" --dns-result-order="*) ;; *) export NODE_OPTIONS="${NODE_OPTIONS:+$NODE_OPTIONS }--dns-result-order=ipv4first" ;; esac; ';
 
+/** The one service code-kit keeps on a Sprite: the terminal its address serves. */
+const SERVICE = 'code-kit-terminal';
+
 /** The Sprites the sign-in's organisation holds, or null when the platform can't be asked. */
 function listed() {
   const r = sprite(['list']);
@@ -175,6 +178,56 @@ export default {
     } finally {
       closeSync(from);
     }
+  },
+  /**
+   * The Sprite's own address, and whether it's open to anyone who has it. Fly's sign-in stands in front
+   * of an address set to `sprite`, which is how a Sprite is made; one the person made `public` isn't
+   * asked about, and anything else the platform says of it is read as open.
+   */
+  address(name) {
+    const r = sprite(['info', '-s', name]);
+    const url = r.stdout?.match(/^URL:\s*(\S+)/m)?.[1];
+    if (r.status !== 0 || !url) return { ok: false, why: firstLine(r) || 'it named no address' };
+    return {
+      ok: true,
+      url,
+      open: r.stdout.match(/^Auth:\s*(\S+)/m)?.[1] !== 'sprite',
+      gate: 'Fly asks who you are first, and lets in only people in the organisation the machine is in',
+      close: `sprite config update --url-auth sprite -s ${name}`,
+    };
+  },
+  /** Packages the Sprite's image lacks, from Ubuntu's own archive, which its user may install from. */
+  install(name, packages) {
+    const get = `sudo -n env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq -o Dpkg::Use-Pty=0 ${packages.join(' ')}`;
+    const r = this.run(name, `${get} || { sudo -n apt-get update && ${get}; }`, {
+      timeoutSeconds: 600,
+      inherit: true,
+    });
+    return { ok: r.status === 0 };
+  },
+  /**
+   * A command the platform keeps as a service and routes the Sprite's address to: a request to the
+   * address starts it, after a sleep too. A Sprite routes its address to one port, so one service holds
+   * it, and code-kit's is put in place of its own earlier one only.
+   */
+  serve(name, { command, args, dir, port }) {
+    if ([command, dir, ...args].some((a) => /[,\s'"]/.test(String(a))))
+      return {
+        ok: false,
+        why: 'a path in it holds a comma, a space or a quote, which a service on a Sprite is given none of',
+      };
+    const r = this.run(
+      name,
+      `sprite-env services delete ${SERVICE} >/dev/null 2>&1; sprite-env services create ${SERVICE} --cmd ${command} --args ${args.join(',')} --dir ${dir} --http-port ${port} --no-stream`,
+      { timeoutSeconds: 60 },
+    );
+    return r.status === 0
+      ? { ok: true, why: null }
+      : { ok: false, why: r.output.split('\n').filter(Boolean).pop() || `exit ${r.status}` };
+  },
+  /** That service taken away, so the address goes back to what the Sprite routed it to before. */
+  unserve(name) {
+    return { ok: this.run(name, `sprite-env services delete ${SERVICE}`).status === 0 };
   },
   /** The person's terminal joined to a command on the Sprite, until it ends or they detach. */
   terminal(name, cmd, { cwd = null } = {}) {

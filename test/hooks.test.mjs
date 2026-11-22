@@ -13,12 +13,13 @@ import {
   readFileSync,
   realpathSync,
   rmSync,
+  statSync,
   symlinkSync,
   utimesSync,
   writeFileSync,
 } from 'node:fs';
 import { devNull, homedir, tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { refusalCard } from '../hooks/mod/view.mjs';
 import { holdable } from '../hooks/mod/hold.mjs';
@@ -14618,6 +14619,11 @@ const named = () => a[a.indexOf('-s') + 1];
 if (a[0] === 'list') { console.log(fs.readdirSync(root).filter((d) => d.startsWith('ck-')).join('\\n')); process.exit(0); }
 if (a[0] === 'create') { fs.mkdirSync(home(a[a.length - 1]), { recursive: true }); process.exit(0); }
 if (a[0] === 'destroy') { fs.rmSync(home(a[a.length - 1]), { recursive: true, force: true }); process.exit(0); }
+// A machine's own address, private unless the person made it public.
+if (a[0] === 'info') {
+  console.log('Name: ' + named() + '\\nURL: https://' + named() + '-fake.sprites.app\\nAuth: ' + (fs.existsSync(path.join(root, 'public')) ? 'public' : 'sprite'));
+  process.exit(0);
+}
 if (a[0] === 'sessions') {
   console.log('ID                Command           Workdir           Started           Activity          ');
   console.log('──────────────────────────────────────────────────────────────────────────────────────────');
@@ -14682,7 +14688,26 @@ if (a[0] === 'auth' && a[1] === 'setup-git') { if (!login) process.exit(1); fs.w
     stub(
       dirs.there,
       'curl',
-      `${head}fs.appendFileSync(path.join(h, 'curl.log'), a.join(' ') + '\\n'); process.stdout.write('200');\n`,
+      `${head}if (a.some((x) => x.startsWith('http://127.0.0.1:'))) { process.stdout.write('<!DOCTYPE html><html><head><title>ttyd - Terminal</title></head><body><script>/* the terminal */</script></body></html>'); process.exit(0); }
+fs.appendFileSync(path.join(h, 'curl.log'), a.join(' ') + '\\n'); process.stdout.write('200');\n`,
+    );
+    // The terminal a machine serves in a browser: its image has none until it's installed, which the
+    // machine's own package source does. The platform's services are noted as they're made and removed.
+    const TTYD = `${head}fs.appendFileSync(path.join(h, 'ttyd.log'), a.join(' ') + '\\n');\n`;
+    writeFileSync(join(dirs.sprites, '_ttyd'), `#!/usr/bin/env node\n${TTYD}`);
+    stub(
+      dirs.there,
+      'sudo',
+      `${head}fs.appendFileSync(path.join(h, 'sudo.log'), a.join(' ') + '\\n');
+if (a.includes('install') && a.includes('ttyd')) { fs.copyFileSync(path.join(process.env.FAKE_SPRITES, '_ttyd'), path.join(__dirname, 'ttyd')); fs.chmodSync(path.join(__dirname, 'ttyd'), 0o755); }
+`,
+    );
+    stub(
+      dirs.there,
+      'sprite-env',
+      `${head}fs.appendFileSync(path.join(h, 'services.log'), a.join(' ') + '\\n');
+if (a[1] === 'create' && fs.existsSync(path.join(h, 'port-taken'))) { console.error('error: another service has the HTTP port'); process.exit(1); }
+`,
     );
     // git on a machine, which can't clone from GitHub until it's told to ask gh for the credential: a
     // device sign-in started with no terminal signs gh in and leaves git as it was.
@@ -15075,6 +15100,86 @@ sys.exit(os.WEXITSTATUS(status))
       ),
       0,
     );
+    // CLOUD-12: the lead's session in a browser, at the machine's own address.
+    const address = `https://${machine}-fake.sprites.app`;
+    const readThere = (f) => {
+      try {
+        return readFileSync(join(mHome, f), 'utf8');
+      } catch {
+        return '';
+      }
+    };
+    const services = () => readThere('services.log').split('\n').filter(Boolean);
+    const page = () =>
+      readThere(join('projects', basename(clone), '.claude/state/cloud/terminal.html'));
+    const startFile = join(clone, '.claude/state/cloud/terminal.sh');
+    // A developer's own computer may have ttyd, which the stand-in machine then finds too.
+    const ownTtyd =
+      spawnSync('bash', ['-c', 'command -v ttyd'], { env: envWith(dirs.noSprite) }).status === 0;
+    expect(
+      'CLOUD-12 up installs the terminal server the image lacks, from the image’s own source and without a prompt',
+      truth(
+        ownTtyd ||
+          (up.stdout.includes('Installing ttyd there') &&
+            readThere('sudo.log').includes(
+              '-n env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq -o Dpkg::Use-Pty=0 ttyd',
+            )),
+        `${up.stdout}\n${readThere('sudo.log')}`,
+      ),
+      0,
+    );
+    expect(
+      'CLOUD-12 and has the platform serve it at the machine’s address, on the port the address is routed to, running what joins the lead’s session',
+      truth(
+        services().length === 2 &&
+          services()[0] === 'services delete code-kit-terminal' &&
+          services()[1].startsWith('services create code-kit-terminal --cmd ') &&
+          services()[1].includes(
+            `--args -p,7681,-W,-O,-I,${clone}/.claude/state/cloud/terminal.html,-t,titleFixed=${basename(clone)},-t,disableLeaveAlert=true,${startFile} `,
+          ) &&
+          services()[1].endsWith(`--dir ${clone} --http-port 7681 --no-stream`),
+        services().join('\n'),
+      ),
+      0,
+    );
+    expect(
+      'CLOUD-12 the page it serves is the terminal’s own with the keys a phone lacks put at the end of its body',
+      truth(
+        page().startsWith('<!DOCTYPE html><html><head><title>ttyd - Terminal</title>') &&
+          page().includes('/* the terminal */</script><meta') &&
+          page().includes('<div id="ck-keys"') &&
+          page().includes("['⇧Tab'") &&
+          page().endsWith('</script>\n</body></html>'),
+        page().slice(0, 400),
+      ),
+      0,
+    );
+    expect(
+      'CLOUD-12 the address is on both markers, and up names it with who the platform lets in',
+      truth(
+        marker()?.terminal === address &&
+          JSON.parse(readFileSync(join(clone, '.claude/state/cloud.json'), 'utf8')).terminal ===
+            address &&
+          up.stdout.includes(`Or open it in a browser, a phone's too: ${address}`) &&
+          up.stdout.includes('Fly asks who you are first'),
+        `${up.stdout}\n${JSON.stringify(marker())}`,
+      ),
+      0,
+    );
+    expect(
+      'CLOUD-12 what the terminal runs has the environment the adapter’s commands have there, which a service is not given',
+      truth(
+        readFileSync(startFile, 'utf8').includes(`export PATH='${dirs.there}:`) &&
+          readFileSync(startFile, 'utf8').includes(
+            "export NODE_OPTIONS='--dns-result-order=ipv4first'",
+          ) &&
+          readFileSync(startFile, 'utf8').includes('cloud join') &&
+          (statSync(startFile).mode & 0o100) !== 0,
+        readFileSync(startFile, 'utf8'),
+      ),
+      0,
+    );
+
     const again = cCli(['cloud', 'up']);
     expect(
       'CLOUD-3 up run again on a ready machine does only what is left: nothing',
@@ -15121,6 +15226,68 @@ sys.exit(os.WEXITSTATUS(status))
       ),
       0,
     );
+
+    // CLOUD-12: an address anyone can open serves no terminal, and one that did stops.
+    writeFileSync(join(dirs.sprites, 'public'), '');
+    const servedBefore = services().length;
+    const opened12 = cCli(['cloud', 'up']);
+    rmSync(join(dirs.sprites, 'public'));
+    expect(
+      'CLOUD-12 a machine whose address is open to anyone serves no terminal: up says so, takes away the one it served, and the project still goes up',
+      truth(
+        opened12.status === 0 &&
+          opened12.stdout.includes('its address is open to anyone who has it') &&
+          opened12.stdout.includes(`sprite config update --url-auth sprite -s ${machine}`) &&
+          opened12.stdout.includes('is ready') &&
+          services().length === servedBefore + 1 &&
+          services().at(-1) === 'services delete code-kit-terminal' &&
+          marker()?.terminal === undefined,
+        `${both(opened12)}\n${services().join('\n')}`,
+      ),
+      0,
+    );
+    writeFileSync(join(mHome, 'port-taken'), '');
+    const taken = cCli(['cloud', 'up']);
+    rmSync(join(mHome, 'port-taken'));
+    expect(
+      'CLOUD-12 when the platform cannot serve it, up says why in the platform’s words and carries on',
+      truth(
+        taken.status === 0 &&
+          taken.stdout.includes(
+            "Sprites couldn't serve it: error: another service has the HTTP port",
+          ) &&
+          marker()?.terminal === undefined,
+        both(taken),
+      ),
+      0,
+    );
+    const servedAgain = cCli(['cloud', 'up']);
+    expect(
+      'CLOUD-12 up run again serves it once it can',
+      truth(servedAgain.status === 0 && marker()?.terminal === address, both(servedAgain)),
+      0,
+    );
+    cPut('.claude/code-kit.json', withCloud({ ...cloud, terminal: false }));
+    const off = cCli(['cloud', 'up']);
+    cPut('.claude/code-kit.json', withCloud(cloud));
+    expect(
+      'CLOUD-12 with "terminal": false, up takes the terminal away and leaves the address alone',
+      truth(
+        off.status === 0 &&
+          off.stdout.includes('"cloud.terminal" is off') &&
+          services().at(-1) === 'services delete code-kit-terminal' &&
+          marker()?.terminal === undefined &&
+          !off.stdout.includes('open it in a browser'),
+        both(off),
+      ),
+      0,
+    );
+    expect(
+      'CLOUD-1 check names a terminal setting that is not true or false',
+      badly({ sprites: {}, terminal: 'yes' }, '"cloud.terminal" must be true or false'),
+      0,
+    );
+    cCli(['cloud', 'up']);
 
     // CLOUD-6: one place at a time.
     const startHere = () =>
@@ -15337,7 +15504,12 @@ sys.exit(os.WEXITSTATUS(status))
       0,
     );
     // A conversation the ended session left, which the next one continues.
-    const conversations = join(mHome, '.claude/projects', clone.replace(/[^A-Za-z0-9]/g, '-'));
+    // Claude Code names the folder from where it runs, as the system gives that path.
+    const conversations = join(
+      mHome,
+      '.claude/projects',
+      realpathSync(clone).replace(/[^A-Za-z0-9]/g, '-'),
+    );
     mkdirSync(conversations, { recursive: true });
     writeFileSync(join(conversations, 'one.jsonl'), '{}\n');
     // A call the ended session was killed in the middle of, which no new session is running.
@@ -15393,6 +15565,60 @@ sys.exit(os.WEXITSTATUS(status))
       0,
     );
 
+    // CLOUD-12: what the machine's terminal runs for a browser that opens it, as the platform's service
+    // runs it: with next to nothing in its environment.
+    const fromBrowser = () =>
+      spawnSync('bash', [startFile], {
+        encoding: 'utf8',
+        env: {
+          HOME: mHome,
+          PATH: '/usr/bin:/bin',
+          FAKE_SPRITES: dirs.sprites,
+          FAKE_PLUGIN_ROOT: join(here, '..'),
+          FAKE_PLUGIN_VERSION: version,
+        },
+      });
+    const before12 = leads().length;
+    const browsed = fromBrowser();
+    expect(
+      'CLOUD-12 a browser that opens the terminal with no session open starts the lead’s session, continuing its conversation, with the watcher, and is joined to it',
+      truth(
+        browsed.status === 0 &&
+          browsed.stdout.includes('The last session there was stopped from your computer') &&
+          leads().length === before12 + 1 &&
+          leads().at(-1).endsWith('--continue') &&
+          existsSync(join(mHome, '.tmux/code-kit-watch')) &&
+          browsed.stdout.includes('attached code-kit-lead') &&
+          readThere('tmux-env.log')
+            .trim()
+            .split('\n')
+            .at(-1)
+            .includes('--dns-result-order=ipv4first'),
+        `${both(browsed)}\n${leads().join('\n')}`,
+      ),
+      0,
+    );
+    const browsedAgain = fromBrowser();
+    expect(
+      'CLOUD-12 a second browser joins the same session',
+      truth(
+        browsedAgain.stdout.includes('attached code-kit-lead') && leads().length === before12 + 1,
+        both(browsedAgain),
+      ),
+      0,
+    );
+    expect(
+      'CLOUD-12 cloud join is the machine’s: on the computer it says so, and names cloud open',
+      truth(
+        cCli(['cloud', 'join']).status === 1 &&
+          cCli(['cloud', 'join']).stderr.includes("runs on the project's machine") &&
+          cCli(['cloud', 'join']).stderr.includes('code-kit cloud open'),
+        both(cCli(['cloud', 'join'])),
+      ),
+      0,
+    );
+    cCli(['cloud', 'stop']);
+
     // CLOUD-8: what the person sees from the computer.
     inClone('switch', '-q', '-c', 'web/st-9');
     mkdirSync(join(clone, 'apps/office/lib'), { recursive: true });
@@ -15419,6 +15645,16 @@ sys.exit(os.WEXITSTATUS(status))
       truth(
         seen.stdout.includes("web/st-9 has 1 commit there that isn't on the remote") &&
           seen.stdout.includes('Nothing is open on it'),
+        seen.stdout,
+      ),
+      0,
+    );
+    expect(
+      'CLOUD-12 cloud names the terminal’s address, cloud --json carries it, and the machine reports it of itself',
+      truth(
+        seen.stdout.includes(`Its terminal, in a browser: ${address}`) &&
+          JSON.parse(cCli(['cloud', '--json']).stdout).terminal === address &&
+          here32().terminal === address,
         seen.stdout,
       ),
       0,

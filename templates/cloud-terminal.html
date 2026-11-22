@@ -1,0 +1,168 @@
+<meta
+  name="viewport"
+  content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover"
+/>
+<style>
+  #ck-keys {
+    display: none;
+    position: fixed;
+    left: 0;
+    right: 0;
+    z-index: 10;
+    gap: 6px;
+    padding: 6px 8px;
+    overflow-x: auto;
+    background: #1f1f1f;
+    border-top: 1px solid #3a3a3a;
+    font:
+      15px/1 -apple-system,
+      system-ui,
+      sans-serif;
+    touch-action: manipulation;
+    -webkit-user-select: none;
+    user-select: none;
+  }
+  #ck-keys.on {
+    display: flex;
+  }
+  #ck-keys button {
+    flex: 0 0 auto;
+    min-width: 44px;
+    height: 40px;
+    padding: 0 12px;
+    border: 1px solid #4a4a4a;
+    border-radius: 8px;
+    background: #333;
+    color: #eee;
+    font: inherit;
+  }
+  #ck-keys button.pressed {
+    background: #5a5a5a;
+  }
+</style>
+<div id="ck-keys" role="toolbar" aria-label="Keys a phone's keyboard lacks"></div>
+<script>
+  // code-kit (spec 32, CLOUD-12): what a project's machine adds to its terminal's page. The keys a phone's
+  // keyboard lacks, a type size that reads on one, the terminal kept above the keyboard, and the session
+  // joined again when the person comes back to the page. The keys show where the pointer is a finger, or
+  // the address ends ?keys; a computer's browser gets the page as it is, and the joining again.
+  (() => {
+    const touch = matchMedia('(pointer: coarse)').matches || /[?&]keys\b/.test(location.search);
+    const bar = document.getElementById('ck-keys');
+    const ESC = '\x1b';
+    const KEYS = [
+      ['Esc', () => ESC],
+      ['Tab', () => '\t'],
+      ['⇧Tab', () => `${ESC}[Z`],
+      ['↑', (app) => `${ESC}${app ? 'O' : '['}A`],
+      ['↓', (app) => `${ESC}${app ? 'O' : '['}B`],
+      ['←', (app) => `${ESC}${app ? 'O' : '['}D`],
+      ['→', (app) => `${ESC}${app ? 'O' : '['}C`],
+      ['⏎', () => '\r'],
+      ['^C', () => '\x03'],
+    ];
+    const SIZES = [11, 12, 13, 14, 16, 18];
+    const stored = () => {
+      try {
+        return Number(localStorage.getItem('ck-font')) || 0;
+      } catch {
+        return 0;
+      }
+    };
+    const store = (n) => {
+      try {
+        localStorage.setItem('ck-font', String(n));
+      } catch {
+        // a private window keeps nothing, and the size holds for this visit
+      }
+    };
+
+    function ready(term) {
+      const box = document.getElementById('terminal-container');
+      // Once its connection has closed, the terminal waits for Enter from a real keyboard before it
+      // connects again, and takes nothing else.
+      const waiting = () =>
+        [...term.element.children].some((n) => n.textContent === 'Press ⏎ to Reconnect');
+      const reconnect = () => {
+        const enter = new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', bubbles: true });
+        Object.defineProperty(enter, 'keyCode', { get: () => 13 });
+        term.textarea.dispatchEvent(enter);
+      };
+      const send = (text) => {
+        if (waiting()) return text === '\r' ? reconnect() : undefined;
+        return typeof term.input === 'function'
+          ? term.input(text, true)
+          : term._core.coreService.triggerDataEvent(text, true);
+      };
+      const fit = () => {
+        const view = window.visualViewport;
+        const height = view ? view.height : window.innerHeight;
+        const top = view ? view.offsetTop : 0;
+        const keys = bar.classList.contains('on') ? bar.offsetHeight : 0;
+        bar.style.top = `${top + height - keys}px`;
+        // The page's own rules give the terminal the whole window. It gets what can be seen: the window
+        // less the keyboard, which only the visual viewport knows of, and less the keys.
+        for (const el of [document.documentElement, document.body, box]) {
+          el.style.height = `${height - keys}px`;
+          el.style.minHeight = '0';
+        }
+        window.scrollTo(0, 0);
+        term.fit();
+      };
+      const size = (n) => {
+        term.options.fontSize = n;
+        store(n);
+        fit();
+      };
+      const button = (label, act) => {
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.textContent = label;
+        // On the way down, so the keyboard stays up and the terminal keeps its focus.
+        b.addEventListener('pointerdown', (e) => {
+          e.preventDefault();
+          b.classList.add('pressed');
+          act();
+        });
+        for (const up of ['pointerup', 'pointercancel', 'pointerleave'])
+          b.addEventListener(up, () => b.classList.remove('pressed'));
+        bar.append(b);
+      };
+      if (touch) {
+        for (const [label, text] of KEYS)
+          button(label, () => send(text(term.modes.applicationCursorKeysMode)));
+        const step = (by) => {
+          const at = SIZES.indexOf(term.options.fontSize);
+          const next = SIZES[Math.min(Math.max((at < 0 ? 2 : at) + by, 0), SIZES.length - 1)];
+          size(next);
+        };
+        button('A−', () => step(-1));
+        button('A+', () => step(1));
+        bar.classList.add('on');
+        term.options.fontSize = stored() || 13;
+      }
+      // A phone closes the connection of a page nobody is looking at, and the page may only learn of it a
+      // moment after it's looked at again. Coming back to the page joins the session again without a
+      // key, and that request wakes a sleeping machine. A page left open and in view isn't joined again
+      // by itself: a session the machine ended for being idle stays ended, so the machine can sleep,
+      // until the person presses Enter.
+      let back = 0;
+      document.addEventListener('visibilitychange', () => {
+        if (!document.hidden) back = Date.now();
+      });
+      setInterval(() => {
+        if (!document.hidden && Date.now() - back < 10_000 && waiting()) reconnect();
+      }, 500);
+      fit();
+      window.visualViewport?.addEventListener('resize', fit);
+      window.visualViewport?.addEventListener('scroll', fit);
+      window.addEventListener('resize', fit);
+    }
+
+    const wait = setInterval(() => {
+      if (!window.term?.fit) return;
+      clearInterval(wait);
+      ready(window.term);
+    }, 100);
+  })();
+</script>

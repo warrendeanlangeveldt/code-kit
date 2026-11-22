@@ -2,8 +2,9 @@
 // and the merge queue all run on one machine the person owns, and the person's computer only connects.
 // This file is both sides of it. On the computer: what `cloud up` does to make a machine ready (CLOUD-3),
 // opening, stopping and removing it (CLOUD-4, CLOUD-7, CLOUD-9), and the marker that keeps the project in
-// one place at a time (CLOUD-6). On the machine: what it reports of itself (CLOUD-8), and the watcher
-// that ends an idle session so the machine sleeps (CLOUD-7). The platform is an adapter's (CLOUD-2);
+// one place at a time (CLOUD-6), and the terminal the machine serves in a browser (CLOUD-12). On the
+// machine: what it reports of itself (CLOUD-8), the watcher that ends an idle session so the machine
+// sleeps (CLOUD-7), and what that terminal runs (CLOUD-12). The platform is an adapter's (CLOUD-2);
 // nothing here names one.
 import { createHash } from 'node:crypto';
 import { execFileSync, spawnSync } from 'node:child_process';
@@ -36,6 +37,11 @@ const ENDED_FILE = `${CLOUD_DIR}/ended.json`;
 const AWAKE_FILE = `${CLOUD_DIR}/awake.json`;
 const PREPARED_FILE = `${CLOUD_DIR}/prepared`;
 const CARRIED_DIR = `${CLOUD_DIR}/carried`;
+/** CLOUD-12, on the machine: the page its terminal serves, and what the terminal runs for each browser. */
+const TERMINAL_PAGE = `${CLOUD_DIR}/terminal.html`;
+const TERMINAL_START = `${CLOUD_DIR}/terminal.sh`;
+/** The port the machine's terminal listens on, which the platform routes the machine's address to. */
+export const TERMINAL_PORT = 7681;
 /** On the computer: the machine's report as `cloud` last read it. */
 const STATUS_FILE = '.claude/state/cloud-status.json';
 /** The terminal sessions code-kit keeps on a machine: the lead's, and the watcher's. */
@@ -597,11 +603,25 @@ export function cloudUp(root, config, io) {
       `${name} isn't ready: ${notThere.join(', ')} didn't arrive (see above), and the project's checks may not pass there without ${notThere.length === 1 ? 'it' : 'them'}. The project's work stays on this computer. Run \`code-kit cloud up\` again: it copies what's missing and carries on.`,
     );
 
+  // The lead's session in a browser, at the machine's own address (CLOUD-12).
+  let terminal = null;
+  if (cloud.terminal) terminal = serveTerminal({ adapter, name, run, main, clone, io });
+  else if (marker?.terminal && adapter.unserve) {
+    adapter.unserve(name);
+    io.say(`"cloud.terminal" is off: ${name} no longer serves a terminal at its address.`);
+  }
+
   const since = marker?.since ?? new Date().toISOString();
+  const facts = {
+    machine: name,
+    adapter: adapter.key,
+    since,
+    ...(terminal ? { terminal: terminal.url } : {}),
+  };
   run(
-    `mkdir -p "${clone}/.claude/state" && printf %s ${quoted(JSON.stringify({ here: true, machine: name, adapter: adapter.key, since }))} > "${clone}/${CLOUD_FILE}"`,
+    `mkdir -p "${clone}/.claude/state" && printf %s ${quoted(JSON.stringify({ here: true, ...facts }))} > "${clone}/${CLOUD_FILE}"`,
   );
-  writeMarker(main, { machine: name, adapter: adapter.key, since });
+  writeMarker(main, facts);
 
   // What this computer has for the project that the machine won't.
   const local = spawnSync('claude', ['plugin', 'list', '--json'], { encoding: 'utf8' });
@@ -619,6 +639,105 @@ export function cloudUp(root, config, io) {
   io.say(
     `Open the lead's session there: code-kit cloud open\nSee what it's doing from here: code-kit cloud`,
   );
+  if (terminal)
+    io.say(`Or open it in a browser, a phone's too: ${terminal.url}\n  ${terminal.gate}.`);
+}
+
+/**
+ * CLOUD-12: the terminal's own page with code-kit's part put at the end of its body, or null when what
+ * the terminal gave isn't a page.
+ */
+export function terminalPage(base, keys) {
+  const at = String(base ?? '').lastIndexOf('</body>');
+  return at < 0 ? null : `${base.slice(0, at)}${keys.trimEnd()}\n${base.slice(at)}`;
+}
+
+/**
+ * CLOUD-12: the lead's session served as a terminal at the machine's own address, behind the platform's
+ * sign-in: ttyd, with a page a phone can work in, started by the platform when a request comes (after a
+ * sleep too) and running `cloud join` for each browser. Answers { url, gate }, or null having said why
+ * there's no terminal; the project's move doesn't wait on it.
+ */
+function serveTerminal({ adapter, name, run, main, clone, io }) {
+  if (!adapter.address || !adapter.serve) return null;
+  const not = (why) => {
+    io.say(`${name} serves no terminal in a browser yet: ${why}`);
+    return null;
+  };
+  const again = 'Run `code-kit cloud up` again to try it.';
+  const address = adapter.address(name);
+  if (!address.ok)
+    return not(`${adapter.label} didn't give its address (${address.why}). ${again}`);
+  if (address.open) {
+    adapter.unserve?.(name);
+    return not(
+      `its address is open to anyone who has it, and the lead's session would be too, so nothing is served there. Make the address private (${address.close}), then run \`code-kit cloud up\` again. To leave the address as it is, set "terminal": false in the config's "cloud".`,
+    );
+  }
+  const found = () => run('command -v ttyd').stdout.trim().split('\n').pop();
+  if (!found() && adapter.install) {
+    io.say('Installing ttyd there, which serves the terminal.');
+    adapter.install(name, ['ttyd']);
+  }
+  const ttyd = found();
+  if (!ttyd)
+    return not(
+      `it has no ttyd, which serves it. Add its install to "cloud.prepare" in the config and run \`code-kit cloud up\` again.`,
+    );
+  // The page is ttyd's own, which only a running one gives: one is started on a spare port that nothing
+  // outside the machine reaches, asked for it, and ended.
+  const spare = TERMINAL_PORT + 1;
+  const base = run(
+    `"${ttyd}" -p ${spare} -i 127.0.0.1 true >/dev/null 2>&1 & T=$!; for i in $(seq 40); do curl -fs --compressed http://127.0.0.1:${spare}/ && break; sleep 0.25; done; kill $T 2>/dev/null; true`,
+    { timeoutSeconds: 60 },
+  ).stdout;
+  const page = terminalPage(
+    base,
+    readFileSync(join(PLUGIN_ROOT, 'templates/cloud-terminal.html'), 'utf8'),
+  );
+  if (!page) return not(`ttyd there didn't give its page. ${again}`);
+  // Full paths, and the environment the adapter's commands run in there, which a service isn't given.
+  const [home, path, node] = run(
+    `mkdir -p "${clone}/${CLOUD_DIR}" && printf '%s\\n%s\\n%s' "${clone}" "$PATH" "\${NODE_OPTIONS:-}"`,
+  ).stdout.split('\n');
+  if (!home || !path) return not(`the project's clone there couldn't be read. ${again}`);
+  const temp = mkdtempSync(join(tmpdir(), 'code-kit-terminal-'));
+  let sent;
+  try {
+    writeFileSync(join(temp, 'terminal.html'), page);
+    sent = adapter.put(name, join(temp, 'terminal.html'), `${home}/${TERMINAL_PAGE}`);
+  } finally {
+    rmSync(temp, { recursive: true, force: true });
+  }
+  if (!sent.ok) return not(`its page couldn't be copied there (${sent.why}). ${again}`);
+  const start = [
+    '#!/bin/bash',
+    "# code-kit (spec 32, CLOUD-12): what this machine's terminal runs for each browser that opens it.",
+    `export PATH=${quoted(path)}`,
+    ...(node ? [`export NODE_OPTIONS=${quoted(node)}`] : []),
+    'export LANG="${LANG:-C.UTF-8}"',
+    `( ${onMachine(home, 'cloud join')} ) && exit 0`,
+    'echo',
+    `read -r -p "The lead's session didn't open (see above). Press Enter to close this; Enter again tries once more. " _`,
+    '',
+  ].join('\n');
+  const wrote = run(
+    `printf %s ${quoted(start)} > "${home}/${TERMINAL_START}" && chmod +x "${home}/${TERMINAL_START}"`,
+  );
+  if (wrote.status !== 0) return not(`what it runs couldn't be written there. ${again}`);
+  const served = adapter.serve(name, {
+    command: ttyd,
+    args: [
+      ...['-p', String(TERMINAL_PORT), '-W', '-O'],
+      ...['-I', `${home}/${TERMINAL_PAGE}`],
+      ...['-t', `titleFixed=${folderOf(main)}`, '-t', 'disableLeaveAlert=true'],
+      `${home}/${TERMINAL_START}`,
+    ],
+    dir: home,
+    port: TERMINAL_PORT,
+  });
+  if (!served.ok) return not(`${adapter.label} couldn't serve it: ${served.why}. ${again}`);
+  return { url: address.url, gate: address.gate };
 }
 
 /** The plugins the project's own `.claude/settings.json` enables: [{ id, source }]. */
@@ -682,19 +801,63 @@ export function cloudConsole(root, config) {
 export function cloudOpen(root, config, io) {
   const { adapter, name, clone } = upMachine(root, config);
   const run = (cmd, o) => adapter.run(name, cmd, o);
+  const { first } = startLead({ run, name, clone, io });
+  if (!io.terminal) {
+    io.say(
+      first
+        ? `It's the first session on ${name}, so Claude Code is waiting there at its first-run questions (its theme, whether to trust the folder, working without permission prompts). They're the person's to answer, and nothing runs until they do: ask them to run \`code-kit cloud open\` in their own terminal.`
+        : `It's running there with nobody attached. Join it from a terminal: code-kit cloud open`,
+    );
+    return 0;
+  }
+  io.say('Leave it working with Ctrl-b then d. It carries on with nobody attached.');
+  return adapter.terminal(name, `tmux attach -t ${LEAD_SESSION}`);
+}
+
+/**
+ * CLOUD-12, on the machine: what its terminal in a browser runs. The lead's session there, started if
+ * there's none, with the watcher beside it, and this terminal joined to it.
+ */
+export function cloudJoin(root, io) {
+  const marker = readMarker(root);
+  if (!marker?.here)
+    stop(
+      "`cloud join` runs on the project's machine, where its terminal in a browser starts it. From your computer, the lead's session there is: code-kit cloud open",
+    );
+  const run = (cmd) => {
+    const r = spawnSync('bash', ['-c', cmd], { encoding: 'utf8' });
+    return {
+      status: r.status,
+      stdout: r.stdout ?? '',
+      output: `${r.stdout ?? ''}${r.stderr ?? ''}`.trim(),
+    };
+  };
+  startLead({ run, name: marker.machine, clone: mainOf(root), io });
+  // Closing the page leaves the session working; however this terminal's part in it ends, it opened.
+  spawnSync('tmux', ['attach', '-t', LEAD_SESSION], { stdio: 'inherit' });
+  return 0;
+}
+
+/**
+ * The lead's session on the machine, started if there's none, and the watcher beside it. `run` runs a
+ * command there: through the adapter from the computer, or as it is on the machine itself. Answers
+ * { first }: whether it's the machine's first session, which waits at Claude Code's own first-run
+ * questions until the person answers.
+ */
+function startLead({ run, name, clone, io }) {
   if (run('command -v tmux').status !== 0)
     stop(
       `${name} has no tmux, which keeps the lead's session running when nobody is attached. Add its install to "cloud.prepare" in the config (such as "sudo apt-get install -y tmux") and run \`code-kit cloud up\`.`,
     );
-  // A machine's first session waits at Claude Code's own first-run questions until the person answers.
   let first = false;
   if (run(`tmux has-session -t ${LEAD_SESSION}`).status !== 0) {
     const ended = readJson0(run(`cat "${clone}/${ENDED_FILE}" 2>/dev/null`).stdout);
-    // The conversation an earlier session there left, which the new one continues. No session is open,
+    // The conversation an earlier session there left, which the new one continues: Claude Code keeps it
+    // under the folder's path as the system gives it, with any link in it followed. No session is open,
     // so no tool call is running: what a killed one left noted as running is cleared with the start.
     const before =
       run(
-        `ls "$HOME/.claude/projects/$(cd "${clone}" && pwd | sed 's/[^A-Za-z0-9]/-/g')"/*.jsonl >/dev/null 2>&1`,
+        `ls "$HOME/.claude/projects/$(cd "${clone}" && pwd -P | sed 's/[^A-Za-z0-9]/-/g')"/*.jsonl >/dev/null 2>&1`,
       ).status === 0;
     const started = run(
       `rm -f "${clone}/${ENDED_FILE}"; rm -rf "${clone}/${ACTS_DIR}"; mkdir -p "${clone}/${CLOUD_DIR}" && touch "${clone}/${LAST_FILE}" && tmux new-session -d -s ${LEAD_SESSION} -c "${clone}" ${quoted(`claude --permission-mode bypassPermissions${before ? ' --continue' : ''}`)}`,
@@ -715,16 +878,7 @@ export function cloudOpen(root, config, io) {
     io.say(
       `The watcher that lets ${name} sleep when nothing moves couldn't be started (${watching.output.split('\n')[0]}). End the session yourself when you're done: code-kit cloud stop`,
     );
-  if (!io.terminal) {
-    io.say(
-      first
-        ? `It's the first session on ${name}, so Claude Code is waiting there at its first-run questions (its theme, whether to trust the folder, working without permission prompts). They're the person's to answer, and nothing runs until they do: ask them to run \`code-kit cloud open\` in their own terminal.`
-        : `It's running there with nobody attached. Join it from a terminal: code-kit cloud open`,
-    );
-    return 0;
-  }
-  io.say('Leave it working with Ctrl-b then d. It carries on with nobody attached.');
-  return adapter.terminal(name, `tmux attach -t ${LEAD_SESSION}`);
+  return { first };
 }
 const readJson0 = (text) => {
   try {
@@ -809,7 +963,7 @@ export function cloudDown(root, config, io, { discard = false } = {}) {
 
 /**
  * CLOUD-8: where the project's work is and what its machine is doing, for `cloud` to print:
- * { platform, name, up, since, exists, sessions, state } where `state` is the machine's own report.
+ * { platform, name, up, since, terminal, exists, sessions, state } where `state` is the machine's own report.
  */
 export function cloudStatus(root, config) {
   const cloud = cloudOf(config);
@@ -823,6 +977,7 @@ export function cloudStatus(root, config) {
     name,
     up: Boolean(marker),
     since: marker?.since ?? null,
+    terminal: marker?.terminal ?? null,
     reachable: platform.reachable,
     why: platform.why ?? null,
     exists: platform.exists ?? false,
@@ -1047,6 +1202,7 @@ export function hereState(root, config, now = Date.now()) {
   const activity = activityOf(main, now);
   return {
     version: PLUGIN.version,
+    terminal: readMarker(main)?.terminal ?? null,
     claude,
     github: { login, scopes },
     apiKey: Boolean(process.env.ANTHROPIC_API_KEY),

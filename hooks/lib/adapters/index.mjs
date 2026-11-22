@@ -47,6 +47,16 @@
 //   state     (name) => { reachable, exists, sessions: [{ id, command, started }], why }
 //   release   (name) => { ok, why }: the machine removed
 //
+// and, where the platform gives a machine an address of its own, what the terminal in a browser needs
+// (CLOUD-12). An adapter without `address` and `serve` has none:
+//
+//   address   (name) => { ok, url, open, gate, close, why }: the address, whether anyone who has it can
+//             open it, who the platform lets in, and the command that makes an open one private
+//   serve     (name, { command, args, dir, port }) => { ok, why }: that command kept running on the
+//             machine, started again after a sleep, with the address routed to its port
+//   unserve   (name) => { ok }: that taken away
+//   install   (name, packages) => { ok }: packages the machine's image lacks, from the image's own source
+//
 // The core only ever calls machineAdapterOf(); it never names a platform.
 import contextGraph from './context-graph.mjs';
 import hub from './hub/index.mjs';
@@ -57,7 +67,7 @@ export const PROVIDERS = [hub];
 export const MACHINES = [sprites];
 
 /** The settings `cloud` may hold beside its adapter's key. */
-export const CLOUD_SETTINGS = ['prepare', 'carry', 'idleMinutes'];
+export const CLOUD_SETTINGS = ['prepare', 'carry', 'idleMinutes', 'terminal'];
 
 /**
  * The machine adapter `cloud` names, with its options: { adapter, options }, or null when the config has

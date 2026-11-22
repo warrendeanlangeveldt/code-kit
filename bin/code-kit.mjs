@@ -321,6 +321,7 @@ import {
   carryProblem,
   cloudConsole,
   cloudDown,
+  cloudJoin,
   cloudOpen,
   cloudSignin,
   cloudStatus,
@@ -4237,7 +4238,7 @@ function typedLine() {
  * Spec 32: the project's work on a cloud machine the person owns. `cloud` says where the work is and what
  * the machine is doing; `up` makes the machine ready, `signin` and `console` join the person's terminal
  * to it, `open` is the lead's session there, `stop` ends it so the machine sleeps, and `down` brings the
- * project home. `here` and `watch` run on the machine itself.
+ * project home. `here`, `watch` and `join` (what its terminal in a browser runs) run on the machine itself.
  */
 async function cloudCommand() {
   const { config } = load();
@@ -4263,6 +4264,7 @@ async function cloudCommand() {
       const ended = await watch(root, config, { once: flag('--once') });
       return out(ended.ended ? `The lead's session ${ended.why}.` : `Watching: ${ended.why}.`);
     }
+    if (sub === 'join') return process.exit(cloudJoin(root, io));
     if (sub === 'up') return cloudUp(root, config, io);
     if (sub === 'signin') return process.exit(cloudSignin(root, config, io));
     if (sub === 'console') return process.exit(cloudConsole(root, config));
@@ -4298,6 +4300,7 @@ async function cloudCommand() {
     const s = status.state;
     if (s.problem)
       return die(`The machine didn't report: ${s.problem}. code-kit cloud up puts it right.`);
+    if (status.terminal) out(`  Its terminal, in a browser: ${status.terminal}`);
     out(
       s.claude.signedIn
         ? `  Claude: signed in${s.claude.account ? ` (${s.claude.account})` : ''}${s.claude.ends ? `, until ${s.claude.ends.slice(0, 10)}` : ''}`

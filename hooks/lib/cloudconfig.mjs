@@ -42,12 +42,16 @@ export function cloudProblems(c) {
     p.push(
       `"cloud.idleMinutes" must be a whole number of ${LEAST_IDLE_MINUTES} or more: the minutes with nothing moving before the lead's session there is ended so the machine sleeps (${DEFAULT_IDLE_MINUTES} unless set)`,
     );
+  if (cloud.terminal !== undefined && typeof cloud.terminal !== 'boolean')
+    p.push(
+      '"cloud.terminal" must be true or false: whether the machine serves the lead\'s session as a terminal in a browser, at its own address behind the platform\'s sign-in (true unless set)',
+    );
   return p;
 }
 
 /**
- * The project's cloud settings in force: { adapter, options, prepare, carry, idleMinutes }, or null when
- * the config names no platform (or names one wrongly, which `check` reports).
+ * The project's cloud settings in force: { adapter, options, prepare, carry, idleMinutes, terminal }, or
+ * null when the config names no platform (or names one wrongly, which `check` reports).
  */
 export function cloudOf(config) {
   const named = machineAdapterOf(config?.cloud);
@@ -62,6 +66,7 @@ export function cloudOf(config) {
       Number.isInteger(cloud.idleMinutes) && cloud.idleMinutes >= LEAST_IDLE_MINUTES
         ? cloud.idleMinutes
         : DEFAULT_IDLE_MINUTES,
+    terminal: cloud.terminal !== false,
   };
 }
 

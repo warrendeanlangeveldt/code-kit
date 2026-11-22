@@ -15,16 +15,17 @@ One machine carries one project: 8 cores and 16 GB on a Sprite, and its cores lo
 
 ## Decisions
 
-| Date       | Decision                                                                                                            | Why                                                                                                                                                                                                          |
-| ---------- | ------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| 2026-11-20 | The whole project runs on one machine; a machine per lane waits until a project needs it                            | A lane agent is a sub-agent inside the lead's process, so moving the lead moves them all with no state crossing machines. A lane on another machine needs its claim, its questions and its hand-back carried |
-| 2026-11-20 | Each platform is an adapter under `hooks/lib/adapters/`, Sprites first                                              | The core never names another tool                                                                                                                                                                            |
-| 2026-11-20 | The machine is the person's own, found through their own sign-in; the config names the platform, not the account    | The project's source goes nowhere that isn't the person's, and a team shares one config                                                                                                                      |
-| 2026-11-20 | The person signs in to Claude on the machine themselves, and code-kit never reads, copies or passes on that sign-in | Anthropic's terms rule out a product that collects, stores or passes on these credentials                                                                                                                    |
-| 2026-11-20 | The lead's session on the machine runs with Claude Code's permission prompts off                                    | Nobody is attached to answer a prompt while the loop works, and in the spike a session with prompts on refused the lane's own report. code-kit's refusals held with them off. The machine is the sandbox     |
-| 2026-11-20 | The machine starts from the remote, and work in flight on the computer is finished or pushed before the move        | `.claude/state` (claims, the queue, the event log, decisions waiting) isn't in git and isn't worth carrying mid-story                                                                                        |
-| 2026-11-20 | A project is worked in one place at a time                                                                          | Two leads on two machines would dispatch the same stories, each with its own claims                                                                                                                          |
-| 2026-11-20 | This is part of code-kit, free, from a terminal. Reaching the machine's sessions through the hub is the hub's       | Nothing here needs a service: the person's own platform account and command line are enough                                                                                                                  |
+| Date       | Decision                                                                                                                                                 | Why                                                                                                                                                                                                                               |
+| ---------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 2026-11-20 | The whole project runs on one machine; a machine per lane waits until a project needs it                                                                 | A lane agent is a sub-agent inside the lead's process, so moving the lead moves them all with no state crossing machines. A lane on another machine needs its claim, its questions and its hand-back carried                      |
+| 2026-11-20 | Each platform is an adapter under `hooks/lib/adapters/`, Sprites first                                                                                   | The core never names another tool                                                                                                                                                                                                 |
+| 2026-11-20 | The machine is the person's own, found through their own sign-in; the config names the platform, not the account                                         | The project's source goes nowhere that isn't the person's, and a team shares one config                                                                                                                                           |
+| 2026-11-20 | The person signs in to Claude on the machine themselves, and code-kit never reads, copies or passes on that sign-in                                      | Anthropic's terms rule out a product that collects, stores or passes on these credentials                                                                                                                                         |
+| 2026-11-20 | The lead's session on the machine runs with Claude Code's permission prompts off                                                                         | Nobody is attached to answer a prompt while the loop works, and in the spike a session with prompts on refused the lane's own report. code-kit's refusals held with them off. The machine is the sandbox                          |
+| 2026-11-20 | The machine starts from the remote, and work in flight on the computer is finished or pushed before the move                                             | `.claude/state` (claims, the queue, the event log, decisions waiting) isn't in git and isn't worth carrying mid-story                                                                                                             |
+| 2026-11-20 | A project is worked in one place at a time                                                                                                               | Two leads on two machines would dispatch the same stories, each with its own claims                                                                                                                                               |
+| 2026-11-22 | A machine with an address of its own serves the lead's session as a terminal in a browser, behind the platform's sign-in, unless the config turns it off | A phone has no `cloud open`, and the hub's page for a machine opens this address. The only thing in front of it is the platform's own sign-in to the account that holds the machine; code-kit adds no password of its own to keep |
+| 2026-11-20 | This is part of code-kit, free, from a terminal. Reaching the machine's sessions through the hub is the hub's                                            | Nothing here needs a service: the person's own platform account and command line are enough                                                                                                                                       |
 
 ## In scope
 
@@ -32,6 +33,7 @@ One machine carries one project: 8 cores and 16 GB on a Sprite, and its cores lo
 - The machine adapter's interface, and a Sprites adapter.
 - `code-kit cloud up`: a machine made ready for the project, with the two sign-ins the person does.
 - `code-kit cloud open`: the lead's session there, in a terminal that stays when the person leaves.
+- The same session as a terminal in a browser, at the machine's own address, that a phone can work in.
 - Work reaching GitHub from the machine with the computer off.
 - The computer knowing the project is on its machine.
 - Ending an idle session so the machine sleeps, and `code-kit cloud stop`.
@@ -49,12 +51,12 @@ One machine carries one project: 8 cores and 16 GB on a Sprite, and its cores lo
 
 ## Data
 
-| Entity   | Where                                               | Fields                                                                                                                                                       |
-| -------- | --------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Cloud    | `.claude/code-kit.json` → `cloud`                   | `{ "<adapter>": { its options } }`, with `prepare` (a command), `carry` (paths of ignored files and folders to copy there) and `idleMinutes` (30 unless set) |
-| Machine  | the platform, in the person's account               | its name (from the project), the project's clone, the installs, Claude Code with its plugins, the person's two sign-ins, the lead's session                  |
-| Marker   | `.claude/state/cloud.json`, on the computer         | the machine's name, the adapter, when the project went up                                                                                                    |
-| Activity | `.claude/state/cloud-activity.json`, on the machine | when the person last sent a prompt, when the watcher last looked, the awake seconds counted so far this month                                                |
+| Entity   | Where                                               | Fields                                                                                                                                                                                     |
+| -------- | --------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Cloud    | `.claude/code-kit.json` → `cloud`                   | `{ "<adapter>": { its options } }`, with `prepare` (a command), `carry` (paths of ignored files and folders to copy there), `idleMinutes` (30 unless set) and `terminal` (true unless set) |
+| Machine  | the platform, in the person's account               | its name (from the project), the project's clone, the installs, Claude Code with its plugins, the person's two sign-ins, the lead's session                                                |
+| Marker   | `.claude/state/cloud.json`, on the computer         | the machine's name, the adapter, when the project went up, and the address of its terminal in a browser when it serves one                                                                 |
+| Activity | `.claude/state/cloud-activity.json`, on the machine | when the person last sent a prompt, when the watcher last looked, the awake seconds counted so far this month                                                                              |
 
 An example:
 
@@ -78,17 +80,23 @@ An example:
 
 The core reaches a machine through one module, which never names a platform. An adapter says its key, the options it takes, and these operations:
 
-| Operation   | Given                                            | Answers                                                                                                                                            |
-| ----------- | ------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `needs`     | nothing                                          | What the platform needs on the computer: for each, whether it's there, the command that installs it or signs in, and where that command comes from |
-| `ready`     | nothing                                          | The project's machine, made if it wasn't there                                                                                                     |
-| `run`       | a command, the folder to run it in, a time limit | The exit status, whether it ran out of time, and the end of its output                                                                             |
-| `put`       | a file on the computer, and where it goes        | Whether it arrived                                                                                                                                 |
-| `terminal`  | a command, and the folder to run it in           | The person's terminal joined to that command on the machine, until it ends or they detach                                                          |
-| `state`     | nothing                                          | The machine, the sessions open on it and since when                                                                                                |
-| `release`   | nothing                                          | Whether the machine was removed                                                                                                                    |
-| `stayAwake` | a number of seconds; run on the machine itself   | Whether the platform will keep the machine running that much longer with nobody connected (CLOUD-7)                                                |
-| `maySleep`  | nothing; run on the machine itself               | Whether that hold was let go                                                                                                                       |
+| Operation   | Given                                            | Answers                                                                                                                                                   |
+| ----------- | ------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `needs`     | nothing                                          | What the platform needs on the computer: for each, whether it's there, the command that installs it or signs in, and where that command comes from        |
+| `ready`     | nothing                                          | The project's machine, made if it wasn't there                                                                                                            |
+| `run`       | a command, the folder to run it in, a time limit | The exit status, whether it ran out of time, and the end of its output                                                                                    |
+| `put`       | a file on the computer, and where it goes        | Whether it arrived                                                                                                                                        |
+| `terminal`  | a command, and the folder to run it in           | The person's terminal joined to that command on the machine, until it ends or they detach                                                                 |
+| `state`     | nothing                                          | The machine, the sessions open on it and since when                                                                                                       |
+| `release`   | nothing                                          | Whether the machine was removed                                                                                                                           |
+| `stayAwake` | a number of seconds; run on the machine itself   | Whether the platform will keep the machine running that much longer with nobody connected (CLOUD-7)                                                       |
+| `maySleep`  | nothing; run on the machine itself               | Whether that hold was let go                                                                                                                              |
+| `address`   | nothing                                          | The machine's own web address, whether anyone who has it can open it, who the platform lets in, and the command that makes an open one private (CLOUD-12) |
+| `serve`     | a command, its arguments, a folder and a port    | Whether the platform now keeps that command running on the machine, starts it again after a sleep, and routes the address to the port                     |
+| `unserve`   | nothing                                          | Whether that was taken away                                                                                                                               |
+| `install`   | package names                                    | Whether the machine's image now has them, from the image's own source                                                                                     |
+
+The last four are for the terminal in a browser, and an adapter whose platform gives a machine no address leaves them out.
 
 `needs` is how code-kit learns what to ask the person for without knowing the platform: its command line, and a sign-in to it. An adapter that can't reach its platform for any other reason (the platform doesn't answer, the account can't make a machine) says which, and every `cloud` command passes that on with what to do. The sessions code-kit keeps on a machine (the lead's, and the watcher's) are tmux sessions it starts through `run`, so they're the same on every platform, and a platform whose image has no tmux gets it from `prepare`.
 
@@ -213,6 +221,8 @@ The adapter's key is `sprites`. It works through the `sprite` command, in the or
 
 A Sprite's hosts file gives `localhost` the Sprite's own network address (`fdf::1`) ahead of the loopback one, and Node takes the first address it's given. A dev server told to listen on `localhost`, which is Vite's default, then listens on that address, while a browser on the Sprite looks for `localhost` at `127.0.0.1` and `::1` only. Every browser test of one real project failed that way with a refused connection. So every command the adapter runs on a Sprite sets Node to take IPv4 addresses first (`--dns-result-order=ipv4first` in `NODE_OPTIONS`), and the lead's session and everything started from it inherit that. The server then listens on `127.0.0.1`, which the browser reaches and the platform's port forwarding reaches too. A machine that already sets an order keeps its own.
 
+A Sprite's address is `https://<name>-<organisation>.sprites.app`, read from `sprite info` with its auth setting. `sprite`, which a new Sprite has, puts Fly's sign-in in front of it and is the only setting the adapter reads as private. `serve` is one of the Sprite's own services, `code-kit-terminal`, made on the Sprite with `sprite-env services create` and given the Sprite's HTTP port. A Sprite routes its address to one port, so the terminal takes the address from a web app a project was showing there, and `"terminal": false` gives it back. A service's arguments are one comma-separated list, so `serve` refuses a path that holds a comma, a space or a quote. `install` is `apt-get` through `sudo -n`, which a Sprite's user may run.
+
 **Acceptance**
 
 - Given a project with no Sprite, then `cloud up` makes one and names it.
@@ -220,6 +230,35 @@ A Sprite's hosts file gives `localhost` the Sprite's own network address (`fdf::
 - Given a tracked file `build/main.ts` changed by a lane on the Sprite, then its commit includes it.
 - Given the lead's session started on a Sprite, then it and the watcher have Node's IPv4-first order set.
 - Given a Sprite that sets an order of its own, then a command run there keeps it.
+
+### CLOUD-12 The lead's session in a browser
+
+A machine whose platform gives it an address of its own serves the lead's session there as a terminal, so the person can work from a phone or any browser without the platform's command line. `cloud up` sets it up after the clone and code-kit are in place, and again on every run:
+
+1. It asks the adapter for the machine's address. An address open to anyone who has it serves no terminal: `up` says so with the adapter's command that makes it private, takes away a terminal it served before, and carries on.
+2. It installs ttyd through the adapter where the machine's image lacks it.
+3. It builds the page. ttyd's own page is read from a ttyd started for a moment on a port only the machine reaches, and code-kit's part (`templates/cloud-terminal.html`) is put at the end of its body. The page goes to the machine as a file.
+4. It writes what the terminal runs for each browser: a script that sets the `PATH` and Node options the adapter's commands have there, which a platform's service may not be given, and runs `code-kit cloud join` in the clone.
+5. It has the adapter serve ttyd with that page and script on port 7681, with the address routed to it, started by the platform when a request arrives, after a sleep too.
+6. It writes the address into both markers, and names it with who the platform lets in.
+
+`cloud join` runs on the machine only. It starts the lead's session if there's none, by the same steps as `cloud open` (continuing the last conversation, with the watcher beside it), and joins the terminal to it. Closing the page leaves the session working. A second browser, or `cloud open` from the computer, joins the same session.
+
+code-kit's part of the page shows its keys where the pointer is a finger. It adds a row of the keys a phone's keyboard lacks (Esc, Tab, Shift-Tab, the arrows, Enter, Ctrl-C) and two for the type size, sizes the terminal to what can be seen above the phone's keyboard, and joins the session again when the person comes back to a page whose connection the phone closed. A page left open and in view isn't joined again by itself, so a session the watcher ended for being idle stays ended and the machine sleeps. Enter joins it again.
+
+A terminal that can't be set up doesn't stop the move: `up` says what was missing, and running it again tries once more. `"terminal": false` in `cloud` leaves the machine's address alone and takes away a terminal served before. `cloud` shows the address, and `cloud --json` and the machine's own report carry it.
+
+The platform's sign-in is the only thing in front of the terminal, and code-kit adds no password of its own. ttyd is started so that it refuses a connection asked for by a page from another address.
+
+**Acceptance**
+
+- Given a machine made ready on a platform that gives it an address, then the address serves a terminal joined to the lead's session, and `up` names the address.
+- Given a browser that opens it with no session open, then the lead's session starts, continuing its last conversation, with the watcher.
+- Given a second browser, then it joins the same session.
+- Given a machine whose address is open to anyone, then no terminal is served, one served before is taken away, and `up` says how to make the address private.
+- Given `"terminal": false`, then `up` serves none and takes away one served before.
+- Given a platform that can't serve it, then `up` says why in the platform's words, and the project still goes up.
+- Given `cloud join` run on the computer, then it's refused, naming `cloud open`.
 
 ## What was tried on a Sprite
 
@@ -277,6 +316,18 @@ Tried on 22 November 2026, on the spike's Sprite.
 - A server that drives an app on the person's computer (a design tool's desktop app, a browser) can't be reached from a Sprite.
 - Blender installed with `apt` in 82 seconds, and rendered its default scene with Cycles on the CPU at 960 by 540 and 64 samples in 3 seconds, from a script. A Sprite has no GPU. Driving a running Blender through an add-on's server, as its MCP server does on a computer, wasn't tried.
 
+## The terminal in a browser, on a real Sprite
+
+Tried on 22 November 2026, first by hand on the spike's Sprite from the person's phone, then through `cloud up` on the real project's machine.
+
+- Fly's sign-in stood in front of the address. Signed in to a Fly account outside the organisation, the person was refused by name; signed in to the right one, the terminal opened.
+- ttyd's live connection passed through the Sprite's address with its check of where the page came from switched on.
+- Claude Code in ttyd's page as it comes wasn't usable on a phone: the type was too small, the keyboard has no Esc, Tab or arrows, and the keyboard covered the prompt. With the key row, a larger type and the terminal sized to what's visible, the person worked in it.
+- Coming back to the page after a while, the terminal asked for Enter to connect again and took it only from the phone's keyboard, not the key row. The page now sends that key itself on return, and the row's Enter does the same. That fix hasn't been seen on a phone yet.
+- On the project's machine `cloud up` installed ttyd 1.7.7 from Ubuntu's archive (651 kB), read its page (730 kB) from a ttyd on the spare port in about a third of a second on the spike, and made the service. A browser on the computer, through the platform's port forwarding, was joined to the lead's session that had been running there for seven hours, with the key row under it.
+- A Sprite's service was given `PATH`, `HOME` and `LANG` as a command there is, and not the Node option the adapter sets, which is why the script sets it.
+- That session had been waiting at a question to the person for those seven hours, with the machine awake: a question is a tool call that stays open, and an open tool call counts as work (CLOUD-7).
+
 ## Open questions
 
 | Question                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          | Owner  | Blocks                                   |
@@ -289,4 +340,6 @@ Tried on 22 November 2026, on the spike's Sprite.
 | A project whose checks need Docker (a local Postgres, Supabase's local stack). Docker installs on a Sprite by Fly's own instructions in half a minute, and containers, their ports and their networks work. Running a command inside a container whose process changed user fails, because root on a Sprite has no `CAP_SYS_PTRACE`, and that includes the Postgres image's health check, which stays unhealthy. So a stack that waits on health checks won't come up as it is. Postgres installed on the machine itself, a hosted database for development, or a second adapter? | Warren | those projects                           |
 | Ignored content made on the machine (generated images, a rebuilt index, an edited `.env.local`) isn't in git, so `cloud down` doesn't see it and removing the machine loses it. `carry` copies one way. Should `down` name carried paths that changed there, and bring them back?                                                                                                                                                                                                                                                                                                 | Warren | projects that generate content there     |
 | A project's toolchain on the platform's image. Trial clones of two real projects found: packages installed with `npm install -g` land off the PATH (pnpm works through `corepack enable --install-directory ~/.local/bin`); Python goes through pyenv, and a project pinned to a version that isn't installed hung there; npm blocks packages' install scripts. A trial clone that runs the project's checks before it moves would find these first. Should `cloud up` offer one?                                                                                                 | Warren | none                                     |
+| Who Fly lets through a private address: every member of the organisation, or its admins only. Its own help says members, the platform has a setting for either (`--private-access`), and which a new Sprite has wasn't read. Whether a member who isn't an admin can also run commands on the Sprite wasn't checked either                                                                                                                                                                                                                                                        | Warren | a team sharing one Fly organisation      |
+| A question to the person holds its tool call open, so the session never counts as idle and the machine stays awake until it's answered: seven hours on the real project. Should a session waiting only on the person be ended like an idle one, since the next open continues the conversation, or does the question need to survive as it is?                                                                                                                                                                                                                                    | Warren | what an unanswered question costs        |
 | Claude Code's Remote Control as a second way to reach the lead's session, from a phone or the web. A browser sign-in can join it; a `setup-token` one can't                                                                                                                                                                                                                                                                                                                                                                                                                       | Warren | none                                     |

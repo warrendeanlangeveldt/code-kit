@@ -4693,6 +4693,34 @@ test('CLOUD-1 the cloud section names one platform, and its settings are checked
   assert.equal(cloudConfig.cloudOf({}), null);
 });
 
+test('CLOUD-12 the terminal in a browser is on unless the config turns it off, and its page keeps the terminal’s own', () => {
+  const { cloudOf, cloudProblems } = cloudConfig;
+  assert.equal(cloudOf({ cloud: { sprites: {} } }).terminal, true);
+  assert.equal(cloudOf({ cloud: { sprites: {}, terminal: false } }).terminal, false);
+  assert.deepEqual(cloudProblems({ cloud: { sprites: {}, terminal: false } }), []);
+  assert.match(
+    cloudProblems({ cloud: { sprites: {}, terminal: 'off' } })[0],
+    /"cloud.terminal" must be true or false/,
+  );
+  const { terminalPage } = cloudLib;
+  // code-kit's part goes at the end of the body: after the terminal's own script, which a `</body>`
+  // written inside that script is part of.
+  assert.equal(
+    terminalPage('<html><body><script>a("</body>")</script></body></html>', '<div id="k"></div>\n'),
+    '<html><body><script>a("</body>")</script><div id="k"></div>\n</body></html>',
+  );
+  // What isn't a page (the terminal didn't answer) gives none, so nothing half-made is served.
+  assert.equal(terminalPage('', '<div></div>'), null);
+  assert.equal(terminalPage('curl: (7) Failed to connect', '<div></div>'), null);
+  // The part itself: the keys, and the session joined again when the page is looked at again.
+  const part = readFileSync(
+    join(dirname(fileURLToPath(import.meta.url)), '../templates/cloud-terminal.html'),
+    'utf8',
+  );
+  for (const has of ['id="ck-keys"', "['Esc'", "['^C'", 'visualViewport', 'visibilitychange'])
+    assert.ok(part.includes(has), has);
+});
+
 test('CLOUD-11 a machine is named from the project and its remote, whichever form the address takes', () => {
   const { machineName, httpsRemote, hostOf } = cloudLib;
   assert.equal(httpsRemote('git@github.com:acme/app.git'), 'https://github.com/acme/app.git');
