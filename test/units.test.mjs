@@ -4763,6 +4763,22 @@ test('CLOUD-7 a session is ended only when nothing runs and nothing has moved fo
   // A watcher that started ten minutes ago counts from then, whatever the record says.
   assert.equal(verdict({ since: ago(10) }).end, false);
   assert.equal(verdict({ last: null, since: ago(31) }).end, true);
+  // A question to the person is open until they answer, and it's no work: it waits idleMinutes at most.
+  assert.equal(verdict({ asking: 1, last: ago(29) }).end, false);
+  assert.equal(
+    verdict({ asking: 1, last: ago(29) }).why,
+    'its question has waited 29 of 30 minutes for an answer',
+  );
+  assert.deepEqual(verdict({ asking: 1 }), {
+    end: true,
+    idleMinutes: 45,
+    asked: true,
+    why: 'was ended after its question waited 30 minutes for an answer',
+  });
+  assert.equal(verdict({}).asked, false);
+  // Work beside the question keeps the session.
+  assert.equal(verdict({ asking: 1, open: 1 }).end, false);
+  assert.equal(verdict({ asking: 1, running: 1 }).end, false);
 });
 
 test('CLOUD-8 awake time is added up from an uptime that stops while the machine sleeps', () => {

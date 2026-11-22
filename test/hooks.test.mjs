@@ -15528,6 +15528,89 @@ sys.exit(os.WEXITSTATUS(status))
       ),
       0,
     );
+    // A question to the person is a tool call that stays open until they answer, and it's no work.
+    const asks = { tool_name: 'AskUserQuestion', tool_input: { questions: [] } };
+    act('start', 'toolu_ask', asks);
+    idle(3);
+    const asking = there('cloud', 'watch', '--once');
+    const seenAsking = cCli(['cloud']);
+    expect(
+      'CLOUD-7 a question waiting on the person is no tool call running, and the computer sees it wait',
+      truth(
+        here32().activity?.open === 0 &&
+          here32().activity?.asking === 1 &&
+          asking.stdout.includes('its question has waited 3 of 5 minutes for an answer') &&
+          seenAsking.stdout.includes("The lead's session waits on your answer to a question") &&
+          seenAsking.stdout.includes('Unanswered for 5 minutes') &&
+          existsSync(join(mHome, '.tmux/code-kit-lead')),
+        `${both(asking)}\n${both(seenAsking)}`,
+      ),
+      0,
+    );
+    act('start', 'toolu_beside', lane9);
+    idle(6);
+    const besideIt = there('cloud', 'watch', '--once');
+    expect(
+      'CLOUD-7 a lane agent working beside the question keeps the session, however long the question waits',
+      truth(
+        besideIt.stdout.includes('1 tool call running') &&
+          existsSync(join(mHome, '.tmux/code-kit-lead')),
+        both(besideIt),
+      ),
+      0,
+    );
+    act('end', 'toolu_beside', lane9);
+    act('end', 'toolu_ask', asks);
+    const answered = here32().activity?.asking;
+    act('start', 'toolu_ask_2', { tool_name: 'ExitPlanMode', tool_input: {} });
+    idle(6);
+    const unanswered = there('cloud', 'watch', '--once');
+    expect(
+      'CLOUD-7 an answer ends the wait, and a question or a plan unanswered for idleMinutes ends the session, so the machine sleeps',
+      truth(
+        answered === 0 &&
+          unanswered.stdout.includes(
+            'was ended after its question waited 5 minutes for an answer',
+          ) &&
+          !existsSync(join(mHome, '.tmux/code-kit-lead')) &&
+          holds().at(-1).includes('-X DELETE http://sprite/v1/tasks/code-kit') &&
+          here32().ended?.asked === true,
+        both(unanswered),
+      ),
+      0,
+    );
+    const askedAgain = cCli(['cloud', 'open']);
+    expect(
+      'CLOUD-7 the next open continues the conversation and has the lead ask its question again',
+      truth(
+        askedAgain.stdout.includes(
+          'The last session there was ended after its question waited 5 minutes for an answer. Started a new one, which continues its conversation and asks its question again.',
+        ) &&
+          leads()
+            .at(-1)
+            .includes(
+              "--continue 'code-kit ended this session while a question of yours waited for an answer",
+            ) &&
+          here32().activity?.asking === 0,
+        `${both(askedAgain)}\n${leads().join('\n')}`,
+      ),
+      0,
+    );
+    act('start', 'toolu_ask_3', asks);
+    const stoppedAsking = cCli(['cloud', 'stop']);
+    const afterStop = cCli(['cloud', 'open']);
+    expect(
+      'CLOUD-7 a session stopped from the computer at a question asks it again when next opened',
+      truth(
+        stoppedAsking.status === 0 &&
+          afterStop.stdout.includes(
+            'The last session there was stopped from your computer. Started a new one, which continues its conversation and asks its question again.',
+          ) &&
+          leads().at(-1).includes("--continue 'code-kit ended this session"),
+        `${both(stoppedAsking)}\n${both(afterStop)}\n${leads().join('\n')}`,
+      ),
+      0,
+    );
     claimLane(clone, { lane: 'web', story: 'ST-4', session: 'mmmm1111-s' });
     const midStory = cCli(['cloud', 'stop']);
     expect(

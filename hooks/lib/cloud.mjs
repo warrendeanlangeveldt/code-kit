@@ -838,6 +838,10 @@ export function cloudJoin(root, io) {
   return 0;
 }
 
+/** What a session is started with when the one before was ended at a question (CLOUD-7). */
+const ASK_AGAIN =
+  'code-kit ended this session while a question of yours waited for an answer, so the machine could sleep. The session is open again: ask that question again.';
+
 /**
  * The lead's session on the machine, started if there's none, and the watcher beside it. `run` runs a
  * command there: through the adapter from the computer, or as it is on the machine itself. Answers
@@ -859,15 +863,17 @@ function startLead({ run, name, clone, io }) {
       run(
         `ls "$HOME/.claude/projects/$(cd "${clone}" && pwd -P | sed 's/[^A-Za-z0-9]/-/g')"/*.jsonl >/dev/null 2>&1`,
       ).status === 0;
+    // A question the last session was ended at went with it: the new one is told to ask it again.
+    const again = before && ended?.asked === true;
     const started = run(
-      `rm -f "${clone}/${ENDED_FILE}"; rm -rf "${clone}/${ACTS_DIR}"; mkdir -p "${clone}/${CLOUD_DIR}" && touch "${clone}/${LAST_FILE}" && tmux new-session -d -s ${LEAD_SESSION} -c "${clone}" ${quoted(`claude --permission-mode bypassPermissions${before ? ' --continue' : ''}`)}`,
+      `rm -f "${clone}/${ENDED_FILE}"; rm -rf "${clone}/${ACTS_DIR}"; mkdir -p "${clone}/${CLOUD_DIR}" && touch "${clone}/${LAST_FILE}" && tmux new-session -d -s ${LEAD_SESSION} -c "${clone}" ${quoted(`claude --permission-mode bypassPermissions${before ? ' --continue' : ''}${again ? ` ${quoted(ASK_AGAIN)}` : ''}`)}`,
     );
     if (started.status !== 0)
       stop(`The lead's session couldn't be started on ${name}: ${started.output}`);
     first = !before;
     io.say(
       ended
-        ? `The last session there ${ended.why}. Started a new one, which continues its conversation.`
+        ? `The last session there ${ended.why}. Started a new one, which continues its conversation${again ? ' and asks its question again' : ''}.`
         : `Started the lead's session on ${name}${before ? ', continuing its last conversation' : ''}.`,
     );
   } else io.say(`The lead's session is open on ${name}; joining it.`);
@@ -904,9 +910,15 @@ export function cloudStop(root, config, io) {
       );
     if (!yes) stop('Left running.');
   }
+  // A question it was stopped at goes with it, so the next session asks it again.
+  const ended = {
+    at: new Date().toISOString(),
+    why: 'was stopped from your computer',
+    ...(state.activity?.asking ? { asked: true } : {}),
+  };
   adapter.run(
     name,
-    `mkdir -p "${clone}/${CLOUD_DIR}" && printf %s ${quoted(JSON.stringify({ at: new Date().toISOString(), why: 'was stopped from your computer' }))} > "${clone}/${ENDED_FILE}"; tmux kill-session -t ${WATCH_SESSION} 2>/dev/null; ${END_SESSIONS}`,
+    `mkdir -p "${clone}/${CLOUD_DIR}" && printf %s ${quoted(JSON.stringify(ended))} > "${clone}/${ENDED_FILE}"; tmux kill-session -t ${WATCH_SESSION} 2>/dev/null; ${END_SESSIONS}`,
     { timeoutSeconds: 60 },
   );
   io.say(
@@ -1029,8 +1041,16 @@ export function cloudAttention(status, now = Date.now()) {
 const actOwner = (session, agent) =>
   `${session ?? 'session'}-${agent ?? 'main'}`.replace(/[^\w-]+/g, '_');
 
-/** A tool call starting or ending in the project on its machine, for the watcher (CLOUD-7). */
-export function noteAct(root, id, mode, { session = null, agent = null } = {}) {
+/** Claude Code's tool calls that wait on the person: a question to them, and a plan for them to approve. */
+const ASKS = ['AskUserQuestion', 'ExitPlanMode'];
+export const asksPerson = (tool) => ASKS.includes(tool);
+const ASKING = '.asks';
+
+/**
+ * A tool call starting or ending in the project on its machine, for the watcher (CLOUD-7). One that
+ * `asks` the person is noted apart: it's open until they answer, and nothing works while it is.
+ */
+export function noteAct(root, id, mode, { session = null, agent = null, asks = false } = {}) {
   const main = mainOf(root);
   if (!isMachine(main)) return;
   try {
@@ -1040,8 +1060,8 @@ export function noteAct(root, id, mode, { session = null, agent = null } = {}) {
       ACTS_DIR,
       `${actOwner(session, agent)}.${createHash('sha256').update(String(id)).digest('hex').slice(0, 24)}`,
     );
-    if (mode === 'start') writeFileSync(file, '');
-    else rmSync(file, { force: true });
+    if (mode === 'start') writeFileSync(`${file}${asks ? ASKING : ''}`, '');
+    else for (const f of [file, `${file}${ASKING}`]) rmSync(f, { force: true });
     writeFileSync(join(main, LAST_FILE), '');
   } catch {
     // a read-only checkout: the watcher goes by what it can see
@@ -1074,7 +1094,10 @@ export function notePrompt(root) {
   }
 }
 
-/** When anything last moved in the project, and the tool calls still running: { last, open }. */
+/**
+ * When anything last moved in the project, the tool calls still running, and those that wait on the
+ * person's answer: { last, open, asking }.
+ */
 export function activityOf(root, now = Date.now()) {
   const main = mainOf(root);
   let last = null;
@@ -1084,27 +1107,47 @@ export function activityOf(root, now = Date.now()) {
     last = null;
   }
   let open = 0;
+  let asking = 0;
   try {
-    for (const f of readdirSync(join(main, ACTS_DIR)))
-      if (now - statSync(join(main, ACTS_DIR, f)).mtimeMs < ACT_STALE_MS) open++;
+    for (const f of readdirSync(join(main, ACTS_DIR))) {
+      if (f.endsWith(ASKING)) asking++;
+      else if (now - statSync(join(main, ACTS_DIR, f)).mtimeMs < ACT_STALE_MS) open++;
+    }
   } catch {
     open = 0;
+    asking = 0;
   }
-  return { last, open };
+  return { last, open, asking };
 }
 
 /**
  * CLOUD-7: whether the lead's session should be ended now: nothing running, nothing merging, and no tool
- * call or prompt for `idleMinutes`. `{ end, idleMinutes, why }`.
+ * call or prompt for `idleMinutes`. A question to the person is a tool call too, open until they answer,
+ * and it's no work: one that has waited `idleMinutes` ends the session like any other quiet, and `asked`
+ * says so, for the next session to ask it again. `{ end, idleMinutes, asked, why }`.
  */
-export function idleVerdict({ idleMinutes, last, open, running, merging, since, now }) {
+export function idleVerdict({ idleMinutes, last, open, asking = 0, running, merging, since, now }) {
   const quiet = Math.floor((now - Math.max(last ?? 0, since)) / 60_000);
   if (open > 0) return { end: false, idleMinutes: 0, why: `${plural(open, 'tool call')} running` };
   if (running > 0) return { end: false, idleMinutes: 0, why: `${plural(running, 'lane')} working` };
   if (merging) return { end: false, idleMinutes: 0, why: 'the queue is merging' };
-  return quiet >= idleMinutes
-    ? { end: true, idleMinutes: quiet, why: `was ended after ${idleMinutes} idle minutes` }
-    : { end: false, idleMinutes: quiet, why: `${quiet} of ${idleMinutes} idle minutes` };
+  const asked = asking > 0;
+  if (quiet < idleMinutes)
+    return {
+      end: false,
+      idleMinutes: quiet,
+      why: asked
+        ? `its question has waited ${quiet} of ${idleMinutes} minutes for an answer`
+        : `${quiet} of ${idleMinutes} idle minutes`,
+    };
+  return {
+    end: true,
+    idleMinutes: quiet,
+    asked,
+    why: asked
+      ? `was ended after its question waited ${idleMinutes} minutes for an answer`
+      : `was ended after ${idleMinutes} idle minutes`,
+  };
 }
 
 /** The seconds the machine has been awake since it started, which stop counting while it sleeps. */
@@ -1215,6 +1258,7 @@ export function hereState(root, config, now = Date.now()) {
     activity: {
       last: activity.last ? new Date(activity.last).toISOString() : null,
       open: activity.open,
+      asking: activity.asking,
     },
     ended: readJson(join(main, ENDED_FILE)),
     awake: countAwake(main, now),
@@ -1232,8 +1276,9 @@ export const HOLD_SECONDS = WATCH_SECONDS * 3;
  * CLOUD-7: the watcher, run on the machine beside the lead's session. While the session is open it asks
  * the platform, through the adapter, to keep the machine running, and asks again each minute: a machine
  * nobody is connected to is otherwise paused within the minute, with the work on it. Each minute it also
- * counts the awake time and, when nothing has moved for `idleMinutes`, ends the lead's session, lets go
- * of the hold and stops, so the machine sleeps. A watcher that dies leaves a hold that runs out by itself.
+ * counts the awake time and, when nothing has moved for `idleMinutes`, a question left unanswered that
+ * long included, ends the lead's session, lets go of the hold and stops, so the machine sleeps. A watcher
+ * that dies leaves a hold that runs out by itself.
  */
 export async function watch(root, config, { once = false } = {}) {
   const main = mainOf(root);
@@ -1267,7 +1312,11 @@ export async function watch(root, config, { once = false } = {}) {
       return { ended: false, why: 'the session is gone' };
     }
     if (verdict.end) {
-      writeJson(join(main, ENDED_FILE), { at: new Date(now).toISOString(), why: verdict.why });
+      writeJson(join(main, ENDED_FILE), {
+        at: new Date(now).toISOString(),
+        why: verdict.why,
+        ...(verdict.asked ? { asked: true } : {}),
+      });
       spawnSync('bash', ['-c', END_SESSIONS], { stdio: 'ignore' });
       maySleep();
       return { ended: true, why: verdict.why };

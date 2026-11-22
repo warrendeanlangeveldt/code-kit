@@ -6,7 +6,7 @@
 import { existsSync, realpathSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative } from 'node:path';
-import { noteAct } from './lib/cloud.mjs';
+import { asksPerson, noteAct } from './lib/cloud.mjs';
 import { apiStopOf, start } from './lib/hook.mjs';
 import { actorFor, currentBranch, sessionRoot } from './lib/rules.mjs';
 import {
@@ -56,14 +56,14 @@ try {
     // not a git repository yet
   }
   // CLOUD-7: on the project's machine, each tool call running is what keeps its session from being ended
-  // as idle.
+  // as idle. A question to the person is noted apart: it waits, and nothing runs.
   if (['start', 'end', 'fail'].includes(mode))
     noteAct(
       root,
       input.tool_use_id ??
         `${input.session_id}:${input.agent_id}:${input.tool_name}:${JSON.stringify(input.tool_input)}`,
       mode === 'start' ? 'start' : 'end',
-      { session: input.session_id, agent: input.agent_id },
+      { session: input.session_id, agent: input.agent_id, asks: asksPerson(input.tool_name) },
     );
   const who = actor.kind === 'lane' ? actor.lane : actor.kind === 'lead' ? 'lead' : actor.label;
   const ctx = { session: input.session_id ?? null, agent: input.agent_id ?? null, actor: who };

@@ -4324,6 +4324,10 @@ async function cloudCommand() {
         ? `  Open on it: ${[...ours, ...theirs].join('; ')}. It stays awake, and bills, while anything is open.`
         : "  Nothing is open on it: it sleeps, and bills its disk only. Open the lead's session: code-kit cloud open",
     );
+    if (s.activity?.asking && ours.length)
+      out(
+        `  The lead's session waits on your answer to a question. Unanswered for ${cloudOf(config)?.idleMinutes ?? 30} minutes, it's ended so the machine sleeps, and the next open asks it again.`,
+      );
     if (s.ended && !ours.length)
       out(
         `  The last session there ${s.ended.why} (${String(s.ended.at).slice(0, 16).replace('T', ' ')} UTC).`,
