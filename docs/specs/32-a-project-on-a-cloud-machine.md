@@ -272,6 +272,8 @@ Tried on 22 November 2026, on the spike's Sprite.
 
 - The connectors on the person's Claude account come with the Claude sign-in: the one that account has was connected there with nothing done. Servers set up in Claude Code on the computer alone aren't there.
 - A hosted server is reachable. A design tool's remote server, added with `claude mcp add --transport http`, read "Needs authentication". `claude mcp login <name> --no-browser` printed the tool's authorization address and waits for the redirect address to be pasted back, in a real terminal. That sign-in is the person's, as the Claude one is, and hasn't been completed there yet.
+- That sign-in was completed later the same day on a real project's machine, in the person's own terminal, and the server then read "Connected" there.
+- The same design tool added as a connector on the person's Claude account, from a phone, read "Connected" in every new Claude Code process on the computer with nothing done there, as the account's other connectors do on both Sprites. A session already running on the computer didn't get its tools; whether one on a machine does wasn't checked. For a hosted tool this is the route with no sign-in per machine: the person connects it once on their account.
 - A server that drives an app on the person's computer (a design tool's desktop app, a browser) can't be reached from a Sprite.
 - Blender installed with `apt` in 82 seconds, and rendered its default scene with Cycles on the CPU at 960 by 540 and 64 samples in 3 seconds, from a script. A Sprite has no GPU. Driving a running Blender through an add-on's server, as its MCP server does on a computer, wasn't tried.
 
