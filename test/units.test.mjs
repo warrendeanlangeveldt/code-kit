@@ -4781,6 +4781,26 @@ test('CLOUD-7 a session is ended only when nothing runs and nothing has moved fo
   assert.equal(verdict({ asking: 1, running: 1 }).end, false);
 });
 
+test('CLOUD-15 the machine workflow is the same text for a platform and version, with the platform’s steps in it', async () => {
+  const { default: sprites } = await import('../hooks/lib/adapters/sprites.mjs');
+  const text = cloudLib.machineWorkflow(sprites);
+  assert.equal(text, cloudLib.machineWorkflow(sprites));
+  assert.ok(!/(?<!\$)\{\{\w+\}\}/.test(text), 'a placeholder was left in');
+  assert.match(text, /^on:\n {2}workflow_dispatch:/m);
+  for (const act of ['up', 'start', 'stop', 'down'])
+    assert.ok(text.includes(`inputs.act == '${act}'`));
+  // The platform's steps come before code-kit's, at a step's indent, with the secret read from the repository.
+  assert.match(
+    text,
+    /\n {6}- name: Sign in to Sprites\n {8}env:\n {10}SPRITES_TOKEN: \$\{\{ secrets\.SPRITES_TOKEN \}\}\n {8}run: \|\n {10}if test -z/,
+  );
+  assert.ok(text.indexOf('Sign in to Sprites') < text.indexOf('Make the machine'));
+  assert.ok(text.includes('persist-credentials: false'));
+  assert.ok(text.includes('contents: read'));
+  // An adapter with no workflow has none.
+  assert.equal(cloudLib.machineWorkflow({ key: 'x', label: 'X' }), null);
+});
+
 test('CLOUD-8 awake time is added up from an uptime that stops while the machine sleeps', () => {
   const dir = mkdtempSync(join(tmpdir(), 'code-kit-awake-'));
   try {

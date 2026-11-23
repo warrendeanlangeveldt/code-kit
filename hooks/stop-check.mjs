@@ -15,11 +15,12 @@ import { storyOfBranch } from './lib/teamfacts.mjs';
 import { releaseLane } from './lib/laneclaims.mjs';
 import { auditProblems, changedFiles } from './lane-audit.mjs';
 
-const { input, project, config, error } = start();
-
 // CLOUD-7: on the project's machine, a turn ending means none of this agent's tool calls is running,
-// whatever a refused one left noted.
-if (config) noteTurnEnd(project, { session: input.session_id, agent: input.agent_id });
+// whatever a refused one left noted. A machine made for a repository with no config yet notes it too.
+const { input, project, config, error } = start({
+  first: (input, project) =>
+    noteTurnEnd(project, { session: input.session_id, agent: input.agent_id }),
+});
 
 // A turn Claude's API ended (its usage limit, an overload) didn't finish its work: there's nothing to
 // check, a refusal would only prompt it into the same error, and a lane agent keeps its lane for the

@@ -21,8 +21,9 @@ const asked = String(input.prompt ?? '').match(/^\s*\/(?:code-kit:)?lead(?:\s+(\
 const session = input.session_id ?? null;
 const project = projectDir();
 const { config } = loadConfig(project);
-// CLOUD-7: on the project's machine, the person sending a prompt is the session in use.
-if (config) notePrompt(project);
+// CLOUD-7: on the project's machine, the person sending a prompt is the session in use, in a repository
+// with no config yet too.
+notePrompt(project);
 if (!asked || !session || !config) process.exit(0);
 
 const cli = fileURLToPath(new URL('../bin/code-kit.mjs', import.meta.url));

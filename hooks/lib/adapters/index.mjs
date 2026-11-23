@@ -57,6 +57,11 @@
 //   unserve   (name) => { ok }: that taken away
 //   install   (name, packages) => { ok }: packages the machine's image lacks, from the image's own source
 //
+// and, where a machine can be made with nobody at a computer (CLOUD-15):
+//
+//   workflow  { secret, steps: [{ name, run, env? }] }: what a workflow does before code-kit runs in
+//             it, the command installed and signed in with a token kept as the repository's secret
+//
 // The core only ever calls machineAdapterOf(); it never names a platform.
 import contextGraph from './context-graph.mjs';
 import hub from './hub/index.mjs';

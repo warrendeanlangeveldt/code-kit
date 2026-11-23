@@ -79,6 +79,32 @@ export default {
   key: 'sprites',
   label: 'Sprites',
   options: [],
+  /**
+   * What the machine workflow does before code-kit runs in it (CLOUD-15): the command installed, and
+   * signed in with a token the repository keeps as a secret. The workflow hands the secret to the
+   * command, and code-kit never reads it.
+   */
+  workflow: {
+    secret: 'SPRITES_TOKEN',
+    steps: [
+      {
+        name: 'Install the sprite command',
+        run: 'curl -fsSL https://sprites.dev/install.sh | sh\necho "$HOME/.local/bin" >> "$GITHUB_PATH"',
+      },
+      {
+        name: 'Sign in to Sprites',
+        env: { SPRITES_TOKEN: '${{ secrets.SPRITES_TOKEN }}' },
+        run: [
+          'if test -z "$SPRITES_TOKEN"; then',
+          '  echo "::error::This repository has no SPRITES_TOKEN secret. Make a token for your Fly organisation and add it under Settings, Secrets and variables, Actions."',
+          '  exit 1',
+          'fi',
+          'sprite auth setup --token "$SPRITES_TOKEN"',
+          'sprite list > /dev/null',
+        ].join('\n'),
+      },
+    ],
+  },
   /** What the platform needs on the computer (CLOUD-2): its command line, and a sign-in to it. */
   needs() {
     const installed = command() !== null;

@@ -362,7 +362,15 @@ export function machineState(adapter, name, clone) {
  * CLOUD-3 step 1: what the adapter needs on the computer, asked for one at a time. `io.ask` answers
  * true, false, or null where there's no terminal to ask in; nothing is installed without a yes.
  */
-function ensureNeeds(adapter, io) {
+function ensureNeeds(adapter, io, { unattended = false } = {}) {
+  if (unattended) {
+    const missing = adapter.needs().filter((n) => !n.have);
+    if (missing.length)
+      stop(
+        `${adapter.label} needs ${missing.map((n) => n.what).join(' and ')} here, and nobody is here to install it or sign in. The machine workflow does both before this runs, with the repository's own secret: \`code-kit cloud workflow\` prints the file.`,
+      );
+    return;
+  }
   const byHand = (missing) =>
     `Run ${missing.length === 1 ? 'it' : 'them'} yourself, then run this again:\n${missing.map((n) => `  ${n.command}\n    (${n.what}, from ${n.from})`).join('\n')}`;
   for (let asked = 0; ; asked++) {
@@ -398,17 +406,66 @@ const pluginsOf = (text) => {
 };
 
 /**
- * CLOUD-3: makes the project's machine ready, doing only what's left. `io`: say(line), ask(question) →
+ * CLOUD-13: the machine's clone made from this checkout's own commits, sent as one bundle, with the
+ * remote's address set on it. For a machine nobody has signed in to GitHub yet, which can't clone: once
+ * its owner signs in there, it fetches the rest and pushes as them.
+ */
+function seedClone({ adapter, name, run, main, clone, address, io }) {
+  if (git(main, 'rev-parse', '--is-shallow-repository') === 'true')
+    stop(
+      "This checkout holds only its latest commit, and the machine's clone is made from it. Check out the whole history (in a workflow, `fetch-depth: 0` on actions/checkout) and run this again.",
+    );
+  const branch = git(main, 'branch', '--show-current');
+  if (!branch)
+    stop(
+      "This checkout is on no branch, and the machine's clone starts on the one it's on. Check out the default branch and run this again.",
+    );
+  io.say(
+    `Copying ${branch} to ${name}, which fetches the rest once its owner has signed in to GitHub.`,
+  );
+  const held = mkdtempSync(join(tmpdir(), 'code-kit-seed-'));
+  try {
+    const bundle = join(held, 'seed.bundle');
+    const packed = spawnSync('git', ['-C', main, 'bundle', 'create', '-q', bundle, branch], {
+      encoding: 'utf8',
+    });
+    if (packed.status !== 0)
+      stop(
+        `${branch} couldn't be packed to copy: ${`${packed.stderr ?? ''}`.trim().split('\n')[0] || packed.error?.message}`,
+      );
+    // A file is put at a full path: the platform expands no ~ or $HOME in it.
+    const to = run(`mkdir -p "$(dirname "${clone}")" && printf %s "${clone}.bundle"`).stdout;
+    const sent = to ? adapter.put(name, bundle, to) : { ok: false, why: 'its folder' };
+    if (!sent.ok) stop(`${branch} couldn't be copied to ${name}: ${sent.why}. Run this again.`);
+    const cloned = run(
+      `git clone -q -b ${quoted(branch)} "${to}" "${clone}" && git -C "${clone}" remote set-url origin ${quoted(address)}; S=$?; rm -f "${to}"; exit $S`,
+      { timeoutSeconds: 1800 },
+    );
+    if (cloned.status !== 0)
+      stop(`The copy reached ${name} and couldn't be made a clone there: ${cloned.output}`);
+  } finally {
+    rmSync(held, { recursive: true, force: true });
+  }
+}
+
+/**
+ * CLOUD-3: makes the project's machine ready, doing only what's left. With `unattended` (CLOUD-13) nobody
+ * is asked anything: what only the machine's owner can give is left for its terminal, and `stage` stops
+ * after the machine is made (`machine`) or the clone is there (`clone`). `io`: say(line), ask(question) →
  * true | false | null (no terminal), local(command) → exit status, terminal (whether the person is at
  * one). Throws Stop at each thing only the person can do, saying what.
  */
-export function cloudUp(root, config, io) {
+export function cloudUp(root, config, io, { unattended = false, stage = null } = {}) {
   const main = mainOf(root);
   const cloud = cloudFor(config);
   const { adapter } = cloud;
   const tracked = carryProblem(main, cloud.carry);
   if (tracked) stop(tracked);
-  ensureNeeds(adapter, io);
+  if (unattended && !cloud.terminal)
+    stop(
+      'With nobody at a computer, the machine\'s terminal in a browser is the only way in to it, and "cloud.terminal" is off in the config. Take that setting out, or make the machine from your own computer: code-kit cloud up',
+    );
+  ensureNeeds(adapter, io, { unattended });
   const remote = remoteOf(main);
   if (!remote)
     stop(
@@ -428,6 +485,7 @@ export function cloudUp(root, config, io) {
   const made = adapter.ready(name);
   if (!made.ok) stop(made.why);
   io.say(made.made ? `Made ${name} on ${adapter.label}.` : `${name} is there on ${adapter.label}.`);
+  if (stage === 'machine') return;
   const run = (cmd, o) => adapter.run(name, cmd, o);
 
   if (run('test -n "${ANTHROPIC_API_KEY:-}"').status === 0)
@@ -436,13 +494,18 @@ export function cloudUp(root, config, io) {
     );
 
   // The sign-ins are the person's. code-kit starts GitHub's and reads neither credential.
+  // With nobody at a computer (CLOUD-13) neither is asked for: the machine's owner gives both at its
+  // terminal, on their first visit (CLOUD-14).
   const host = hostOf(remote);
+  let pushesAs = null;
   if (host === 'github.com') {
     const login = () => {
       const r = run('gh api user -q .login');
       return r.status === 0 ? r.stdout.trim() : null;
     };
-    if (!login()) {
+    if (!login() && unattended)
+      io.say(`GitHub: ${name} isn't signed in yet. Its owner signs in at its terminal.`);
+    else if (!login()) {
       if (io.ask(`${name} isn't signed in to GitHub. Start GitHub's device sign-in there now?`)) {
         io.say(
           'GitHub shows a one-time code below. Enter it at https://github.com/login/device, signed in as the account this project is pushed as.',
@@ -458,21 +521,27 @@ export function cloudUp(root, config, io) {
         );
     }
     const there = login();
-    const mine = spawnSync('gh', ['api', 'user', '-q', '.login'], { encoding: 'utf8' });
-    const here = mine.status === 0 ? mine.stdout.trim() : null;
-    if (here && there !== here)
+    pushesAs = there;
+    // A workflow's own sign-in to GitHub is no person's, so there's nobody's to compare with.
+    const mine = unattended
+      ? null
+      : spawnSync('gh', ['api', 'user', '-q', '.login'], { encoding: 'utf8' });
+    const here = mine?.status === 0 ? mine.stdout.trim() : null;
+    if (there && here && there !== here)
       stop(
         `${name} is signed in to GitHub as ${there}, and this computer as ${here}. Work pushed from the machine would be ${there}'s. Sign the machine in as ${here} (code-kit cloud console, then gh auth logout and gh auth login), or switch this computer's gh to ${there}, and run this again.`,
       );
-    io.say(`GitHub: signed in there as ${there}.`);
-    // git there asks GitHub's own command line for the credential. A device sign-in started with no
-    // terminal signs that command line in and leaves git as it was, so a clone would stop to ask for
-    // a username.
-    const wired = run('gh auth setup-git --hostname github.com');
-    if (wired.status !== 0)
-      stop(
-        `git on ${name} couldn't be set to use the GitHub sign-in there: ${wired.output.split('\n')[0] || `exit ${wired.status}`}. Run \`gh auth setup-git\` there yourself (code-kit cloud console), then run this again.`,
-      );
+    if (there) {
+      io.say(`GitHub: signed in there as ${there}.`);
+      // git there asks GitHub's own command line for the credential. A device sign-in started with no
+      // terminal signs that command line in and leaves git as it was, so a clone would stop to ask for
+      // a username.
+      const wired = run('gh auth setup-git --hostname github.com');
+      if (wired.status !== 0)
+        stop(
+          `git on ${name} couldn't be set to use the GitHub sign-in there: ${wired.output.split('\n')[0] || `exit ${wired.status}`}. Run \`gh auth setup-git\` there yourself (code-kit cloud console), then run this again.`,
+        );
+    }
   } else if (host) {
     io.say(
       `The remote is on ${host}: git on the machine needs a credential for it, which is yours to set up there (code-kit cloud console).`,
@@ -486,7 +555,10 @@ export function cloudUp(root, config, io) {
       return false;
     }
   };
-  if (!claudeIn()) {
+  const claudeWaits = unattended && !claudeIn();
+  if (claudeWaits)
+    io.say(`Claude: ${name} isn't signed in yet. Its owner signs in at its terminal.`);
+  else if (!claudeIn()) {
     // The person's own sign-in: at their terminal, up joins them to it and carries on in the same run.
     if (io.ask(`${name} isn't signed in to Claude. Sign in there now?`)) {
       io.say(
@@ -499,11 +571,16 @@ export function cloudUp(root, config, io) {
         `${name} isn't signed in to Claude. Run \`code-kit cloud signin\` in your own terminal: it joins your terminal to Claude Code's sign-in on the machine, and code-kit never sees it. Then run \`code-kit cloud up\` again.`,
       );
   }
-  io.say('Claude: signed in there.');
+  if (!claudeWaits) io.say('Claude: signed in there.');
 
-  // The clone, from the remote, with the computer's git name and email.
+  // The clone, from the remote, with the computer's git name and email. A machine that can't reach
+  // the remote yet, with nobody there to sign it in, gets this checkout's own commits (CLOUD-13).
   const address = httpsRemote(remote);
-  if (run(`test -d "${clone}/.git"`).status !== 0) {
+  if (run(`test -d "${clone}/.git"`).status === 0) {
+    // there already
+  } else if (unattended && !pushesAs) {
+    seedClone({ adapter, name, run, main, clone, address, io });
+  } else {
     io.say(`Cloning ${address} there.`);
     const cloned = run(
       `mkdir -p "$(dirname "${clone}")" && git clone ${quoted(address)} "${clone}"`,
@@ -514,7 +591,9 @@ export function cloudUp(root, config, io) {
         `The clone on ${name} failed (see above). Nothing else was done; put right what git said and run this again.`,
       );
   }
-  for (const key of ['user.name', 'user.email']) {
+  // A workflow's checkout is nobody's: the name and email on the machine's commits are its owner's,
+  // set when they sign in there (CLOUD-14).
+  for (const key of unattended ? [] : ['user.name', 'user.email']) {
     const value = git(main, 'config', key);
     if (value)
       run(
@@ -522,6 +601,7 @@ export function cloudUp(root, config, io) {
       );
     else io.say(`This computer's clone sets no git ${key}; commits made on the machine need one.`);
   }
+  if (stage === 'clone') return;
 
   // code-kit there, level with the computer's.
   const listThere = () => pluginsOf(run('claude plugin list --json').stdout);
@@ -582,7 +662,11 @@ export function cloudUp(root, config, io) {
   const notThere = [];
   for (const f of cloud.carry) {
     if (!existsSync(join(main, f))) {
-      io.say(`"cloud.carry" names ${f}, which isn't on this computer: nothing to copy.`);
+      io.say(
+        unattended
+          ? `"cloud.carry" names ${f}, which git ignores, so this checkout has none to copy. Put it on the machine yourself, at its terminal.`
+          : `"cloud.carry" names ${f}, which isn't on this computer: nothing to copy.`,
+      );
       continue;
     }
     if (isFolder(join(main, f))) {
@@ -610,6 +694,10 @@ export function cloudUp(root, config, io) {
     adapter.unserve(name);
     io.say(`"cloud.terminal" is off: ${name} no longer serves a terminal at its address.`);
   }
+  if (unattended && !terminal)
+    stop(
+      `${name} was made, and serves no terminal (see above), which with nobody at a computer is the only way in to it. Put that right and run this again.`,
+    );
 
   const since = marker?.since ?? new Date().toISOString();
   const facts = {
@@ -621,6 +709,19 @@ export function cloudUp(root, config, io) {
   run(
     `mkdir -p "${clone}/.claude/state" && printf %s ${quoted(JSON.stringify({ here: true, ...facts }))} > "${clone}/${CLOUD_FILE}"`,
   );
+  // A workflow's checkout is thrown away with its run: the machine's own marker is the one that lasts.
+  if (unattended) {
+    const waits = [host === 'github.com' && !pushesAs && 'GitHub', claudeWaits && 'Claude'].filter(
+      Boolean,
+    );
+    io.say(`\n${name} is ready${waits.length ? ', and waits for its owner' : ''}.`);
+    io.say(`Its terminal, in a browser: ${terminal.url}\n  ${terminal.gate}.`);
+    if (waits.length)
+      io.say(
+        `A first visit there asks them to sign in to ${waits.join(' and to ')}, typed on the machine itself. code-kit reads neither sign-in.`,
+      );
+    return;
+  }
   writeMarker(main, facts);
 
   // What this computer has for the project that the machine won't.
@@ -761,13 +862,31 @@ function projectPlugins(main) {
 }
 
 /** The machine a command works on: { cloud, adapter, name, clone }, stopping when the project isn't up. */
-function upMachine(root, config, { ready = true } = {}) {
+function upMachine(root, config, { ready = true, unattended = false } = {}) {
   const cloud = cloudFor(config);
   const marker = readMarker(root);
   if (marker?.here) stop('This is the project on its machine; run this from your computer.');
-  if (ready && !marker)
+  const found = {
+    cloud,
+    adapter: cloud.adapter,
+    name: nameFor(root),
+    clone: cloneOf(root),
+    marker,
+  };
+  if (!ready || marker) return found;
+  if (!unattended)
     stop("This project isn't on a cloud machine. Make its machine ready first: code-kit cloud up");
-  return { cloud, adapter: cloud.adapter, name: nameFor(root), clone: cloneOf(root), marker };
+  // A workflow's checkout holds no marker (CLOUD-13): the machine says whether the project is on it.
+  const there = cloud.adapter.state(found.name);
+  if (!there.reachable) stop(`${cloud.adapter.label} didn't answer: ${there.why}`);
+  if (
+    !there.exists ||
+    cloud.adapter.run(found.name, `test -f "${found.clone}/${CLOUD_FILE}"`).status !== 0
+  )
+    stop(
+      `This repository has no machine yet${there.exists ? `: ${found.name} is there, and the project isn't on it` : ''}. Make it first: code-kit cloud up --unattended`,
+    );
+  return found;
 }
 
 /** Ends the lead's session on the machine, letting Claude Code finish first, and the watcher. */
@@ -798,9 +917,33 @@ export function cloudConsole(root, config) {
  * CLOUD-4: the lead's session on the machine, started if there's none, with the watcher beside it, and
  * the person's terminal joined to it where there is one.
  */
-export function cloudOpen(root, config, io) {
-  const { adapter, name, clone } = upMachine(root, config);
+export function cloudOpen(root, config, io, { unattended = false } = {}) {
+  const { adapter, name, clone } = upMachine(root, config, { unattended });
   const run = (cmd, o) => adapter.run(name, cmd, o);
+  if (unattended) {
+    // Started by a workflow (CLOUD-13): the machine's own terminal is where its owner joins it, and
+    // where they sign in first if they haven't (CLOUD-14). No session is started that couldn't work.
+    const state = machineState(adapter, name, clone);
+    if (state.problem) stop(`${name} didn't report: ${state.problem}.`);
+    const at = state.terminal ? `its terminal: ${state.terminal}` : 'its terminal';
+    const waits = [
+      hostOf(remoteOf(mainOf(root)) ?? '') === 'github.com' && !state.github?.login && 'GitHub',
+      !state.claude?.signedIn && 'Claude',
+    ].filter(Boolean);
+    if (waits.length) {
+      io.say(
+        `No session was started: ${name} waits for its owner to sign in to ${waits.join(' and to ')}, which they do at ${at}`,
+      );
+      return 0;
+    }
+    const { first } = startLead({ run, name, clone, io });
+    io.say(
+      first
+        ? `It's the first session on ${name}, so Claude Code is waiting there at its first-run questions, which are its owner's to answer, at ${at}`
+        : `It's running there with nobody attached. Its owner joins it at ${at}`,
+    );
+    return 0;
+  }
   const { first } = startLead({ run, name, clone, io });
   if (!io.terminal) {
     io.say(
@@ -832,11 +975,140 @@ export function cloudJoin(root, io) {
       output: `${r.stdout ?? ''}${r.stderr ?? ''}`.trim(),
     };
   };
+  // A session already open is one its owner signed in for; with none, the sign-ins are looked at first.
+  if (run(`tmux has-session -t ${LEAD_SESSION}`).status !== 0)
+    if (!ownerSignIns(mainOf(root), marker.machine, io)) return 1;
   startLead({ run, name: marker.machine, clone: mainOf(root), io });
   // Closing the page leaves the session working; however this terminal's part in it ends, it opened.
   spawnSync('tmux', ['attach', '-t', LEAD_SESSION], { stdio: 'inherit' });
   return 0;
 }
+
+/**
+ * CLOUD-14, on the machine: the sign-ins only its owner can give, asked for in its terminal when one is
+ * missing: GitHub's by its device sign-in, then Claude's by Claude Code's own. Each is the tool's own
+ * exchange with the person, and code-kit reads neither credential. With GitHub's it sets the name and
+ * email the machine commits as, where none is set, and fetches what the machine's first copy left out.
+ * True when the machine is signed in to both.
+ */
+function ownerSignIns(main, name, io) {
+  const asked = (cmd, args) => spawnSync(cmd, args, { cwd: main, encoding: 'utf8' });
+  const typed = (cmd, args) => spawnSync(cmd, args, { cwd: main, stdio: 'inherit' }).status;
+  const claudeIn = () => {
+    try {
+      const text = asked('claude', ['auth', 'status']).stdout;
+      return JSON.parse(text.slice(text.indexOf('{'))).loggedIn === true;
+    } catch {
+      return false;
+    }
+  };
+  const login = () => {
+    const r = asked('gh', ['api', 'user', '-q', '.login']);
+    return r.status === 0 ? r.stdout.trim() : null;
+  };
+  const address = remoteOf(main) ?? '';
+  const github = hostOf(address) === 'github.com' && !login();
+  const claude = !claudeIn();
+  if (!github && !claude) return true;
+  if (!io.terminal) {
+    io.say(
+      `${name} waits for its owner to sign in to ${[github && 'GitHub', claude && 'Claude'].filter(Boolean).join(' and to ')}, which takes a terminal: open the machine's own in a browser.`,
+    );
+    return false;
+  }
+  io.say(
+    `${name} is yours, and it needs ${github && claude ? 'two sign-ins' : 'a sign-in'} only you can give. Each is typed here, on the machine, and code-kit reads neither.\n`,
+  );
+  if (github) {
+    io.say(
+      `GitHub, so the machine can fetch and push the project's work. GitHub shows a one-time code below: enter it at https://github.com/login/device, signed in as the account this project is pushed as.\n`,
+    );
+    typed('gh', ['auth', 'login', '--hostname', 'github.com', '--git-protocol', 'https', '--web']);
+    const who = login();
+    if (!who) {
+      io.say(`\nGitHub's sign-in didn't finish, so ${name} can't fetch or push yet.`);
+      return false;
+    }
+    asked('gh', ['auth', 'setup-git', '--hostname', 'github.com']);
+    const fetched = asked('git', ['fetch', '-q', 'origin']);
+    if (fetched.status !== 0) {
+      io.say(
+        `\nSigned in to GitHub as ${who}, and ${httpsRemote(address)} couldn't be fetched as them: ${`${fetched.stderr ?? ''}`.trim().split('\n')[0] || `exit ${fetched.status}`}`,
+      );
+      if (io.ask(`Sign ${who} out here, to sign in as an account that can?`))
+        typed('gh', ['auth', 'logout', '--hostname', 'github.com']);
+      return false;
+    }
+    const set = (key) => asked('git', ['config', '--global', key]).stdout.trim();
+    if (!set('user.name') || !set('user.email')) {
+      const [id, account, full] = asked('gh', [
+        ...['api', 'user', '-q'],
+        '[.id, .login, .name // ""] | @tsv',
+      ])
+        .stdout.trim()
+        .split('\t');
+      if (id && account) {
+        if (!set('user.name')) asked('git', ['config', '--global', 'user.name', full || account]);
+        if (!set('user.email'))
+          asked('git', [
+            ...['config', '--global', 'user.email'],
+            `${id}+${account}@users.noreply.github.com`,
+          ]);
+        io.say(
+          `\nCommits made here are ${set('user.name')} <${set('user.email')}>. \`git config --global\` changes that.`,
+        );
+      }
+    }
+    io.say(`GitHub: signed in as ${who}.\n`);
+  }
+  if (claude) {
+    io.say(
+      `Claude, on your own subscription. Claude Code asks you to open an address in your browser and paste a code back.\n`,
+    );
+    typed('claude', ['auth', 'login']);
+    if (!claudeIn()) {
+      io.say(`\nClaude's sign-in didn't finish, so no session can work on ${name} yet.`);
+      return false;
+    }
+    io.say('Claude: signed in.\n');
+  }
+  return true;
+}
+
+/**
+ * CLOUD-15: the workflow a repository commits so that its machine is made, started, stopped and removed
+ * with nobody at a computer: code-kit's own file, with the platform's steps from its adapter and this
+ * code-kit's version in the commands it runs. The same text for the same adapter and version, so a
+ * committed file can be told from one changed by hand.
+ */
+export function machineWorkflow(adapter) {
+  if (!adapter.workflow) return null;
+  const indent = (text, by) =>
+    text
+      .split('\n')
+      .map((l) => (l ? `${' '.repeat(by)}${l}` : l))
+      .join('\n');
+  const steps = adapter.workflow.steps
+    .map((st) =>
+      [
+        `      - name: ${st.name}`,
+        ...(st.env
+          ? ['        env:', ...Object.entries(st.env).map(([k, v]) => `          ${k}: ${v}`)]
+          : []),
+        '        run: |',
+        indent(st.run, 10),
+      ].join('\n'),
+    )
+    .join('\n');
+  return readFileSync(join(PLUGIN_ROOT, 'templates/cloud-machine.yml'), 'utf8')
+    .replaceAll('{{version}}', PLUGIN.version)
+    .replaceAll('{{platform}}', adapter.label)
+    .replaceAll('{{key}}', adapter.key)
+    .replaceAll('{{secret}}', adapter.workflow.secret)
+    .replace('      #{{steps}}', steps);
+}
+/** Where a repository keeps that workflow. */
+export const WORKFLOW_FILE = '.github/workflows/code-kit-machine.yml';
 
 /** What a session is started with when the one before was ended at a question (CLOUD-7). */
 const ASK_AGAIN =
@@ -895,8 +1167,8 @@ const readJson0 = (text) => {
 };
 
 /** CLOUD-7: ends the lead's session on the machine now, so it sleeps. Asks first while lanes work. */
-export function cloudStop(root, config, io) {
-  const { adapter, name, clone } = upMachine(root, config);
+export function cloudStop(root, config, io, { unattended = false } = {}) {
+  const { adapter, name, clone } = upMachine(root, config, { unattended });
   const state = machineState(adapter, name, clone);
   const running = state.running ?? [];
   if (running.length) {
@@ -906,7 +1178,7 @@ export function cloudStop(root, config, io) {
     );
     if (yes === null)
       stop(
-        `${what} ${running.length === 1 ? 'is' : 'are'} working on ${name}. Ending the session stops ${running.length === 1 ? 'it' : 'them'} mid-story, so it's the person's to confirm: ask them to run \`code-kit cloud stop\` in their own terminal.`,
+        `${what} ${running.length === 1 ? 'is' : 'are'} working on ${name}. Ending the session stops ${running.length === 1 ? 'it' : 'them'} mid-story, so it's the person's to confirm: ${unattended ? 'its owner ends it at its terminal, or stops it again once the work has merged.' : 'ask them to run `code-kit cloud stop` in their own terminal.'}`,
       );
     if (!yes) stop('Left running.');
   }
@@ -944,8 +1216,9 @@ export function heldThere(state) {
 }
 
 /** CLOUD-9: the project brought home, and the machine removed with both sign-ins on it. */
-export function cloudDown(root, config, io, { discard = false } = {}) {
-  const { adapter, name, clone } = upMachine(root, config);
+export function cloudDown(root, config, io, { discard = false, unattended = false } = {}) {
+  // A workflow's checkout holds no marker (CLOUD-13): whether there's a machine is the platform's to say.
+  const { adapter, name, clone } = upMachine(root, config, { ready: !unattended });
   const platform = adapter.state(name);
   if (!platform.reachable) stop(`${adapter.label} didn't answer: ${platform.why}`);
   if (platform.exists) {
@@ -955,11 +1228,12 @@ export function cloudDown(root, config, io, { discard = false } = {}) {
       : heldThere(state);
     if (held.length && !discard)
       stop(
-        `Nothing was removed. ${name} holds work that isn't on the remote, which removing it would lose:\n${held.map((h) => `  ${h}`).join('\n')}\nFinish and push it from the machine (code-kit cloud open). To remove the machine with what's on it, the person runs: code-kit cloud down --discard`,
+        `Nothing was removed. ${name} holds work that isn't on the remote, which removing it would lose:\n${held.map((h) => `  ${h}`).join('\n')}\n${unattended ? "Its owner finishes and pushes it at the machine's terminal. To remove the machine with what's on it, they run the workflow's down with discard." : "Finish and push it from the machine (code-kit cloud open). To remove the machine with what's on it, the person runs: code-kit cloud down --discard"}`,
       );
     if (held.length) {
       io.say(`Removing ${name} loses:\n${held.map((h) => `  ${h}`).join('\n')}`);
-      if (io.ask('Remove it anyway?') !== true) stop('Nothing was removed.');
+      // A workflow's discard was the person's own choice where they started it; nobody is here to ask.
+      if (!unattended && io.ask('Remove it anyway?') !== true) stop('Nothing was removed.');
     }
     adapter.run(name, `tmux kill-session -t ${WATCH_SESSION} 2>/dev/null; ${END_SESSIONS}`, {
       timeoutSeconds: 60,
@@ -969,7 +1243,7 @@ export function cloudDown(root, config, io, { discard = false } = {}) {
   }
   clearMarker(root);
   io.say(
-    `${platform.exists ? `Removed ${name}, with the sign-ins on it` : `${name} was already gone`}. The project is on this computer again: git pull to bring in what was pushed from the machine.`,
+    `${platform.exists ? `Removed ${name}, with the sign-ins on it` : `${name} was already gone`}. ${unattended ? 'Nothing of the project is on a machine now.' : 'The project is on this computer again: git pull to bring in what was pushed from the machine.'}`,
   );
 }
 

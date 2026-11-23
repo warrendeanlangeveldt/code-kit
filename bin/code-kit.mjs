@@ -58,6 +58,7 @@
 //   defer <story>... --reason "…" [--until <date|ISO time>] | defer release <story>... | defer [--json]
 //                                    stories the lead holds on purpose: not dispatched, reviewed or merged (LOOP-15)
 //   cloud [--json] | cloud up | cloud signin | cloud open | cloud console | cloud stop | cloud down [--discard]
+//   cloud workflow [--write] [--platform <key>]   (and `--unattended` on up, open, stop and down, for that workflow)
 //                                    the project's work on a cloud machine the person owns (spec 32)
 // --config <file> reads a draft (.claude/code-kit.draft.json) instead of .claude/code-kit.json.
 import { execFileSync, spawnSync } from 'node:child_process';
@@ -75,7 +76,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { isAbsolute, join, posix, resolve } from 'node:path';
+import { dirname, isAbsolute, join, posix, resolve } from 'node:path';
 import {
   BASELINE_FILE,
   loadBaseline,
@@ -132,6 +133,7 @@ import {
   ADAPTERS,
   activeAdapters,
   adapterFacts,
+  machineAdapterOf,
   providerAdapterOf,
 } from '../hooks/lib/adapters/index.mjs';
 import {
@@ -318,6 +320,7 @@ import { WORKFLOWS_DIR, ciFindings, ciUsage, releaseBranch } from '../hooks/lib/
 import { COST_APPROVAL, costReport, infraFiles, money } from '../hooks/lib/costs.mjs';
 import {
   Stop,
+  WORKFLOW_FILE,
   carryProblem,
   cloudConsole,
   cloudDown,
@@ -329,6 +332,8 @@ import {
   cloudUp,
   heldThere,
   hereState,
+  machineWorkflow,
+  readMarker,
   watch,
 } from '../hooks/lib/cloud.mjs';
 import { cloudOf } from '../hooks/lib/cloudconfig.mjs';
@@ -401,6 +406,8 @@ const splitGiven = option('--split');
 const moveGiven = option('--move');
 const measuredGiven = option('--measured');
 const linesGiven = option('--lines');
+const platformGiven = option('--platform');
+const stageGiven = option('--stage');
 const optionsGiven = [];
 for (let o = option('--option'); o !== undefined; o = option('--option')) optionsGiven.push(o);
 const FLAGS = [
@@ -419,6 +426,7 @@ const FLAGS = [
   '--for',
   '--discard',
   '--once',
+  '--unattended',
 ];
 const flag = (name) => args.includes(name);
 const writeBaseline = flag('--write');
@@ -4235,15 +4243,72 @@ function typedLine() {
 }
 
 /**
+ * The config the cloud commands read. A machine can be made for a repository whose config names no
+ * platform, or that has no config yet (CLOUD-13): the workflow that makes it names the platform with
+ * `--platform`, and on the machine its own marker does.
+ */
+function cloudConfig(root) {
+  const marker = readMarker(root);
+  const named = platformGiven ?? (marker?.here ? marker.adapter : null);
+  const withPlatform = (raw) => {
+    const said = machineAdapterOf({ [named]: {} });
+    if (said?.problem) die(said.problem);
+    return effectiveConfig({ ...raw, cloud: { [named]: {} } }, '.');
+  };
+  if (!existsSync(resolve(file))) {
+    if (!named) return load().config;
+    return withPlatform({ version: 1, lead: { paths: [] }, lanes: {} });
+  }
+  const { raw, config } = load();
+  if (!named || raw.cloud === undefined) return named ? withPlatform(raw) : config;
+  if (platformGiven && !(platformGiven in raw.cloud))
+    die(
+      `\`--platform ${platformGiven}\` isn't the platform ${file} names in its "cloud". A project's work runs on one.`,
+    );
+  return config;
+}
+
+/** CLOUD-15: the machine workflow, printed, or with `--write` put where a repository keeps it. */
+function cloudWorkflow(config) {
+  const cloud = cloudOf(config);
+  if (!cloud)
+    die(
+      `Which platform's workflow? Name one in ${file}, such as "cloud": { "sprites": {} }, or here: code-kit cloud workflow --platform sprites`,
+    );
+  const text = machineWorkflow(cloud.adapter);
+  if (!text)
+    die(`${cloud.adapter.label} has no machine workflow: its machines are made from a computer.`);
+  if (!flag('--write')) return process.stdout.write(text);
+  const had = existsSync(resolve(WORKFLOW_FILE)) ? read(WORKFLOW_FILE) : null;
+  if (had === text) return out(`${WORKFLOW_FILE} is code-kit's already.`);
+  mkdirSync(dirname(resolve(WORKFLOW_FILE)), { recursive: true });
+  writeFileSync(resolve(WORKFLOW_FILE), text);
+  out(
+    `${had === null ? 'Wrote' : 'Brought up to date'} ${WORKFLOW_FILE}. Commit it to the default branch, add the ${cloud.adapter.workflow.secret} secret to the repository (Settings, Secrets and variables, Actions), then make the machine from the Actions tab, or: gh workflow run code-kit-machine.yml -f act=up`,
+  );
+}
+
+/**
  * Spec 32: the project's work on a cloud machine the person owns. `cloud` says where the work is and what
  * the machine is doing; `up` makes the machine ready, `signin` and `console` join the person's terminal
  * to it, `open` is the lead's session there, `stop` ends it so the machine sleeps, and `down` brings the
  * project home. `here`, `watch` and `join` (what its terminal in a browser runs) run on the machine itself.
  */
 async function cloudCommand() {
-  const { config } = load();
   const root = resolve('.');
+  const config = cloudConfig(root);
   const [sub, ...more] = rest;
+  // CLOUD-13: run by a workflow, with nobody to ask and a checkout that's thrown away afterwards.
+  const unattended = flag('--unattended');
+  if (unattended && process.env.CLAUDECODE)
+    die(
+      "`--unattended` is for the machine workflow, where nobody is there to ask and what it removes was the person's own choice. In a session, run the command without it.",
+    );
+  if (
+    stageGiven !== undefined &&
+    !(sub === 'up' && unattended && ['machine', 'clone'].includes(stageGiven))
+  )
+    die('`--stage machine` and `--stage clone` go with `cloud up --unattended`: each stops there.');
   const terminal = Boolean(process.stdin.isTTY && process.stdout.isTTY) && !process.env.CLAUDECODE;
   const io = {
     say: out,
@@ -4265,12 +4330,14 @@ async function cloudCommand() {
       return out(ended.ended ? `The lead's session ${ended.why}.` : `Watching: ${ended.why}.`);
     }
     if (sub === 'join') return process.exit(cloudJoin(root, io));
-    if (sub === 'up') return cloudUp(root, config, io);
+    if (sub === 'up') return cloudUp(root, config, io, { unattended, stage: stageGiven ?? null });
+    if (sub === 'workflow') return cloudWorkflow(config);
     if (sub === 'signin') return process.exit(cloudSignin(root, config, io));
     if (sub === 'console') return process.exit(cloudConsole(root, config));
-    if (sub === 'open') return process.exit(cloudOpen(root, config, io));
-    if (sub === 'stop') return cloudStop(root, config, io);
-    if (sub === 'down') return cloudDown(root, config, io, { discard: flag('--discard') });
+    if (sub === 'open') return process.exit(cloudOpen(root, config, io, { unattended }));
+    if (sub === 'stop') return cloudStop(root, config, io, { unattended });
+    if (sub === 'down')
+      return cloudDown(root, config, io, { discard: flag('--discard'), unattended });
     if (sub !== undefined) usage();
     const status = cloudStatus(root, config);
     if (flag('--json')) return out(JSON.stringify(status, null, 2));
@@ -4439,7 +4506,7 @@ function usage() {
       '              | decisions [--json] [--all]\n' +
       '              | ci check [--json] | ci usage [--days N] [--json] | release <version>\n' +
       '              | cost [--json]\n' +
-      '              | cloud [--json] | cloud up | cloud signin | cloud open | cloud console | cloud stop | cloud down [--discard]\n' +
+      '              | cloud [--json] | cloud up | cloud signin | cloud open | cloud console | cloud stop | cloud down [--discard] | cloud workflow [--write]\n' +
       '              | hold <id> [--minutes N] | hold <id> --answer approved|refused\n' +
       '              | queue [--json] | queue add|drop <branch> | queue rules | queue merge --delegated|--person\n' +
       '              | queue pause --reason "…" | queue resume\n' +

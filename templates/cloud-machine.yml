@@ -1,0 +1,76 @@
+# code-kit {{version}}: this repository's cloud machine, on {{platform}}, in your own account.
+#
+# It makes the machine, starts and stops the lead's session on it, and removes it, with nobody at a
+# computer. You start it from the Actions tab, or a hub you've connected starts it for you. It reads
+# one secret, {{secret}}, which only this repository's workflows can read. The sign-ins to GitHub
+# and to Claude are never in a workflow: the machine's owner types them at the machine's own terminal.
+#
+# Printed by `code-kit cloud workflow`. A file changed by hand is no longer code-kit's.
+name: code-kit machine
+run-name: code-kit machine ${{ inputs.act }} ${{ inputs.request }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      act:
+        description: 'up makes the machine ready; start and stop open and end its session; down removes it'
+        required: true
+        type: choice
+        options: [up, start, stop, down]
+      request:
+        description: "Who asked, as their own id for it. It's shown in the run's name."
+        required: false
+        type: string
+        default: ''
+      discard:
+        description: "With down: remove the machine with the work on it that isn't on GitHub"
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: code-kit-machine
+  cancel-in-progress: false
+
+env:
+  CODE_KIT: npx --yes @warren-dean/code-kit@{{version}}
+
+jobs:
+  machine:
+    name: ${{ inputs.act }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      #{{steps}}
+      - name: Make the machine
+        if: inputs.act == 'up'
+        run: $CODE_KIT cloud up --unattended --platform {{key}} --stage machine
+      - name: Copy the repository there
+        if: inputs.act == 'up'
+        run: $CODE_KIT cloud up --unattended --platform {{key}} --stage clone
+      - name: Install code-kit and the terminal there
+        if: inputs.act == 'up'
+        run: $CODE_KIT cloud up --unattended --platform {{key}}
+      - name: Start the lead's session
+        if: inputs.act == 'start'
+        run: $CODE_KIT cloud open --unattended --platform {{key}}
+      - name: Stop the lead's session
+        if: inputs.act == 'stop'
+        run: $CODE_KIT cloud stop --unattended --platform {{key}}
+      - name: Remove the machine
+        if: inputs.act == 'down'
+        env:
+          DISCARD: ${{ inputs.discard && '--discard' || '' }}
+        run: $CODE_KIT cloud down --unattended --platform {{key}} $DISCARD

@@ -516,6 +516,19 @@ To move a project:
 
 What doesn't move with it: plugins and MCP servers set up on your computer and not in the project's own settings (`up` lists the plugins), and tools that run on your computer, such as a design tool or a browser. A Sprite comes without Docker. Its image carries Fly's instructions for installing it as a service, which hasn't been tried with code-kit, so don't count on a project whose checks start a database in Docker running them there. One machine carries one project, 8 cores and 16 GB on a Sprite.
 
+### With only a browser
+
+A machine can also be made with nobody at a computer, by a workflow in the repository. That's for a phone, for a computer you don't want the `sprite` command on, and for a hub that starts the workflow for you. It's built this way so that the two sign-ins that matter stay yours: a workflow can keep the platform's token as a secret, and it never holds your GitHub or Claude sign-in.
+
+1. Run `code-kit cloud workflow --write` and commit `.github/workflows/code-kit-machine.yml` to the default branch. A repository that isn't set up with code-kit yet names the platform: `code-kit cloud workflow --platform sprites`.
+2. Make a Sprites token for your Fly organisation and add it to the repository's Actions secrets as `SPRITES_TOKEN`.
+3. Run the workflow with `act: up`, from the Actions tab or with `gh workflow run code-kit-machine.yml -f act=up`. Its steps make the machine, copy the repository there, and install code-kit and the terminal. The run ends with the terminal's address.
+4. Open that address. Your first visit asks for GitHub's device sign-in and then Claude's own, each typed on the machine, and then opens the lead's session. Later visits join it.
+
+`act: start` opens the session with nobody attached, `stop` ends it, and `down` removes the machine, refusing while work there isn't on GitHub unless you tick `discard`. The workflow runs code-kit's own commands with `--unattended`, which a Claude session is refused: it's what lets `down` with `discard` go ahead without asking.
+
+A machine made this way doesn't mark your own clone, so don't start a lead in both places. That's an open question in spec 32.
+
 ## Enforce it in CI
 
 The hooks only see Claude Code sessions. For everything else, init offers `.github/workflows/code-kit.yml` (from `templates/github-workflow.yml`). It runs `verify --no-checks` on every pull request, through `npx @warren-dean/code-kit@<version>`, pinned so CI doesn't change under you: the rules, in seconds, with a 10-minute limit, and a new push cancels the run it replaces. The project's checks aren't run again there, because the merge queue ran them before each merge; the project's full CI runs on its release branches instead, once per release (`code-kit release <version>` cuts one). `code-kit ci check` says what in the project's own workflows still runs once per story, and `code-kit ci usage` what the project spent. The workflow needs no secret. Mark the `code-kit` check as required on the protected branches, and keep its install step: a fix story's test is run without its fix (REG-1). Add gitleaks to the workflow for the secret scan of commits' content.
@@ -585,6 +598,7 @@ code-kit cloud signin | cloud console                          # join your termi
 code-kit cloud open                                            # the lead's session on the machine: started if there's none, joined if there is; it keeps working when you detach
 code-kit cloud stop                                            # end the lead's session there now, so the machine sleeps
 code-kit cloud down [--discard]                                # bring the project home and remove the machine; refuses while work there isn't on the remote (--discard is yours alone)
+code-kit cloud workflow [--write] [--platform <key>]            # the workflow a repository commits so its machine is made, started, stopped and removed with nobody at a computer (CLOUD-15); it runs up, open, stop and down with --unattended
 code-kit decisions [--json] [--all]                          # what waits on you in this session, and a count in each other one; --all lists every session's
 code-kit who                                                 # which session this is, whether it leads the project, and its task
 code-kit sessions [--json]                                   # the sessions working the project, which one leads, and each one's task
