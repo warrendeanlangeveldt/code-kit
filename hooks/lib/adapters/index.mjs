@@ -31,11 +31,85 @@
 //             `code-kit team provider …`
 //
 // The core only ever calls providerAdapterOf(); it never names a provider.
+//
+// Machine adapters (spec 32, CLOUD-2) are the third kind: a platform of cloud machines a project's work
+// can run on, chosen when the config's `cloud` names it, as `{ "<key>": { its options } }`. Each says:
+//
+//   key       the platform's key in `cloud`
+//   label     what code-kit calls it, and what its row in the cost register is found by (CLOUD-10)
+//   options   the option names it takes
+//   needs     () => [{ what, have, command, from, terminal? }]: what it needs on the computer, with the
+//             command that installs it or signs in, and where that command comes from
+//   ready     (name) => { ok, made, why }: the machine of that name, made if it wasn't there
+//   run       (name, command, { cwd, timeoutSeconds, inherit }) => { status, timedOut, stdout, output }
+//   put       (name, file, to) => { ok, why }: a file from the computer onto the machine, at a full path
+//   terminal  (name, command, { cwd }) => exit code: the person's terminal joined to a command there
+//   state     (name) => { reachable, exists, sessions: [{ id, command, started }], why }
+//   release   (name) => { ok, why }: the machine removed
+//
+// and, where the platform gives a machine an address of its own, what the terminal in a browser needs
+// (CLOUD-12). An adapter without `address` and `serve` has none:
+//
+//   address   (name) => { ok, url, open, gate, close, why }: the address, whether anyone who has it can
+//             open it, who the platform lets in, and the command that makes an open one private
+//   serve     (name, { command, args, dir, port }) => { ok, why }: that command kept running on the
+//             machine, started again after a sleep, with the address routed to its port
+//   unserve   (name) => { ok }: that taken away
+//   install   (name, packages) => { ok }: packages the machine's image lacks, from the image's own source
+//
+// and, where a machine can be made with nobody at a computer (CLOUD-15):
+//
+//   workflow  { secret, steps: [{ name, run, env? }] }: what a workflow does before code-kit runs in
+//             it, the command installed and signed in with a token kept as the repository's secret
+//
+// The core only ever calls machineAdapterOf(); it never names a platform.
 import contextGraph from './context-graph.mjs';
 import hub from './hub/index.mjs';
+import sprites from './sprites.mjs';
 
 export const ADAPTERS = [contextGraph];
 export const PROVIDERS = [hub];
+export const MACHINES = [sprites];
+
+/** The settings `cloud` may hold beside its adapter's key. */
+export const CLOUD_SETTINGS = ['prepare', 'carry', 'idleMinutes', 'terminal'];
+
+/**
+ * The machine adapter `cloud` names, with its options: { adapter, options }, or null when the config has
+ * no `cloud`. `{ problem }` says what's wrong with it: no adapter, two, or options one doesn't take.
+ */
+export function machineAdapterOf(cloud) {
+  if (cloud === undefined || cloud === null) return null;
+  const keys = MACHINES.map((m) => m.key);
+  const known = `(${keys.join(', ')})`;
+  if (typeof cloud !== 'object' || Array.isArray(cloud))
+    return {
+      problem: `"cloud" must be an object naming one platform ${known}: { "<platform>": {} }`,
+    };
+  const named = Object.keys(cloud).filter((k) => !CLOUD_SETTINGS.includes(k));
+  const found = named.filter((k) => keys.includes(k));
+  const strangers = named.filter((k) => !keys.includes(k));
+  if (strangers.length)
+    return {
+      problem: `"cloud.${strangers[0]}" isn't a platform code-kit knows ${known} or a cloud setting (${CLOUD_SETTINGS.join(', ')})`,
+    };
+  if (found.length !== 1)
+    return {
+      problem: found.length
+        ? `"cloud" names ${found.length} platforms (${found.join(', ')}); a project's work runs on one`
+        : `"cloud" must name one platform ${known}: { "<platform>": {} }`,
+    };
+  const adapter = MACHINES.find((m) => m.key === found[0]);
+  const options = cloud[adapter.key];
+  if (options === null || typeof options !== 'object' || Array.isArray(options))
+    return { problem: `"cloud.${adapter.key}" must be an object of its options; {} for none` };
+  const extra = Object.keys(options).filter((k) => !adapter.options.includes(k));
+  if (extra.length)
+    return {
+      problem: `"cloud.${adapter.key}.${extra[0]}" isn't an option ${adapter.label} takes${adapter.options.length ? ` (${adapter.options.join(', ')})` : '; it takes none, and the account is the one you are signed in to'}`,
+    };
+  return { adapter, options };
+}
 
 const isAddress = (v) => typeof v === 'string' && /^https?:\/\/[^\s]+$/.test(v);
 

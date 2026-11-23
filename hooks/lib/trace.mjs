@@ -5,7 +5,7 @@
 import { execFileSync } from 'node:child_process';
 import { literalPath, matchesAny } from './glob.mjs';
 import { layerOf } from './layers.mjs';
-import { readRequirements, readStories } from './plan.mjs';
+import { allRequirements, readStories } from './plan.mjs';
 import { ownerOf, reviewerOf } from './rules.mjs';
 
 const git = (root, ...args) => {
@@ -53,8 +53,8 @@ export function traceFile(root, rel, config) {
   if (!specs || !plan) return out;
   const stories = readStories(root, plan);
   const requirements = new Map(
-    readRequirements(root, specs)
-      .filter((r) => r.file !== plan && !r.removed)
+    allRequirements(root, specs, plan, stories)
+      .filter((r) => !r.removed)
       .map((r) => [r.id, r]),
   );
   const byReq = new Map();

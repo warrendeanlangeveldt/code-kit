@@ -10,10 +10,14 @@ export function block(message) {
   process.exit(2);
 }
 
-/** The hook input, project and config; exits quietly when the project does not use the kit. */
-export function start() {
+/**
+ * The hook input, project and config; exits quietly when the project does not use the kit. `first` runs
+ * before that, for what a hook does whether or not the project has a config yet.
+ */
+export function start({ first = null } = {}) {
   const input = JSON.parse(readFileSync(0, 'utf8'));
   const project = projectDir();
+  first?.(input, project);
   const { config, error } = loadConfig(project);
   if (!config && !error) process.exit(0);
   // SESS-1: the session acting is still there; one code-kit hadn't seen starts here.

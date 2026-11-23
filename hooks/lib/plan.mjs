@@ -3,7 +3,9 @@
 // stories as `### ST-12 Title` followed by `**Lane:**`, `**Requirements:**`, `**Depends on:**` and
 // `**Status:**` lines, and for a fix, `**Fixes:**`. A lane builds a story on the branch `<lane>/st-12`. The lane `lead` marks the
 // lead's own stories (contracts, foundations, spikes), which the lead builds rather than dispatches;
-// `**Requirements:** none` marks a story that delivers no requirement, such as a spike.
+// `**Requirements:** none` marks a story that delivers no requirement, such as a spike. Specs written
+// before code-kit keep their own ids: a story cites one in backticks (`A105`, `OP.Guide.open`), and it's
+// a requirement where a spec names it (TRACE-5).
 import { execFileSync } from 'node:child_process';
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
@@ -17,6 +19,16 @@ import { WORKTREES_DIR } from './worktrees.mjs';
 import { streamOfLane, streamOfPlanFile } from './streams.mjs';
 
 export const REQUIREMENT = /\b(?!ST-)([A-Z][A-Z0-9]*-\d+)\b/g;
+// TRACE-5: an id shaped like BOOK-4 wherever it stands, and one of another shape in backticks. It starts
+// with a capital or a digit, which keeps a word of code quoted in the line (`cancel`) out of the ids.
+const CITED = /`([A-Z0-9][^`\s]*)`|\b(?!ST-)([A-Z][A-Z0-9]*-\d+)\b/g;
+const SHAPED = /^[A-Z][A-Z0-9]*-\d+$/;
+/** The requirement ids a line of the plan or a spec-check row cites, in the order written, each once. */
+export const citedIds = (text) => [
+  ...new Set(
+    [...String(text).matchAll(CITED)].map((m) => m[1] ?? m[2]).filter((id) => !/^ST-\d+$/.test(id)),
+  ),
+];
 const STORY_HEADING = /^###\s+(ST-\d+)\b\s*(.*)$/;
 const REQUIREMENT_HEADING = /^###\s+((?!ST-)[A-Z][A-Z0-9]*-\d+)\b\s*(.*)$/;
 export const STATES = ['todo', 'in progress', 'review', 'done'];
@@ -48,6 +60,69 @@ export function readRequirements(root, specsPath) {
     }
   }
   return found;
+}
+
+const escaped = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+/** `id` standing on its own in a line: not a part of a longer word, path or dotted name. */
+const standsIn = (id) => new RegExp(`(?<![\\w.\\-/])${escaped(id)}(?![\\w\\-/]|\\.\\w)`);
+/** `id` opening a line (a table row, a list item, a heading, a definition), and what the line says after it. */
+const opens = (id) =>
+  new RegExp(`^[\\s|#>*+\\-]*[\`*_]*${escaped(id)}(?![\\w\\-/]|\\.\\w)[\`*_]*[\\s|:·—–-]*([^|]*)`);
+
+/**
+ * TRACE-5: the ids of the specs' own shape that stories cite, as requirements: [{ id, title, file, removed,
+ * named }]. One is a requirement where a spec names it: `file` is the first spec with a line it opens (its
+ * row in a table of acceptance criteria, say), with `title` what that line says next, or else the first
+ * spec that mentions it. An id no spec names isn't returned, and the trace says so.
+ */
+export function namedRequirements(root, specsPath, plan, ids) {
+  const wanted = ids.filter((id) => !SHAPED.test(id));
+  if (!wanted.length) return [];
+  const found = new Map();
+  for (const file of markdownFiles(root, specsPath)) {
+    if (file === plan) continue;
+    const lines = readFileSync(join(root, file), 'utf8').split('\n');
+    for (const id of wanted) {
+      const have = found.get(id);
+      if (have?.opened) continue;
+      const names = standsIn(id);
+      const first = opens(id);
+      for (const line of lines) {
+        if (!line.includes(id)) continue;
+        const m = line.match(first);
+        if (m) {
+          const title = m[1].replace(/[`*_]/g, '').trim();
+          found.set(id, {
+            file,
+            title: title.length > 80 ? `${title.slice(0, 79)}…` : title,
+            opened: true,
+          });
+          break;
+        }
+        if (!have && !found.has(id) && names.test(line))
+          found.set(id, { file, title: '', opened: false });
+      }
+    }
+  }
+  return wanted
+    .filter((id) => found.has(id))
+    .map((id) => ({
+      id,
+      title: found.get(id).title,
+      file: found.get(id).file,
+      removed: false,
+      named: true,
+    }));
+}
+
+/** Every requirement the project has: the specs' headings, and the specs' own ids its stories cite (TRACE-5). */
+export function allRequirements(root, specsPath, plan, stories) {
+  const defined = readRequirements(root, specsPath).filter((r) => r.file !== plan);
+  const have = new Set(defined.map((r) => r.id));
+  const cited = [
+    ...new Set(stories.filter((s) => s.status !== DROPPED).flatMap((s) => s.requirements)),
+  ].filter((id) => !have.has(id));
+  return [...defined, ...namedRequirements(root, specsPath, plan, cited)];
 }
 
 const field = (lines, name) =>
@@ -255,7 +330,7 @@ export function readStories(root, planPath) {
         title: m[2].trim(),
         file,
         lane: field(body, 'Lane'),
-        requirements: [...field(body, 'Requirements').matchAll(REQUIREMENT)].map((r) => r[1]),
+        requirements: citedIds(field(body, 'Requirements')),
         noRequirements: /^none\b/i.test(field(body, 'Requirements')),
         // REG-1: what a fix story fixes, or null.
         fixes: field(body, 'Fixes') || null,
@@ -321,9 +396,13 @@ export function readMilestones(root, planPath) {
 
 export const storyBranch = (story) => `${story.lane}/${story.id.toLowerCase()}`;
 
-/** Requirement IDs each tracked test file names (tests name the IDs they prove): { id: [file, ...] }. */
-export function testedRequirements(root, files, specsPath, config) {
+/**
+ * Requirement IDs each tracked test file names (tests name the IDs they prove): { id: [file, ...] }.
+ * `named` are the ids of the specs' own shape to look for as well (TRACE-5).
+ */
+export function testedRequirements(root, files, specsPath, config, named = []) {
   const tested = {};
+  const own = named.map((id) => [id, standsIn(id)]);
   for (const file of files) {
     if (!isTestFile(file, config) || file.startsWith(`${specsPath}/`)) continue;
     let body;
@@ -333,6 +412,8 @@ export function testedRequirements(root, files, specsPath, config) {
       continue; // deleted in the working tree, or not a text file
     }
     for (const [, id] of body.matchAll(REQUIREMENT)) (tested[id] ??= new Set()).add(file);
+    for (const [id, names] of own)
+      if (body.includes(id) && names.test(body)) (tested[id] ??= new Set()).add(file);
   }
   return Object.fromEntries(Object.entries(tested).map(([id, s]) => [id, [...s]]));
 }
@@ -562,9 +643,12 @@ export function traceProblems(requirements, stories, lanes, config = null) {
     else if (s.lane !== LEAD && s.lane !== DESIGN && !lanes.includes(s.lane))
       problems.push(`${s.id} names an unknown lane "${s.lane}"`);
     if (!s.requirements.length && !s.noRequirements && s.status !== DROPPED)
-      problems.push(`${s.id} cites no requirements (write "none" if it delivers none)`);
+      problems.push(
+        `${s.id} cites no requirements: an id is read where it's shaped like BOOK-4, or sits in backticks where the specs' own ids are another shape (write "none" if it delivers none)`,
+      );
     for (const r of s.requirements)
-      if (!ids.has(r)) problems.push(`${s.id} cites ${r}, which no spec defines`);
+      if (!ids.has(r))
+        problems.push(`${s.id} cites ${r}, which no spec ${SHAPED.test(r) ? 'defines' : 'names'}`);
     for (const d of s.dependsOn)
       if (!stories.some((o) => o.id === d))
         problems.push(`${s.id} depends on ${d}, which isn't in the plan`);
@@ -612,11 +696,18 @@ function stillDesigning(root, config, requirements) {
 /** The whole picture for `code-kit status` and `code-kit next`: stories, requirements, gaps, drift. */
 export function buildStatus(root, config, base, files) {
   const { specs, plan } = config.docs;
-  const requirements = readRequirements(root, specs).filter((r) => r.file !== plan);
-  const stories = storyStates(root, readStories(root, plan), base, {
+  const planned = readStories(root, plan);
+  const requirements = allRequirements(root, specs, plan, planned);
+  const stories = storyStates(root, planned, base, {
     designing: stillDesigning(root, config, requirements),
   });
-  const tested = testedRequirements(root, files, specs, config);
+  const tested = testedRequirements(
+    root,
+    files,
+    specs,
+    config,
+    requirements.filter((r) => r.named).map((r) => r.id),
+  );
   const problems = traceProblems(requirements, stories, Object.keys(config.lanes), config);
   const byRequirement = requirements.map((r) => {
     const covering = stories.filter((s) => s.state !== DROPPED && s.requirements.includes(r.id));
@@ -662,7 +753,7 @@ export function specCheckRows(text) {
     if (cells.every((c) => /^:?-+:?$/.test(c) || c === '')) continue;
     const [requirement = '', status = '', where = '', note = ''] = cells;
     rows.push({
-      requirement: requirement.match(REQUIREMENT_ID)?.[0] ?? requirement,
+      requirement: citedIds(requirement)[0] ?? requirement,
       status: status.toLowerCase(),
       where,
       note,
@@ -670,4 +761,3 @@ export function specCheckRows(text) {
   }
   return rows;
 }
-const REQUIREMENT_ID = /\b[A-Z][A-Z0-9]*-\d+\b/;

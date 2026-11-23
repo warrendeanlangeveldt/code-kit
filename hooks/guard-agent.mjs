@@ -8,6 +8,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { recordDispatch, storyModels } from './lib/dispatches.mjs';
+import { elsewhere, elsewhereWords } from './lib/cloud.mjs';
 import { block, start } from './lib/hook.mjs';
 import { CLI } from './lib/rules.mjs';
 import { claimLane, shortSession } from './lib/laneclaims.mjs';
@@ -38,6 +39,12 @@ if (isolated && !noteNextLane(main, { lane: lane ?? null, story: lane ? story : 
   );
 }
 if (!lane) process.exit(0);
+// CLOUD-6: a project is worked in one place at a time: while it's up on its machine, no lane starts here.
+const away = elsewhere(project);
+if (away) {
+  if (isolated) dropNextLane(main);
+  block(`Blocked: the ${lane} lane's agent wasn't started. ${elsewhereWords(away)}`);
+}
 const session = input.session_id ?? null;
 // STRM-2, STRM-6: a stream's lanes are started by its own lead; a shared core lane by any stream's.
 const me = session ? readSession(project, session) : null;

@@ -13,12 +13,13 @@ import {
   readFileSync,
   realpathSync,
   rmSync,
+  statSync,
   symlinkSync,
   utimesSync,
   writeFileSync,
 } from 'node:fs';
-import { homedir, tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { devNull, homedir, tmpdir } from 'node:os';
+import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { refusalCard } from '../hooks/mod/view.mjs';
 import { holdable } from '../hooks/mod/hold.mjs';
@@ -29,6 +30,11 @@ import { keptCheckoutOf } from '../hooks/lib/checkout.mjs';
 
 // SESS-1: the CLI reads the calling session from Claude Code's environment; these tests say it themselves.
 delete process.env.CLAUDE_CODE_SESSION_ID;
+// The throwaway repositories ignore only what their own .gitignore says. A machine's global ignore file
+// (a cloud dev machine's ignores .env.* and build/) would keep the tests' files out of their commits.
+process.env.GIT_CONFIG_COUNT = '1';
+process.env.GIT_CONFIG_KEY_0 = 'core.excludesFile';
+process.env.GIT_CONFIG_VALUE_0 = devNull;
 
 const here = dirname(fileURLToPath(import.meta.url));
 const hooks = join(here, '..', 'hooks');
@@ -6403,6 +6409,54 @@ const op = process.argv[2]; let input = ''; process.stdin.on('data', (d) => (inp
       ),
       0,
     );
+    // A check that reads content git ignores: .worktreeinclude names it, so the merged tree's checkout
+    // has the main checkout's copy, as it is at each merge.
+    writeFileSync(
+      join(m.dir, '.gitignore'),
+      `${readFileSync(join(m.dir, '.gitignore'), 'utf8')}packs/\n`,
+    );
+    writeFileSync(join(m.dir, '.worktreeinclude'), 'packs/\n');
+    writeFileSync(
+      join(m.dir, '.claude/code-kit.json'),
+      JSON.stringify(
+        mConfig({
+          checks: [
+            {
+              name: 'content',
+              files: ['apps/office/**'],
+              run: ['test "$(cat packs/images/well.txt)" = "$(cat apps/office/expects.txt)"'],
+            },
+          ],
+        }),
+      ),
+    );
+    m.git('add', '-A');
+    m.git('commit', '-q', '-m', 'a check reads ignored content');
+    mkdirSync(join(m.dir, 'packs/images'), { recursive: true });
+    writeFileSync(join(m.dir, 'packs/images/well.txt'), 'one');
+    laneTree('web/st-36', { 'apps/office/expects.txt': 'one\n' });
+    mKit(m.dir, 'queue', 'add', 'web/st-36');
+    const included = mKit(m.dir, 'queue', 'merge', '--delegated');
+    expect(
+      'MQ-1 the merged tree has the ignored files .worktreeinclude names, from the main checkout',
+      truth(
+        included.status === 0 && stateOf('web/st-36') === 'merged',
+        included.stdout + included.stderr,
+      ),
+      0,
+    );
+    writeFileSync(join(m.dir, 'packs/images/well.txt'), 'two');
+    laneTree('web/st-37', { 'apps/office/expects.txt': 'two\n' });
+    mKit(m.dir, 'queue', 'add', 'web/st-37');
+    const includedAgain = mKit(m.dir, 'queue', 'merge', '--delegated');
+    expect(
+      'MQ-1 and at the next merge, as they are in the main checkout by then',
+      truth(
+        includedAgain.status === 0 && stateOf('web/st-37') === 'merged',
+        includedAgain.stdout + includedAgain.stderr,
+      ),
+      0,
+    );
     writeFileSync(join(m.dir, '.claude/code-kit.json'), JSON.stringify(mConfig()));
     m.git('commit', '-q', '-am', 'no checks');
 
@@ -7782,6 +7836,70 @@ const op = process.argv[2]; let input = ''; process.stdin.on('data', (d) => (inp
     0,
   );
   expect('status prints a readable report', says(vCli('status'), 'Ready to dispatch: ST-2'), 0);
+
+  // TRACE-5: specs written before code-kit keep their own ids, cited in backticks.
+  vPut(
+    'docs/spec/12-acceptance.md',
+    '# 12. Acceptance\n\n| Id | Given | Then |\n|---|---|---|\n| A105 | the opening of a journey | it proposes a course |\n| A1050 | another | x |\n\nThe walk calls `Guide.open()`, which is OP.Guide.open in the lock.\n',
+  );
+  vPut(
+    'docs/spec/plan.md',
+    plan('review') +
+      '\n### ST-4 The walk\n\n**Lane:** web\n**Requirements:** `A105`, `OP.Guide.open` (the `cancel` path), `A999`\n**Status:** todo\n',
+  );
+  vPut('apps/office/e2e/walk.spec.ts', "test('the walk opens', () => {}); // @spec A105\n");
+  vPut('apps/office/e2e/other.spec.ts', "test('another', () => {}); // @spec A1050\n");
+  vCommit('a story on the specs own ids');
+  const own = JSON.parse(vCli('status', '--json').stdout);
+  const a105 = own.requirements.find((r) => r.id === 'A105');
+  const op = own.requirements.find((r) => r.id === 'OP.Guide.open');
+  expect(
+    "an id of the specs' own shape, cited in backticks, is a requirement where a spec names it",
+    truth(
+      a105?.file === 'docs/spec/12-acceptance.md' &&
+        a105.title === 'the opening of a journey' &&
+        a105.stories[0] === 'ST-4' &&
+        op?.file === 'docs/spec/12-acceptance.md' &&
+        own.stories.find((s) => s.id === 'ST-4').requirements.join() === 'A105,OP.Guide.open,A999',
+      JSON.stringify([a105, op]),
+    ),
+    0,
+  );
+  expect(
+    'it is tested by the tests that name it, and not by one naming a longer id',
+    truth(a105.tests.join() === 'apps/office/e2e/walk.spec.ts', JSON.stringify(a105.tests)),
+    0,
+  );
+  expect(
+    'one no spec names is a gap, and a word of code quoted beside the ids is not an id',
+    truth(
+      own.problems.some((p) => p.includes('ST-4 cites A999, which no spec names')) &&
+        !own.problems.some((p) => p.includes('cancel')) &&
+        !own.problems.some((p) => p.includes('A105')) &&
+        !own.requirements.some((r) => r.id === 'A1050'),
+      own.problems.join(' / '),
+    ),
+    0,
+  );
+  vPut(
+    'docs/spec/plan.md',
+    plan('review') +
+      '\n### ST-4 The walk\n\n**Lane:** data\n**Requirements:** `A105`, `OP.Guide.open`\n**Status:** todo\n',
+  );
+  vCommit('the plan cites what the specs name');
+  expect(
+    'and a story citing only ids the specs name is ready to dispatch',
+    truth(/Ready to dispatch: .*\bST-4\b/.test(vCli('status').stdout), vCli('status').stdout),
+    0,
+  );
+  const nextOwn = JSON.parse(vCli('next', '--json').stdout);
+  expect(
+    'next counts it among the stories that can start',
+    truth(nextOwn.step === 'dispatch' && /\bST-4\b/.test(nextOwn.why), JSON.stringify(nextOwn)),
+    0,
+  );
+  vPut('docs/spec/plan.md', plan('review'));
+  vCommit('the plan as it was');
 
   // --- adapters: another tool in the project adds its own rules ---------------------------------
   const c = newRepo();
@@ -11093,9 +11211,9 @@ else process.exit(1);
     cleanups.push(w.dir);
     writeFileSync(
       join(w.dir, '.gitignore'),
-      '.claude/approvals/\n.claude/state/\n.claude/worktrees/\nnode_modules/\n.env\n',
+      '.claude/approvals/\n.claude/state/\n.claude/worktrees/\nnode_modules/\n.env\npacks/\n',
     );
-    writeFileSync(join(w.dir, '.worktreeinclude'), '.env\n');
+    writeFileSync(join(w.dir, '.worktreeinclude'), '.env\npacks/\n');
     writeFileSync(join(w.dir, '.env'), 'KEY=local\n');
     w.git('add', '-A');
     w.git('commit', '-q', '-m', 'ignore worktrees');
@@ -11140,6 +11258,9 @@ else process.exit(1);
     execFileSync('git', ['-C', laneTree, 'switch', '-q', '-c', 'web/st-1', 'main']);
     mkdirSync(join(laneTree, 'node_modules/dep'), { recursive: true });
     writeFileSync(join(laneTree, 'node_modules/dep/index.js'), '1\n');
+    // Content the main checkout gained since: ignored, and named by .worktreeinclude.
+    mkdirSync(join(w.dir, 'packs/images'), { recursive: true });
+    writeFileSync(join(w.dir, 'packs/images/well.png'), 'well');
     releaseLane(w.dir, 'web', { session: 's1' });
     expect(
       'LEAN-10 the next story in the lane starts',
@@ -11156,6 +11277,11 @@ else process.exit(1);
           !existsSync(join(w.dir, '.claude/worktrees/agent-bbb')),
         second.stdout + second.stderr,
       ),
+      0,
+    );
+    expect(
+      'LEAN-10 with the files .worktreeinclude names that the main checkout has gained since',
+      truth(readFileSync(join(laneTree, 'packs/images/well.png'), 'utf8') === 'well'),
       0,
     );
     // Work its last agent left uncommitted stays where it is: the next agent gets a worktree of its own.
@@ -14448,6 +14574,1773 @@ for (const fn of ['spawnSync', 'execFileSync']) { const o = cp[fn]; cp[fn] = fun
       ),
       0,
     );
+  }
+  // --- spec 32: a project on a cloud machine -------------------------------------------------------
+  {
+    const c = newRepo();
+    cleanups.push(c.dir);
+    const world = mkdtempSync(join(tmpdir(), 'code-kit-cloud-'));
+    cleanups.push(world);
+    const dirs = {
+      bin: join(world, 'bin'),
+      noSprite: join(world, 'bin-without'),
+      sprites: join(world, 'sprites'),
+      there: join(world, 'sprites', 'on-machine'),
+      home: join(world, 'home'),
+      bare: join(world, 'remote.git'),
+    };
+    for (const d of [dirs.bin, dirs.noSprite, dirs.there, dirs.home])
+      mkdirSync(d, { recursive: true });
+    const stub = (dir, name, body) => {
+      writeFileSync(join(dir, name), `#!/usr/bin/env node\n${body}`);
+      chmodSync(join(dir, name), 0o755);
+    };
+    const head = `
+const fs = require('node:fs');
+const path = require('node:path');
+const a = process.argv.slice(2);
+const h = process.env.HOME;
+const read = (f) => { try { return fs.readFileSync(path.join(h, f), 'utf8').trim(); } catch { return null; } };
+`;
+    // A stand-in for a machine platform's command line: a machine is a folder, and a command "on" it
+    // runs here with that folder as its home and the machine's own claude, gh and tmux first on its PATH.
+    const SPRITE = `
+const { spawnSync } = require('node:child_process');
+const fs = require('node:fs');
+const path = require('node:path');
+const root = process.env.FAKE_SPRITES;
+const a = process.argv.slice(2);
+if (a[0] === '--help') process.exit(0);
+fs.appendFileSync(path.join(root, 'calls.log'), a.join(' ') + '\\n');
+if (a[0] === 'login') { fs.rmSync(path.join(root, 'signed-out'), { force: true }); process.exit(0); }
+if (fs.existsSync(path.join(root, 'signed-out'))) { console.error('Error: not authenticated'); process.exit(1); }
+const home = (name) => path.join(root, name);
+const named = () => a[a.indexOf('-s') + 1];
+if (a[0] === 'list') { console.log(fs.readdirSync(root).filter((d) => d.startsWith('ck-')).join('\\n')); process.exit(0); }
+if (a[0] === 'create') { fs.mkdirSync(home(a[a.length - 1]), { recursive: true }); process.exit(0); }
+if (a[0] === 'destroy') { fs.rmSync(home(a[a.length - 1]), { recursive: true, force: true }); process.exit(0); }
+// A machine's own address, private unless the person made it public.
+if (a[0] === 'info') {
+  console.log('Name: ' + named() + '\\nURL: https://' + named() + '-fake.sprites.app\\nAuth: ' + (fs.existsSync(path.join(root, 'public')) ? 'public' : 'sprite'));
+  process.exit(0);
+}
+if (a[0] === 'sessions') {
+  console.log('ID                Command           Workdir           Started           Activity          ');
+  console.log('──────────────────────────────────────────────────────────────────────────────────────────');
+  try { process.stdout.write(fs.readFileSync(path.join(home(named()), 'platform-sessions'), 'utf8')); } catch {}
+  console.log('');
+  process.exit(0);
+}
+if (a[0] === 'exec') {
+  const h = home(named());
+  // A file arrives as a command's input; the connection can drop while it's sent.
+  if (a.includes('--stdin') && fs.existsSync(path.join(root, 'uploads-drop'))) { console.error('Error: connection lost'); process.exit(1); }
+  const cmd = a.slice(a.indexOf('--') + 1);
+  const r = spawnSync(cmd[0], cmd.slice(1), {
+    stdio: 'inherit',
+    env: { ...process.env, HOME: h, PATH: path.join(root, 'on-machine') + path.delimiter + process.env.PATH },
+  });
+  process.exit(r.status ?? 1);
+}
+process.exit(2);
+`;
+    writeFileSync(join(dirs.sprites, '_sprite'), `#!/usr/bin/env node\n${SPRITE}`);
+    stub(dirs.bin, 'sprite', SPRITE);
+    for (const dir of [dirs.bin, dirs.noSprite]) {
+      stub(
+        dir,
+        'gh',
+        `${head}if (a[0] === 'api') { console.log(process.env.FAKE_LOCAL_GH || 'kim'); process.exit(0); }\nprocess.exit(1);\n`,
+      );
+      stub(
+        dir,
+        'claude',
+        `${head}if (a[0] === 'plugin' && a[1] === 'list') console.log(JSON.stringify([{ id: 'arch-diagram@arch-diagram', version: '2.1.0', enabled: true }]));\n`,
+      );
+      // The platform's installer, as `curl … | sh` would fetch it: it puts the command on the PATH.
+      stub(
+        dir,
+        'curl',
+        `console.log('cp "$FAKE_SPRITES/_sprite" "$FAKE_BIN/sprite" && chmod +x "$FAKE_BIN/sprite"');\n`,
+      );
+    }
+    stub(
+      dirs.there,
+      'claude',
+      `${head}fs.appendFileSync(path.join(h, 'claude.log'), a.join(' ') + '\\n');
+if (a[0] === 'auth' && a[1] === 'status') { console.log(JSON.stringify({ loggedIn: read('.claude-signed-in') !== null, subscriptionType: 'max', loginExpiresAt: read('.claude-signed-in') || undefined })); process.exit(0); }
+if (a[0] === 'auth' && a[1] === 'login') { fs.writeFileSync(path.join(h, '.claude-signed-in'), ''); process.exit(0); }
+if (a[0] === 'plugin' && a[1] === 'list') { const v = read('.plugin-version'); console.log(JSON.stringify(v ? [{ id: 'code-kit@code-kit', version: v, enabled: true, installPath: process.env.FAKE_PLUGIN_ROOT }] : [])); process.exit(0); }
+if (a[0] === 'plugin' && (a[1] === 'install' || a[1] === 'update')) fs.writeFileSync(path.join(h, '.plugin-version'), process.env.FAKE_PLUGIN_VERSION);
+`,
+    );
+    stub(
+      dirs.there,
+      'gh',
+      `${head}const login = read('.gh-login');
+if (a[0] === 'api') { if (!login) process.exit(1); console.log(a.some((x) => x.includes('@tsv')) ? '42\\t' + login + '\\tKim Lee' : login); process.exit(0); }
+if (a[0] === 'auth' && a[1] === 'logout') { fs.rmSync(path.join(h, '.gh-login'), { force: true }); process.exit(0); }
+if (a[0] === 'auth' && a[1] === 'login') { console.log('! First copy your one-time code: ABCD-1234'); fs.writeFileSync(path.join(h, '.gh-login'), process.env.FAKE_GH_LOGIN || 'kim'); process.exit(0); }
+if (a[0] === 'auth' && a[1] === 'status') { if (!login) process.exit(1); console.log("  - Token scopes: 'gist', 'repo'"); process.exit(0); }
+if (a[0] === 'auth' && a[1] === 'setup-git') { if (!login) process.exit(1); fs.writeFileSync(path.join(h, '.gh-git-ready'), 'x'); process.exit(0); }
+`,
+    );
+    // The machine's own management socket, as the adapter reaches it: each request is noted.
+    stub(
+      dirs.there,
+      'curl',
+      `${head}if (a.some((x) => x.startsWith('http://127.0.0.1:'))) { process.stdout.write('<!DOCTYPE html><html><head><title>ttyd - Terminal</title></head><body><script>/* the terminal */</script></body></html>'); process.exit(0); }
+fs.appendFileSync(path.join(h, 'curl.log'), a.join(' ') + '\\n'); process.stdout.write('200');\n`,
+    );
+    // The terminal a machine serves in a browser: its image has none until it's installed, which the
+    // machine's own package source does. The platform's services are noted as they're made and removed.
+    const TTYD = `${head}fs.appendFileSync(path.join(h, 'ttyd.log'), a.join(' ') + '\\n');\n`;
+    writeFileSync(join(dirs.sprites, '_ttyd'), `#!/usr/bin/env node\n${TTYD}`);
+    stub(
+      dirs.there,
+      'sudo',
+      `${head}fs.appendFileSync(path.join(h, 'sudo.log'), a.join(' ') + '\\n');
+if (a.includes('install') && a.includes('ttyd')) { fs.copyFileSync(path.join(process.env.FAKE_SPRITES, '_ttyd'), path.join(__dirname, 'ttyd')); fs.chmodSync(path.join(__dirname, 'ttyd'), 0o755); }
+`,
+    );
+    stub(
+      dirs.there,
+      'sprite-env',
+      `${head}fs.appendFileSync(path.join(h, 'services.log'), a.join(' ') + '\\n');
+if (a[1] === 'create' && fs.existsSync(path.join(h, 'port-taken'))) { console.error('error: another service has the HTTP port'); process.exit(1); }
+`,
+    );
+    // git on a machine, which can't clone from GitHub until it's told to ask gh for the credential: a
+    // device sign-in started with no terminal signs gh in and leaves git as it was.
+    stub(
+      dirs.there,
+      'git',
+      `${head}const { spawnSync } = require('node:child_process');
+if (a.includes('clone') && a.some((x) => x.startsWith('https://')) && read('.gh-git-ready') === null) { console.error("fatal: could not read Username for 'https://github.com': No such device or address"); process.exit(128); }
+if (a.includes('fetch') && fs.existsSync(path.join(h, 'no-access'))) { console.error('remote: Repository not found.'); process.exit(128); }
+process.exit(spawnSync(process.env.FAKE_REAL_GIT, a, { stdio: 'inherit' }).status ?? 1);
+`,
+    );
+    stub(
+      dirs.there,
+      'tmux',
+      `${head}const dir = path.join(h, '.tmux');
+fs.mkdirSync(dir, { recursive: true });
+const t = a[a.indexOf('-t') + 1];
+const s = a[a.indexOf('-s') + 1];
+if (a[0] === 'has-session') process.exit(fs.existsSync(path.join(dir, t)) ? 0 : 1);
+if (a[0] === 'new-session') { fs.writeFileSync(path.join(dir, s), ''); fs.appendFileSync(path.join(h, 'tmux.log'), 'new ' + s + ' ' + a[a.length - 1] + '\\n'); fs.appendFileSync(path.join(h, 'tmux-env.log'), s + ' ' + (process.env.NODE_OPTIONS || '') + '\\n'); }
+if (a[0] === 'kill-session') fs.rmSync(path.join(dir, t), { force: true });
+if (a[0] === 'ls') for (const f of fs.readdirSync(dir)) console.log(f + ' ' + Math.floor(fs.statSync(path.join(dir, f)).mtimeMs / 1000));
+if (a[0] === 'attach') console.log('attached ' + t);
+`,
+    );
+    const ADDRESS = 'https://github.com/acme/app.git';
+    execFileSync('git', ['init', '-q', '--bare', '-b', 'main', dirs.bare]);
+    const version = JSON.parse(
+      readFileSync(join(here, '..', '.claude-plugin', 'plugin.json'), 'utf8'),
+    ).version;
+    const gitDir = dirname(execFileSync('which', ['git'], { encoding: 'utf8' }).trim());
+    const envWith = (binDir, more = {}) => {
+      const env = {
+        ...process.env,
+        PATH: [binDir, dirname(process.execPath), gitDir, '/usr/bin', '/bin'].join(':'),
+        HOME: dirs.home,
+        FAKE_SPRITES: dirs.sprites,
+        FAKE_BIN: binDir,
+        FAKE_PLUGIN_ROOT: join(here, '..'),
+        FAKE_PLUGIN_VERSION: version,
+        FAKE_REAL_GIT: join(gitDir, 'git'),
+        // The remote's address is GitHub's, and git reaches it on this disk.
+        GIT_CONFIG_COUNT: '2',
+        GIT_CONFIG_KEY_1: `url.${dirs.bare}.insteadOf`,
+        GIT_CONFIG_VALUE_1: ADDRESS,
+        ...more,
+      };
+      delete env.CLAUDECODE;
+      if (!more.ANTHROPIC_API_KEY) delete env.ANTHROPIC_API_KEY;
+      return env;
+    };
+    const env = envWith(dirs.bin);
+    const cCli = (args, e = env) =>
+      spawnSync('node', [kitCli, ...args], { cwd: c.dir, encoding: 'utf8', env: e });
+    const both = (r) => r.stdout + r.stderr;
+    const cPut = (rel, body = '') => {
+      mkdirSync(dirname(join(c.dir, rel)), { recursive: true });
+      writeFileSync(join(c.dir, rel), body);
+    };
+    const cGit = (...args) =>
+      execFileSync('git', ['-C', c.dir, '-c', 'user.email=t@t', '-c', 'user.name=t', ...args], {
+        encoding: 'utf8',
+        env,
+      });
+    const withCloud = (cloud, more = {}) =>
+      JSON.stringify({ ...JSON.parse(fixture), ...(cloud ? { cloud } : {}), ...more }, null, 2);
+
+    const none = cCli(['cloud']);
+    expect(
+      'CLOUD-1 without cloud in the config, cloud says the project names no platform, and how to',
+      truth(none.status === 0 && none.stdout.includes('"cloud": { "sprites": {} }'), both(none)),
+      0,
+    );
+    const badly = (cloud, has) => {
+      cPut('.claude/bad.json', withCloud(cloud));
+      const r = cCli(['check', '--config', '.claude/bad.json']);
+      rmSync(join(c.dir, '.claude/bad.json'));
+      return truth(r.status !== 0 && both(r).includes(has), both(r));
+    };
+    expect(
+      'CLOUD-1 check names a cloud with two platforms, or one it does not know',
+      badly(
+        { sprites: {}, docker: {} },
+        `"cloud.docker" isn't a platform code-kit knows (sprites)`,
+      ),
+      0,
+    );
+    expect(
+      'CLOUD-1 and an option the platform does not take: the account is never in the config',
+      badly({ sprites: { org: 'acme' } }, `"cloud.sprites.org" isn't an option Sprites takes`),
+      0,
+    );
+    expect(
+      'CLOUD-1 and an idle time under five minutes, or a carry that leaves the project',
+      truth(
+        badly(
+          { sprites: {}, idleMinutes: 2 },
+          '"cloud.idleMinutes" must be a whole number of 5 or more',
+        ).status === 0 &&
+          badly({ sprites: {}, carry: ['../secrets.env'] }, "which leaves the project's folder")
+            .status === 0,
+      ),
+      0,
+    );
+    cPut('.claude/bad.json', withCloud({ sprites: {}, carry: ['.gitignore'] }));
+    const tracked = cCli(['check', '--config', '.claude/bad.json']);
+    rmSync(join(c.dir, '.claude/bad.json'));
+    expect(
+      'CLOUD-1 check says carry is for ignored files when git tracks one',
+      truth(
+        tracked.status !== 0 &&
+          both(tracked).includes(
+            '"cloud.carry" is for what git ignores, and git tracks .gitignore, which travels with the clone already',
+          ),
+        both(tracked),
+      ),
+      0,
+    );
+    cPut('.claude/bad.json', withCloud({ sprites: {}, carry: ['.claude'] }));
+    const partly = cCli(['check', '--config', '.claude/bad.json']);
+    rmSync(join(c.dir, '.claude/bad.json'));
+    expect(
+      'CLOUD-1 and of a folder git tracks part of, to name the ignored files and folders inside it',
+      truth(
+        partly.status !== 0 &&
+          both(partly).includes('git tracks files in .claude, which travel') &&
+          both(partly).includes(
+            'name the ignored files and folders inside a folder git tracks part of',
+          ),
+        both(partly),
+      ),
+      0,
+    );
+
+    const prepare = 'echo ran >> "$HOME/prepared.log"';
+    const cloud = { sprites: {}, prepare, carry: ['.env.local', 'packs/images'], idleMinutes: 5 };
+    cPut('.claude/code-kit.json', withCloud(cloud));
+    cPut('.gitignore', '.claude/approvals/\n.claude/state/\n.env.local\npacks/images/\n');
+    cPut('.env.local', 'SECRET=1\n');
+    // Content the project's tests read and git ignores: a folder, with a folder inside it.
+    cPut('packs/images/hero.png', 'hero');
+    cPut('packs/images/place/well.png', 'well');
+    cPut('build/main.ts', 'export const main = 1;\n');
+    cGit('add', '-A');
+    cGit('commit', '-q', '-m', 'the cloud platform');
+    cGit('config', 'user.name', 'Kim Lee');
+    cGit('config', 'user.email', 'kim@example.com');
+    cGit('remote', 'add', 'origin', ADDRESS);
+    cGit('push', '-q', '-u', 'origin', 'main');
+    const machines = () => readdirSync(dirs.sprites).filter((d) => d.startsWith('ck-'));
+
+    // CLOUD-3: what the platform needs on the computer, asked for and never installed unasked.
+    writeFileSync(join(dirs.sprites, 'signed-out'), '');
+    const unasked = cCli(['cloud', 'up'], envWith(dirs.noSprite));
+    expect(
+      'CLOUD-3 with no terminal to ask in, up installs nothing and gives the commands for the person',
+      truth(
+        unasked.status === 1 &&
+          unasked.stderr.includes("there's no terminal here to ask in") &&
+          unasked.stderr.includes('curl -fsSL https://sprites.dev/install.sh | sh') &&
+          unasked.stderr.includes('login') &&
+          !existsSync(join(dirs.noSprite, 'sprite')) &&
+          machines().length === 0,
+        both(unasked),
+      ),
+      0,
+    );
+    // A terminal, with the person's answers typed into it: python's pty, since Node has none of its own
+    // and `script` differs between systems. Each answer is typed a moment after its question shows, as
+    // a person's is: one typed ahead would be waiting already, and wouldn't show a read that doesn't wait.
+    const PTY = `
+import os, pty, sys, time
+answers = [a for a in sys.argv[1].split('\\n') if a]
+pid, fd = pty.fork()
+if pid == 0:
+    os.execvp(sys.argv[2], sys.argv[2:])
+out = b''
+asked = 0
+while True:
+    try:
+        data = os.read(fd, 65536)
+    except OSError:
+        break
+    if not data:
+        break
+    out += data
+    if answers and out.count(b'[y/N] ') > asked:
+        asked += 1
+        time.sleep(0.4)
+        os.write(fd, (answers.pop(0) + '\\n').encode())
+_, status = os.waitpid(pid, 0)
+sys.stdout.buffer.write(out)
+sys.exit(os.WEXITSTATUS(status))
+`;
+    const atTerminal = (args, answers, e) =>
+      spawnSync('python3', ['-c', PTY, answers, 'node', kitCli, ...args], {
+        cwd: c.dir,
+        encoding: 'utf8',
+        env: e,
+        timeout: 120_000,
+      });
+    const declined = atTerminal(['cloud', 'up'], 'n\n', envWith(dirs.noSprite));
+    expect(
+      'CLOUD-3 asked at a terminal, a no installs nothing and leaves the commands to run by hand',
+      truth(
+        both(declined).includes('Run it now? [y/N]') &&
+          both(declined).includes("Fly's own installer at sprites.dev") &&
+          both(declined).includes('Nothing was installed. Run them yourself') &&
+          !existsSync(join(dirs.noSprite, 'sprite')),
+        both(declined),
+      ),
+      0,
+    );
+    const agreed = atTerminal(['cloud', 'up'], 'y\ny\ny\nn\n', envWith(dirs.noSprite));
+    expect(
+      'CLOUD-3 a yes installs it, goes on to the sign-in, makes the machine and starts the device sign-in to GitHub',
+      truth(
+        existsSync(join(dirs.noSprite, 'sprite')) &&
+          !existsSync(join(dirs.sprites, 'signed-out')) &&
+          machines().length === 1 &&
+          both(agreed).includes('one-time code: ABCD-1234') &&
+          both(agreed).includes('GitHub: signed in there as kim'),
+        both(agreed),
+      ),
+      0,
+    );
+    expect(
+      'CLOUD-3 and asks about the sign-in to Claude, which is the person’s own; declined, it stops with cloud signin',
+      truth(
+        both(agreed).includes('Sign in there now? [y/N]') &&
+          both(agreed).includes("isn't signed in to Claude") &&
+          both(agreed).includes('code-kit cloud signin') &&
+          !existsSync(join(c.dir, '.claude/state/cloud.json')),
+        both(agreed),
+      ),
+      0,
+    );
+    const [machine] = machines();
+    const mHome = join(dirs.sprites, machine);
+    const clone = join(mHome, 'projects', c.dir.split('/').pop());
+    const noTerminal = cCli(['cloud', 'signin']);
+    expect(
+      'CLOUD-3 cloud signin is not run for the person by a session with no terminal',
+      truth(
+        noTerminal.status === 1 && noTerminal.stderr.includes("the person's own step"),
+        both(noTerminal),
+      ),
+      0,
+    );
+
+    const keyed = cCli(['cloud', 'up'], envWith(dirs.bin, { ANTHROPIC_API_KEY: 'sk-test' }));
+    expect(
+      'CLOUD-3 an API key set on the machine stops up: it would be billed in place of the subscription',
+      truth(
+        keyed.status === 1 && keyed.stderr.includes('has an ANTHROPIC_API_KEY set'),
+        both(keyed),
+      ),
+      0,
+    );
+    const other = cCli(['cloud', 'up'], envWith(dirs.bin, { FAKE_LOCAL_GH: 'sam' }));
+    expect(
+      'CLOUD-5 a machine signed in to GitHub as someone else stops up, naming both',
+      truth(
+        other.status === 1 &&
+          other.stderr.includes('signed in to GitHub as kim, and this computer as sam'),
+        both(other),
+      ),
+      0,
+    );
+    cGit('switch', '-q', '-c', 'web/st-4');
+    cPut('apps/office/lib/w.ts', 'export const w = 1;\n');
+    cGit('add', '-A');
+    cGit('commit', '-q', '-m', 'ST-4');
+    // A second story's branch started from the first: both of its unpushed commits are its own to push.
+    cGit('switch', '-q', '-c', 'web/st-5');
+    cPut('apps/office/lib/v.ts', 'export const v = 1;\n');
+    cGit('add', '-A');
+    cGit('commit', '-q', '-m', 'ST-5');
+    cGit('switch', '-q', 'main');
+    claimLane(c.dir, { lane: 'web', story: 'ST-4', session: 'cccc1111-s' });
+    const leaving = cCli(['cloud', 'up']);
+    expect(
+      'CLOUD-3 up stops when the move would leave a running story or an unpushed lane branch behind',
+      truth(
+        leaving.status === 1 &&
+          leaving.stderr.includes('Nothing was moved') &&
+          leaving.stderr.includes('ST-4 is running in the web lane here') &&
+          leaving.stderr.includes("web/st-4 has 1 commit that isn't on the remote") &&
+          leaving.stderr.includes("web/st-5 has 2 commits that aren't on the remote") &&
+          !existsSync(clone),
+        both(leaving),
+      ),
+      0,
+    );
+    releaseLane(c.dir, 'web');
+    cGit('branch', '-q', '-D', 'web/st-4', 'web/st-5');
+
+    // At their terminal the person says yes to Claude's sign-in, and the same run carries on.
+    const up = atTerminal(['cloud', 'up'], 'y\n', env);
+    expect(
+      'CLOUD-3 at a terminal, up joins the person to Claude’s own sign-in there and carries on in the same run',
+      truth(
+        up.stdout.includes("isn't signed in to Claude. Sign in there now? [y/N]") &&
+          readFileSync(join(mHome, 'claude.log'), 'utf8').includes('auth login') &&
+          up.stdout.includes('Claude: signed in there.') &&
+          up.stdout.includes('is ready'),
+        both(up),
+      ),
+      0,
+    );
+    // That sign-in ends in two days.
+    writeFileSync(
+      join(mHome, '.claude-signed-in'),
+      new Date(Date.now() + 2 * 86_400_000).toISOString(),
+    );
+    const marker = () => {
+      try {
+        return JSON.parse(readFileSync(join(c.dir, '.claude/state/cloud.json'), 'utf8'));
+      } catch {
+        return null;
+      }
+    };
+    const inClone = (...args) =>
+      execFileSync('git', ['-C', clone, ...args], { encoding: 'utf8', env }).trim();
+    expect(
+      'CLOUD-3 after the sign-ins, up clones the project there with the computer’s git name and email',
+      truth(
+        up.status === 0 &&
+          up.stdout.includes('is ready') &&
+          existsSync(join(clone, '.git')) &&
+          inClone('config', 'user.name') === 'Kim Lee' &&
+          inClone('config', 'user.email') === 'kim@example.com',
+        both(up),
+      ),
+      0,
+    );
+    const claudeLog = () => readFileSync(join(mHome, 'claude.log'), 'utf8');
+    expect(
+      'CLOUD-3 installs code-kit there, runs prepare, copies the carried files and writes the markers',
+      truth(
+        claudeLog().includes('plugin install code-kit@code-kit -y') &&
+          readFileSync(join(mHome, 'prepared.log'), 'utf8') === 'ran\n' &&
+          readFileSync(join(clone, '.env.local'), 'utf8') === 'SECRET=1\n' &&
+          marker()?.machine === machine &&
+          JSON.parse(readFileSync(join(clone, '.claude/state/cloud.json'), 'utf8')).here === true,
+        `${claudeLog()}\n${JSON.stringify(marker())}`,
+      ),
+      0,
+    );
+    const puts = () =>
+      readFileSync(join(dirs.sprites, 'calls.log'), 'utf8')
+        .split('\n')
+        .filter((l) => l.includes('--stdin') && l.includes('arriving.tgz')).length;
+    const walked = (dir) =>
+      readdirSync(dir, { recursive: true, withFileTypes: true })
+        .filter((e) => e.isFile())
+        .map((e) => e.name)
+        .sort();
+    expect(
+      'CLOUD-3 a carried folder is copied whole in one go, with nothing beside its files',
+      truth(
+        up.stdout.includes('Copied packs/images there: 2 files, 1 KB.') &&
+          readFileSync(join(clone, 'packs/images/hero.png'), 'utf8') === 'hero' &&
+          readFileSync(join(clone, 'packs/images/place/well.png'), 'utf8') === 'well' &&
+          walked(join(clone, 'packs')).join() === 'hero.png,well.png' &&
+          !existsSync(join(clone, '.claude/state/cloud/carried/arriving.tgz')) &&
+          puts() === 1,
+        `${up.stdout}\n${walked(join(clone, 'packs')).join()}`,
+      ),
+      0,
+    );
+    expect(
+      'CLOUD-3 and names the plugins on the computer that the machine does not have',
+      truth(up.stdout.includes("aren't on the machine: arch-diagram@arch-diagram"), up.stdout),
+      0,
+    );
+    expect(
+      'CLOUD-11 the machine is named from the project and its remote, and its global git ignore is emptied',
+      truth(
+        /^ck-code-kit-test-[a-z0-9-]+-[0-9a-f]{8}$/.test(machine) &&
+          execFileSync(
+            'git',
+            ['config', '--file', join(mHome, '.gitconfig'), 'core.excludesFile'],
+            {
+              encoding: 'utf8',
+            },
+          ).trim() === '/dev/null' &&
+          existsSync(join(clone, 'build/main.ts')),
+        machine,
+      ),
+      0,
+    );
+    // CLOUD-12: the lead's session in a browser, at the machine's own address.
+    const address = `https://${machine}-fake.sprites.app`;
+    const readThere = (f) => {
+      try {
+        return readFileSync(join(mHome, f), 'utf8');
+      } catch {
+        return '';
+      }
+    };
+    const services = () => readThere('services.log').split('\n').filter(Boolean);
+    const page = () =>
+      readThere(join('projects', basename(clone), '.claude/state/cloud/terminal.html'));
+    const startFile = join(clone, '.claude/state/cloud/terminal.sh');
+    // A developer's own computer may have ttyd, which the stand-in machine then finds too.
+    const ownTtyd =
+      spawnSync('bash', ['-c', 'command -v ttyd'], { env: envWith(dirs.noSprite) }).status === 0;
+    expect(
+      'CLOUD-12 up installs the terminal server the image lacks, from the image’s own source and without a prompt',
+      truth(
+        ownTtyd ||
+          (up.stdout.includes('Installing ttyd there') &&
+            readThere('sudo.log').includes(
+              '-n env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq -o Dpkg::Use-Pty=0 ttyd',
+            )),
+        `${up.stdout}\n${readThere('sudo.log')}`,
+      ),
+      0,
+    );
+    expect(
+      'CLOUD-12 and has the platform serve it at the machine’s address, on the port the address is routed to, running what joins the lead’s session',
+      truth(
+        services().length === 2 &&
+          services()[0] === 'services delete code-kit-terminal' &&
+          services()[1].startsWith('services create code-kit-terminal --cmd ') &&
+          services()[1].includes(
+            `--args -p,7681,-W,-O,-I,${clone}/.claude/state/cloud/terminal.html,-t,titleFixed=${basename(clone)},-t,disableLeaveAlert=true,${startFile} `,
+          ) &&
+          services()[1].endsWith(`--dir ${clone} --http-port 7681 --no-stream`),
+        services().join('\n'),
+      ),
+      0,
+    );
+    expect(
+      'CLOUD-12 the page it serves is the terminal’s own with the keys a phone lacks put at the end of its body',
+      truth(
+        page().startsWith('<!DOCTYPE html><html><head><title>ttyd - Terminal</title>') &&
+          page().includes('/* the terminal */</script><meta') &&
+          page().includes('<div id="ck-keys"') &&
+          page().includes("['⇧Tab'") &&
+          page().endsWith('</script>\n</body></html>'),
+        page().slice(0, 400),
+      ),
+      0,
+    );
+    expect(
+      'CLOUD-12 the address is on both markers, and up names it with who the platform lets in',
+      truth(
+        marker()?.terminal === address &&
+          JSON.parse(readFileSync(join(clone, '.claude/state/cloud.json'), 'utf8')).terminal ===
+            address &&
+          up.stdout.includes(`Or open it in a browser, a phone's too: ${address}`) &&
+          up.stdout.includes('Fly asks who you are first'),
+        `${up.stdout}\n${JSON.stringify(marker())}`,
+      ),
+      0,
+    );
+    expect(
+      'CLOUD-12 what the terminal runs has the environment the adapter’s commands have there, which a service is not given',
+      truth(
+        readFileSync(startFile, 'utf8').includes(`export PATH='${dirs.there}:`) &&
+          readFileSync(startFile, 'utf8').includes(
+            "export NODE_OPTIONS='--dns-result-order=ipv4first'",
+          ) &&
+          readFileSync(startFile, 'utf8').includes('cloud join') &&
+          (statSync(startFile).mode & 0o100) !== 0,
+        readFileSync(startFile, 'utf8'),
+      ),
+      0,
+    );
+
+    const again = cCli(['cloud', 'up']);
+    expect(
+      'CLOUD-3 up run again on a ready machine does only what is left: nothing',
+      truth(
+        again.status === 0 &&
+          again.stdout.includes(`${machine} is there on Sprites`) &&
+          readFileSync(join(mHome, 'prepared.log'), 'utf8') === 'ran\n' &&
+          machines().length === 1,
+        both(again),
+      ),
+      0,
+    );
+    expect(
+      'CLOUD-3 a carried folder that has not changed is not copied again',
+      truth(
+        again.stdout.includes('packs/images is there as it is here.') && puts() === 1,
+        again.stdout,
+      ),
+      0,
+    );
+    // An image made on the machine, and one changed on the computer since.
+    writeFileSync(join(clone, 'packs/images/made-there.png'), 'there');
+    cPut('packs/images/hero.png', 'a new hero');
+    const recopied = cCli(['cloud', 'up']);
+    expect(
+      'CLOUD-3 one that changed on the computer is copied again, and what the machine made in it stays',
+      truth(
+        recopied.stdout.includes('Copied packs/images there: 2 files') &&
+          puts() === 2 &&
+          readFileSync(join(clone, 'packs/images/hero.png'), 'utf8') === 'a new hero' &&
+          readFileSync(join(clone, 'packs/images/made-there.png'), 'utf8') === 'there',
+        recopied.stdout,
+      ),
+      0,
+    );
+    cPut('.claude/code-kit.json', withCloud({ ...cloud, prepare: `${prepare}; true` }));
+    const changed = cCli(['cloud', 'up']);
+    cPut('.claude/code-kit.json', withCloud(cloud));
+    expect(
+      'CLOUD-11 a prepare that changed runs again',
+      truth(
+        changed.status === 0 && readFileSync(join(mHome, 'prepared.log'), 'utf8') === 'ran\nran\n',
+        both(changed),
+      ),
+      0,
+    );
+
+    // CLOUD-12: an address anyone can open serves no terminal, and one that did stops.
+    writeFileSync(join(dirs.sprites, 'public'), '');
+    const servedBefore = services().length;
+    const opened12 = cCli(['cloud', 'up']);
+    rmSync(join(dirs.sprites, 'public'));
+    expect(
+      'CLOUD-12 a machine whose address is open to anyone serves no terminal: up says so, takes away the one it served, and the project still goes up',
+      truth(
+        opened12.status === 0 &&
+          opened12.stdout.includes('its address is open to anyone who has it') &&
+          opened12.stdout.includes(`sprite config update --url-auth sprite -s ${machine}`) &&
+          opened12.stdout.includes('is ready') &&
+          services().length === servedBefore + 1 &&
+          services().at(-1) === 'services delete code-kit-terminal' &&
+          marker()?.terminal === undefined,
+        `${both(opened12)}\n${services().join('\n')}`,
+      ),
+      0,
+    );
+    writeFileSync(join(mHome, 'port-taken'), '');
+    const taken = cCli(['cloud', 'up']);
+    rmSync(join(mHome, 'port-taken'));
+    expect(
+      'CLOUD-12 when the platform cannot serve it, up says why in the platform’s words and carries on',
+      truth(
+        taken.status === 0 &&
+          taken.stdout.includes(
+            "Sprites couldn't serve it: error: another service has the HTTP port",
+          ) &&
+          marker()?.terminal === undefined,
+        both(taken),
+      ),
+      0,
+    );
+    const servedAgain = cCli(['cloud', 'up']);
+    expect(
+      'CLOUD-12 up run again serves it once it can',
+      truth(servedAgain.status === 0 && marker()?.terminal === address, both(servedAgain)),
+      0,
+    );
+    cPut('.claude/code-kit.json', withCloud({ ...cloud, terminal: false }));
+    const off = cCli(['cloud', 'up']);
+    cPut('.claude/code-kit.json', withCloud(cloud));
+    expect(
+      'CLOUD-12 with "terminal": false, up takes the terminal away and leaves the address alone',
+      truth(
+        off.status === 0 &&
+          off.stdout.includes('"cloud.terminal" is off') &&
+          services().at(-1) === 'services delete code-kit-terminal' &&
+          marker()?.terminal === undefined &&
+          !off.stdout.includes('open it in a browser'),
+        both(off),
+      ),
+      0,
+    );
+    expect(
+      'CLOUD-1 check names a terminal setting that is not true or false',
+      badly({ sprites: {}, terminal: 'yes' }, '"cloud.terminal" must be true or false'),
+      0,
+    );
+    cCli(['cloud', 'up']);
+
+    // CLOUD-6: one place at a time.
+    const startHere = () =>
+      spawnSync('node', [join(hooks, 'session.mjs'), 'start'], {
+        input: JSON.stringify({ cwd: c.dir, session_id: 'cccc2222-s' }),
+        env: { ...process.env, CLAUDE_PROJECT_DIR: c.dir },
+        encoding: 'utf8',
+      });
+    const dispatchHere = () =>
+      spawnSync('node', [join(hooks, 'guard-agent.mjs')], {
+        input: JSON.stringify({
+          cwd: c.dir,
+          session_id: 'cccc2222-s',
+          tool_name: 'Agent',
+          tool_input: { subagent_type: 'web-engineer', description: 'ST-4 the form', prompt: 'x' },
+        }),
+        env: { ...process.env, CLAUDE_PROJECT_DIR: c.dir },
+        encoding: 'utf8',
+      });
+    expect(
+      'CLOUD-6 a session starting on the computer is told the project is on its machine',
+      truth(
+        startHere().stdout.includes(`runs on its cloud machine (${machine}`),
+        startHere().stdout,
+      ),
+      0,
+    );
+    expect(
+      'CLOUD-6 a lane agent started there is refused, with both ways on',
+      dispatchHere(),
+      2,
+      'code-kit cloud open',
+    );
+    expect(
+      'CLOUD-6 and the refusal names bringing it home',
+      dispatchHere(),
+      2,
+      'code-kit cloud down',
+    );
+    const nextHere = () => JSON.parse(cCli(['next', '--json']).stdout || '{"step":"unreadable"}');
+    expect(
+      'CLOUD-6 next on the computer waits, saying where the work is',
+      truth(
+        nextHere().step === 'wait' && nextHere().why.includes('runs on its cloud machine'),
+        JSON.stringify(nextHere()),
+      ),
+      0,
+    );
+
+    // CLOUD-4: the lead's session, in a terminal that stays.
+    const tmuxLog = () => {
+      try {
+        return readFileSync(join(mHome, 'tmux.log'), 'utf8').split('\n').filter(Boolean);
+      } catch {
+        return [];
+      }
+    };
+    const leads = () => tmuxLog().filter((l) => l.startsWith('new code-kit-lead '));
+    const opened = cCli(['cloud', 'open']);
+    expect(
+      'CLOUD-4 open starts Claude Code in the clone with permission prompts off, and the watcher beside it; with no terminal, a first session is said to wait at its first-run questions',
+      truth(
+        opened.status === 0 &&
+          opened.stdout.includes('waiting there at its first-run questions') &&
+          opened.stdout.includes("the person's to answer") &&
+          leads().length === 1 &&
+          leads()[0].endsWith('claude --permission-mode bypassPermissions') &&
+          tmuxLog().some((l) => l.startsWith('new code-kit-watch ') && l.includes('cloud watch')),
+        `${both(opened)}\n${tmuxLog().join('\n')}`,
+      ),
+      0,
+    );
+    expect(
+      'CLOUD-11 what code-kit starts on a Sprite has Node look for localhost at 127.0.0.1 first, where a browser there looks',
+      truth(
+        readFileSync(join(mHome, 'tmux-env.log'), 'utf8')
+          .split('\n')
+          .filter(Boolean)
+          .every((l) => l.split(' ').includes('--dns-result-order=ipv4first')),
+        readFileSync(join(mHome, 'tmux-env.log'), 'utf8'),
+      ),
+      0,
+    );
+    const ownOrder = spawnSync(
+      'node',
+      [
+        '--input-type=module',
+        '-e',
+        `import sprites from ${JSON.stringify(join(here, '..', 'hooks/lib/adapters/sprites.mjs'))}; process.stdout.write(sprites.run(${JSON.stringify(machine)}, 'printf %s "$NODE_OPTIONS"').stdout);`,
+      ],
+      { encoding: 'utf8', env: { ...env, NODE_OPTIONS: '--dns-result-order=verbatim' } },
+    );
+    expect(
+      'CLOUD-11 and an order the machine was given already stays',
+      truth(ownOrder.stdout === '--dns-result-order=verbatim', both(ownOrder)),
+      0,
+    );
+    const joined = cCli(['cloud', 'open']);
+    expect(
+      'CLOUD-4 a session already open there is joined, never started twice',
+      truth(joined.stdout.includes('is open on') && leads().length === 1, both(joined)),
+      0,
+    );
+    const attached = atTerminal(['cloud', 'open'], '', env);
+    expect(
+      'CLOUD-4 at a terminal, open joins the person to it',
+      truth(both(attached).includes('attached code-kit-lead'), both(attached)),
+      0,
+    );
+
+    // CLOUD-7: on the machine, the watcher ends an idle session; a tool call running keeps it.
+    const thereEnv = {
+      ...env,
+      HOME: mHome,
+      PATH: `${dirs.there}:${env.PATH}`,
+      CLAUDE_PROJECT_DIR: clone,
+    };
+    const there = (...args) =>
+      spawnSync('node', [kitCli, ...args], { cwd: clone, encoding: 'utf8', env: thereEnv });
+    const act = (mode, id = 'toolu_1', more = {}) =>
+      spawnSync('node', [join(hooks, 'act.mjs'), mode], {
+        input: JSON.stringify({
+          cwd: clone,
+          session_id: 'mmmm1111-s',
+          tool_name: 'Bash',
+          tool_use_id: id,
+          tool_input: { command: 'npm test' },
+          ...more,
+        }),
+        env: thereEnv,
+        encoding: 'utf8',
+      });
+    const here32 = () => JSON.parse(there('cloud', 'here').stdout || '{}');
+    act('start');
+    const idle = (minutes) => {
+      const at = new Date(Date.now() - minutes * 60_000);
+      utimesSync(join(clone, '.claude/state/cloud/last'), at, at);
+    };
+    idle(40);
+    const working = there('cloud', 'watch', '--once');
+    expect(
+      'CLOUD-7 a tool call still running keeps the session, however long it takes',
+      truth(
+        here32().activity?.open === 1 &&
+          working.stdout.includes('1 tool call running') &&
+          existsSync(join(mHome, '.tmux/code-kit-lead')),
+        both(working),
+      ),
+      0,
+    );
+    const holds = () => {
+      try {
+        return readFileSync(join(mHome, 'curl.log'), 'utf8').split('\n').filter(Boolean);
+      } catch {
+        return [];
+      }
+    };
+    expect(
+      'CLOUD-7 while the session is open, the watcher asks the platform to keep the machine running until its look after next',
+      truth(
+        holds().length === 1 &&
+          holds()[0].includes('--unix-socket /.sprite/api.sock -X PUT') &&
+          holds()[0].includes('{"expire":180}') &&
+          holds()[0].endsWith('http://sprite/v1/tasks/code-kit'),
+        holds().join('\n'),
+      ),
+      0,
+    );
+    act('end');
+    // A call a guard refuses gets no end: it counts while its agent's turn goes on, and no longer.
+    const lane9 = { agent_id: 'agent-9', agent_type: 'web-engineer' };
+    act('start', 'toolu_refused');
+    act('start', 'toolu_lane', lane9);
+    const turnEnds = (more = {}) =>
+      spawnSync('node', [join(hooks, 'stop-check.mjs')], {
+        input: JSON.stringify({ cwd: clone, session_id: 'mmmm1111-s', ...more }),
+        env: thereEnv,
+        encoding: 'utf8',
+      });
+    const midTurn = here32().activity?.open;
+    turnEnds({ hook_event_name: 'Stop' });
+    const leadDone = here32().activity?.open;
+    turnEnds({ hook_event_name: 'SubagentStop', ...lane9 });
+    expect(
+      'CLOUD-7 a call a guard refused stops counting as running when its agent’s turn ends: the lead’s, then a lane agent’s',
+      truth(
+        midTurn === 2 && leadDone === 1 && here32().activity?.open === 0,
+        `${midTurn}, ${leadDone}, ${here32().activity?.open}`,
+      ),
+      0,
+    );
+    idle(3);
+    const quiet = there('cloud', 'watch', '--once');
+    expect(
+      'CLOUD-7 and three idle minutes of five do not end it',
+      truth(
+        here32().activity?.open === 0 &&
+          quiet.stdout.includes('3 of 5 idle minutes') &&
+          existsSync(join(mHome, '.tmux/code-kit-lead')),
+        both(quiet),
+      ),
+      0,
+    );
+    idle(6);
+    const ended = there('cloud', 'watch', '--once');
+    expect(
+      'CLOUD-7 after idleMinutes with nothing moving, the watcher ends the lead’s session and lets go of the hold, so the machine sleeps',
+      truth(
+        ended.stdout.includes('was ended after 5 idle minutes') &&
+          !existsSync(join(mHome, '.tmux/code-kit-lead')) &&
+          holds().at(-1).includes('-X DELETE http://sprite/v1/tasks/code-kit'),
+        both(ended),
+      ),
+      0,
+    );
+    // A conversation the ended session left, which the next one continues.
+    // Claude Code names the folder from where it runs, as the system gives that path.
+    const conversations = join(
+      mHome,
+      '.claude/projects',
+      realpathSync(clone).replace(/[^A-Za-z0-9]/g, '-'),
+    );
+    mkdirSync(conversations, { recursive: true });
+    writeFileSync(join(conversations, 'one.jsonl'), '{}\n');
+    // A call the ended session was killed in the middle of, which no new session is running.
+    act('start', 'toolu_killed');
+    const reopened = cCli(['cloud', 'open']);
+    expect(
+      'CLOUD-7 the next open continues its conversation and says why the last one ended',
+      truth(
+        reopened.stdout.includes('The last session there was ended after 5 idle minutes') &&
+          reopened.stdout.includes("It's running there with nobody attached") &&
+          !reopened.stdout.includes('first-run questions') &&
+          here32().activity?.open === 0 &&
+          leads().length === 2 &&
+          leads()[1].endsWith('--continue'),
+        `${both(reopened)}\n${leads().join('\n')}`,
+      ),
+      0,
+    );
+    // A question to the person is a tool call that stays open until they answer, and it's no work.
+    const asks = { tool_name: 'AskUserQuestion', tool_input: { questions: [] } };
+    act('start', 'toolu_ask', asks);
+    idle(3);
+    const asking = there('cloud', 'watch', '--once');
+    const seenAsking = cCli(['cloud']);
+    expect(
+      'CLOUD-7 a question waiting on the person is no tool call running, and the computer sees it wait',
+      truth(
+        here32().activity?.open === 0 &&
+          here32().activity?.asking === 1 &&
+          asking.stdout.includes('its question has waited 3 of 5 minutes for an answer') &&
+          seenAsking.stdout.includes("The lead's session waits on your answer to a question") &&
+          seenAsking.stdout.includes('Unanswered for 5 minutes') &&
+          existsSync(join(mHome, '.tmux/code-kit-lead')),
+        `${both(asking)}\n${both(seenAsking)}`,
+      ),
+      0,
+    );
+    act('start', 'toolu_beside', lane9);
+    idle(6);
+    const besideIt = there('cloud', 'watch', '--once');
+    expect(
+      'CLOUD-7 a lane agent working beside the question keeps the session, however long the question waits',
+      truth(
+        besideIt.stdout.includes('1 tool call running') &&
+          existsSync(join(mHome, '.tmux/code-kit-lead')),
+        both(besideIt),
+      ),
+      0,
+    );
+    act('end', 'toolu_beside', lane9);
+    act('end', 'toolu_ask', asks);
+    const answered = here32().activity?.asking;
+    act('start', 'toolu_ask_2', { tool_name: 'ExitPlanMode', tool_input: {} });
+    idle(6);
+    const unanswered = there('cloud', 'watch', '--once');
+    expect(
+      'CLOUD-7 an answer ends the wait, and a question or a plan unanswered for idleMinutes ends the session, so the machine sleeps',
+      truth(
+        answered === 0 &&
+          unanswered.stdout.includes(
+            'was ended after its question waited 5 minutes for an answer',
+          ) &&
+          !existsSync(join(mHome, '.tmux/code-kit-lead')) &&
+          holds().at(-1).includes('-X DELETE http://sprite/v1/tasks/code-kit') &&
+          here32().ended?.asked === true,
+        both(unanswered),
+      ),
+      0,
+    );
+    const askedAgain = cCli(['cloud', 'open']);
+    expect(
+      'CLOUD-7 the next open continues the conversation and has the lead ask its question again',
+      truth(
+        askedAgain.stdout.includes(
+          'The last session there was ended after its question waited 5 minutes for an answer. Started a new one, which continues its conversation and asks its question again.',
+        ) &&
+          leads()
+            .at(-1)
+            .includes(
+              "--continue 'code-kit ended this session while a question of yours waited for an answer",
+            ) &&
+          here32().activity?.asking === 0,
+        `${both(askedAgain)}\n${leads().join('\n')}`,
+      ),
+      0,
+    );
+    act('start', 'toolu_ask_3', asks);
+    const stoppedAsking = cCli(['cloud', 'stop']);
+    const afterStop = cCli(['cloud', 'open']);
+    expect(
+      'CLOUD-7 a session stopped from the computer at a question asks it again when next opened',
+      truth(
+        stoppedAsking.status === 0 &&
+          afterStop.stdout.includes(
+            'The last session there was stopped from your computer. Started a new one, which continues its conversation and asks its question again.',
+          ) &&
+          leads().at(-1).includes("--continue 'code-kit ended this session"),
+        `${both(stoppedAsking)}\n${both(afterStop)}\n${leads().join('\n')}`,
+      ),
+      0,
+    );
+    claimLane(clone, { lane: 'web', story: 'ST-4', session: 'mmmm1111-s' });
+    const midStory = cCli(['cloud', 'stop']);
+    expect(
+      'CLOUD-7 stop while a lane works names the lane and story, and is the person’s to confirm',
+      truth(
+        midStory.status === 1 &&
+          midStory.stderr.includes('ST-4 in the web lane') &&
+          midStory.stderr.includes("the person's to confirm") &&
+          existsSync(join(mHome, '.tmux/code-kit-lead')),
+        both(midStory),
+      ),
+      0,
+    );
+    const held = cCli(['cloud', 'down']);
+    expect(
+      'CLOUD-9 down stops while a story is running there',
+      truth(
+        held.status === 1 &&
+          held.stderr.includes('Nothing was removed') &&
+          held.stderr.includes('ST-4 is running there in the web lane'),
+        both(held),
+      ),
+      0,
+    );
+    releaseLane(clone, 'web');
+    const stopped = cCli(['cloud', 'stop']);
+    expect(
+      'CLOUD-7 stop ends the session at once, from the computer',
+      truth(
+        stopped.status === 0 &&
+          !existsSync(join(mHome, '.tmux/code-kit-lead')) &&
+          !existsSync(join(mHome, '.tmux/code-kit-watch')),
+        both(stopped),
+      ),
+      0,
+    );
+
+    // CLOUD-12: what the machine's terminal runs for a browser that opens it, as the platform's service
+    // runs it: with next to nothing in its environment.
+    const fromBrowser = () =>
+      spawnSync('bash', [startFile], {
+        encoding: 'utf8',
+        env: {
+          HOME: mHome,
+          PATH: '/usr/bin:/bin',
+          FAKE_SPRITES: dirs.sprites,
+          FAKE_PLUGIN_ROOT: join(here, '..'),
+          FAKE_PLUGIN_VERSION: version,
+        },
+      });
+    const before12 = leads().length;
+    const browsed = fromBrowser();
+    expect(
+      'CLOUD-12 a browser that opens the terminal with no session open starts the lead’s session, continuing its conversation, with the watcher, and is joined to it',
+      truth(
+        browsed.status === 0 &&
+          browsed.stdout.includes('The last session there was stopped from your computer') &&
+          leads().length === before12 + 1 &&
+          leads().at(-1).endsWith('--continue') &&
+          existsSync(join(mHome, '.tmux/code-kit-watch')) &&
+          browsed.stdout.includes('attached code-kit-lead') &&
+          readThere('tmux-env.log')
+            .trim()
+            .split('\n')
+            .at(-1)
+            .includes('--dns-result-order=ipv4first'),
+        `${both(browsed)}\n${leads().join('\n')}`,
+      ),
+      0,
+    );
+    const browsedAgain = fromBrowser();
+    expect(
+      'CLOUD-12 a second browser joins the same session',
+      truth(
+        browsedAgain.stdout.includes('attached code-kit-lead') && leads().length === before12 + 1,
+        both(browsedAgain),
+      ),
+      0,
+    );
+    expect(
+      'CLOUD-12 cloud join is the machine’s: on the computer it says so, and names cloud open',
+      truth(
+        cCli(['cloud', 'join']).status === 1 &&
+          cCli(['cloud', 'join']).stderr.includes("runs on the project's machine") &&
+          cCli(['cloud', 'join']).stderr.includes('code-kit cloud open'),
+        both(cCli(['cloud', 'join'])),
+      ),
+      0,
+    );
+    cCli(['cloud', 'stop']);
+
+    // CLOUD-8: what the person sees from the computer.
+    inClone('switch', '-q', '-c', 'web/st-9');
+    mkdirSync(join(clone, 'apps/office/lib'), { recursive: true });
+    writeFileSync(join(clone, 'apps/office/lib/nine.ts'), 'export const nine = 9;\n');
+    inClone('add', '-A');
+    inClone('commit', '-q', '-m', 'ST-9');
+    inClone('switch', '-q', 'main');
+    const seen = cCli(['cloud']);
+    expect(
+      'CLOUD-8 cloud shows the sign-ins, with GitHub’s scopes, and code-kit’s version on both sides',
+      truth(
+        seen.status === 0 &&
+          seen.stdout.includes('Claude: signed in (max), until ') &&
+          seen.stdout.includes(
+            'GitHub: kim, with a token for gist, repo (every repository that account has)',
+          ) &&
+          seen.stdout.includes(`code-kit ${version} there, ${version} here`),
+        both(seen),
+      ),
+      0,
+    );
+    expect(
+      'CLOUD-8 and what is on the machine that is not on the remote',
+      truth(
+        seen.stdout.includes("web/st-9 has 1 commit there that isn't on the remote") &&
+          seen.stdout.includes('Nothing is open on it'),
+        seen.stdout,
+      ),
+      0,
+    );
+    expect(
+      'CLOUD-12 cloud names the terminal’s address, cloud --json carries it, and the machine reports it of itself',
+      truth(
+        seen.stdout.includes(`Its terminal, in a browser: ${address}`) &&
+          JSON.parse(cCli(['cloud', '--json']).stdout).terminal === address &&
+          here32().terminal === address,
+        seen.stdout,
+      ),
+      0,
+    );
+    expect(
+      'CLOUD-8 cloud --json gives the same for tools',
+      truth(
+        JSON.parse(cCli(['cloud', '--json']).stdout).state.notOnRemote.branches[0].branch ===
+          'web/st-9',
+      ),
+      0,
+    );
+    expect(
+      'CLOUD-8 next names a Claude sign-in that ends within three days, from the last report',
+      truth(
+        nextHere().attention.some(
+          (l) => l.includes('The Claude sign-in on') && l.includes('code-kit cloud signin'),
+        ),
+        JSON.stringify(nextHere().attention),
+      ),
+      0,
+    );
+    expect(
+      'CLOUD-5 a commit made on the machine is authored as the computer’s clone is',
+      truth(inClone('log', '-1', '--format=%an <%ae>', 'web/st-9') === 'Kim Lee <kim@example.com>'),
+      0,
+    );
+
+    // CLOUD-9: bringing the project home.
+    const unpushed = cCli(['cloud', 'down']);
+    expect(
+      'CLOUD-9 down stops while a branch on the machine is not on the remote, naming it',
+      truth(
+        unpushed.status === 1 &&
+          unpushed.stderr.includes("web/st-9 has 1 commit there that isn't on the remote") &&
+          unpushed.stderr.includes('code-kit cloud down --discard') &&
+          machines().length === 1,
+        both(unpushed),
+      ),
+      0,
+    );
+    expect(
+      'CLOUD-9 a Claude session may not remove the machine with what is on it',
+      spawnSync('node', [join(hooks, 'guard-bash.mjs')], {
+        input: JSON.stringify({
+          cwd: c.dir,
+          tool_input: { command: `node "${kitCli}" cloud down --discard` },
+        }),
+        env: { ...process.env, CLAUDE_PROJECT_DIR: c.dir },
+        encoding: 'utf8',
+      }),
+      2,
+      "the person's own act",
+    );
+    inClone('push', '-q', 'origin', 'web/st-9');
+    const down = cCli(['cloud', 'down']);
+    expect(
+      'CLOUD-9 with everything on the remote, down removes the machine and the marker',
+      truth(
+        down.status === 0 &&
+          machines().length === 0 &&
+          marker() === null &&
+          down.stdout.includes('git pull'),
+        both(down),
+      ),
+      0,
+    );
+    expect(
+      'CLOUD-9 and cloud says the project is on this computer',
+      truth(cCli(['cloud']).stdout.includes("The project's work is on this computer"), ''),
+      0,
+    );
+    expect('CLOUD-6 after down, a lane agent starts on the computer again', dispatchHere(), 0);
+
+    // What the project carries doesn't arrive: the machine isn't ready, and the work stays here.
+    releaseLane(c.dir, 'web');
+    writeFileSync(join(dirs.sprites, 'uploads-drop'), '');
+    const dropped = atTerminal(['cloud', 'up'], 'y\ny\n', env);
+    expect(
+      'CLOUD-3 when what it carries does not arrive, up stops, says what and why, and the project stays on the computer',
+      truth(
+        both(dropped).includes("packs/images couldn't be copied there: Error: connection lost") &&
+          both(dropped).includes("isn't ready: .env.local, packs/images didn't arrive") &&
+          !both(dropped).includes('is ready') &&
+          marker() === null,
+        both(dropped),
+      ),
+      0,
+    );
+    rmSync(join(dirs.sprites, 'uploads-drop'));
+    const arrived = cCli(['cloud', 'up']);
+    expect(
+      'CLOUD-3 and up run again copies what is missing and carries on',
+      truth(
+        arrived.status === 0 &&
+          arrived.stdout.includes('Copied packs/images there') &&
+          arrived.stdout.includes('is ready') &&
+          marker() !== null,
+        both(arrived),
+      ),
+      0,
+    );
+    cCli(['cloud', 'down']);
+
+    // CLOUD-13 to CLOUD-15: a machine made with nobody at a computer, by the workflow a repository commits.
+    {
+      const printed = cCli(['cloud', 'workflow']);
+      expect(
+        'CLOUD-15 cloud workflow prints the machine workflow: the platform’s sign-in from the repository’s secret, and this code-kit’s unattended commands',
+        truth(
+          printed.status === 0 &&
+            printed.stdout.includes('workflow_dispatch') &&
+            printed.stdout.includes('SPRITES_TOKEN: ${{ secrets.SPRITES_TOKEN }}') &&
+            printed.stdout.includes('sprite auth setup --token "$SPRITES_TOKEN"') &&
+            printed.stdout.includes(`CODE_KIT: npx --yes @warren-dean/code-kit@${version}`) &&
+            printed.stdout.includes(
+              '$CODE_KIT cloud up --unattended --platform sprites --stage machine',
+            ) &&
+            printed.stdout.includes(
+              '$CODE_KIT cloud down --unattended --platform sprites $DISCARD',
+            ) &&
+            !/(?<!\$)\{\{\w+\}\}/.test(printed.stdout),
+          both(printed),
+        ),
+        0,
+      );
+      const wrote = cCli(['cloud', 'workflow', '--write']);
+      const workflowFile = join(c.dir, '.github/workflows/code-kit-machine.yml');
+      expect(
+        'CLOUD-15 with --write it is put where the repository keeps it, with what to do next, and a second run changes nothing',
+        truth(
+          wrote.status === 0 &&
+            readFileSync(workflowFile, 'utf8') === printed.stdout &&
+            wrote.stdout.includes('add the SPRITES_TOKEN secret') &&
+            wrote.stdout.includes('gh workflow run code-kit-machine.yml -f act=up') &&
+            cCli(['cloud', 'workflow', '--write']).stdout.includes("is code-kit's already"),
+          both(wrote),
+        ),
+        0,
+      );
+      rmSync(join(c.dir, '.github'), { recursive: true, force: true });
+
+      // A workflow's checkout: the remote's own commits, nobody's git name, none of what git ignores.
+      const runner = join(world, 'runner', 'app');
+      mkdirSync(dirname(runner), { recursive: true });
+      execFileSync('git', ['clone', '-q', ADDRESS, runner], { env });
+      const wCli = (args, e = env) =>
+        spawnSync('node', [kitCli, ...args], { cwd: runner, encoding: 'utf8', env: e });
+      const un = (...args) => wCli(['cloud', ...args, '--unattended', '--platform', 'sprites']);
+      expect(
+        'CLOUD-13 a Claude session may not run a cloud command unattended',
+        wCli(['cloud', 'down', '--unattended', '--discard'], { ...env, CLAUDECODE: '1' }),
+        1,
+        'is for the machine workflow',
+      );
+      expect(
+        'CLOUD-13 a stage goes with up unattended, and is one code-kit knows',
+        truth(
+          wCli(['cloud', 'up', '--stage', 'clone']).status === 1 &&
+            un('up', '--stage', 'ready').stderr.includes('`--stage machine` and `--stage clone`'),
+        ),
+        0,
+      );
+      writeFileSync(join(dirs.sprites, 'signed-out'), '');
+      const signedOut = un('up');
+      expect(
+        'CLOUD-13 unattended, with the platform’s command not signed in, up stops and names the workflow that signs it in',
+        truth(
+          signedOut.status === 1 &&
+            signedOut.stderr.includes('nobody is here to install it or sign in') &&
+            signedOut.stderr.includes('code-kit cloud workflow') &&
+            machines().length === 0,
+          both(signedOut),
+        ),
+        0,
+      );
+      rmSync(join(dirs.sprites, 'signed-out'));
+      expect(
+        'CLOUD-13 with no machine yet, start, stop and the rest say so',
+        un('stop'),
+        1,
+        'This repository has no machine yet',
+      );
+      const stage1 = un('up', '--stage', 'machine');
+      const [machine2] = machines();
+      const home2 = join(dirs.sprites, machine2 ?? 'none');
+      const clone2 = join(home2, 'projects', 'app');
+      expect(
+        'CLOUD-13 the first stage makes the machine and stops there',
+        truth(
+          stage1.status === 0 &&
+            machines().length === 1 &&
+            /^ck-app-[0-9a-f]{8}$/.test(machine2) &&
+            stage1.stdout.includes(`Made ${machine2} on Sprites.`) &&
+            !existsSync(clone2),
+          both(stage1),
+        ),
+        0,
+      );
+      const shallow = join(world, 'runner-shallow', 'app');
+      mkdirSync(dirname(shallow), { recursive: true });
+      execFileSync('git', ['clone', '-q', '--depth', '1', `file://${dirs.bare}`, shallow], { env });
+      execFileSync('git', ['-C', shallow, 'remote', 'set-url', 'origin', ADDRESS], { env });
+      const depthOne = spawnSync(
+        'node',
+        [kitCli, 'cloud', 'up', '--unattended', '--platform', 'sprites', '--stage', 'clone'],
+        { cwd: shallow, encoding: 'utf8', env },
+      );
+      expect(
+        'CLOUD-13 a checkout of only the latest commit is refused, naming fetch-depth',
+        truth(
+          depthOne.status === 1 &&
+            depthOne.stderr.includes('`fetch-depth: 0`') &&
+            !existsSync(clone2),
+          both(depthOne),
+        ),
+        0,
+      );
+      const stage2 = un('up', '--stage', 'clone');
+      const in2 = (...args) =>
+        execFileSync('git', ['-C', clone2, ...args], { encoding: 'utf8', env }).trim();
+      expect(
+        'CLOUD-13 the second stage copies the checkout’s own commits to a machine that can’t clone yet, with the remote’s address set',
+        truth(
+          stage2.status === 0 &&
+            stage2.stdout.includes("isn't signed in yet. Its owner signs in at its terminal") &&
+            stage2.stdout.includes(`Copying main to ${machine2}`) &&
+            in2('rev-parse', 'HEAD') ===
+              execFileSync('git', ['-C', runner, 'rev-parse', 'HEAD'], {
+                encoding: 'utf8',
+              }).trim() &&
+            in2('config', 'remote.origin.url') === ADDRESS &&
+            in2('branch', '--show-current') === 'main' &&
+            !existsSync(`${clone2}.bundle`) &&
+            !existsSync(join(clone2, '.claude/state/cloud.json')),
+          both(stage2),
+        ),
+        0,
+      );
+      const made = un('up');
+      const marker2 = () => {
+        try {
+          return JSON.parse(readFileSync(join(clone2, '.claude/state/cloud.json'), 'utf8'));
+        } catch {
+          return null;
+        }
+      };
+      expect(
+        'CLOUD-13 the rest installs code-kit and the terminal there, asks nobody anything, and says the machine waits for its owner’s sign-ins at its terminal',
+        truth(
+          made.status === 0 &&
+            !both(made).includes('[y/N]') &&
+            made.stdout.includes(`${machine2} is there on Sprites.`) &&
+            made.stdout.includes(`${machine2} is ready, and waits for its owner.`) &&
+            made.stdout.includes(
+              `Its terminal, in a browser: https://${machine2}-fake.sprites.app`,
+            ) &&
+            made.stdout.includes('asks them to sign in to GitHub and to Claude') &&
+            made.stdout.includes(
+              '"cloud.carry" names .env.local, which git ignores, so this checkout has none to copy',
+            ) &&
+            marker2()?.here === true &&
+            marker2()?.adapter === 'sprites' &&
+            marker2()?.terminal === `https://${machine2}-fake.sprites.app` &&
+            existsSync(join(home2, '.plugin-version')) &&
+            existsSync(join(clone2, '.claude/state/cloud/terminal.sh')) &&
+            readFileSync(join(home2, 'prepared.log'), 'utf8').trim() === 'ran',
+          both(made),
+        ),
+        0,
+      );
+      expect(
+        'CLOUD-13 and leaves no marker in the workflow’s checkout, and no git name on the machine that isn’t its owner’s',
+        truth(
+          !existsSync(join(runner, '.claude/state/cloud.json')) &&
+            spawnSync('git', ['-C', clone2, 'config', 'user.name'], {
+              encoding: 'utf8',
+              env: { ...env, HOME: home2 },
+            }).stdout.trim() === '',
+        ),
+        0,
+      );
+      const tmux2 = () => {
+        try {
+          return readFileSync(join(home2, 'tmux.log'), 'utf8').split('\n').filter(Boolean);
+        } catch {
+          return [];
+        }
+      };
+      const early = un('open');
+      expect(
+        'CLOUD-13 a start before the owner has signed in starts no session, and says where they sign in',
+        truth(
+          early.status === 0 &&
+            early.stdout.includes(
+              `No session was started: ${machine2} waits for its owner to sign in to GitHub and to Claude, which they do at its terminal: https://${machine2}-fake.sprites.app`,
+            ) &&
+            tmux2().length === 0,
+          both(early),
+        ),
+        0,
+      );
+
+      // CLOUD-14: the owner's first visit to the machine's terminal, which runs `cloud join` there.
+      const env2 = {
+        ...env,
+        HOME: home2,
+        PATH: `${dirs.there}:${env.PATH}`,
+        CLAUDE_PROJECT_DIR: clone2,
+      };
+      const piped = spawnSync('node', [kitCli, 'cloud', 'join'], {
+        cwd: clone2,
+        encoding: 'utf8',
+        env: env2,
+      });
+      expect(
+        'CLOUD-14 with no terminal to type in, join starts nothing and says the sign-ins take one',
+        truth(
+          piped.status === 1 &&
+            both(piped).includes('waits for its owner to sign in to GitHub and to Claude') &&
+            tmux2().length === 0,
+          both(piped),
+        ),
+        0,
+      );
+      const visit = (answers = '') =>
+        spawnSync('python3', ['-c', PTY, answers, 'node', kitCli, 'cloud', 'join'], {
+          cwd: clone2,
+          encoding: 'utf8',
+          env: env2,
+          timeout: 120_000,
+        });
+      writeFileSync(join(home2, 'no-access'), '');
+      const wrongAccount = visit('y\n');
+      expect(
+        'CLOUD-14 signed in to GitHub as an account that can’t fetch the project, the visit says so, offers to sign it out, and starts no session',
+        truth(
+          both(wrongAccount).includes('one-time code: ABCD-1234') &&
+            both(wrongAccount).includes(
+              "couldn't be fetched as them: remote: Repository not found.",
+            ) &&
+            both(wrongAccount).includes(
+              'Sign kim out here, to sign in as an account that can? [y/N]',
+            ) &&
+            !existsSync(join(home2, '.gh-login')) &&
+            tmux2().length === 0,
+          both(wrongAccount),
+        ),
+        0,
+      );
+      rmSync(join(home2, 'no-access'));
+      const first = visit();
+      const global2 = (key) =>
+        spawnSync('git', ['config', '--global', key], {
+          encoding: 'utf8',
+          env: { ...env, HOME: home2 },
+        }).stdout.trim();
+      expect(
+        'CLOUD-14 the owner’s first visit asks for GitHub’s device sign-in and then Claude’s own, each typed there, and then opens the lead’s session',
+        truth(
+          first.status === 0 &&
+            both(first).includes('it needs two sign-ins only you can give') &&
+            both(first).includes('https://github.com/login/device') &&
+            both(first).includes('one-time code: ABCD-1234') &&
+            both(first).includes('GitHub: signed in as kim.') &&
+            both(first).includes('Claude: signed in.') &&
+            both(first).indexOf('GitHub: signed in as kim.') <
+              both(first).indexOf('Claude, on your own subscription') &&
+            readFileSync(join(home2, 'claude.log'), 'utf8').includes('auth login') &&
+            tmux2().filter((l) => l.startsWith('new code-kit-lead ')).length === 1 &&
+            both(first).includes('attached code-kit-lead'),
+          both(first),
+        ),
+        0,
+      );
+      expect(
+        'CLOUD-14 with GitHub’s sign-in, git there uses it, the rest of the remote is fetched, and commits are the owner’s by GitHub’s own address for them',
+        truth(
+          existsSync(join(home2, '.gh-git-ready')) &&
+            in2('rev-parse', '--verify', '-q', 'origin/web/st-9') !== '' &&
+            global2('user.name') === 'Kim Lee' &&
+            global2('user.email') === '42+kim@users.noreply.github.com' &&
+            both(first).includes('Commits made here are Kim Lee <42+kim@users.noreply.github.com>'),
+          `${global2('user.name')} <${global2('user.email')}>`,
+        ),
+        0,
+      );
+      const again = visit();
+      expect(
+        'CLOUD-14 a later visit asks for nothing and joins the session',
+        truth(
+          again.status === 0 &&
+            !both(again).includes('sign-in') &&
+            both(again).includes('attached code-kit-lead') &&
+            tmux2().filter((l) => l.startsWith('new code-kit-lead ')).length === 1,
+          both(again),
+        ),
+        0,
+      );
+      const started = un('open');
+      expect(
+        'CLOUD-13 a start once the owner has signed in opens the session with nobody attached, and names its terminal',
+        truth(
+          started.status === 0 &&
+            started.stdout.includes(
+              `It's running there with nobody attached. Its owner joins it at its terminal: https://${machine2}-fake.sprites.app`,
+            ),
+          both(started),
+        ),
+        0,
+      );
+      const stopped2 = un('stop');
+      expect(
+        'CLOUD-13 a stop ends the session from a checkout that holds no marker',
+        truth(
+          stopped2.status === 0 &&
+            !existsSync(join(home2, '.tmux/code-kit-lead')) &&
+            stopped2.stdout.includes("Ended the lead's session"),
+          both(stopped2),
+        ),
+        0,
+      );
+      in2('switch', '-q', '-c', 'web/st-12');
+      writeFileSync(join(clone2, 'twelve.txt'), '12\n');
+      in2('add', '-A');
+      execFileSync('git', ['-C', clone2, 'commit', '-q', '-m', 'ST-12'], {
+        env: { ...env, HOME: home2 },
+      });
+      in2('switch', '-q', 'main');
+      const keeps = un('down');
+      expect(
+        'CLOUD-13 down keeps a machine with work that isn’t on the remote, naming it and the workflow’s discard',
+        truth(
+          keeps.status === 1 &&
+            keeps.stderr.includes("web/st-12 has 1 commit there that isn't on the remote") &&
+            keeps.stderr.includes("run the workflow's down with discard") &&
+            machines().length === 1,
+          both(keeps),
+        ),
+        0,
+      );
+      expect(
+        'CLOUD-13 a Claude session is refused the unattended discard by the guard too',
+        spawnSync('node', [join(hooks, 'guard-bash.mjs')], {
+          input: JSON.stringify({
+            cwd: c.dir,
+            tool_input: { command: `node "${kitCli}" cloud down --unattended --discard` },
+          }),
+          env: { ...process.env, CLAUDE_PROJECT_DIR: c.dir },
+          encoding: 'utf8',
+        }),
+        2,
+        "the person's own act",
+      );
+      const discarded = un('down', '--discard');
+      expect(
+        'CLOUD-13 with discard, chosen where the workflow was started, down removes it and asks nobody',
+        truth(
+          discarded.status === 0 &&
+            machines().length === 0 &&
+            discarded.stdout.includes(`Removing ${machine2} loses`) &&
+            discarded.stdout.includes('Nothing of the project is on a machine now.'),
+          both(discarded),
+        ),
+        0,
+      );
+      expect(
+        'CLOUD-13 and a down with no machine left says it was already gone',
+        truth(un('down').stdout.includes('was already gone'), both(un('down'))),
+        0,
+      );
+
+      // A repository code-kit isn't set up in yet: the workflow names the platform, and the machine's
+      // own marker does after that.
+      const bare3 = join(world, 'idea.git');
+      const ADDRESS3 = 'https://github.com/acme/idea.git';
+      execFileSync('git', ['init', '-q', '--bare', '-b', 'main', bare3]);
+      const env3 = {
+        ...env,
+        GIT_CONFIG_COUNT: '3',
+        GIT_CONFIG_KEY_2: `url.${bare3}.insteadOf`,
+        GIT_CONFIG_VALUE_2: ADDRESS3,
+      };
+      const idea = join(world, 'runner', 'idea');
+      mkdirSync(idea, { recursive: true });
+      const ideaGit = (...args) =>
+        execFileSync('git', ['-C', idea, '-c', 'user.email=t@t', '-c', 'user.name=t', ...args], {
+          encoding: 'utf8',
+          env: env3,
+        });
+      ideaGit('init', '-q', '-b', 'main');
+      writeFileSync(join(idea, 'README.md'), '# An idea\n');
+      ideaGit('add', '-A');
+      ideaGit('commit', '-q', '-m', 'An idea');
+      ideaGit('remote', 'add', 'origin', ADDRESS3);
+      ideaGit('push', '-q', '-u', 'origin', 'main');
+      const iCli = (...args) =>
+        spawnSync('node', [kitCli, 'cloud', ...args], { cwd: idea, encoding: 'utf8', env: env3 });
+      expect(
+        'CLOUD-13 in a repository with no config, a cloud command without a platform says the config is missing',
+        iCli('up', '--unattended'),
+        1,
+        '.claude/code-kit.json',
+      );
+      const ideaUp = iCli('up', '--unattended', '--platform', 'sprites');
+      const [machine3] = machines();
+      const home3 = join(dirs.sprites, machine3 ?? 'none');
+      const clone3 = join(home3, 'projects', 'idea');
+      expect(
+        'CLOUD-13 with the platform named by the workflow, a machine is made for a repository code-kit isn’t set up in yet',
+        truth(
+          ideaUp.status === 0 &&
+            ideaUp.stdout.includes(`${machine3} is ready, and waits for its owner.`) &&
+            existsSync(join(clone3, 'README.md')) &&
+            !existsSync(join(clone3, '.claude/code-kit.json')),
+          both(ideaUp),
+        ),
+        0,
+      );
+      const envThere3 = {
+        ...env3,
+        HOME: home3,
+        PATH: `${dirs.there}:${env.PATH}`,
+        CLAUDE_PROJECT_DIR: clone3,
+      };
+      const here3 = spawnSync('node', [kitCli, 'cloud', 'here'], {
+        cwd: clone3,
+        encoding: 'utf8',
+        env: envThere3,
+      });
+      const hook3 = (file, input) =>
+        spawnSync('node', [join(hooks, file), ...(file === 'act.mjs' ? ['start'] : [])], {
+          input: JSON.stringify({ cwd: clone3, session_id: 'idea1111-s', ...input }),
+          env: envThere3,
+          encoding: 'utf8',
+        });
+      hook3('act.mjs', {
+        tool_name: 'Bash',
+        tool_use_id: 'toolu_i',
+        tool_input: { command: 'ls' },
+      });
+      const acts3 = () => {
+        try {
+          return readdirSync(join(clone3, '.claude/state/cloud/acts')).length;
+        } catch {
+          return 0;
+        }
+      };
+      const noted = acts3();
+      hook3('stop-check.mjs', { hook_event_name: 'Stop' });
+      const watched3 = spawnSync('node', [kitCli, 'cloud', 'watch', '--once'], {
+        cwd: clone3,
+        encoding: 'utf8',
+        env: envThere3,
+      });
+      expect(
+        'CLOUD-13 there, with no config, the machine still reports itself, its tool calls are noted for the watcher, and the watcher holds it awake through the platform its marker names',
+        truth(
+          here3.status === 0 &&
+            JSON.parse(here3.stdout).terminal === `https://${machine3}-fake.sprites.app` &&
+            noted === 1 &&
+            acts3() === 0 &&
+            watched3.status === 0 &&
+            readFileSync(join(home3, 'curl.log'), 'utf8').includes('-X PUT'),
+          `${both(here3)}\n${noted} ${acts3()}\n${both(watched3)}`,
+        ),
+        0,
+      );
+      iCli('down', '--unattended', '--platform', 'sprites', '--discard');
+    }
+
+    // CLOUD-10: the machine is a paid thing, with a row in the cost register.
+    const today = new Date().toISOString().slice(0, 10);
+    const register = (rows) =>
+      `# Costs\n\n| Item | Provider | Environment | Size | Monthly | Basis |\n| --- | --- | --- | --- | --- | --- |\n${rows.join('\n')}\n`;
+    cPut(
+      '.claude/code-kit.json',
+      withCloud(cloud, { cost: { currency: 'USD', monthly: { prod: 100, dev: 30 } } }),
+    );
+    cPut(
+      'docs/costs.md',
+      register([`| Postgres | Supabase | prod | Pro | 25 | supabase.com/pricing, ${today} |`]),
+    );
+    const unrowed = cCli(['cost']);
+    expect(
+      'CLOUD-10 with a budget and a cloud platform, cost names the missing row for the machine',
+      truth(
+        unrowed.status === 1 &&
+          unrowed.stdout.includes('has no row for it. Add one with Sprites as its Provider'),
+        both(unrowed),
+      ),
+      0,
+    );
+    cPut(
+      'docs/costs.md',
+      register([
+        `| Postgres | Supabase | prod | Pro | 25 | supabase.com/pricing, ${today} |`,
+        `| Cloud machine | Sprites | dev | 8 vCPU, 16 GB, 40 awake hours | 9 | sprites.dev/pricing, ${today} |`,
+      ]),
+    );
+    expect('CLOUD-10 and with its row, the register passes', cCli(['cost']), 0);
   }
 } finally {
   for (const d of cleanups) rmSync(d, { recursive: true, force: true });

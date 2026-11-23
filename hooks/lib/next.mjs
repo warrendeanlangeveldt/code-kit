@@ -19,6 +19,7 @@ import { isTestFile } from './testfiles.mjs';
 import { laneClaims } from './laneclaims.mjs';
 import { keptBecause, worktrees } from './worktrees.mjs';
 import { ciFindings } from './ci.mjs';
+import { cloudAttention, elsewhere, elsewhereWords, lastStatus } from './cloud.mjs';
 import { costReport, infraFiles, money } from './costs.mjs';
 import { loadBaseline } from './baseline.mjs';
 import { LAYER_RULES, conformance } from './conform.mjs';
@@ -224,6 +225,13 @@ export function nextStep(root, base, { stream = null, projectWide = true } = {})
       'check',
       `The config is invalid, so nothing but the config can be written: ${error.split('\n')[0]}`,
     );
+  // CLOUD-6: while the project's work is on its machine, nothing is dispatched from this computer.
+  // CLOUD-8: what the machine needs from the person is named from its last report, without waking it.
+  const away = config ? elsewhere(root) : null;
+  if (away) {
+    attention.push(...cloudAttention(lastStatus(root)));
+    return result('wait', elsewhereWords(away));
+  }
   const brief = readBrief(root, config);
   if (brief?.openQuestions.length) {
     const vibe = config?.harness.autonomy === 'vibe';

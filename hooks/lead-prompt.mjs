@@ -5,6 +5,7 @@
 import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { notePrompt } from './lib/cloud.mjs';
 import { loadConfig } from './lib/config.mjs';
 import { mainCheckoutLead, memberOf, readSession } from './lib/sessions.mjs';
 import { hasStreams } from './lib/streams.mjs';
@@ -20,6 +21,9 @@ const asked = String(input.prompt ?? '').match(/^\s*\/(?:code-kit:)?lead(?:\s+(\
 const session = input.session_id ?? null;
 const project = projectDir();
 const { config } = loadConfig(project);
+// CLOUD-7: on the project's machine, the person sending a prompt is the session in use, in a repository
+// with no config yet too.
+notePrompt(project);
 if (!asked || !session || !config) process.exit(0);
 
 const cli = fileURLToPath(new URL('../bin/code-kit.mjs', import.meta.url));
