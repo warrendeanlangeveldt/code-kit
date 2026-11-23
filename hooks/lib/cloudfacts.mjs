@@ -11,6 +11,9 @@ const read = (path) =>
   readFileSync(fileURLToPath(new URL(`../../${path}`, import.meta.url)), 'utf8');
 const VERSION = JSON.parse(read('.claude-plugin/plugin.json')).version;
 
+/** CLOUD-8: a Claude sign-in that ends within this many days is named, on the computer and by a hub. */
+export const SIGN_IN_DAYS = 3;
+
 /** A git remote's address as a machine with an https credential can use it. */
 export function httpsRemote(url) {
   const scp = String(url).match(/^(?:[\w.-]+@)?([\w.-]+\.[a-z]{2,}):(?!\/)(.+)$/i);

@@ -15467,6 +15467,7 @@ sys.exit(os.WEXITSTATUS(status))
     };
     idle(40);
     const working = there('cloud', 'watch', '--once');
+    const saidWorking = here32();
     expect(
       'CLOUD-7 a tool call still running keeps the session, however long it takes',
       truth(
@@ -15520,6 +15521,7 @@ sys.exit(os.WEXITSTATUS(status))
     );
     idle(3);
     const quiet = there('cloud', 'watch', '--once');
+    const saidIdle = here32();
     expect(
       'CLOUD-7 and three idle minutes of five do not end it',
       truth(
@@ -15539,6 +15541,32 @@ sys.exit(os.WEXITSTATUS(status))
           !existsSync(join(mHome, '.tmux/code-kit-lead')) &&
           holds().at(-1).includes('-X DELETE http://sprite/v1/tasks/code-kit'),
         both(ended),
+      ),
+      0,
+    );
+    const saidEnded = here32();
+    expect(
+      'CLOUD-8 the machine’s own report names it and its platform, and says what is open and what the lead’s session is doing: working, idle, then nothing open',
+      truth(
+        /^ck-/.test(saidWorking.name ?? '') &&
+          saidWorking.platform === 'sprites' &&
+          saidWorking.idleMinutes === 5 &&
+          Boolean(saidWorking.open?.lead) &&
+          saidWorking.lead === 'working' &&
+          saidIdle.lead === 'idle' &&
+          saidEnded.open?.lead === null &&
+          saidEnded.lead === null &&
+          Boolean(saidEnded.ended?.at),
+        JSON.stringify(
+          [saidWorking, saidIdle, saidEnded].map((r) => [
+            r.name,
+            r.platform,
+            r.idleMinutes,
+            r.open,
+            r.lead,
+            r.ended,
+          ]),
+        ),
       ),
       0,
     );

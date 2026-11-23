@@ -4739,6 +4739,16 @@ test('CLOUD-11 a machine is named from the project and its remote, whichever for
   }
 });
 
+test('CLOUD-8 the lead’s session is working while anything runs, waiting on a question alone, idle otherwise', () => {
+  assert.equal(cloudLib.leadState({}), 'idle');
+  assert.equal(cloudLib.leadState({ asking: 2 }), 'waiting');
+  // A lane agent's test run beside a question is work, as the watcher counts it.
+  assert.equal(cloudLib.leadState({ asking: 1, open: 1 }), 'working');
+  assert.equal(cloudLib.leadState({ running: 1 }), 'working');
+  assert.equal(cloudLib.leadState({ merging: true }), 'working');
+  assert.equal(cloudLib.SIGN_IN_DAYS, 3);
+});
+
 test('CLOUD-7 a session is ended only when nothing runs and nothing has moved for idleMinutes', () => {
   const now = Date.parse('2026-11-20T12:00:00Z');
   const ago = (minutes) => now - minutes * 60_000;

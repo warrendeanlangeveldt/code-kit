@@ -24,7 +24,7 @@ import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { machineAdapterOf, providerAdapterOf } from './adapters/index.mjs';
 import { cloudOf } from './cloudconfig.mjs';
-import { folderName, httpsRemote, machineNameOf } from './cloudfacts.mjs';
+import { SIGN_IN_DAYS, folderName, httpsRemote, machineNameOf } from './cloudfacts.mjs';
 import { openDecisions } from './decisionstore.mjs';
 import { laneClaims } from './laneclaims.mjs';
 import { mainCheckout } from './lanetrees.mjs';
@@ -58,11 +58,10 @@ export const WATCH_SESSION = 'code-kit-watch';
 const ACT_STALE_MS = 12 * 3600_000;
 /** How often the watcher looks. */
 export const WATCH_SECONDS = 60;
-/** CLOUD-8: a Claude sign-in that ends within this many days is named. */
-export const SIGN_IN_DAYS = 3;
 
 // What a hub shares with code-kit is in cloudfacts.mjs; the command line and the tests reach it here.
 export {
+  SIGN_IN_DAYS,
   WORKFLOW_FILE,
   httpsRemote,
   machineWorkflow,
@@ -1518,6 +1517,13 @@ export function idleVerdict({ idleMinutes, last, open, asking = 0, running, merg
   };
 }
 
+/**
+ * CLOUD-8: what the lead's session is doing, by the watcher's own order (CLOUD-7): `working` while a tool
+ * call, a lane or a merge runs, `waiting` when only a question to the person is open, `idle` otherwise.
+ */
+export const leadState = ({ open = 0, asking = 0, running = 0, merging = false }) =>
+  open > 0 || running > 0 || merging ? 'working' : asking > 0 ? 'waiting' : 'idle';
+
 /** The seconds the machine has been awake since it started, which stop counting while it sleeps. */
 function uptimeSeconds() {
   try {
@@ -1611,17 +1617,27 @@ export function hereState(root, config, now = Date.now()) {
     });
   const df = (ran('df', ['-Pk', main], main) ?? '').trim().split('\n').pop()?.split(/\s+/) ?? [];
   const activity = activityOf(main, now);
+  const marker = readMarker(main);
+  const running = laneClaims(main, now)
+    .filter((c) => !c.stale)
+    .map((c) => ({ lane: c.lane, story: c.story ?? null }));
+  const merging = readQueue(main).some((e) => e.state === 'merging');
+  const since = (name) => sessions.find((s) => s.name === name)?.since ?? null;
+  const open = { lead: since(LEAD_SESSION), watcher: since(WATCH_SESSION) };
   return {
     version: PLUGIN.version,
-    terminal: readMarker(main)?.terminal ?? null,
+    name: marker?.machine ?? null,
+    platform: marker?.adapter ?? null,
+    terminal: marker?.terminal ?? null,
     claude,
     github: { login, scopes },
     apiKey: Boolean(process.env.ANTHROPIC_API_KEY),
     sessions,
-    running: laneClaims(main, now)
-      .filter((c) => !c.stale)
-      .map((c) => ({ lane: c.lane, story: c.story ?? null })),
-    merging: readQueue(main).some((e) => e.state === 'merging'),
+    open,
+    lead: open.lead ? leadState({ ...activity, running: running.length, merging }) : null,
+    idleMinutes: cloudOf(config)?.idleMinutes ?? null,
+    running,
+    merging,
     notOnRemote: notOnRemote(main, config),
     activity: {
       last: activity.last ? new Date(activity.last).toISOString() : null,

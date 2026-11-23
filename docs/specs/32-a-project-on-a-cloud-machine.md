@@ -207,9 +207,12 @@ A question to the person is a tool call too, open from when it's asked until the
 
 The awake hours come from the machine's own uptime, which the spike showed stops counting while a Sprite sleeps. The watcher adds it up, and where the platform restarted the count, `cloud` says since when the figure runs.
 
+The machine's own code-kit gives the report (`code-kit cloud here`, run on the machine), so a hosted provider's part there (CLOUD-16) can pass it on without the computer. For that reader it also says the machine's name, its platform and its terminal's address; which of the open sessions is the lead's and which the watcher's; what the lead's session is doing, by the watcher's own order (CLOUD-7): working while a tool call, a lane or a merge runs, waiting when only a question to the person is open, idle otherwise; and after how many idle minutes a session is ended. The three days a sign-in is named within are one number, which a hub reads from code-kit.
+
 **Acceptance**
 
 - Given a lane branch on the machine that was never pushed, then `cloud` lists it under what isn't on the remote.
+- Given the lead's session open on the machine with a test run going, then the machine's own report names the machine and its platform and says the lead's session is working; with nothing running it says idle; and once the watcher has ended the session it says nothing is open.
 - Given a Claude sign-in that ends in two days, then `cloud` and `next` say so, and that the person signs in again with `cloud signin`.
 - Given code-kit 0.39.0 on the machine and 0.40.0 on the computer, then `cloud` shows both and says `cloud up` brings it level.
 
