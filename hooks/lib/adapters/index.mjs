@@ -59,8 +59,9 @@
 //
 // and, where a machine can be made with nobody at a computer (CLOUD-15):
 //
-//   workflow  { secret, steps: [{ name, run, env? }] }: what a workflow does before code-kit runs in
-//             it, the command installed and signed in with a token kept as the repository's secret
+//   workflow  { secret, steps: [{ name, stage, run, env? }] }: what a workflow does before code-kit runs
+//             in it, the command installed (stage `prepare`) and signed in with a token kept as the
+//             repository's secret (stage `signin`)
 //
 // The core only ever calls machineAdapterOf(); it never names a platform.
 import contextGraph from './context-graph.mjs';

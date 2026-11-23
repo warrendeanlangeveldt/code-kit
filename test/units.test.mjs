@@ -4801,6 +4801,88 @@ test('CLOUD-15 the machine workflow is the same text for a platform and version,
   assert.equal(cloudLib.machineWorkflow({ key: 'x', label: 'X' }), null);
 });
 
+test('CLOUD-15 the workflow’s steps are listed in the file’s order, each with its acts and its stage', async () => {
+  const { default: sprites } = await import('../hooks/lib/adapters/sprites.mjs');
+  const facts = await import('../hooks/lib/cloudfacts.mjs');
+  const steps = facts.workflowSteps(sprites);
+  // Every step the file names is listed, in order, and nothing else.
+  const named = [...facts.machineWorkflow(sprites).matchAll(/^ {6}- name: (.+)$/gm)].map(
+    (m) => m[1],
+  );
+  assert.deepEqual(
+    steps.map((st) => st.name),
+    named,
+  );
+  const of = (act) => steps.filter((st) => st.acts.includes(act)).map((st) => st.stage);
+  assert.deepEqual(of('up'), [
+    'prepare',
+    'prepare',
+    'prepare',
+    'signin',
+    'machine',
+    'clone',
+    'ready',
+  ]);
+  assert.deepEqual(of('start').slice(-2), ['signin', 'start']);
+  assert.deepEqual(of('stop').slice(-2), ['signin', 'stop']);
+  assert.deepEqual(of('down').slice(-2), ['signin', 'remove']);
+  assert.equal(steps.find((st) => st.stage === 'signin').name, 'Sign in to Sprites');
+  // A step's act is the one the file runs it for.
+  for (const st of steps.filter((x) => x.acts.length === 1))
+    assert.ok(
+      facts
+        .machineWorkflow(sprites)
+        .includes(`      - name: ${st.name}\n        if: inputs.act == '${st.acts[0]}'\n`),
+      st.name,
+    );
+  assert.deepEqual(facts.workflowSteps({ key: 'x', label: 'X' }), []);
+});
+
+test('CLOUD-15 a repository’s file is told as this version’s, another version’s, or changed', async () => {
+  const { default: sprites } = await import('../hooks/lib/adapters/sprites.mjs');
+  const { machineWorkflow, workflowStanding } = await import('../hooks/lib/cloudfacts.mjs');
+  const text = machineWorkflow(sprites);
+  const version = text.match(/^# code-kit (\S+):/)[1];
+  assert.deepEqual(workflowStanding(text, sprites), { is: 'current', version });
+  // GitHub's editor may end the file differently, and Windows its lines.
+  assert.equal(workflowStanding(text.trimEnd(), sprites).is, 'current');
+  assert.equal(workflowStanding(text.replaceAll('\n', '\r\n'), sprites).is, 'current');
+  assert.deepEqual(workflowStanding(text.replaceAll(version, '0.1.2'), sprites), {
+    is: 'version',
+    version: '0.1.2',
+  });
+  // One version in the header and another in the command isn't code-kit's.
+  assert.equal(
+    workflowStanding(text.replace(`code-kit ${version}:`, 'code-kit 0.1.2:'), sprites).is,
+    'changed',
+  );
+  assert.equal(
+    workflowStanding(text.replace('contents: read', 'contents: write'), sprites).is,
+    'changed',
+  );
+  assert.equal(workflowStanding(null, sprites).is, 'changed');
+  assert.equal(workflowStanding(text, { key: 'x', label: 'X' }).is, 'changed');
+});
+
+test('CLOUD-11 a workflow’s checkout and a computer’s clone name the same machine', async () => {
+  const { machineNameOf } = await import('../hooks/lib/cloudfacts.mjs');
+  const dir = mkdtempSync(join(tmpdir(), 'ck-name-'));
+  const clone = join(dir, 'Booking App');
+  mkdirSync(clone);
+  try {
+    assert.equal(
+      cloudLib.machineName(clone, 'git@github.com:acme/booking-app.git'),
+      machineNameOf('Booking App', 'https://github.com/Acme/Booking-App'),
+    );
+    assert.match(
+      machineNameOf('booking-app', 'https://github.com/acme/booking-app'),
+      /^ck-booking-app-[0-9a-f]{8}$/,
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('CLOUD-8 awake time is added up from an uptime that stops while the machine sleeps', () => {
   const dir = mkdtempSync(join(tmpdir(), 'code-kit-awake-'));
   try {

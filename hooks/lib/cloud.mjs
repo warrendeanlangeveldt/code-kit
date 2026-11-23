@@ -22,6 +22,7 @@ import { cpus, freemem, loadavg, tmpdir, totalmem } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { cloudOf } from './cloudconfig.mjs';
+import { folderName, httpsRemote, machineNameOf } from './cloudfacts.mjs';
 import { openDecisions } from './decisionstore.mjs';
 import { laneClaims } from './laneclaims.mjs';
 import { mainCheckout } from './lanetrees.mjs';
@@ -53,6 +54,15 @@ const ACT_STALE_MS = 12 * 3600_000;
 export const WATCH_SECONDS = 60;
 /** CLOUD-8: a Claude sign-in that ends within this many days is named. */
 export const SIGN_IN_DAYS = 3;
+
+// What a hub shares with code-kit is in cloudfacts.mjs; the command line and the tests reach it here.
+export {
+  WORKFLOW_FILE,
+  httpsRemote,
+  machineWorkflow,
+  workflowStanding,
+  workflowSteps,
+} from './cloudfacts.mjs';
 
 /** A refusal: what stopped, and what to do, for the command to print as it exits. */
 export class Stop extends Error {}
@@ -115,14 +125,6 @@ export const elsewhereWords = (marker) =>
 // ---------------------------------------------------------------------------------------------------
 // The computer's side
 
-/** A git remote's address as a machine with an https credential can use it. */
-export function httpsRemote(url) {
-  const scp = String(url).match(/^(?:[\w.-]+@)?([\w.-]+\.[a-z]{2,}):(?!\/)(.+)$/i);
-  if (scp) return `https://${scp[1]}/${scp[2]}`;
-  const ssh = String(url).match(/^ssh:\/\/(?:[\w.-]+@)?([\w.-]+)(?::\d+)?\/(.+)$/i);
-  if (ssh) return `https://${ssh[1]}/${ssh[2]}`;
-  return String(url);
-}
 /** The host a remote's address is on, or null for a path on this disk. */
 export const hostOf = (url) => httpsRemote(url).match(/^https?:\/\/([^/:]+)/i)?.[1] ?? null;
 
@@ -130,27 +132,14 @@ export const hostOf = (url) => httpsRemote(url).match(/^https?:\/\/([^/:]+)/i)?.
 const remoteOf = (main) => git(main, 'config', '--get', 'remote.origin.url');
 
 /** The project's folder name, as a machine's folder and name can hold it. */
-const folderOf = (root) =>
-  basename(mainOf(root))
-    .replace(/[^A-Za-z0-9._-]+/g, '-')
-    .replace(/^[-.]+|[-.]+$/g, '') || 'project';
+const folderOf = (root) => folderName(basename(mainOf(root)));
 
 /**
  * CLOUD-11: the project's machine, named from its folder and a hash of its remote's address, so a second
  * computer with the same clone finds the same one.
  */
-export function machineName(root, remote = remoteOf(mainOf(root))) {
-  const address = httpsRemote(remote ?? mainOf(root))
-    .replace(/\.git$/, '')
-    .toLowerCase();
-  const hash = createHash('sha256').update(address).digest('hex').slice(0, 8);
-  const slug = folderOf(root)
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '')
-    .slice(0, 24);
-  return `ck-${slug || 'project'}-${hash}`;
-}
+export const machineName = (root, remote = remoteOf(mainOf(root))) =>
+  machineNameOf(basename(mainOf(root)), remote ?? mainOf(root));
 
 /** The project's clone on its machine, as the machine's shell says it. */
 export const cloneOf = (root) => `$HOME/projects/${folderOf(root)}`;
@@ -1074,41 +1063,6 @@ function ownerSignIns(main, name, io) {
   }
   return true;
 }
-
-/**
- * CLOUD-15: the workflow a repository commits so that its machine is made, started, stopped and removed
- * with nobody at a computer: code-kit's own file, with the platform's steps from its adapter and this
- * code-kit's version in the commands it runs. The same text for the same adapter and version, so a
- * committed file can be told from one changed by hand.
- */
-export function machineWorkflow(adapter) {
-  if (!adapter.workflow) return null;
-  const indent = (text, by) =>
-    text
-      .split('\n')
-      .map((l) => (l ? `${' '.repeat(by)}${l}` : l))
-      .join('\n');
-  const steps = adapter.workflow.steps
-    .map((st) =>
-      [
-        `      - name: ${st.name}`,
-        ...(st.env
-          ? ['        env:', ...Object.entries(st.env).map(([k, v]) => `          ${k}: ${v}`)]
-          : []),
-        '        run: |',
-        indent(st.run, 10),
-      ].join('\n'),
-    )
-    .join('\n');
-  return readFileSync(join(PLUGIN_ROOT, 'templates/cloud-machine.yml'), 'utf8')
-    .replaceAll('{{version}}', PLUGIN.version)
-    .replaceAll('{{platform}}', adapter.label)
-    .replaceAll('{{key}}', adapter.key)
-    .replaceAll('{{secret}}', adapter.workflow.secret)
-    .replace('      #{{steps}}', steps);
-}
-/** Where a repository keeps that workflow. */
-export const WORKFLOW_FILE = '.github/workflows/code-kit-machine.yml';
 
 /** What a session is started with when the one before was ended at a question (CLOUD-7). */
 const ASK_AGAIN =

@@ -89,10 +89,12 @@ export default {
     steps: [
       {
         name: 'Install the sprite command',
+        stage: 'prepare',
         run: 'curl -fsSL https://sprites.dev/install.sh | sh\necho "$HOME/.local/bin" >> "$GITHUB_PATH"',
       },
       {
         name: 'Sign in to Sprites',
+        stage: 'signin',
         env: { SPRITES_TOKEN: '${{ secrets.SPRITES_TOKEN }}' },
         run: [
           'if test -z "$SPRITES_TOKEN"; then',

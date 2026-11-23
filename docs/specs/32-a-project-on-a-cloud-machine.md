@@ -314,11 +314,15 @@ It runs on `workflow_dispatch` with three inputs: `act` (`up`, `start`, `stop`, 
 
 The token is passed by the workflow to the platform's command. code-kit doesn't read it, and nothing in the inputs is a secret.
 
+A hub that starts the workflow draws its runs and names its machine from code-kit's own answers, not from a copy of the file: the steps in order with the acts each runs for and the stage each is (`prepare`, `signin`, `machine`, `clone`, `ready`, `start`, `stop`, `remove`), the name a repository's machine gets, and whether the file a repository holds is this version's, another version's with the same steps, or changed by hand.
+
 **Acceptance**
 
 - Given `"cloud": { "sprites": {} }`, when `cloud workflow` runs, then the output is a workflow with the three inputs, the two Sprites steps reading `secrets.SPRITES_TOKEN`, and `cloud up --unattended --platform sprites` in its three stages at this code-kit's version.
 - Given the file written by `--write`, when `--write` runs again, then nothing changes and it says the file is code-kit's already.
 - Given a repository without the secret, when the workflow runs, then it fails at "Sign in to Sprites", saying which secret to add and where.
+- Given the file as code-kit prints it, then every step in it is one of the steps code-kit lists, in the same order, the three `up` stages listed for `up` alone.
+- Given a file printed by another version with the same steps, then it is told from this version's and from one changed by hand, with the version it names.
 
 ## What was tried on a Sprite
 
