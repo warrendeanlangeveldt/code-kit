@@ -27,6 +27,11 @@ on:
         required: false
         type: boolean
         default: false
+      provider:
+        description: "With up: the hosted team provider that asked, as name=address, so the machine's owner is offered to pair the machine with it. Not a secret."
+        required: false
+        type: string
+        default: ''
 
 permissions:
   contents: read

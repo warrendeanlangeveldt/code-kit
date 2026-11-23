@@ -30,6 +30,15 @@
 //   run       (args, url) => exit code: the client's own commands (sign in, connect, status), for
 //             `code-kit team provider …`
 //
+// and, where the provider pairs with a cloud machine it asked for (spec 32, CLOUD-16):
+//
+//   machine   { offer(url) => what pairing does, in sentences its owner reads before choosing;
+//             pair({ url, name, workspace, remote, typed, sh }) => whether it paired: the provider's own
+//             exchange with the owner, each command run by `typed(command, args)` in the machine's
+//             terminal; session(sh) => { env, args } a session there is started with so the provider
+//             sees it, or null while the machine isn't paired; service(sh) => { command, args } what
+//             the machine keeps running, or null }. `sh(command)` => { status, stdout } asks the machine
+//
 // The core only ever calls providerAdapterOf(); it never names a provider.
 //
 // Machine adapters (spec 32, CLOUD-2) are the third kind: a platform of cloud machines a project's work
@@ -56,12 +65,15 @@
 //             machine, started again after a sleep, with the address routed to its port
 //   unserve   (name) => { ok }: that taken away
 //   install   (name, packages) => { ok }: packages the machine's image lacks, from the image's own source
+//   keep      ({ key, command, dir }) => { ok, made, why }: run on the machine itself, a command its
+//             platform keeps running there, and again when the machine wakes
 //
 // and, where a machine can be made with nobody at a computer (CLOUD-15):
 //
-//   workflow  { secret, steps: [{ name, stage, run, env? }] }: what a workflow does before code-kit runs
-//             in it, the command installed (stage `prepare`) and signed in with a token kept as the
-//             repository's secret (stage `signin`)
+//   workflow  { secret, steps: [{ name, stage, run, env? }], printed? }: what a workflow does before
+//             code-kit runs in it, the command installed (stage `prepare`) and signed in with a token kept
+//             as the repository's secret (stage `signin`); `printed` is { version: hash } for the files
+//             earlier versions printed from before the workflow last changed
 //
 // The core only ever calls machineAdapterOf(); it never names a platform.
 import contextGraph from './context-graph.mjs';

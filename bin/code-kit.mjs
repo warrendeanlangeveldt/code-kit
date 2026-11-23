@@ -58,7 +58,8 @@
 //   defer <story>... --reason "…" [--until <date|ISO time>] | defer release <story>... | defer [--json]
 //                                    stories the lead holds on purpose: not dispatched, reviewed or merged (LOOP-15)
 //   cloud [--json] | cloud up | cloud signin | cloud open | cloud console | cloud stop | cloud down [--discard]
-//   cloud workflow [--write] [--platform <key>]   (and `--unattended` on up, open, stop and down, for that workflow)
+//   cloud workflow [--write] [--platform <key>]   (and `--unattended` on up, open, stop and down, for that
+//                                    workflow, with `--provider <name>=<address>` on up for who asked)
 //                                    the project's work on a cloud machine the person owns (spec 32)
 // --config <file> reads a draft (.claude/code-kit.draft.json) instead of .claude/code-kit.json.
 import { execFileSync, spawnSync } from 'node:child_process';
@@ -408,6 +409,7 @@ const measuredGiven = option('--measured');
 const linesGiven = option('--lines');
 const platformGiven = option('--platform');
 const stageGiven = option('--stage');
+const providerGiven = option('--provider');
 const optionsGiven = [];
 for (let o = option('--option'); o !== undefined; o = option('--option')) optionsGiven.push(o);
 const FLAGS = [
@@ -427,6 +429,7 @@ const FLAGS = [
   '--discard',
   '--once',
   '--unattended',
+  '--detached',
 ];
 const flag = (name) => args.includes(name);
 const writeBaseline = flag('--write');
@@ -4309,6 +4312,22 @@ async function cloudCommand() {
     !(sub === 'up' && unattended && ['machine', 'clone'].includes(stageGiven))
   )
     die('`--stage machine` and `--stage clone` go with `cloud up --unattended`: each stops there.');
+  // CLOUD-16: the hosted team provider that asked for the machine, as the workflow passes it on. A run
+  // nobody asked through passes nothing.
+  let provider = null;
+  if (providerGiven !== undefined && !(sub === 'up' && unattended))
+    die(
+      '`--provider` goes with `cloud up --unattended`: the machine workflow passes on who asked.',
+    );
+  if (providerGiven) {
+    const [, key, address] = providerGiven.match(/^([a-z][\w-]*)=(\S+)$/) ?? [];
+    const named = key ? providerAdapterOf({ [key]: address }) : null;
+    if (!named?.adapter?.machine || named.problem || !address.startsWith('https://'))
+      die(
+        `\`--provider ${providerGiven}\` isn't a hosted team provider this code-kit pairs a machine with. It's given as name=address, the address an https one. Nothing was done: take the input out of the run, or start it from the provider.`,
+      );
+    provider = { [key]: named.url };
+  }
   const terminal = Boolean(process.stdin.isTTY && process.stdout.isTTY) && !process.env.CLAUDECODE;
   const io = {
     say: out,
@@ -4329,8 +4348,9 @@ async function cloudCommand() {
       const ended = await watch(root, config, { once: flag('--once') });
       return out(ended.ended ? `The lead's session ${ended.why}.` : `Watching: ${ended.why}.`);
     }
-    if (sub === 'join') return process.exit(cloudJoin(root, io));
-    if (sub === 'up') return cloudUp(root, config, io, { unattended, stage: stageGiven ?? null });
+    if (sub === 'join') return process.exit(cloudJoin(root, io, { attach: !flag('--detached') }));
+    if (sub === 'up')
+      return cloudUp(root, config, io, { unattended, stage: stageGiven ?? null, provider });
     if (sub === 'workflow') return cloudWorkflow(config);
     if (sub === 'signin') return process.exit(cloudSignin(root, config, io));
     if (sub === 'console') return process.exit(cloudConsole(root, config));

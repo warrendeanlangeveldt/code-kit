@@ -1,7 +1,8 @@
 // A project's cloud machine (spec 32), the parts a hub shares with code-kit: the machine's name from its
 // folder and its remote (CLOUD-11), and the machine workflow (CLOUD-15) as a file, as its steps with the
-// act each runs for, and whether a file a repository holds is code-kit's. Nothing of a project is read
-// here, so a hub that draws a run's steps, or names the machine a run will make, says what code-kit says.
+// act each runs for, the inputs it takes, and whether a file a repository holds is code-kit's. Nothing of
+// a project is read here, so a hub that draws a run's steps, or names the machine a run will make, says
+// what code-kit says.
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -70,7 +71,8 @@ const ACT_STEPS = [
     name: 'Install code-kit and the terminal there',
     stage: 'ready',
     act: 'up',
-    run: '$CODE_KIT cloud up --unattended --platform {{key}}',
+    env: { PROVIDER: '${{ inputs.provider }}' },
+    run: '$CODE_KIT cloud up --unattended --platform {{key}} --provider "$PROVIDER"',
   },
   {
     name: "Start the lead's session",
@@ -148,17 +150,51 @@ export function machineWorkflow(adapter) {
   return adapter.workflow ? render(adapter, VERSION) : null;
 }
 
+/** A workflow file's text as it's compared: line endings and the file's last newline aren't a change. */
+const settled = (text) => text.replace(/\r\n/g, '\n').trimEnd();
+/** The hash an adapter's `workflow.printed` keeps of a file an earlier version printed. */
+export const workflowHash = (text) => createHash('sha256').update(settled(text)).digest('hex');
+
 /**
  * Whether a file a repository holds is code-kit's (CLOUD-15): `current` for this version's, `version`
- * for another version's whose steps are these (with the version it names), and `changed` for anything
- * else, a file changed by hand included. Line endings and the file's last newline aren't a change.
+ * for another version's as that version printed it (with the version it names), and `changed` for
+ * anything else, a file changed by hand included. A version from before the file last changed is known
+ * by the hash its platform's adapter keeps of what it printed.
  */
 export function workflowStanding(text, adapter) {
   if (!adapter.workflow || typeof text !== 'string') return { is: 'changed', version: null };
-  const same = (a, b) => a.replace(/\r\n/g, '\n').trimEnd() === b.trimEnd();
-  if (same(text, render(adapter, VERSION))) return { is: 'current', version: VERSION };
+  if (settled(text) === settled(render(adapter, VERSION)))
+    return { is: 'current', version: VERSION };
   const version = text.match(/^# code-kit (\d+\.\d+\.\d+(?:-[\w.]+)?):/)?.[1] ?? null;
-  return version && same(text, render(adapter, version))
+  return version &&
+    (settled(text) === settled(render(adapter, version)) ||
+      adapter.workflow.printed?.[version] === workflowHash(text))
     ? { is: 'version', version }
     : { is: 'changed', version: null };
+}
+
+/**
+ * The inputs a workflow file takes when it's started (CLOUD-15), by name, read from its own text: an
+ * earlier version's file, or one changed by hand, may take fewer than this version's, and GitHub refuses
+ * a start that gives one the file doesn't name.
+ */
+export function workflowInputs(text) {
+  const lines = String(text).replace(/\r\n/g, '\n').split('\n');
+  const depth = (line) => line.match(/^ */)[0].length;
+  const dispatch = lines.findIndex((l) => /^\s*workflow_dispatch:\s*$/.test(l));
+  if (dispatch < 0) return [];
+  const inputs = lines.findIndex(
+    (l, i) => i > dispatch && /^\s*inputs:\s*$/.test(l) && depth(l) > depth(lines[dispatch]),
+  );
+  if (inputs < 0) return [];
+  const found = [];
+  let at = null;
+  for (const line of lines.slice(inputs + 1)) {
+    if (!line.trim() || line.trim().startsWith('#')) continue;
+    if (depth(line) <= depth(lines[inputs])) break;
+    at ??= depth(line);
+    const name = depth(line) === at ? line.trim().match(/^([A-Za-z_][\w-]*):/)?.[1] : null;
+    if (name) found.push(name);
+  }
+  return found;
 }

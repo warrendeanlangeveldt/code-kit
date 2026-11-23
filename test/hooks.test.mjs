@@ -14708,6 +14708,43 @@ if (a.includes('install') && a.includes('ttyd')) { fs.copyFileSync(path.join(pro
       'sprite-env',
       `${head}fs.appendFileSync(path.join(h, 'services.log'), a.join(' ') + '\\n');
 if (a[1] === 'create' && fs.existsSync(path.join(h, 'port-taken'))) { console.error('error: another service has the HTTP port'); process.exit(1); }
+const kept = path.join(h, '.services');
+fs.mkdirSync(kept, { recursive: true });
+if (a[1] === 'get' && !fs.existsSync(path.join(kept, a[2]))) { console.error('service not found: ' + a[2]); process.exit(22); }
+if (a[1] === 'create') fs.writeFileSync(path.join(kept, a[2]), '');
+if (a[1] === 'delete') fs.rmSync(path.join(kept, a[2]), { force: true });
+`,
+    );
+    // A hosted provider's companion (CLOUD-16): npm installs it from the provider's own address into its
+    // own folder, which isn't on the machine's PATH, its setup pairs the machine, and it says what a
+    // session is started with once the machine is paired.
+    stub(
+      dirs.there,
+      'npm',
+      `${head}const prefix = path.join(h, 'npm-global');
+if (a[0] === 'prefix') { console.log(prefix); process.exit(0); }
+fs.appendFileSync(path.join(h, 'npm.log'), a.join(' ') + '\\n');
+if (a[0] === 'install' && a[1] === '-g') {
+  fs.mkdirSync(path.join(prefix, 'bin'), { recursive: true });
+  fs.copyFileSync(path.join(process.env.FAKE_SPRITES, '_companion'), path.join(prefix, 'bin', 'code-kit-companion'));
+  fs.chmodSync(path.join(prefix, 'bin', 'code-kit-companion'), 0o755);
+}
+`,
+    );
+    writeFileSync(
+      join(dirs.sprites, '_companion'),
+      `#!/usr/bin/env node\n${head}if (a[0] === 'setup') {
+  fs.appendFileSync(path.join(h, 'companion.log'), a.join(' ') + '\\n');
+  console.log('Your pairing code is ABCD-EFGH. Confirm it at https://hub.example/computers/pair?code=ABCD-EFGH');
+  if (fs.existsSync(path.join(h, 'pairing-fails'))) { console.error('code-kit-companion: Nobody confirmed the code in time. Run setup again.'); process.exit(1); }
+  fs.writeFileSync(path.join(h, '.companion-paired'), '');
+  process.exit(0);
+}
+if (a[0] === 'session-env') {
+  if (read('.companion-paired') === null) process.exit(1);
+  console.log(JSON.stringify({ env: { CODE_KIT_COMPANION_HOME: path.join(h, '.config/code-kit-companion') }, args: ['--plugin-dir', '/opt/companion/adapter'] }));
+  process.exit(0);
+}
 `,
     );
     // git on a machine, which can't clone from GitHub until it's told to ask gh for the credential: a
@@ -16162,6 +16199,226 @@ sys.exit(os.WEXITSTATUS(status))
         ),
         0,
       );
+
+      // CLOUD-16: the hosted provider that asked for the machine, and its owner's choice to pair with it.
+      {
+        const HUB = 'https://hub.example';
+        const from = (...args) => un('up', '--provider', ...args);
+        expect(
+          'CLOUD-16 who asked goes with up unattended alone',
+          wCli([
+            'cloud',
+            'open',
+            '--unattended',
+            '--platform',
+            'sprites',
+            '--provider',
+            `hub=${HUB}`,
+          ]),
+          1,
+          '`--provider` goes with `cloud up --unattended`',
+        );
+        expect(
+          'CLOUD-16 a provider code-kit pairs no machine with is refused, and so is an address that isn’t https',
+          truth(
+            from(`nobody=${HUB}`).status === 1 &&
+              from(`nobody=${HUB}`).stderr.includes("isn't a hosted team provider") &&
+              from('hub=http://hub.example').status === 1 &&
+              from('hub').stderr.includes('given as name=address') &&
+              marker2()?.provider === undefined,
+          ),
+          0,
+        );
+        const unasked = from('');
+        expect(
+          'CLOUD-16 a run nobody asked through names no provider, and the machine keeps none',
+          truth(
+            unasked.status === 0 &&
+              marker2()?.provider === undefined &&
+              !unasked.stdout.includes('offers to pair'),
+            both(unasked),
+          ),
+          0,
+        );
+        const asked = from(`hub=${HUB}/`);
+        expect(
+          'CLOUD-16 up records who asked on the machine, and says its owner is offered the pairing there',
+          truth(
+            asked.status === 0 &&
+              marker2()?.provider?.hub === HUB &&
+              asked.stdout.includes(
+                `A first visit there offers to pair ${machine2} with code-kit hub, at ${HUB}, which asked for it.`,
+              ),
+            both(asked),
+          ),
+          0,
+        );
+        expect(
+          'CLOUD-16 a later up that names nobody leaves the machine with who asked',
+          truth(un('up').status === 0 && marker2()?.provider?.hub === HUB),
+          0,
+        );
+        const log = (name) => {
+          try {
+            return readFileSync(join(home2, name), 'utf8').split('\n').filter(Boolean);
+          } catch {
+            return [];
+          }
+        };
+        const lastLead = () =>
+          tmux2()
+            .filter((l) => l.startsWith('new code-kit-lead '))
+            .pop();
+        const leads = () => tmux2().filter((l) => l.startsWith('new code-kit-lead ')).length;
+        const notNow = visit('n\nn\n');
+        expect(
+          'CLOUD-16 the owner’s visit says who asked and what pairing does, and a no installs nothing and is offered again next time',
+          truth(
+            notNow.status === 0 &&
+              both(notNow).includes(
+                `${machine2} was made at the asking of code-kit hub, at ${HUB}.`,
+              ) &&
+              both(notNow).includes(`installs the hub's companion from ${HUB}`) &&
+              both(notNow).includes(`Pair ${machine2} with code-kit hub now? [y/N]`) &&
+              both(notNow).includes('Stop offering this on later visits? [y/N]') &&
+              both(notNow).includes('Not paired. Your next visit offers it again.') &&
+              log('npm.log').length === 0 &&
+              !lastLead().includes('--plugin-dir') &&
+              both(notNow).includes('attached code-kit-lead'),
+            both(notNow),
+          ),
+          0,
+        );
+        const open2 = visit('y\n');
+        expect(
+          'CLOUD-16 a visit that finds the session open asks nothing',
+          truth(!both(open2).includes('Pair ') && log('npm.log').length === 0, both(open2)),
+          0,
+        );
+        un('stop');
+        const never = visit('n\ny\n');
+        un('stop');
+        const quiet = visit('y\n');
+        un('stop');
+        expect(
+          'CLOUD-16 told to stop offering it, the next visit doesn’t',
+          truth(
+            both(never).includes("Not paired, and it won't be offered here again.") &&
+              existsSync(join(clone2, '.claude/state/cloud/provider.json')) &&
+              !both(quiet).includes('Pair ') &&
+              log('npm.log').length === 0,
+            both(never) + both(quiet),
+          ),
+          0,
+        );
+        from(`hub=${HUB}`);
+        writeFileSync(join(home2, 'pairing-fails'), '');
+        const failed = visit('y\n');
+        un('stop');
+        expect(
+          'CLOUD-16 the provider asking again is offered again; a pairing that doesn’t finish says so, and the session opens without it',
+          truth(
+            !existsSync(join(clone2, '.claude/state/cloud/provider.json')) &&
+              log('npm.log').join() === `install -g ${HUB}/companion/code-kit-companion.tgz` &&
+              both(failed).includes('Your pairing code is ABCD-EFGH') &&
+              both(failed).includes(`${machine2} isn't paired with code-kit hub (see above)`) &&
+              !lastLead().includes('--plugin-dir') &&
+              !log('services.log').some((l) => l.includes('code-kit-provider')),
+            both(failed),
+          ),
+          0,
+        );
+        rmSync(join(home2, 'pairing-fails'));
+        const paired = visit('y\n');
+        const startFile = 'projects/app/.claude/state/cloud/provider.sh';
+        const created = () =>
+          log('services.log').filter((l) => l.startsWith('services create code-kit-provider '));
+        expect(
+          'CLOUD-16 a yes installs the provider’s companion from its own address and runs its pairing in the terminal, for this machine and its repository',
+          truth(
+            paired.status === 0 &&
+              both(paired).includes(`${machine2} is paired with code-kit hub.`) &&
+              new RegExp(
+                `^setup --hub ${HUB} --workspace \\S+/projects --name ${machine2} --machine acme/app$`,
+              ).test(log('companion.log').pop()),
+            both(paired) + log('companion.log').join('\n'),
+          ),
+          0,
+        );
+        expect(
+          'CLOUD-16 paired, the platform keeps the provider’s part running, with the PATH this terminal has',
+          truth(
+            created().length === 1 &&
+              new RegExp(`--cmd \\S+/${startFile} --dir \\S+/projects/app --no-stream$`).test(
+                created()[0],
+              ) &&
+              readFileSync(join(home2, startFile), 'utf8').includes(
+                `exec '${join(home2, 'npm-global/bin/code-kit-companion')}' 'run'`,
+              ) &&
+              readFileSync(join(home2, startFile), 'utf8').includes(
+                `export PATH='${dirs.there}:`,
+              ) &&
+              both(paired).includes('again whenever the machine wakes'),
+            created().join('\n'),
+          ),
+          0,
+        );
+        expect(
+          'CLOUD-16 and the lead’s session is started so that the provider sees it',
+          truth(
+            lastLead().includes(
+              `env CODE_KIT_COMPANION_HOME='${join(home2, '.config/code-kit-companion')}' claude --permission-mode bypassPermissions '--plugin-dir' '/opt/companion/adapter'`,
+            ),
+            lastLead(),
+          ),
+          0,
+        );
+        un('stop');
+        const installs = log('npm.log').length;
+        const later = visit('y\n');
+        un('stop');
+        expect(
+          'CLOUD-16 a later visit to a paired machine asks nothing, keeps the one service, and starts the session the same way',
+          truth(
+            !both(later).includes('Pair ') &&
+              created().length === 1 &&
+              log('npm.log').length === installs &&
+              lastLead().includes("'--plugin-dir' '/opt/companion/adapter'"),
+            both(later),
+          ),
+          0,
+        );
+        const before = leads();
+        const byWorkflow = un('open');
+        un('stop');
+        expect(
+          'CLOUD-16 the workflow’s start opens that same session, seen by the provider',
+          truth(
+            byWorkflow.status === 0 &&
+              leads() === before + 1 &&
+              lastLead().includes("'--plugin-dir' '/opt/companion/adapter'"),
+            both(byWorkflow),
+          ),
+          0,
+        );
+        const detached = spawnSync('node', [kitCli, 'cloud', 'join', '--detached'], {
+          cwd: clone2,
+          encoding: 'utf8',
+          env: env2,
+        });
+        expect(
+          'CLOUD-16 the provider starts the lead’s session by code-kit’s own join, with nobody attached',
+          truth(
+            detached.status === 0 &&
+              leads() === before + 2 &&
+              !both(detached).includes('attached') &&
+              existsSync(join(home2, '.tmux/code-kit-lead')),
+            both(detached),
+          ),
+          0,
+        );
+        un('stop');
+      }
       in2('switch', '-q', '-c', 'web/st-12');
       writeFileSync(join(clone2, 'twelve.txt'), '12\n');
       in2('add', '-A');

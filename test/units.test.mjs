@@ -4864,6 +4864,103 @@ test('CLOUD-15 a repository’s file is told as this version’s, another versio
   assert.equal(workflowStanding(text, { key: 'x', label: 'X' }).is, 'changed');
 });
 
+test('CLOUD-15 a file an earlier version printed, from before the workflow changed, is still code-kit’s', async () => {
+  const { default: sprites } = await import('../hooks/lib/adapters/sprites.mjs');
+  const facts = await import('../hooks/lib/cloudfacts.mjs');
+  const file = (name) => readFileSync(join(dirname(fileURLToPath(import.meta.url)), name), 'utf8');
+  // What 0.40.0 printed for Sprites, as a repository that committed it then still holds it.
+  const old = file('machine-workflow-0.40.0.yml');
+  assert.deepEqual(facts.workflowStanding(old, sprites), { is: 'version', version: '0.40.0' });
+  assert.equal(facts.workflowStanding(old.replaceAll('\n', '\r\n'), sprites).is, 'version');
+  assert.equal(
+    facts.workflowStanding(old.replace('contents: read', 'contents: write'), sprites).is,
+    'changed',
+  );
+  // It takes the inputs it had then, and this version's file takes who asked as well.
+  assert.deepEqual(facts.workflowInputs(old), ['act', 'request', 'discard']);
+  const now = facts.machineWorkflow(sprites);
+  assert.deepEqual(facts.workflowInputs(now), ['act', 'request', 'discard', 'provider']);
+  assert.ok(now.includes('          PROVIDER: ${{ inputs.provider }}\n'));
+  assert.ok(now.includes('cloud up --unattended --platform sprites --provider "$PROVIDER"'));
+  assert.deepEqual(facts.workflowInputs('on:\n  push:\n'), []);
+  assert.deepEqual(
+    facts.workflowInputs(
+      'on:\n  workflow_dispatch:\n    inputs:\n      # why\n      act:\n        type: string\n\njobs:\n  inputs:\n',
+    ),
+    ['act'],
+  );
+  // The workflow as this version prints it, whatever its version: when this fails the file has changed,
+  // so the last released version's file is no longer the one this code prints for it. Add that version's
+  // hash (workflowHash of the file it printed) to its adapter's `workflow.printed`, then put the new hash
+  // here.
+  const version = now.match(/^# code-kit (\S+):/)[1];
+  assert.equal(
+    facts.workflowHash(now.replaceAll(version, '0.0.0')),
+    '4426f17573d56062c1dce04da0508f962c349162b3d41822c6d5a5132db1fe30',
+  );
+});
+
+test('CLOUD-16 the hosted provider’s part on a machine: what a session is started with, and what is never taken from it', async () => {
+  const { providerAdapterOf } = await import('../hooks/lib/adapters/index.mjs');
+  const { adapter, url } = providerAdapterOf({ hub: 'https://hub.example/' });
+  assert.equal(url, 'https://hub.example');
+  const { machine } = adapter;
+  // npm says where a global install's commands are; the machine's PATH may not hold that folder.
+  const at = '/opt/node/bin/code-kit-companion';
+  const asked = [];
+  const machineSays =
+    (stdout, status = 0) =>
+    (cmd) => {
+      asked.push(cmd);
+      return cmd.startsWith('npm prefix -g')
+        ? { status: 0, stdout: '/opt/node\n' }
+        : { status, stdout };
+    };
+  const says = (stdout, status) => machine.session(machineSays(stdout, status));
+  const good = {
+    env: { CODE_KIT_COMPANION_HOME: '/home/kim/.config/code-kit-companion' },
+    args: ['--plugin-dir', '/opt/companion/adapter'],
+  };
+  assert.deepEqual(says(JSON.stringify(good)), good);
+  assert.equal(asked.pop(), `'${at}' session-env 2>/dev/null`);
+  // Not paired, not installed, or an answer that isn't the one asked for: the session starts without it.
+  assert.equal(says('', 127), null);
+  assert.equal(says('not json'), null);
+  assert.equal(says(JSON.stringify({ env: { 'A B': 'x' }, args: [] })), null);
+  assert.equal(says(JSON.stringify({ env: { A: 'x\ny' }, args: [] })), null);
+  assert.equal(says(JSON.stringify({ env: {}, args: ['ok', 3] })), null);
+  assert.equal(
+    machine.session(() => ({ status: 1, stdout: '' })),
+    null,
+  );
+  assert.deepEqual(machine.service(machineSays('')), { command: at, args: ['run'] });
+  assert.equal(
+    machine.service(() => ({ status: 1, stdout: '' })),
+    null,
+  );
+  // Pairing installs the companion from the provider's own address, then runs its setup for this machine.
+  const ran = [];
+  const typed = (cmd, args) => (ran.push([cmd, ...args].join(' ')), 0);
+  const given = {
+    url,
+    name: 'ck-app-1a2b3c4d',
+    workspace: '/home/kim/projects',
+    remote: 'https://github.com/acme/app.git',
+    typed,
+    sh: machineSays(''),
+  };
+  assert.equal(machine.pair(given), true);
+  assert.deepEqual(ran, [
+    'npm install -g https://hub.example/companion/code-kit-companion.tgz',
+    `${at} setup --hub https://hub.example --workspace /home/kim/projects --name ck-app-1a2b3c4d --machine acme/app`,
+  ]);
+  // An install that fails pairs nothing.
+  ran.length = 0;
+  assert.equal(machine.pair({ ...given, typed: (cmd) => (ran.push(cmd), 1) }), false);
+  assert.deepEqual(ran, ['npm']);
+  assert.match(machine.offer(url), /installs the hub's companion from https:\/\/hub\.example/);
+});
+
 test('CLOUD-11 a workflow’s checkout and a computer’s clone name the same machine', async () => {
   const { machineNameOf } = await import('../hooks/lib/cloudfacts.mjs');
   const dir = mkdtempSync(join(tmpdir(), 'ck-name-'));

@@ -86,6 +86,9 @@ export default {
    */
   workflow: {
     secret: 'SPRITES_TOKEN',
+    // The files earlier versions printed, from before the workflow last changed, by the hash of each:
+    // a repository's untouched one is still read as code-kit's own.
+    printed: { '0.40.0': '4fce860d5fab4f350622e3d2aedf9df19528ee1b6586d1b100f993c3091575f7' },
     steps: [
       {
         name: 'Install the sprite command',
@@ -252,6 +255,25 @@ export default {
     return r.status === 0
       ? { ok: true, why: null }
       : { ok: false, why: r.output.split('\n').filter(Boolean).pop() || `exit ${r.status}` };
+  },
+  /**
+   * Run on the Sprite itself: a command the platform keeps as a service of its own, beside the terminal's.
+   * It runs while the Sprite is awake, is paused with it and carries on when it wakes. One kept already
+   * is left as it is.
+   */
+  keep({ key, command, dir }) {
+    const service = `code-kit-${key}`;
+    if ([command, dir].some((a) => /[,\s'"]/.test(String(a))))
+      return {
+        ok: false,
+        why: 'a path in it holds a comma, a space or a quote, which a service on a Sprite is given none of',
+      };
+    const services = (args) => spawnSync('sprite-env', ['services', ...args], { encoding: 'utf8' });
+    if (services(['get', service]).status === 0) return { ok: true, made: false, why: null };
+    const r = services(['create', service, '--cmd', command, '--dir', dir, '--no-stream']);
+    return r.status === 0
+      ? { ok: true, made: true, why: null }
+      : { ok: false, why: said(r).split('\n').filter(Boolean).pop() || firstLine(r) };
   },
   /** That service taken away, so the address goes back to what the Sprite routed it to before. */
   unserve(name) {

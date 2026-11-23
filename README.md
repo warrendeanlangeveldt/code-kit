@@ -525,6 +525,8 @@ A machine can also be made with nobody at a computer, by a workflow in the repos
 3. Run the workflow with `act: up`, from the Actions tab or with `gh workflow run code-kit-machine.yml -f act=up`. Its steps make the machine, copy the repository there, and install code-kit and the terminal. The run ends with the terminal's address.
 4. Open that address. Your first visit asks for GitHub's device sign-in and then Claude's own, each typed on the machine, and then opens the lead's session. Later visits join it.
 
+A hub that starts the workflow names itself in the `provider` input, by its address. That visit then says which hub asked and what pairing does, and asks whether to pair the machine with it. Nothing of the hub is installed until you say yes there, and after a no the next visit offers it again unless you say to stop. Paired, the hub's companion is kept running on the machine, and the lead's session is the same one whether the terminal, the workflow or the hub starts it.
+
 `act: start` opens the session with nobody attached, `stop` ends it, and `down` removes the machine, refusing while work there isn't on GitHub unless you tick `discard`. The workflow runs code-kit's own commands with `--unattended`, which a Claude session is refused: it's what lets `down` with `discard` go ahead without asking.
 
 A machine made this way doesn't mark your own clone, so don't start a lead in both places. That's an open question in spec 32.
@@ -598,7 +600,7 @@ code-kit cloud signin | cloud console                          # join your termi
 code-kit cloud open                                            # the lead's session on the machine: started if there's none, joined if there is; it keeps working when you detach
 code-kit cloud stop                                            # end the lead's session there now, so the machine sleeps
 code-kit cloud down [--discard]                                # bring the project home and remove the machine; refuses while work there isn't on the remote (--discard is yours alone)
-code-kit cloud workflow [--write] [--platform <key>]            # the workflow a repository commits so its machine is made, started, stopped and removed with nobody at a computer (CLOUD-15); it runs up, open, stop and down with --unattended
+code-kit cloud workflow [--write] [--platform <key>]            # the workflow a repository commits so its machine is made, started, stopped and removed with nobody at a computer (CLOUD-15); it runs up, open, stop and down with --unattended, and passes who asked to up as --provider <name>=<address> (CLOUD-16)
 code-kit decisions [--json] [--all]                          # what waits on you in this session, and a count in each other one; --all lists every session's
 code-kit who                                                 # which session this is, whether it leads the project, and its task
 code-kit sessions [--json]                                   # the sessions working the project, which one leads, and each one's task
