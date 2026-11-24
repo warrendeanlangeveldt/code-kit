@@ -772,6 +772,30 @@ export function terminalPage(base, keys) {
 }
 
 /**
+ * CLOUD-12, on the machine: the page its terminal serves, made from ttyd's own, which only a running one
+ * gives: one is started on a spare port that nothing outside the machine reaches, asked for it, and ended.
+ */
+export function cloudPage(root) {
+  const main = mainOf(root);
+  const sh = (cmd) =>
+    spawnSync('bash', ['-c', cmd], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 }).stdout ?? '';
+  const ttyd = sh('command -v ttyd').trim().split('\n').pop();
+  if (!ttyd) stop('it has no ttyd, which serves it.');
+  const spare = TERMINAL_PORT + 1;
+  const base = sh(
+    `"${ttyd}" -p ${spare} -i 127.0.0.1 true >/dev/null 2>&1 & T=$!; for i in $(seq 40); do curl -fs --compressed http://127.0.0.1:${spare}/ && break; sleep 0.25; done; kill $T 2>/dev/null; true`,
+  );
+  const page = terminalPage(
+    base,
+    readFileSync(join(PLUGIN_ROOT, 'templates/cloud-terminal.html'), 'utf8'),
+  );
+  if (!page) stop("ttyd there didn't give its page.");
+  mkdirSync(join(main, CLOUD_DIR), { recursive: true });
+  writeFileSync(join(main, TERMINAL_PAGE), page);
+  return 0;
+}
+
+/**
  * CLOUD-12: the lead's session served as a terminal at the machine's own address, behind the platform's
  * sign-in: ttyd, with a page a phone can work in, started by the platform when a request comes (after a
  * sleep too) and running `cloud join` for each browser. Answers { url, gate }, or null having said why
@@ -803,32 +827,18 @@ function serveTerminal({ adapter, name, run, main, clone, io }) {
     return not(
       `it has no ttyd, which serves it. Add its install to "cloud.prepare" in the config and run \`code-kit cloud up\` again.`,
     );
-  // The page is ttyd's own, which only a running one gives: one is started on a spare port that nothing
-  // outside the machine reaches, asked for it, and ended.
-  const spare = TERMINAL_PORT + 1;
-  const base = run(
-    `"${ttyd}" -p ${spare} -i 127.0.0.1 true >/dev/null 2>&1 & T=$!; for i in $(seq 40); do curl -fs --compressed http://127.0.0.1:${spare}/ && break; sleep 0.25; done; kill $T 2>/dev/null; true`,
-    { timeoutSeconds: 60 },
-  ).stdout;
-  const page = terminalPage(
-    base,
-    readFileSync(join(PLUGIN_ROOT, 'templates/cloud-terminal.html'), 'utf8'),
-  );
-  if (!page) return not(`ttyd there didn't give its page. ${again}`);
+  // The page is made there, by the machine's own code-kit. It's far more than the last of a command's
+  // output, which is all a platform's command may keep for whoever reads it late.
+  const paged = run(onMachine(clone, 'cloud page'), { timeoutSeconds: 60 });
+  if (paged.status !== 0)
+    return not(
+      `${(paged.output.split('\n').pop() || "its page couldn't be made there").replace(/\.$/, '')}. ${again}`,
+    );
   // Full paths, and the environment the adapter's commands run in there, which a service isn't given.
   const [home, path, node] = run(
-    `mkdir -p "${clone}/${CLOUD_DIR}" && printf '%s\\n%s\\n%s' "${clone}" "$PATH" "\${NODE_OPTIONS:-}"`,
+    `printf '%s\\n%s\\n%s' "${clone}" "$PATH" "\${NODE_OPTIONS:-}"`,
   ).stdout.split('\n');
   if (!home || !path) return not(`the project's clone there couldn't be read. ${again}`);
-  const temp = mkdtempSync(join(tmpdir(), 'code-kit-terminal-'));
-  let sent;
-  try {
-    writeFileSync(join(temp, 'terminal.html'), page);
-    sent = adapter.put(name, join(temp, 'terminal.html'), `${home}/${TERMINAL_PAGE}`);
-  } finally {
-    rmSync(temp, { recursive: true, force: true });
-  }
-  if (!sent.ok) return not(`its page couldn't be copied there (${sent.why}). ${again}`);
   const start = [
     '#!/bin/bash',
     "# code-kit (spec 32, CLOUD-12): what this machine's terminal runs for each browser that opens it.",
