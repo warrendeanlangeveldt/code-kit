@@ -15213,6 +15213,7 @@ sys.exit(os.WEXITSTATUS(status))
           page().length > 200_000 &&
           page().includes('<div id="ck-keys"') &&
           page().includes("['⇧Tab'") &&
+          page().includes("button('Paste', pasteKey, 'click')") &&
           page().endsWith('</script>\n</body></html>'),
         page().slice(0, 400),
       ),
