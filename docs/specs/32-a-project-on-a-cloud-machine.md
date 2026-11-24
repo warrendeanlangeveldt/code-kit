@@ -209,11 +209,15 @@ The awake hours come from the machine's own uptime, which the spike showed stops
 
 The machine's own code-kit gives the report (`code-kit cloud here`, run on the machine), so a hosted provider's part there (CLOUD-16) can pass it on without the computer. For that reader it also says the machine's name, its platform and its terminal's address; which of the open sessions is the lead's and which the watcher's; what the lead's session is doing, by the watcher's own order (CLOUD-7): working while a tool call, a lane or a merge runs, waiting when only a question to the person is open, idle otherwise; and after how many idle minutes a session is ended. The three days a sign-in is named within are one number, which a hub reads from code-kit.
 
+The report also says what the work waits for that has a time on it, so that whoever reads it can start a sleeping machine when the wait is over. There are two such waits. Claude's usage limit ends a turn with an error, and Claude Code writes when the limit resets on that turn's last entry (`quotaLimits.resetsAt`); the Stop hook reads the field and the machine keeps the time, whichever session or lane agent met the limit, since the limit is the account's. A tool call starting afterwards means Claude answers again, and the note goes. The other is a story the lead holds until a date (LOOP-15): the first hold to end. The limit comes first while it's in force, since nothing works until it resets. The report gives one wait: what it's for, until when, and the story where it's a hold. `cloud` on the computer says it too. A turn ended by anything else, or with no time on it, is no wait.
+
 **Acceptance**
 
 - Given a lane branch on the machine that was never pushed, then `cloud` lists it under what isn't on the remote.
 - Given the lead's session open on the machine with a test run going, then the machine's own report names the machine and its platform and says the lead's session is working; with nothing running it says idle; and once the watcher has ended the session it says nothing is open.
 - Given a Claude sign-in that ends in two days, then `cloud` and `next` say so, and that the person signs in again with `cloud signin`.
+- Given a lead's turn on the machine ended by Claude's usage limit, which Claude Code says resets at 15:10, then the machine's own report says the work waits for the limit until 15:10; once a tool call starts there again, it says no wait.
+- Given ST-4 held until 10 November and nothing limited, then the report says the work waits for that hold until then, with the story.
 - Given code-kit 0.39.0 on the machine and 0.40.0 on the computer, then `cloud` shows both and says `cloud up` brings it level.
 
 ### CLOUD-9 `cloud down` brings the project home

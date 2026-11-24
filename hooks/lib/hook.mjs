@@ -44,6 +44,25 @@ export function apiStopOf(input) {
   return entry?.isApiErrorMessage ? (entry.error ?? 'unknown') : null;
 }
 
+/** No limit of Claude's runs longer than its weekly one: a reset further off than this isn't one. */
+const LIMIT_DAYS = 8;
+
+/**
+ * CLOUD-8: when the usage limit a stopping turn ended on resets, as Claude Code writes it on the turn's
+ * last entry (`quotaLimits.resetsAt`, in seconds): { until } as an ISO time, or null when the turn
+ * ended on anything else, or Claude Code gave no time still to come.
+ */
+export function limitOf(input, now = Date.now()) {
+  const path = input?.agent_id ? input.agent_transcript_path : input?.transcript_path;
+  const entry = lastAssistant(path);
+  if (!entry?.isApiErrorMessage || entry.error !== 'rate_limit') return null;
+  const resets = entry.quotaLimits?.resetsAt ?? entry.apiErrorParams?.rate_limit_info?.resetsAt;
+  if (typeof resets !== 'number' || !Number.isFinite(resets)) return null;
+  const until = resets * 1000;
+  if (until <= now || until - now > LIMIT_DAYS * 86_400_000) return null;
+  return { until: new Date(until).toISOString() };
+}
+
 /**
  * The model the session runs on: the one SessionStart names, or the one its transcript's last reply
  * came from (Claude Code writes it on each), or null. Never a lane agent's: that's the session's lead.

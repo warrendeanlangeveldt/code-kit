@@ -15570,6 +15570,52 @@ sys.exit(os.WEXITSTATUS(status))
       ),
       0,
     );
+    // CLOUD-8: what the work there waits for that has a time on it. Claude's usage limit ends the lead's
+    // turn, and Claude Code writes when it resets on the turn's last entry.
+    const resets = Math.floor(Date.now() / 1000) + 2 * 3600;
+    const limitedTurn = join(clone, '.claude/state/lead-turn.jsonl');
+    writeFileSync(
+      limitedTurn,
+      [
+        { type: 'assistant', message: { content: [{ type: 'text', text: 'Dispatching.' }] } },
+        {
+          type: 'assistant',
+          isApiErrorMessage: true,
+          error: 'rate_limit',
+          quotaLimits: { status: 'rejected', resetsAt: resets, rateLimitType: 'five_hour' },
+          message: { content: [{ type: 'text', text: "You've hit your session limit" }] },
+        },
+      ]
+        .map((e) => JSON.stringify(e))
+        .join('\n') + '\n',
+    );
+    const noWait = here32().wait;
+    const limitStop = spawnSync('node', [join(hooks, 'stop-check.mjs')], {
+      input: JSON.stringify({
+        cwd: clone,
+        session_id: 'mmmm1111-s',
+        hook_event_name: 'Stop',
+        transcript_path: limitedTurn,
+      }),
+      env: thereEnv,
+      encoding: 'utf8',
+    });
+    const waitsLimit = here32().wait;
+    act('start', 'toolu_after_limit');
+    act('end', 'toolu_after_limit');
+    expect(
+      'CLOUD-8 the report says the work waits for Claude’s usage limit until it resets, as Claude Code wrote it on the turn the limit ended, and no longer once a tool call runs there again',
+      truth(
+        noWait === null &&
+          limitStop.status === 0 &&
+          waitsLimit?.for === 'limit' &&
+          waitsLimit.until === new Date(resets * 1000).toISOString() &&
+          waitsLimit.story === null &&
+          here32().wait === null,
+        `${JSON.stringify([noWait, waitsLimit, here32().wait])} ${both(limitStop)}`,
+      ),
+      0,
+    );
     // A conversation the ended session left, which the next one continues.
     // Claude Code names the folder from where it runs, as the system gives that path.
     const conversations = join(

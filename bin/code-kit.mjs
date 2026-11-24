@@ -4419,6 +4419,12 @@ async function cloudCommand() {
       out(
         `  The last session there ${s.ended.why} (${String(s.ended.at).slice(0, 16).replace('T', ' ')} UTC).`,
       );
+    if (s.wait)
+      out(
+        s.wait.for === 'limit'
+          ? `  Claude's usage limit stopped the work there. It resets at ${s.wait.until.slice(0, 16).replace('T', ' ')} UTC.`
+          : `  ${s.wait.story} is held until ${s.wait.until.slice(0, 16).replace('T', ' ')} UTC.`,
+      );
     for (const r of s.running) out(`  Working: ${r.story ?? 'a story'} in the ${r.lane} lane`);
     if (s.merging) out('  The queue is merging.');
     if (s.awake)

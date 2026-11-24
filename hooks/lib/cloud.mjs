@@ -26,6 +26,7 @@ import { machineAdapterOf, providerAdapterOf } from './adapters/index.mjs';
 import { cloudOf } from './cloudconfig.mjs';
 import { SIGN_IN_DAYS, folderName, httpsRemote, machineNameOf } from './cloudfacts.mjs';
 import { openDecisions } from './decisionstore.mjs';
+import { activeDeferrals } from './deferrals.mjs';
 import { laneClaims } from './laneclaims.mjs';
 import { mainCheckout } from './lanetrees.mjs';
 import { readQueue, waiting } from './queue.mjs';
@@ -38,6 +39,7 @@ const ACTS_DIR = `${CLOUD_DIR}/acts`;
 const LAST_FILE = `${CLOUD_DIR}/last`;
 const ENDED_FILE = `${CLOUD_DIR}/ended.json`;
 const AWAKE_FILE = `${CLOUD_DIR}/awake.json`;
+const LIMIT_FILE = `${CLOUD_DIR}/limit.json`;
 const PREPARED_FILE = `${CLOUD_DIR}/prepared`;
 const CARRIED_DIR = `${CLOUD_DIR}/carried`;
 /** CLOUD-12, on the machine: the page its terminal serves, and what the terminal runs for each browser. */
@@ -1427,8 +1429,11 @@ export function noteAct(root, id, mode, { session = null, agent = null, asks = f
       ACTS_DIR,
       `${actOwner(session, agent)}.${createHash('sha256').update(String(id)).digest('hex').slice(0, 24)}`,
     );
-    if (mode === 'start') writeFileSync(`${file}${asks ? ASKING : ''}`, '');
-    else for (const f of [file, `${file}${ASKING}`]) rmSync(f, { force: true });
+    if (mode === 'start') {
+      writeFileSync(`${file}${asks ? ASKING : ''}`, '');
+      // A tool call starting is Claude answering again: whatever limit stopped it has lifted.
+      rmSync(join(main, LIMIT_FILE), { force: true });
+    } else for (const f of [file, `${file}${ASKING}`]) rmSync(f, { force: true });
     writeFileSync(join(main, LAST_FILE), '');
   } catch {
     // a read-only checkout: the watcher goes by what it can see
@@ -1449,6 +1454,36 @@ export function noteTurnEnd(root, { session = null, agent = null } = {}) {
     // no call was ever noted there
   }
 }
+/**
+ * CLOUD-8: Claude's usage limit ended a turn in the project on its machine, and resets at `until` (an
+ * ISO time). The limit is the account's, so it's one note for the project, whichever agent met it.
+ */
+export function noteLimit(root, until, now = Date.now()) {
+  const main = mainOf(root);
+  if (!isMachine(main)) return;
+  try {
+    writeJson(join(main, LIMIT_FILE), { until, at: new Date(now).toISOString() });
+  } catch {
+    // a read-only checkout: the report goes without
+  }
+}
+
+/**
+ * CLOUD-8: what the work there waits for that has a time on it: Claude's usage limit until it resets,
+ * and otherwise the first held story to be released (LOOP-15). { for: 'limit' | 'hold', until, story },
+ * or null when nothing with a time on it is waited for.
+ */
+export function waitOf(root, now = Date.now()) {
+  const main = mainOf(root);
+  const limit = readJson(join(main, LIMIT_FILE));
+  if (typeof limit?.until === 'string' && Date.parse(limit.until) > now)
+    return { for: 'limit', until: limit.until, story: null };
+  const [held] = activeDeferrals(main, now)
+    .filter((h) => h.until)
+    .sort((a, b) => Date.parse(a.until) - Date.parse(b.until));
+  return held ? { for: 'hold', until: held.until, story: held.story } : null;
+}
+
 /** The person sending a prompt there. */
 export function notePrompt(root) {
   const main = mainOf(root);
@@ -1645,6 +1680,7 @@ export function hereState(root, config, now = Date.now()) {
       asking: activity.asking,
     },
     ended: readJson(join(main, ENDED_FILE)),
+    wait: waitOf(main, now),
     awake: countAwake(main, now),
     load: Number(loadavg()[0].toFixed(2)),
     cores: cpus().length,

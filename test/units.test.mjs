@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { globToRegExp, matchesAny } from '../hooks/lib/glob.mjs';
+import { limitOf } from '../hooks/lib/hook.mjs';
 import { loadConfig, validate, withDefaults } from '../hooks/lib/config.mjs';
 import { importsOf, layerProblems } from '../hooks/lib/layers.mjs';
 import { diffConfigs, ownershipMoves } from '../hooks/lib/diff.mjs';
@@ -4747,6 +4748,115 @@ test('CLOUD-8 the lead’s session is working while anything runs, waiting on a 
   assert.equal(cloudLib.leadState({ running: 1 }), 'working');
   assert.equal(cloudLib.leadState({ merging: true }), 'working');
   assert.equal(cloudLib.SIGN_IN_DAYS, 3);
+});
+
+test('CLOUD-8 a turn ended by Claude’s usage limit says when the limit resets, from the field Claude Code writes', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'code-kit-limit-'));
+  const now = Date.parse('2026-11-24T02:00:00Z');
+  const turn = (last) => {
+    const file = join(dir, 'turn.jsonl');
+    writeFileSync(
+      file,
+      [
+        { type: 'assistant', message: { content: [] } },
+        { type: 'assistant', ...last },
+      ]
+        .map((e) => JSON.stringify(e))
+        .join('\n') + '\n',
+    );
+    return { transcript_path: file };
+  };
+  const limited = (more) => turn({ isApiErrorMessage: true, error: 'rate_limit', ...more });
+  const at = (iso) => Date.parse(iso) / 1000;
+  try {
+    assert.deepEqual(
+      limitOf(limited({ quotaLimits: { resetsAt: at('2026-11-24T05:10:00Z') } }), now),
+      {
+        until: '2026-11-24T05:10:00.000Z',
+      },
+    );
+    // An older Claude Code wrote it under the error's own parameters.
+    assert.deepEqual(
+      limitOf(
+        limited({ apiErrorParams: { rate_limit_info: { resetsAt: at('2026-11-27T19:00:00Z') } } }),
+        now,
+      ),
+      { until: '2026-11-27T19:00:00.000Z' },
+    );
+    // No time, a time already past, one no limit runs to, another error, and a turn that ended well.
+    assert.equal(limitOf(limited({}), now), null);
+    assert.equal(limitOf(limited({ quotaLimits: { resetsAt: 'soon' } }), now), null);
+    assert.equal(
+      limitOf(limited({ quotaLimits: { resetsAt: at('2026-11-24T01:00:00Z') } }), now),
+      null,
+    );
+    assert.equal(
+      limitOf(limited({ quotaLimits: { resetsAt: at('2027-01-01T00:00:00Z') } }), now),
+      null,
+    );
+    assert.equal(
+      limitOf(
+        turn({
+          isApiErrorMessage: true,
+          error: 'overloaded',
+          quotaLimits: { resetsAt: at('2026-11-24T05:10:00Z') },
+        }),
+        now,
+      ),
+      null,
+    );
+    assert.equal(limitOf(turn({ message: { content: [] } }), now), null);
+    assert.equal(limitOf({}, now), null);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('CLOUD-8 the work on a machine waits for the usage limit while it lasts, and else for the first held story to be released', async () => {
+  const { deferStories } = await import('../hooks/lib/deferrals.mjs');
+  const dir = mkdtempSync(join(tmpdir(), 'code-kit-wait-'));
+  const now = Date.parse('2026-11-24T02:00:00Z');
+  try {
+    mkdirSync(join(dir, '.claude/state'), { recursive: true });
+    assert.equal(cloudLib.waitOf(dir, now), null);
+    // Off its machine a project keeps no limit: the computer's own session is the person's to see.
+    cloudLib.noteLimit(dir, '2026-11-24T05:10:00.000Z', now);
+    assert.equal(cloudLib.waitOf(dir, now), null);
+    writeFileSync(join(dir, cloudLib.CLOUD_FILE), JSON.stringify({ here: true, machine: 'ck-x' }));
+    // A story held with no date is no wait with a time on it; of two with one, the first to end.
+    deferStories(dir, ['ST-7'], { reason: 'until the partner answers' }, now);
+    assert.equal(cloudLib.waitOf(dir, now), null);
+    deferStories(
+      dir,
+      ['ST-4'],
+      { reason: 'after the venue', until: '2026-11-28T00:00:00.000Z' },
+      now,
+    );
+    deferStories(
+      dir,
+      ['ST-5'],
+      { reason: 'after the launch', until: '2026-11-26T00:00:00.000Z' },
+      now,
+    );
+    assert.deepEqual(cloudLib.waitOf(dir, now), {
+      for: 'hold',
+      until: '2026-11-26T00:00:00.000Z',
+      story: 'ST-5',
+    });
+    // The limit comes first while it lasts: nothing works until it resets.
+    cloudLib.noteLimit(dir, '2026-11-24T05:10:00.000Z', now);
+    assert.deepEqual(cloudLib.waitOf(dir, now), {
+      for: 'limit',
+      until: '2026-11-24T05:10:00.000Z',
+      story: null,
+    });
+    // Once it has reset, and once ST-5 is released, what is left.
+    assert.equal(cloudLib.waitOf(dir, Date.parse('2026-11-24T05:10:01Z')).story, 'ST-5');
+    assert.equal(cloudLib.waitOf(dir, Date.parse('2026-11-26T00:00:01Z')).story, 'ST-4');
+    assert.equal(cloudLib.waitOf(dir, Date.parse('2026-11-28T00:00:01Z')), null);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test('CLOUD-7 a session is ended only when nothing runs and nothing has moved for idleMinutes', () => {
