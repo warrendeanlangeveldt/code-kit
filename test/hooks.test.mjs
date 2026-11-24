@@ -14636,10 +14636,18 @@ if (a[0] === 'exec') {
   // A file arrives as a command's input; the connection can drop while it's sent.
   if (a.includes('--stdin') && fs.existsSync(path.join(root, 'uploads-drop'))) { console.error('Error: connection lost'); process.exit(1); }
   const cmd = a.slice(a.indexOf('--') + 1);
+  // An output-only command's output is kept for whoever reads it late, its last 64 KB alone: more than
+  // that, written before it's read, is lost with an error, as on a real one.
+  const kept = a.includes('--no-stdin');
   const r = spawnSync(cmd[0], cmd.slice(1), {
-    stdio: 'inherit',
+    stdio: kept ? ['ignore', 'pipe', 'inherit'] : 'inherit',
+    maxBuffer: 256 * 1024 * 1024,
     env: { ...process.env, HOME: h, PATH: path.join(root, 'on-machine') + path.delimiter + process.env.PATH },
   });
+  if (kept) {
+    if (r.stdout.length > 65536) { console.error('Error: cannot resume output at byte 0: earliest retained byte is ' + (r.stdout.length - 65536)); process.exit(1); }
+    return process.stdout.write(r.stdout, () => process.exit(r.status ?? 1));
+  }
   process.exit(r.status ?? 1);
 }
 process.exit(2);
@@ -14689,7 +14697,7 @@ if (a[0] === 'auth' && a[1] === 'setup-git') { if (!login) process.exit(1); fs.w
     stub(
       dirs.there,
       'curl',
-      `${head}if (a.some((x) => x.startsWith('http://127.0.0.1:'))) { process.stdout.write('<!DOCTYPE html><html><head><title>ttyd - Terminal</title></head><body><script>/* the terminal */</script></body></html>'); process.exit(0); }
+      `${head}if (a.some((x) => x.startsWith('http://127.0.0.1:'))) { return process.stdout.write('<!DOCTYPE html><html><head><title>ttyd - Terminal</title></head><body><script>/* the terminal' + ' '.repeat(200000) + '*/</script></body></html>', () => process.exit(0)); }
 fs.appendFileSync(path.join(h, 'curl.log'), a.join(' ') + '\\n'); process.stdout.write('200');\n`,
     );
     // The terminal a machine serves in a browser: its image has none until it's installed, which the
@@ -15199,9 +15207,13 @@ sys.exit(os.WEXITSTATUS(status))
       'CLOUD-12 the page it serves is the terminal’s own with the keys a phone lacks put at the end of its body',
       truth(
         page().startsWith('<!DOCTYPE html><html><head><title>ttyd - Terminal</title>') &&
-          page().includes('/* the terminal */</script><meta') &&
+          page().includes(' */</script><meta') &&
+          // ttyd's page is far more than a platform's command keeps of what a command printed: it's
+          // made on the machine, whole.
+          page().length > 200_000 &&
           page().includes('<div id="ck-keys"') &&
           page().includes("['⇧Tab'") &&
+          page().includes("button('Paste', pasteKey, 'click')") &&
           page().endsWith('</script>\n</body></html>'),
         page().slice(0, 400),
       ),

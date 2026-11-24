@@ -39,12 +39,25 @@
   #ck-keys button.pressed {
     background: #5a5a5a;
   }
+  #ck-keys input {
+    flex: 1 0 220px;
+    height: 40px;
+    padding: 0 10px;
+    border: 1px solid #6a6a6a;
+    border-radius: 8px;
+    background: #111;
+    color: #eee;
+    font: inherit;
+    font-size: 16px;
+    -webkit-user-select: text;
+    user-select: text;
+  }
 </style>
 <div id="ck-keys" role="toolbar" aria-label="Keys a phone's keyboard lacks"></div>
 <script>
   // code-kit (spec 32, CLOUD-12): what a project's machine adds to its terminal's page. The keys a phone's
-  // keyboard lacks, a type size that reads on one, the terminal kept above the keyboard, and the session
-  // joined again when the person comes back to the page. The keys show where the pointer is a finger, or
+  // keyboard lacks, a way to paste, a type size that reads on one, the terminal kept above the keyboard,
+  // and the session joined again when the person comes back to the page. The keys show where the pointer is a finger, or
   // the address ends ?keys; a computer's browser gets the page as it is, and the joining again.
   (() => {
     const touch = matchMedia('(pointer: coarse)').matches || /[?&]keys\b/.test(location.search);
@@ -114,21 +127,76 @@
         store(n);
         fit();
       };
-      const button = (label, act) => {
+      const button = (label, act, on = 'pointerup') => {
         const b = document.createElement('button');
         b.type = 'button';
         b.textContent = label;
-        // On the way down, so the keyboard stays up and the terminal keeps its focus.
+        let from = null;
+        // Held back on the way down, so the keyboard stays up and the terminal keeps its focus.
         b.addEventListener('pointerdown', (e) => {
           e.preventDefault();
           b.classList.add('pressed');
-          act();
+          from = [e.clientX, e.clientY];
         });
+        // A key is a tap. A finger that slides the row along to reach its other keys presses none.
+        b.addEventListener('pointerup', (e) => {
+          const tap = from && Math.hypot(e.clientX - from[0], e.clientY - from[1]) < 10;
+          from = null;
+          if (tap && on === 'pointerup') act();
+        });
+        if (on !== 'pointerup') b.addEventListener(on, act);
         for (const up of ['pointerup', 'pointercancel', 'pointerleave'])
           b.addEventListener(up, () => b.classList.remove('pressed'));
+        for (const off of ['pointercancel', 'pointerleave'])
+          b.addEventListener(off, () => (from = null));
         bar.append(b);
       };
+      // A terminal has nothing a finger can hold to paste into, and a sign-in gives a code to paste.
+      // Paste asks the browser for the clipboard, which a phone gives after a tap and its own yes. Where
+      // the browser won't, a field opens that the phone's own paste works in. What's pasted goes to the
+      // terminal as typing does, and the page keeps none of it.
+      const paste = (text) => {
+        if (!text || waiting()) return;
+        return typeof term.paste === 'function' ? term.paste(text) : send(text);
+      };
+      const field = document.createElement('input');
+      field.type = 'text';
+      field.hidden = true;
+      field.placeholder = 'Paste here';
+      field.setAttribute('aria-label', 'Paste here, and it goes to the terminal');
+      for (const off of ['autocomplete', 'autocapitalize', 'autocorrect'])
+        field.setAttribute(off, 'off');
+      field.spellcheck = false;
+      const fieldDone = (text) => {
+        field.value = '';
+        field.hidden = true;
+        term.focus();
+        paste(text);
+      };
+      field.addEventListener('paste', (e) => {
+        e.preventDefault();
+        fieldDone(e.clipboardData?.getData('text') ?? '');
+      });
+      field.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') fieldDone(field.value);
+        if (e.key === 'Escape') fieldDone('');
+      });
+      const askField = () => {
+        field.hidden = false;
+        bar.scrollLeft = 0;
+        field.focus();
+      };
+      const pasteKey = () => {
+        if (!field.hidden) return fieldDone(field.value);
+        // Asked for on the finger's way up, which is when a browser lets a page ask.
+        const read = navigator.clipboard?.readText?.();
+        if (!read) return askField();
+        return read.then((text) => (text ? paste(text) : askField()), askField);
+      };
       if (touch) {
+        // First in the row, where it's seen without sliding the row along.
+        bar.append(field);
+        button('Paste', pasteKey, 'click');
         for (const [label, text] of KEYS)
           button(label, () => send(text(term.modes.applicationCursorKeysMode)));
         const step = (by) => {

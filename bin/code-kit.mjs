@@ -326,6 +326,7 @@ import {
   cloudConsole,
   cloudDown,
   cloudJoin,
+  cloudPage,
   cloudOpen,
   cloudSignin,
   cloudStatus,
@@ -4296,12 +4297,14 @@ function cloudWorkflow(config) {
  * Spec 32: the project's work on a cloud machine the person owns. `cloud` says where the work is and what
  * the machine is doing; `up` makes the machine ready, `signin` and `console` join the person's terminal
  * to it, `open` is the lead's session there, `stop` ends it so the machine sleeps, and `down` brings the
- * project home. `here`, `watch` and `join` (what its terminal in a browser runs) run on the machine itself.
+ * project home. `here`, `watch`, `page` (which makes the page its terminal serves) and `join` (what that
+ * terminal runs) run on the machine itself.
  */
 async function cloudCommand() {
   const root = resolve('.');
-  const config = cloudConfig(root);
   const [sub, ...more] = rest;
+  // The machine makes its terminal's page before it's marked as the project's, and needs no config for it.
+  const config = sub === 'page' ? null : cloudConfig(root);
   // CLOUD-13: run by a workflow, with nobody to ask and a checkout that's thrown away afterwards.
   const unattended = flag('--unattended');
   if (unattended && process.env.CLAUDECODE)
@@ -4349,6 +4352,7 @@ async function cloudCommand() {
       const ended = await watch(root, config, { once: flag('--once') });
       return out(ended.ended ? `The lead's session ${ended.why}.` : `Watching: ${ended.why}.`);
     }
+    if (sub === 'page') return process.exit(cloudPage(root));
     if (sub === 'join')
       return process.exit(
         cloudJoin(root, io, { attach: !flag('--detached'), visit: flag('--visit') }),
