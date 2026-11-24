@@ -14766,10 +14766,19 @@ fs.mkdirSync(dir, { recursive: true });
 const t = a[a.indexOf('-t') + 1];
 const s = a[a.indexOf('-s') + 1];
 if (a[0] === 'has-session') process.exit(fs.existsSync(path.join(dir, t)) ? 0 : 1);
-if (a[0] === 'new-session') { fs.writeFileSync(path.join(dir, s), ''); fs.appendFileSync(path.join(h, 'tmux.log'), 'new ' + s + ' ' + a[a.length - 1] + '\\n'); fs.appendFileSync(path.join(h, 'tmux-env.log'), s + ' ' + (process.env.NODE_OPTIONS || '') + '\\n'); }
+if (a[0] === 'new-session') { fs.writeFileSync(path.join(dir, s), s === 'code-kit-owner' ? a[a.length - 1] : ''); fs.appendFileSync(path.join(h, 'tmux.log'), 'new ' + s + ' ' + a[a.length - 1] + '\\n'); fs.appendFileSync(path.join(h, 'tmux-env.log'), s + ' ' + (process.env.NODE_OPTIONS || '') + '\\n'); }
 if (a[0] === 'kill-session') fs.rmSync(path.join(dir, t), { force: true });
 if (a[0] === 'ls') for (const f of fs.readdirSync(dir)) console.log(f + ' ' + Math.floor(fs.statSync(path.join(dir, f)).mtimeMs / 1000));
-if (a[0] === 'attach') console.log('attached ' + t);
+if (a[0] === 'attach') {
+  console.log('attached ' + t);
+  // The owner's session runs what it was started with in the terminal that joins it, and ends with it.
+  // With 'owner-stays' the terminal leaves first, as a browser does that goes to another page.
+  const cmd = read(path.join('.tmux', t));
+  if (cmd && !fs.existsSync(path.join(h, 'owner-stays'))) {
+    require('node:child_process').spawnSync('bash', ['-c', cmd], { stdio: 'inherit' });
+    fs.rmSync(path.join(dir, t), { force: true });
+  }
+}
 `,
     );
     const ADDRESS = 'https://github.com/acme/app.git';
@@ -14925,6 +14934,7 @@ if pid == 0:
     os.execvp(sys.argv[2], sys.argv[2:])
 out = b''
 asked = 0
+entered = 0
 while True:
     try:
         data = os.read(fd, 65536)
@@ -14937,6 +14947,10 @@ while True:
         asked += 1
         time.sleep(0.4)
         os.write(fd, (answers.pop(0) + '\\n').encode())
+    if out.count(b'Press Enter to go on. ') > entered:
+        entered += 1
+        time.sleep(0.2)
+        os.write(fd, b'\\n')
 _, status = os.waitpid(pid, 0)
 sys.stdout.buffer.write(out)
 sys.exit(os.WEXITSTATUS(status))
@@ -16161,6 +16175,7 @@ sys.exit(os.WEXITSTATUS(status))
         PATH: `${dirs.there}:${env.PATH}`,
         CLAUDE_PROJECT_DIR: clone2,
       };
+      const leads2 = () => tmux2().filter((l) => l.startsWith('new code-kit-lead ')).length;
       const piped = spawnSync('node', [kitCli, 'cloud', 'join'], {
         cwd: clone2,
         encoding: 'utf8',
@@ -16196,12 +16211,40 @@ sys.exit(os.WEXITSTATUS(status))
               'Sign kim out here, to sign in as an account that can? [y/N]',
             ) &&
             !existsSync(join(home2, '.gh-login')) &&
-            tmux2().length === 0,
+            both(wrongAccount).includes(
+              `No session was started on ${machine2}: it still waits for your sign-in to GitHub and to Claude.`,
+            ) &&
+            leads2() === 0,
           both(wrongAccount),
         ),
         0,
       );
       rmSync(join(home2, 'no-access'));
+      // A phone's browser that goes to GitHub's page closes the terminal's connection, which ends what
+      // the terminal ran. The sign-ins run in a session of their own, which is still there.
+      const owners2 = () => tmux2().filter((l) => l.startsWith('new code-kit-owner ')).length;
+      const before = owners2();
+      writeFileSync(join(home2, 'owner-stays'), '');
+      const left = visit();
+      const back = visit();
+      expect(
+        'CLOUD-14 the sign-ins run in a session of their own, so a page that’s left finds the same one waiting when it’s opened again',
+        truth(
+          tmux2().some(
+            (l) => l.startsWith('new code-kit-owner ') && l.includes('cloud join --visit'),
+          ) &&
+            owners2() === before + 1 &&
+            both(left).includes('attached code-kit-owner') &&
+            both(left).includes(`It waits on ${machine2} as you left it.`) &&
+            both(back).includes('attached code-kit-owner') &&
+            existsSync(join(home2, '.tmux/code-kit-owner')) &&
+            !existsSync(join(home2, '.gh-login')) &&
+            leads2() === 0,
+          `${both(left)}\n${both(back)}\n${tmux2().join('\n')}`,
+        ),
+        0,
+      );
+      rmSync(join(home2, 'owner-stays'));
       const first = visit();
       const global2 = (key) =>
         spawnSync('git', ['config', '--global', key], {
@@ -16213,6 +16256,9 @@ sys.exit(os.WEXITSTATUS(status))
         truth(
           first.status === 0 &&
             both(first).includes('it needs two sign-ins only you can give') &&
+            both(first).includes('this one waits as you left it') &&
+            owners2() === before + 1 &&
+            !existsSync(join(home2, '.tmux/code-kit-owner')) &&
             both(first).includes('https://github.com/login/device') &&
             both(first).includes('one-time code: ABCD-1234') &&
             both(first).includes('GitHub: signed in as kim.') &&
@@ -16244,6 +16290,7 @@ sys.exit(os.WEXITSTATUS(status))
         truth(
           again.status === 0 &&
             !both(again).includes('sign-in') &&
+            owners2() === before + 1 &&
             both(again).includes('attached code-kit-lead') &&
             tmux2().filter((l) => l.startsWith('new code-kit-lead ')).length === 1,
           both(again),

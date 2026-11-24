@@ -308,6 +308,8 @@ A person's own clone of the repository isn't told the project is on a machine ma
 
 A machine made with nobody at a computer has neither sign-in, and both are its owner's alone. When its terminal is opened with no session running, `cloud join` looks at both before it starts one. Where GitHub's is missing it runs GitHub's own device sign-in in that terminal: the person reads a one-time code there and enters it at github.com, signed in as the account the project is pushed as. Then git on the machine is set to use that sign-in, the remote is fetched, which brings the branches the first copy left out, and where the machine has no git name or email they're set from the account: its name, and GitHub's own address for it (`<id>+<login>@users.noreply.github.com`), said in a line with how to change them. Where the fetch fails, the account can't read the repository: the visit says so, offers to sign it out so another can sign in, and starts nothing. Where Claude's is missing it runs Claude Code's own sign-in, on the person's subscription. code-kit starts each sign-in and reads neither credential.
 
+Each sign-in sends the person to another page, GitHub's for the code and Claude's for its own, and so does a provider's pairing (CLOUD-16). A browser that leaves the terminal's page closes its connection, a phone's as soon as the page is out of sight, and the terminal ends what it ran for that browser. So the sign-ins and the pairing run in a session of their own on the machine (`code-kit-owner`), which the terminal joins: left, it waits as it was, with the same code, and the terminal opened again joins the same one. It ends when the sign-ins and the pairing are done, and the lead's session starts then. Where they didn't finish, the visit says which sign-in the machine still waits for and starts nothing.
+
 With both in place the lead's session starts and the terminal joins it. A later visit finds a session open, or both sign-ins there, and asks for nothing. A visit with no terminal to type in starts nothing and says the sign-ins take one.
 
 **Acceptance**
@@ -316,6 +318,7 @@ With both in place the lead's session starts and the terminal joins it. A later 
 - Given the GitHub sign-in done as an account that can't read the repository, then the visit names the account and the failure, offers to sign it out, and no session starts.
 - Given the sign-in done, then `git config --global user.email` on the machine is the account's `noreply` address, and a branch that was on the remote and not in the first copy is there.
 - Given a machine signed in to both, when its terminal is opened, then nothing is asked.
+- Given a visit whose terminal is closed while GitHub's code waits, when the terminal is opened again, then it joins the same sign-in, and no second one is started.
 
 ### CLOUD-15 The machine workflow
 

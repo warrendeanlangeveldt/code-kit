@@ -49,6 +49,8 @@ const TERMINAL_START = `${CLOUD_DIR}/terminal.sh`;
 const PROVIDER_START = `${CLOUD_DIR}/provider.sh`;
 /** On the machine: its owner's answer that pairing isn't to be offered again. */
 const PROVIDER_FILE = `${CLOUD_DIR}/provider.json`;
+/** On the machine: how its owner's last visit for the sign-ins and the pairing ended (CLOUD-14). */
+const VISIT_FILE = `${CLOUD_DIR}/visit.json`;
 /** The port the machine's terminal listens on, which the platform routes the machine's address to. */
 export const TERMINAL_PORT = 7681;
 /** On the computer: the machine's report as `cloud` last read it. */
@@ -56,6 +58,8 @@ const STATUS_FILE = '.claude/state/cloud-status.json';
 /** The terminal sessions code-kit keeps on a machine: the lead's, and the watcher's. */
 export const LEAD_SESSION = 'code-kit-lead';
 export const WATCH_SESSION = 'code-kit-watch';
+/** And the one its owner's sign-ins and pairing run in, which stays open when their page is left (CLOUD-14). */
+export const OWNER_SESSION = 'code-kit-owner';
 /** A tool call left open by an agent that died stops counting as work after this long. */
 const ACT_STALE_MS = 12 * 3600_000;
 /** How often the watcher looks. */
@@ -975,14 +979,17 @@ export function cloudOpen(root, config, io, { unattended = false } = {}) {
  * CLOUD-12, on the machine: what its terminal in a browser runs. The lead's session there, started if
  * there's none, with the watcher beside it, and this terminal joined to it. With `attach` false the
  * session is started and left with nobody attached, which is how the provider the machine is paired with
- * starts one (CLOUD-16).
+ * starts one (CLOUD-16). With `visit` it's what the owner's own session runs: the sign-ins and the
+ * pairing, and no more (CLOUD-14).
  */
-export function cloudJoin(root, io, { attach = true } = {}) {
+export function cloudJoin(root, io, { attach = true, visit = false } = {}) {
   const marker = readMarker(root);
   if (!marker?.here)
     stop(
       "`cloud join` runs on the project's machine, where its terminal in a browser starts it. From your computer, the lead's session there is: code-kit cloud open",
     );
+  const main = mainOf(root);
+  const name = marker.machine;
   const run = (cmd) => {
     const r = spawnSync('bash', ['-c', cmd], { encoding: 'utf8' });
     return {
@@ -991,13 +998,58 @@ export function cloudJoin(root, io, { attach = true } = {}) {
       output: `${r.stdout ?? ''}${r.stderr ?? ''}`.trim(),
     };
   };
+  const has = (session) => run(`tmux has-session -t ${session}`).status === 0;
+  if (visit) {
+    const done = ownerSignIns(main, name, io);
+    if (done) providerPairing(main, marker, io);
+    writeJson(join(main, VISIT_FILE), { done });
+    // The session closes with this, and what was said goes with it: the person reads it first.
+    if (!done && io.terminal)
+      spawnSync('bash', ['-c', 'read -r -p "Press Enter to go on. " _'], { stdio: 'inherit' });
+    return done ? 0 : 1;
+  }
   // A session already open is one its owner signed in for; with none, the sign-ins are looked at first,
   // and then the pairing with whoever asked for the machine.
-  if (run(`tmux has-session -t ${LEAD_SESSION}`).status !== 0) {
-    if (!ownerSignIns(mainOf(root), marker.machine, io)) return 1;
-    providerPairing(mainOf(root), marker, io);
+  if (!has(LEAD_SESSION)) {
+    // Each of those sends the person to another page, and a browser that leaves this one closes the
+    // terminal's connection, a phone's as soon as it's out of sight, which ends what the terminal ran.
+    // So they run in a session of their own, which this terminal joins: left, it waits as it was, with
+    // the same code, and the next terminal joins it again.
+    const asks = () => {
+      const waits = signInsWaiting(main);
+      return waits.github || waits.claude || pairingOffered(main, marker);
+    };
+    if (attach && io.terminal && (has(OWNER_SESSION) || asks())) {
+      needTmux(run, name);
+      if (!has(OWNER_SESSION)) {
+        rmSync(join(main, VISIT_FILE), { force: true });
+        const made = run(
+          `tmux new-session -d -s ${OWNER_SESSION} -c "${main}" ${quoted(onMachine(main, 'cloud join --visit'))}`,
+        );
+        if (made.status !== 0)
+          stop(
+            `The session for your sign-ins couldn't be started on ${name}: ${made.output.split('\n').pop()}`,
+          );
+      }
+      spawnSync('tmux', ['attach', '-t', OWNER_SESSION], { stdio: 'inherit' });
+      if (has(OWNER_SESSION)) {
+        io.say(`It waits on ${name} as you left it. Open this terminal again to carry on.`);
+        return 1;
+      }
+      if (readJson(join(main, VISIT_FILE))?.done !== true) {
+        const waits = signInsWaiting(main);
+        const still = [waits.github && 'GitHub', waits.claude && 'Claude'].filter(Boolean);
+        io.say(
+          `No session was started on ${name}: ${still.length ? `it still waits for your sign-in to ${still.join(' and to ')}` : "the visit didn't finish"}.`,
+        );
+        return 1;
+      }
+    } else {
+      if (!ownerSignIns(main, name, io)) return 1;
+      providerPairing(main, marker, io);
+    }
   }
-  startLead({ run, name: marker.machine, clone: mainOf(root), io });
+  startLead({ run, name, clone: main, io });
   if (!attach) return 0;
   // Closing the page leaves the session working; however this terminal's part in it ends, it opened.
   spawnSync('tmux', ['attach', '-t', LEAD_SESSION], { stdio: 'inherit' });
@@ -1008,6 +1060,21 @@ export function cloudJoin(root, io, { attach = true } = {}) {
 function providerOf(marker) {
   const named = providerAdapterOf(marker?.provider ?? null);
   return named?.adapter?.machine && /^https:\/\//.test(named.url) ? named : null;
+}
+
+const shIn = (main) => (cmd) => {
+  const r = spawnSync('bash', ['-c', cmd], { cwd: main, encoding: 'utf8' });
+  return { status: r.status, stdout: r.stdout ?? '' };
+};
+
+/** Whether a visit would offer the pairing: a provider asked, the machine isn't paired, and nobody said to stop. */
+function pairingOffered(main, marker) {
+  const named = providerOf(marker);
+  return Boolean(
+    named &&
+    !named.adapter.machine.session(shIn(main)) &&
+    !readJson(join(main, PROVIDER_FILE))?.never,
+  );
 }
 
 /**
@@ -1021,10 +1088,7 @@ function providerPairing(main, marker, io) {
   const named = providerOf(marker);
   if (!named || !io.terminal) return;
   const { adapter, url } = named;
-  const sh = (cmd) => {
-    const r = spawnSync('bash', ['-c', cmd], { cwd: main, encoding: 'utf8' });
-    return { status: r.status, stdout: r.stdout ?? '' };
-  };
+  const sh = shIn(main);
   if (!adapter.machine.session(sh)) {
     if (readJson(join(main, PROVIDER_FILE))?.never) return;
     io.say(
@@ -1102,6 +1166,27 @@ const readText = (file) => {
   }
 };
 
+const claudeSignedIn = (main) => {
+  try {
+    const text = spawnSync('claude', ['auth', 'status'], { cwd: main, encoding: 'utf8' }).stdout;
+    return JSON.parse(text.slice(text.indexOf('{'))).loggedIn === true;
+  } catch {
+    return false;
+  }
+};
+const githubLogin = (main) => {
+  const r = spawnSync('gh', ['api', 'user', '-q', '.login'], { cwd: main, encoding: 'utf8' });
+  return r.status === 0 ? r.stdout.trim() : null;
+};
+
+/** On the machine: which of its owner's two sign-ins it still waits for. */
+function signInsWaiting(main) {
+  return {
+    github: hostOf(remoteOf(main) ?? '') === 'github.com' && !githubLogin(main),
+    claude: !claudeSignedIn(main),
+  };
+}
+
 /**
  * CLOUD-14, on the machine: the sign-ins only its owner can give, asked for in its terminal when one is
  * missing: GitHub's by its device sign-in, then Claude's by Claude Code's own. Each is the tool's own
@@ -1112,21 +1197,10 @@ const readText = (file) => {
 function ownerSignIns(main, name, io) {
   const asked = (cmd, args) => spawnSync(cmd, args, { cwd: main, encoding: 'utf8' });
   const typed = (cmd, args) => spawnSync(cmd, args, { cwd: main, stdio: 'inherit' }).status;
-  const claudeIn = () => {
-    try {
-      const text = asked('claude', ['auth', 'status']).stdout;
-      return JSON.parse(text.slice(text.indexOf('{'))).loggedIn === true;
-    } catch {
-      return false;
-    }
-  };
-  const login = () => {
-    const r = asked('gh', ['api', 'user', '-q', '.login']);
-    return r.status === 0 ? r.stdout.trim() : null;
-  };
+  const claudeIn = () => claudeSignedIn(main);
+  const login = () => githubLogin(main);
   const address = remoteOf(main) ?? '';
-  const github = hostOf(address) === 'github.com' && !login();
-  const claude = !claudeIn();
+  const { github, claude } = signInsWaiting(main);
   if (!github && !claude) return true;
   if (!io.terminal) {
     io.say(
@@ -1135,11 +1209,11 @@ function ownerSignIns(main, name, io) {
     return false;
   }
   io.say(
-    `${name} is yours, and it needs ${github && claude ? 'two sign-ins' : 'a sign-in'} only you can give. Each is typed here, on the machine, and code-kit reads neither.\n`,
+    `${name} is yours, and it needs ${github && claude ? 'two sign-ins' : 'a sign-in'} only you can give. Each is typed here, on the machine, and code-kit reads neither. Each sends you to another page: this one waits as you left it, so come back to it afterwards.\n`,
   );
   if (github) {
     io.say(
-      `GitHub, so the machine can fetch and push the project's work. GitHub shows a one-time code below: enter it at https://github.com/login/device, signed in as the account this project is pushed as.\n`,
+      `GitHub, so the machine can fetch and push the project's work. GitHub shows a one-time code below: copy it, press Enter here, and enter it at https://github.com/login/device in your own browser, signed in as the account this project is pushed as.\n`,
     );
     typed('gh', ['auth', 'login', '--hostname', 'github.com', '--git-protocol', 'https', '--web']);
     const who = login();
@@ -1193,6 +1267,14 @@ function ownerSignIns(main, name, io) {
   return true;
 }
 
+/** tmux on the machine, which keeps a session there running when nobody is attached. */
+function needTmux(run, name) {
+  if (run('command -v tmux').status !== 0)
+    stop(
+      `${name} has no tmux, which keeps the lead's session running when nobody is attached. Add its install to "cloud.prepare" in the config (such as "sudo apt-get install -y tmux") and run \`code-kit cloud up\`.`,
+    );
+}
+
 /** What a session is started with when the one before was ended at a question (CLOUD-7). */
 const ASK_AGAIN =
   'code-kit ended this session while a question of yours waited for an answer, so the machine could sleep. The session is open again: ask that question again.';
@@ -1204,10 +1286,7 @@ const ASK_AGAIN =
  * questions until the person answers.
  */
 function startLead({ run, name, clone, io }) {
-  if (run('command -v tmux').status !== 0)
-    stop(
-      `${name} has no tmux, which keeps the lead's session running when nobody is attached. Add its install to "cloud.prepare" in the config (such as "sudo apt-get install -y tmux") and run \`code-kit cloud up\`.`,
-    );
+  needTmux(run, name);
   let first = false;
   if (run(`tmux has-session -t ${LEAD_SESSION}`).status !== 0) {
     const ended = readJson0(run(`cat "${clone}/${ENDED_FILE}" 2>/dev/null`).stdout);

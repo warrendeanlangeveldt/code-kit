@@ -430,6 +430,7 @@ const FLAGS = [
   '--once',
   '--unattended',
   '--detached',
+  '--visit',
 ];
 const flag = (name) => args.includes(name);
 const writeBaseline = flag('--write');
@@ -4348,7 +4349,10 @@ async function cloudCommand() {
       const ended = await watch(root, config, { once: flag('--once') });
       return out(ended.ended ? `The lead's session ${ended.why}.` : `Watching: ${ended.why}.`);
     }
-    if (sub === 'join') return process.exit(cloudJoin(root, io, { attach: !flag('--detached') }));
+    if (sub === 'join')
+      return process.exit(
+        cloudJoin(root, io, { attach: !flag('--detached'), visit: flag('--visit') }),
+      );
     if (sub === 'up')
       return cloudUp(root, config, io, { unattended, stage: stageGiven ?? null, provider });
     if (sub === 'workflow') return cloudWorkflow(config);
