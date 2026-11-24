@@ -4,8 +4,9 @@
 // opening, stopping and removing it (CLOUD-4, CLOUD-7, CLOUD-9), and the marker that keeps the project in
 // one place at a time (CLOUD-6), and the terminal the machine serves in a browser (CLOUD-12). On the
 // machine: what it reports of itself (CLOUD-8), the watcher that ends an idle session so the machine
-// sleeps (CLOUD-7), and what that terminal runs (CLOUD-12). The platform is an adapter's (CLOUD-2);
-// nothing here names one.
+// sleeps (CLOUD-7), what that terminal runs (CLOUD-12), and pairing the machine with the hosted provider
+// that asked for it (CLOUD-16). The platform is an adapter's (CLOUD-2), and so is that provider; nothing
+// here names either.
 import { createHash } from 'node:crypto';
 import { execFileSync, spawnSync } from 'node:child_process';
 import {
@@ -21,8 +22,11 @@ import {
 import { cpus, freemem, loadavg, tmpdir, totalmem } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { machineAdapterOf, providerAdapterOf } from './adapters/index.mjs';
 import { cloudOf } from './cloudconfig.mjs';
+import { SIGN_IN_DAYS, folderName, httpsRemote, machineNameOf } from './cloudfacts.mjs';
 import { openDecisions } from './decisionstore.mjs';
+import { activeDeferrals } from './deferrals.mjs';
 import { laneClaims } from './laneclaims.mjs';
 import { mainCheckout } from './lanetrees.mjs';
 import { readQueue, waiting } from './queue.mjs';
@@ -35,11 +39,16 @@ const ACTS_DIR = `${CLOUD_DIR}/acts`;
 const LAST_FILE = `${CLOUD_DIR}/last`;
 const ENDED_FILE = `${CLOUD_DIR}/ended.json`;
 const AWAKE_FILE = `${CLOUD_DIR}/awake.json`;
+const LIMIT_FILE = `${CLOUD_DIR}/limit.json`;
 const PREPARED_FILE = `${CLOUD_DIR}/prepared`;
 const CARRIED_DIR = `${CLOUD_DIR}/carried`;
 /** CLOUD-12, on the machine: the page its terminal serves, and what the terminal runs for each browser. */
 const TERMINAL_PAGE = `${CLOUD_DIR}/terminal.html`;
 const TERMINAL_START = `${CLOUD_DIR}/terminal.sh`;
+/** On the machine: what its platform keeps running for the provider it's paired with (CLOUD-16). */
+const PROVIDER_START = `${CLOUD_DIR}/provider.sh`;
+/** On the machine: its owner's answer that pairing isn't to be offered again. */
+const PROVIDER_FILE = `${CLOUD_DIR}/provider.json`;
 /** The port the machine's terminal listens on, which the platform routes the machine's address to. */
 export const TERMINAL_PORT = 7681;
 /** On the computer: the machine's report as `cloud` last read it. */
@@ -51,8 +60,17 @@ export const WATCH_SESSION = 'code-kit-watch';
 const ACT_STALE_MS = 12 * 3600_000;
 /** How often the watcher looks. */
 export const WATCH_SECONDS = 60;
-/** CLOUD-8: a Claude sign-in that ends within this many days is named. */
-export const SIGN_IN_DAYS = 3;
+
+// What a hub shares with code-kit is in cloudfacts.mjs; the command line and the tests reach it here.
+export {
+  SIGN_IN_DAYS,
+  WORKFLOW_FILE,
+  httpsRemote,
+  machineWorkflow,
+  workflowInputs,
+  workflowStanding,
+  workflowSteps,
+} from './cloudfacts.mjs';
 
 /** A refusal: what stopped, and what to do, for the command to print as it exits. */
 export class Stop extends Error {}
@@ -115,14 +133,6 @@ export const elsewhereWords = (marker) =>
 // ---------------------------------------------------------------------------------------------------
 // The computer's side
 
-/** A git remote's address as a machine with an https credential can use it. */
-export function httpsRemote(url) {
-  const scp = String(url).match(/^(?:[\w.-]+@)?([\w.-]+\.[a-z]{2,}):(?!\/)(.+)$/i);
-  if (scp) return `https://${scp[1]}/${scp[2]}`;
-  const ssh = String(url).match(/^ssh:\/\/(?:[\w.-]+@)?([\w.-]+)(?::\d+)?\/(.+)$/i);
-  if (ssh) return `https://${ssh[1]}/${ssh[2]}`;
-  return String(url);
-}
 /** The host a remote's address is on, or null for a path on this disk. */
 export const hostOf = (url) => httpsRemote(url).match(/^https?:\/\/([^/:]+)/i)?.[1] ?? null;
 
@@ -130,27 +140,14 @@ export const hostOf = (url) => httpsRemote(url).match(/^https?:\/\/([^/:]+)/i)?.
 const remoteOf = (main) => git(main, 'config', '--get', 'remote.origin.url');
 
 /** The project's folder name, as a machine's folder and name can hold it. */
-const folderOf = (root) =>
-  basename(mainOf(root))
-    .replace(/[^A-Za-z0-9._-]+/g, '-')
-    .replace(/^[-.]+|[-.]+$/g, '') || 'project';
+const folderOf = (root) => folderName(basename(mainOf(root)));
 
 /**
  * CLOUD-11: the project's machine, named from its folder and a hash of its remote's address, so a second
  * computer with the same clone finds the same one.
  */
-export function machineName(root, remote = remoteOf(mainOf(root))) {
-  const address = httpsRemote(remote ?? mainOf(root))
-    .replace(/\.git$/, '')
-    .toLowerCase();
-  const hash = createHash('sha256').update(address).digest('hex').slice(0, 8);
-  const slug = folderOf(root)
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '')
-    .slice(0, 24);
-  return `ck-${slug || 'project'}-${hash}`;
-}
+export const machineName = (root, remote = remoteOf(mainOf(root))) =>
+  machineNameOf(basename(mainOf(root)), remote ?? mainOf(root));
 
 /** The project's clone on its machine, as the machine's shell says it. */
 export const cloneOf = (root) => `$HOME/projects/${folderOf(root)}`;
@@ -453,9 +450,16 @@ function seedClone({ adapter, name, run, main, clone, address, io }) {
  * is asked anything: what only the machine's owner can give is left for its terminal, and `stage` stops
  * after the machine is made (`machine`) or the clone is there (`clone`). `io`: say(line), ask(question) →
  * true | false | null (no terminal), local(command) → exit status, terminal (whether the person is at
- * one). Throws Stop at each thing only the person can do, saying what.
+ * one). Throws Stop at each thing only the person can do, saying what. `provider` is the hosted team
+ * provider that asked for the machine, as `team.provider` names one (CLOUD-16): the machine keeps it,
+ * and its owner is offered the pairing on their first visit.
  */
-export function cloudUp(root, config, io, { unattended = false, stage = null } = {}) {
+export function cloudUp(
+  root,
+  config,
+  io,
+  { unattended = false, stage = null, provider = null } = {},
+) {
   const main = mainOf(root);
   const cloud = cloudFor(config);
   const { adapter } = cloud;
@@ -706,8 +710,13 @@ export function cloudUp(root, config, io, { unattended = false, stage = null } =
     since,
     ...(terminal ? { terminal: terminal.url } : {}),
   };
+  // The provider that asked for the machine stays the one it was made for until another asks, and one
+  // asking again is offered to its owner again (CLOUD-16).
+  const asked =
+    provider ?? readJson0(run(`cat "${clone}/${CLOUD_FILE}" 2>/dev/null`).stdout)?.provider ?? null;
+  const onMachine = { here: true, ...facts, ...(asked ? { provider: asked } : {}) };
   run(
-    `mkdir -p "${clone}/.claude/state" && printf %s ${quoted(JSON.stringify({ here: true, ...facts }))} > "${clone}/${CLOUD_FILE}"`,
+    `mkdir -p "${clone}/.claude/state" && printf %s ${quoted(JSON.stringify(onMachine))} > "${clone}/${CLOUD_FILE}"${provider ? `; rm -f "${clone}/${PROVIDER_FILE}"` : ''}`,
   );
   // A workflow's checkout is thrown away with its run: the machine's own marker is the one that lasts.
   if (unattended) {
@@ -719,6 +728,11 @@ export function cloudUp(root, config, io, { unattended = false, stage = null } =
     if (waits.length)
       io.say(
         `A first visit there asks them to sign in to ${waits.join(' and to ')}, typed on the machine itself. code-kit reads neither sign-in.`,
+      );
+    const pairs = providerAdapterOf(asked);
+    if (pairs?.adapter?.machine)
+      io.say(
+        `${waits.length ? 'It then offers' : 'A first visit there offers'} to pair ${name} with ${pairs.adapter.label}, at ${pairs.url}, which asked for it.`,
       );
     return;
   }
@@ -959,9 +973,11 @@ export function cloudOpen(root, config, io, { unattended = false } = {}) {
 
 /**
  * CLOUD-12, on the machine: what its terminal in a browser runs. The lead's session there, started if
- * there's none, with the watcher beside it, and this terminal joined to it.
+ * there's none, with the watcher beside it, and this terminal joined to it. With `attach` false the
+ * session is started and left with nobody attached, which is how the provider the machine is paired with
+ * starts one (CLOUD-16).
  */
-export function cloudJoin(root, io) {
+export function cloudJoin(root, io, { attach = true } = {}) {
   const marker = readMarker(root);
   if (!marker?.here)
     stop(
@@ -975,14 +991,116 @@ export function cloudJoin(root, io) {
       output: `${r.stdout ?? ''}${r.stderr ?? ''}`.trim(),
     };
   };
-  // A session already open is one its owner signed in for; with none, the sign-ins are looked at first.
-  if (run(`tmux has-session -t ${LEAD_SESSION}`).status !== 0)
+  // A session already open is one its owner signed in for; with none, the sign-ins are looked at first,
+  // and then the pairing with whoever asked for the machine.
+  if (run(`tmux has-session -t ${LEAD_SESSION}`).status !== 0) {
     if (!ownerSignIns(mainOf(root), marker.machine, io)) return 1;
+    providerPairing(mainOf(root), marker, io);
+  }
   startLead({ run, name: marker.machine, clone: mainOf(root), io });
+  if (!attach) return 0;
   // Closing the page leaves the session working; however this terminal's part in it ends, it opened.
   spawnSync('tmux', ['attach', '-t', LEAD_SESSION], { stdio: 'inherit' });
   return 0;
 }
+
+/** The provider a machine's marker says asked for it, where it's one that pairs with machines. */
+function providerOf(marker) {
+  const named = providerAdapterOf(marker?.provider ?? null);
+  return named?.adapter?.machine && /^https:\/\//.test(named.url) ? named : null;
+}
+
+/**
+ * CLOUD-16, on the machine: the pairing with the hosted provider that asked for it, offered to its owner
+ * in its terminal once they've signed in. Pairing is the provider's own exchange with the person, typed
+ * there: code-kit starts it and reads no credential of it. Nothing of the provider is installed until
+ * they say yes. A machine that's paired keeps the provider's part running through its platform, so it's
+ * there again when the machine wakes. Said no to, it's offered on the next visit, unless they say to stop.
+ */
+function providerPairing(main, marker, io) {
+  const named = providerOf(marker);
+  if (!named || !io.terminal) return;
+  const { adapter, url } = named;
+  const sh = (cmd) => {
+    const r = spawnSync('bash', ['-c', cmd], { cwd: main, encoding: 'utf8' });
+    return { status: r.status, stdout: r.stdout ?? '' };
+  };
+  if (!adapter.machine.session(sh)) {
+    if (readJson(join(main, PROVIDER_FILE))?.never) return;
+    io.say(
+      `${marker.machine} was made at the asking of ${adapter.label}, at ${url}. ${adapter.machine.offer(url)}\n`,
+    );
+    if (!io.ask(`Pair ${marker.machine} with ${adapter.label} now?`)) {
+      // A bare Enter is a no to both: nothing is paired, and nothing is silenced for good.
+      const never = io.ask('Stop offering this on later visits?') === true;
+      if (never) writeJson(join(main, PROVIDER_FILE), { never: true, url });
+      io.say(
+        never
+          ? `Not paired, and it won't be offered here again. ${adapter.label} making the machine ready once more offers it again.\n`
+          : 'Not paired. Your next visit offers it again.\n',
+      );
+      return;
+    }
+    const paired = adapter.machine.pair({
+      url,
+      name: marker.machine,
+      workspace: dirname(main),
+      remote: httpsRemote(remoteOf(main) ?? ''),
+      typed: (cmd, args) => spawnSync(cmd, args, { cwd: main, stdio: 'inherit' }).status,
+      sh,
+    });
+    if (!paired || !adapter.machine.session(sh)) {
+      io.say(
+        `\n${marker.machine} isn't paired with ${adapter.label} (see above). The lead's session opens without it, and your next visit offers the pairing again.\n`,
+      );
+      return;
+    }
+    io.say(`\n${marker.machine} is paired with ${adapter.label}.`);
+  }
+  // What the provider runs on the machine, kept by the platform. A service is given no environment, so
+  // what it runs is a file that sets the one this terminal has.
+  const service = adapter.machine.service(sh);
+  const platform = machineAdapterOf({ [marker.adapter]: {} })?.adapter;
+  if (!service) return;
+  if (!platform?.keep) {
+    io.say(
+      `Nothing on ${marker.machine} keeps its part running: start it yourself with \`${[service.command, ...service.args].join(' ')}\`.\n`,
+    );
+    return;
+  }
+  const start = [
+    '#!/bin/bash',
+    `# code-kit (spec 32, CLOUD-16): what this machine keeps running for ${adapter.label}, which it's paired with.`,
+    `export PATH=${quoted(process.env.PATH ?? '')}`,
+    ...(process.env.NODE_OPTIONS
+      ? [`export NODE_OPTIONS=${quoted(process.env.NODE_OPTIONS)}`]
+      : []),
+    'export LANG="${LANG:-C.UTF-8}"',
+    `exec ${[service.command, ...service.args].map(quoted).join(' ')}`,
+    '',
+  ].join('\n');
+  const file = join(main, PROVIDER_START);
+  if (readText(file) !== start) {
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, start, { mode: 0o755 });
+  }
+  const kept = platform.keep({ key: 'provider', command: file, dir: main });
+  if (!kept.ok)
+    io.say(
+      `${platform.label} couldn't keep ${adapter.label}'s part running on ${marker.machine} (${kept.why}), so nothing runs it yet. Your next visit tries again.\n`,
+    );
+  else if (kept.made)
+    io.say(
+      `Its part runs on ${marker.machine} from now on, and again whenever the machine wakes.\n`,
+    );
+}
+const readText = (file) => {
+  try {
+    return readFileSync(file, 'utf8');
+  } catch {
+    return null;
+  }
+};
 
 /**
  * CLOUD-14, on the machine: the sign-ins only its owner can give, asked for in its terminal when one is
@@ -1075,41 +1193,6 @@ function ownerSignIns(main, name, io) {
   return true;
 }
 
-/**
- * CLOUD-15: the workflow a repository commits so that its machine is made, started, stopped and removed
- * with nobody at a computer: code-kit's own file, with the platform's steps from its adapter and this
- * code-kit's version in the commands it runs. The same text for the same adapter and version, so a
- * committed file can be told from one changed by hand.
- */
-export function machineWorkflow(adapter) {
-  if (!adapter.workflow) return null;
-  const indent = (text, by) =>
-    text
-      .split('\n')
-      .map((l) => (l ? `${' '.repeat(by)}${l}` : l))
-      .join('\n');
-  const steps = adapter.workflow.steps
-    .map((st) =>
-      [
-        `      - name: ${st.name}`,
-        ...(st.env
-          ? ['        env:', ...Object.entries(st.env).map(([k, v]) => `          ${k}: ${v}`)]
-          : []),
-        '        run: |',
-        indent(st.run, 10),
-      ].join('\n'),
-    )
-    .join('\n');
-  return readFileSync(join(PLUGIN_ROOT, 'templates/cloud-machine.yml'), 'utf8')
-    .replaceAll('{{version}}', PLUGIN.version)
-    .replaceAll('{{platform}}', adapter.label)
-    .replaceAll('{{key}}', adapter.key)
-    .replaceAll('{{secret}}', adapter.workflow.secret)
-    .replace('      #{{steps}}', steps);
-}
-/** Where a repository keeps that workflow. */
-export const WORKFLOW_FILE = '.github/workflows/code-kit-machine.yml';
-
 /** What a session is started with when the one before was ended at a question (CLOUD-7). */
 const ASK_AGAIN =
   'code-kit ended this session while a question of yours waited for an answer, so the machine could sleep. The session is open again: ask that question again.';
@@ -1137,8 +1220,20 @@ function startLead({ run, name, clone, io }) {
       ).status === 0;
     // A question the last session was ended at went with it: the new one is told to ask it again.
     const again = before && ended?.asked === true;
+    // On a machine paired with the provider that asked for it, the session is started so that the
+    // provider sees it: the one session, whoever starts it (CLOUD-16).
+    const seen = providerOf(
+      readJson0(run(`cat "${clone}/${CLOUD_FILE}" 2>/dev/null`).stdout),
+    )?.adapter.machine.session((cmd) => run(cmd));
+    const claude = [
+      ...(seen ? ['env', ...Object.entries(seen.env).map(([k, v]) => `${k}=${quoted(v)}`)] : []),
+      'claude --permission-mode bypassPermissions',
+      ...(seen ? seen.args.map(quoted) : []),
+      ...(before ? ['--continue'] : []),
+      ...(again ? [quoted(ASK_AGAIN)] : []),
+    ].join(' ');
     const started = run(
-      `rm -f "${clone}/${ENDED_FILE}"; rm -rf "${clone}/${ACTS_DIR}"; mkdir -p "${clone}/${CLOUD_DIR}" && touch "${clone}/${LAST_FILE}" && tmux new-session -d -s ${LEAD_SESSION} -c "${clone}" ${quoted(`claude --permission-mode bypassPermissions${before ? ' --continue' : ''}${again ? ` ${quoted(ASK_AGAIN)}` : ''}`)}`,
+      `rm -f "${clone}/${ENDED_FILE}"; rm -rf "${clone}/${ACTS_DIR}"; mkdir -p "${clone}/${CLOUD_DIR}" && touch "${clone}/${LAST_FILE}" && tmux new-session -d -s ${LEAD_SESSION} -c "${clone}" ${quoted(claude)}`,
     );
     if (started.status !== 0)
       stop(`The lead's session couldn't be started on ${name}: ${started.output}`);
@@ -1334,8 +1429,11 @@ export function noteAct(root, id, mode, { session = null, agent = null, asks = f
       ACTS_DIR,
       `${actOwner(session, agent)}.${createHash('sha256').update(String(id)).digest('hex').slice(0, 24)}`,
     );
-    if (mode === 'start') writeFileSync(`${file}${asks ? ASKING : ''}`, '');
-    else for (const f of [file, `${file}${ASKING}`]) rmSync(f, { force: true });
+    if (mode === 'start') {
+      writeFileSync(`${file}${asks ? ASKING : ''}`, '');
+      // A tool call starting is Claude answering again: whatever limit stopped it has lifted.
+      rmSync(join(main, LIMIT_FILE), { force: true });
+    } else for (const f of [file, `${file}${ASKING}`]) rmSync(f, { force: true });
     writeFileSync(join(main, LAST_FILE), '');
   } catch {
     // a read-only checkout: the watcher goes by what it can see
@@ -1356,6 +1454,36 @@ export function noteTurnEnd(root, { session = null, agent = null } = {}) {
     // no call was ever noted there
   }
 }
+/**
+ * CLOUD-8: Claude's usage limit ended a turn in the project on its machine, and resets at `until` (an
+ * ISO time). The limit is the account's, so it's one note for the project, whichever agent met it.
+ */
+export function noteLimit(root, until, now = Date.now()) {
+  const main = mainOf(root);
+  if (!isMachine(main)) return;
+  try {
+    writeJson(join(main, LIMIT_FILE), { until, at: new Date(now).toISOString() });
+  } catch {
+    // a read-only checkout: the report goes without
+  }
+}
+
+/**
+ * CLOUD-8: what the work there waits for that has a time on it: Claude's usage limit until it resets,
+ * and otherwise the first held story to be released (LOOP-15). { for: 'limit' | 'hold', until, story },
+ * or null when nothing with a time on it is waited for.
+ */
+export function waitOf(root, now = Date.now()) {
+  const main = mainOf(root);
+  const limit = readJson(join(main, LIMIT_FILE));
+  if (typeof limit?.until === 'string' && Date.parse(limit.until) > now)
+    return { for: 'limit', until: limit.until, story: null };
+  const [held] = activeDeferrals(main, now)
+    .filter((h) => h.until)
+    .sort((a, b) => Date.parse(a.until) - Date.parse(b.until));
+  return held ? { for: 'hold', until: held.until, story: held.story } : null;
+}
+
 /** The person sending a prompt there. */
 export function notePrompt(root) {
   const main = mainOf(root);
@@ -1423,6 +1551,13 @@ export function idleVerdict({ idleMinutes, last, open, asking = 0, running, merg
       : `was ended after ${idleMinutes} idle minutes`,
   };
 }
+
+/**
+ * CLOUD-8: what the lead's session is doing, by the watcher's own order (CLOUD-7): `working` while a tool
+ * call, a lane or a merge runs, `waiting` when only a question to the person is open, `idle` otherwise.
+ */
+export const leadState = ({ open = 0, asking = 0, running = 0, merging = false }) =>
+  open > 0 || running > 0 || merging ? 'working' : asking > 0 ? 'waiting' : 'idle';
 
 /** The seconds the machine has been awake since it started, which stop counting while it sleeps. */
 function uptimeSeconds() {
@@ -1517,17 +1652,27 @@ export function hereState(root, config, now = Date.now()) {
     });
   const df = (ran('df', ['-Pk', main], main) ?? '').trim().split('\n').pop()?.split(/\s+/) ?? [];
   const activity = activityOf(main, now);
+  const marker = readMarker(main);
+  const running = laneClaims(main, now)
+    .filter((c) => !c.stale)
+    .map((c) => ({ lane: c.lane, story: c.story ?? null }));
+  const merging = readQueue(main).some((e) => e.state === 'merging');
+  const since = (name) => sessions.find((s) => s.name === name)?.since ?? null;
+  const open = { lead: since(LEAD_SESSION), watcher: since(WATCH_SESSION) };
   return {
     version: PLUGIN.version,
-    terminal: readMarker(main)?.terminal ?? null,
+    name: marker?.machine ?? null,
+    platform: marker?.adapter ?? null,
+    terminal: marker?.terminal ?? null,
     claude,
     github: { login, scopes },
     apiKey: Boolean(process.env.ANTHROPIC_API_KEY),
     sessions,
-    running: laneClaims(main, now)
-      .filter((c) => !c.stale)
-      .map((c) => ({ lane: c.lane, story: c.story ?? null })),
-    merging: readQueue(main).some((e) => e.state === 'merging'),
+    open,
+    lead: open.lead ? leadState({ ...activity, running: running.length, merging }) : null,
+    idleMinutes: cloudOf(config)?.idleMinutes ?? null,
+    running,
+    merging,
     notOnRemote: notOnRemote(main, config),
     activity: {
       last: activity.last ? new Date(activity.last).toISOString() : null,
@@ -1535,6 +1680,7 @@ export function hereState(root, config, now = Date.now()) {
       asking: activity.asking,
     },
     ended: readJson(join(main, ENDED_FILE)),
+    wait: waitOf(main, now),
     awake: countAwake(main, now),
     load: Number(loadavg()[0].toFixed(2)),
     cores: cpus().length,

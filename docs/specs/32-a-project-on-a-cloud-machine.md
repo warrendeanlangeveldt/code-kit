@@ -29,6 +29,8 @@ One machine carries one project: 8 cores and 16 GB on a Sprite, and its cores lo
 | 2026-11-23 | A machine can be made, started, stopped and removed by a workflow the repository commits, with nobody at a computer. The sign-ins to GitHub and to Claude stay out of it: the machine's owner types them at its terminal | A person with only a browser, a phone included, has no `cloud up`. A workflow can hold the platform's token as the repository's secret, and can't hold a person's sign-in without becoming a holder of it                                                                                                                            |
 | 2026-11-23 | The machine's first clone is the workflow's own checkout, sent as one bundle                                                                                                                                             | The machine can't clone until someone signs it in to GitHub, and the only token a workflow has is its own. Sent this way, no credential reaches the machine but its owner's                                                                                                                                                          |
 | 2026-11-23 | Sprites stays the first platform. GitHub Codespaces would be a second adapter, for work the person is connected to                                                                                                       | Tried on 23 November 2026: a codespace nobody is connected to by SSH or an editor is stopped at its idle timeout, with a tmux session printing and with a browser on its terminal page too, so a lead left to work is killed mid-story. A Sprite holds itself awake from inside                                                      |
+| 2026-11-23 | A hosted team provider that asks for a machine names itself in the workflow's inputs, by its address. The machine keeps the address, and its owner chooses at its terminal whether to pair                               | A repository can have a machine before it has a config, so the config can't be where the machine learns who asked. The address is no secret. Nothing of the provider is installed, and nothing is paired, until the machine's owner says yes there                                                                                   |
+| 2026-11-23 | On a paired machine there is still one lead's session, started by code-kit whoever asks for it, with what the provider needs to see it                                                                                   | Two ways of starting a session on one machine are two leads waiting to happen (CLOUD-6). The provider's own start runs code-kit's `cloud join`, and the workflow's start and the terminal's run the same steps                                                                                                                       |
 | 2026-11-20 | This is part of code-kit, free, from a terminal. Reaching the machine's sessions through the hub is the hub's                                                                                                            | Nothing here needs a service: the person's own platform account and command line are enough                                                                                                                                                                                                                                          |
 
 ## In scope
@@ -40,6 +42,7 @@ One machine carries one project: 8 cores and 16 GB on a Sprite, and its cores lo
 - The same session as a terminal in a browser, at the machine's own address, that a phone can work in.
 - The machine workflow: one file a repository commits, which makes the machine, starts and stops its session and removes it, with nobody at a computer.
 - The owner's first visit to the machine's terminal, which asks for the sign-ins only they can give.
+- Pairing the machine with the hosted team provider that asked for it, offered to its owner on that visit.
 - Work reaching GitHub from the machine with the computer off.
 - The computer knowing the project is on its machine.
 - Ending an idle session so the machine sleeps, and `code-kit cloud stop`.
@@ -50,20 +53,20 @@ One machine carries one project: 8 cores and 16 GB on a Sprite, and its cores lo
 ## Out of scope
 
 - A machine per lane, with the lead elsewhere. A later spec, when a project outgrows one machine.
-- The hub's companion on the machine, and its assistant starting or answering sessions there. That's the hub's own spec; a machine made ready here is one more of the person's computers to it.
+- What the hub's companion does on the machine, and its assistant starting or answering sessions there. That's the hub's own spec. Here, code-kit offers the pairing, keeps the companion running and starts the lead's session so the companion sees it (CLOUD-16).
 - Carrying a story in flight from the computer to the machine.
 - Prices. code-kit holds none (spec 29).
 - Docker on the machine. A project whose checks need it can't move to a Sprite (see the open questions).
 
 ## Data
 
-| Entity   | Where                                                       | Fields                                                                                                                                                                                     |
-| -------- | ----------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Cloud    | `.claude/code-kit.json` → `cloud`                           | `{ "<adapter>": { its options } }`, with `prepare` (a command), `carry` (paths of ignored files and folders to copy there), `idleMinutes` (30 unless set) and `terminal` (true unless set) |
-| Machine  | the platform, in the person's account                       | its name (from the project), the project's clone, the installs, Claude Code with its plugins, the person's two sign-ins, the lead's session                                                |
-| Marker   | `.claude/state/cloud.json`, on the computer                 | the machine's name, the adapter, when the project went up, and the address of its terminal in a browser when it serves one                                                                 |
-| Activity | `.claude/state/cloud-activity.json`, on the machine         | when the person last sent a prompt, when the watcher last looked, the awake seconds counted so far this month                                                                              |
-| Workflow | `.github/workflows/code-kit-machine.yml`, in the repository | code-kit's own file for the platform and version: the inputs `act`, `request` and `discard`, and the one secret the platform's sign-in reads (CLOUD-15)                                    |
+| Entity   | Where                                                       | Fields                                                                                                                                                                                                                             |
+| -------- | ----------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Cloud    | `.claude/code-kit.json` → `cloud`                           | `{ "<adapter>": { its options } }`, with `prepare` (a command), `carry` (paths of ignored files and folders to copy there), `idleMinutes` (30 unless set) and `terminal` (true unless set)                                         |
+| Machine  | the platform, in the person's account                       | its name (from the project), the project's clone, the installs, Claude Code with its plugins, the person's two sign-ins, the lead's session                                                                                        |
+| Marker   | `.claude/state/cloud.json`, on the computer                 | the machine's name, the adapter, when the project went up, and the address of its terminal in a browser when it serves one. The machine's own copy also keeps the hosted team provider that asked for it, where one did (CLOUD-16) |
+| Activity | `.claude/state/cloud-activity.json`, on the machine         | when the person last sent a prompt, when the watcher last looked, the awake seconds counted so far this month                                                                                                                      |
+| Workflow | `.github/workflows/code-kit-machine.yml`, in the repository | code-kit's own file for the platform and version: the inputs `act`, `request`, `discard` and `provider`, and the one secret the platform's sign-in reads (CLOUD-15)                                                                |
 
 An example:
 
@@ -87,23 +90,24 @@ An example:
 
 The core reaches a machine through one module, which never names a platform. An adapter says its key, the options it takes, and these operations:
 
-| Operation   | Given                                            | Answers                                                                                                                                                   |
-| ----------- | ------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `needs`     | nothing                                          | What the platform needs on the computer: for each, whether it's there, the command that installs it or signs in, and where that command comes from        |
-| `ready`     | nothing                                          | The project's machine, made if it wasn't there                                                                                                            |
-| `run`       | a command, the folder to run it in, a time limit | The exit status, whether it ran out of time, and the end of its output                                                                                    |
-| `put`       | a file on the computer, and where it goes        | Whether it arrived                                                                                                                                        |
-| `terminal`  | a command, and the folder to run it in           | The person's terminal joined to that command on the machine, until it ends or they detach                                                                 |
-| `state`     | nothing                                          | The machine, the sessions open on it and since when                                                                                                       |
-| `release`   | nothing                                          | Whether the machine was removed                                                                                                                           |
-| `stayAwake` | a number of seconds; run on the machine itself   | Whether the platform will keep the machine running that much longer with nobody connected (CLOUD-7)                                                       |
-| `maySleep`  | nothing; run on the machine itself               | Whether that hold was let go                                                                                                                              |
-| `address`   | nothing                                          | The machine's own web address, whether anyone who has it can open it, who the platform lets in, and the command that makes an open one private (CLOUD-12) |
-| `serve`     | a command, its arguments, a folder and a port    | Whether the platform now keeps that command running on the machine, starts it again after a sleep, and routes the address to the port                     |
-| `unserve`   | nothing                                          | Whether that was taken away                                                                                                                               |
-| `install`   | package names                                    | Whether the machine's image now has them, from the image's own source                                                                                     |
+| Operation   | Given                                                            | Answers                                                                                                                                                   |
+| ----------- | ---------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `needs`     | nothing                                                          | What the platform needs on the computer: for each, whether it's there, the command that installs it or signs in, and where that command comes from        |
+| `ready`     | nothing                                                          | The project's machine, made if it wasn't there                                                                                                            |
+| `run`       | a command, the folder to run it in, a time limit                 | The exit status, whether it ran out of time, and the end of its output                                                                                    |
+| `put`       | a file on the computer, and where it goes                        | Whether it arrived                                                                                                                                        |
+| `terminal`  | a command, and the folder to run it in                           | The person's terminal joined to that command on the machine, until it ends or they detach                                                                 |
+| `state`     | nothing                                                          | The machine, the sessions open on it and since when                                                                                                       |
+| `release`   | nothing                                                          | Whether the machine was removed                                                                                                                           |
+| `stayAwake` | a number of seconds; run on the machine itself                   | Whether the platform will keep the machine running that much longer with nobody connected (CLOUD-7)                                                       |
+| `maySleep`  | nothing; run on the machine itself                               | Whether that hold was let go                                                                                                                              |
+| `address`   | nothing                                                          | The machine's own web address, whether anyone who has it can open it, who the platform lets in, and the command that makes an open one private (CLOUD-12) |
+| `serve`     | a command, its arguments, a folder and a port                    | Whether the platform now keeps that command running on the machine, starts it again after a sleep, and routes the address to the port                     |
+| `unserve`   | nothing                                                          | Whether that was taken away                                                                                                                               |
+| `install`   | package names                                                    | Whether the machine's image now has them, from the image's own source                                                                                     |
+| `keep`      | a name for it, a command and a folder; run on the machine itself | Whether the platform now keeps that command running on the machine, and whether it had to be made. It carries on when the machine wakes (CLOUD-16)        |
 
-The last four are for the terminal in a browser, and an adapter whose platform gives a machine no address leaves them out.
+`address`, `serve`, `unserve` and `install` are for the terminal in a browser, and an adapter whose platform gives a machine no address leaves them out. `keep` is for what a paired provider runs on the machine, and an adapter without it leaves that to the person.
 
 `needs` is how code-kit learns what to ask the person for without knowing the platform: its command line, and a sign-in to it. An adapter that can't reach its platform for any other reason (the platform doesn't answer, the account can't make a machine) says which, and every `cloud` command passes that on with what to do. The sessions code-kit keeps on a machine (the lead's, and the watcher's) are tmux sessions it starts through `run`, so they're the same on every platform, and a platform whose image has no tmux gets it from `prepare`.
 
@@ -203,10 +207,17 @@ A question to the person is a tool call too, open from when it's asked until the
 
 The awake hours come from the machine's own uptime, which the spike showed stops counting while a Sprite sleeps. The watcher adds it up, and where the platform restarted the count, `cloud` says since when the figure runs.
 
+The machine's own code-kit gives the report (`code-kit cloud here`, run on the machine), so a hosted provider's part there (CLOUD-16) can pass it on without the computer. For that reader it also says the machine's name, its platform and its terminal's address; which of the open sessions is the lead's and which the watcher's; what the lead's session is doing, by the watcher's own order (CLOUD-7): working while a tool call, a lane or a merge runs, waiting when only a question to the person is open, idle otherwise; and after how many idle minutes a session is ended. The three days a sign-in is named within are one number, which a hub reads from code-kit.
+
+The report also says what the work waits for that has a time on it, so that whoever reads it can start a sleeping machine when the wait is over. There are two such waits. Claude's usage limit ends a turn with an error, and Claude Code writes when the limit resets on that turn's last entry (`quotaLimits.resetsAt`); the Stop hook reads the field and the machine keeps the time, whichever session or lane agent met the limit, since the limit is the account's. A tool call starting afterwards means Claude answers again, and the note goes. The other is a story the lead holds until a date (LOOP-15): the first hold to end. The limit comes first while it's in force, since nothing works until it resets. The report gives one wait: what it's for, until when, and the story where it's a hold. `cloud` on the computer says it too. A turn ended by anything else, or with no time on it, is no wait.
+
 **Acceptance**
 
 - Given a lane branch on the machine that was never pushed, then `cloud` lists it under what isn't on the remote.
+- Given the lead's session open on the machine with a test run going, then the machine's own report names the machine and its platform and says the lead's session is working; with nothing running it says idle; and once the watcher has ended the session it says nothing is open.
 - Given a Claude sign-in that ends in two days, then `cloud` and `next` say so, and that the person signs in again with `cloud signin`.
+- Given a lead's turn on the machine ended by Claude's usage limit, which Claude Code says resets at 15:10, then the machine's own report says the work waits for the limit until 15:10; once a tool call starts there again, it says no wait.
+- Given ST-4 held until 10 November and nothing limited, then the report says the work waits for that hold until then, with the story.
 - Given code-kit 0.39.0 on the machine and 0.40.0 on the computer, then `cloud` shows both and says `cloud up` brings it level.
 
 ### CLOUD-9 `cloud down` brings the project home
@@ -310,15 +321,39 @@ With both in place the lead's session starts and the terminal joins it. A later 
 
 `code-kit cloud workflow` prints the workflow a repository commits as `.github/workflows/code-kit-machine.yml`, and with `--write` puts it there and says what's left: commit it, add the platform's token as the repository's secret, run it. The file is code-kit's own, the same text for the same platform and code-kit version, so whoever starts it can tell a committed file from one changed by hand.
 
-It runs on `workflow_dispatch` with three inputs: `act` (`up`, `start`, `stop`, `down`), `request` (the asker's own id for the request, shown in the run's name so a run can be matched to it) and `discard`. It checks out the whole history without keeping the workflow's token in the checkout, then runs the platform's steps, which come from its adapter: for Sprites, Fly's installer and `sprite auth setup` with the `SPRITES_TOKEN` secret, stopping with what to add where the secret is missing. Then it runs this code-kit version's unattended command for the act, `up` as its three stages. Each step has a name a person can read in the run. One run at a time, and the workflow's own token can only read the repository.
+It runs on `workflow_dispatch` with four inputs: `act` (`up`, `start`, `stop`, `down`), `request` (the asker's own id for the request, shown in the run's name so a run can be matched to it), `discard`, and `provider` (the hosted team provider that asked, as `name=address`, which `up` passes on, CLOUD-16). It checks out the whole history without keeping the workflow's token in the checkout, then runs the platform's steps, which come from its adapter: for Sprites, Fly's installer and `sprite auth setup` with the `SPRITES_TOKEN` secret, stopping with what to add where the secret is missing. Then it runs this code-kit version's unattended command for the act, `up` as its three stages. Each step has a name a person can read in the run. One run at a time, and the workflow's own token can only read the repository.
 
 The token is passed by the workflow to the platform's command. code-kit doesn't read it, and nothing in the inputs is a secret.
 
+A hub that starts the workflow draws its runs and names its machine from code-kit's own answers, not from a copy of the file: the steps in order with the acts each runs for and the stage each is (`prepare`, `signin`, `machine`, `clone`, `ready`, `start`, `stop`, `remove`), the name a repository's machine gets, the inputs a repository's file takes, read from the file, and whether that file is this version's, another version's as that version printed it, or changed by hand. The file changes between versions, so a version from before the last change is known by a hash of what it printed, kept with its platform's adapter. A test fails when the file changes without the last released version's hash being kept.
+
 **Acceptance**
 
-- Given `"cloud": { "sprites": {} }`, when `cloud workflow` runs, then the output is a workflow with the three inputs, the two Sprites steps reading `secrets.SPRITES_TOKEN`, and `cloud up --unattended --platform sprites` in its three stages at this code-kit's version.
+- Given `"cloud": { "sprites": {} }`, when `cloud workflow` runs, then the output is a workflow with the four inputs, the two Sprites steps reading `secrets.SPRITES_TOKEN`, and `cloud up --unattended --platform sprites` in its three stages at this code-kit's version.
 - Given the file written by `--write`, when `--write` runs again, then nothing changes and it says the file is code-kit's already.
 - Given a repository without the secret, when the workflow runs, then it fails at "Sign in to Sprites", saying which secret to add and where.
+- Given the file as code-kit prints it, then every step in it is one of the steps code-kit lists, in the same order, the three `up` stages listed for `up` alone.
+- Given a file printed by another version with the same steps, then it is told from this version's and from one changed by hand, with the version it names.
+- Given the file 0.40.0 printed, which has no `provider` input, then it is read as 0.40.0's, its inputs as `act`, `request` and `discard`, and with one line changed as changed by hand.
+
+### CLOUD-16 Pairing with the provider that asked
+
+A hosted team provider that starts the workflow gives its own address in the `provider` input, as `name=address`, and `cloud up --unattended --provider` keeps it in the machine's marker. The name must be a provider adapter that pairs with machines and the address an https one; anything else is refused before the machine is touched, and an empty input names nobody. A later `up` that names nobody leaves the machine with who asked, and one that names a provider is offered to the owner again. `--provider` is refused anywhere but `up --unattended`. Nothing of the provider is installed by the workflow.
+
+On the owner's first visit, once both sign-ins are there (CLOUD-14) and before the lead's session starts, `cloud join` says who asked for the machine, at which address, and what pairing does, in the adapter's own sentences, and asks whether to pair now. A yes runs the adapter's pairing in the terminal: for the hub, its companion installed from the hub's own address with npm, and the companion's setup for this machine and repository, which shows a code the owner confirms on the hub. code-kit starts those commands and reads no credential of them. A no installs nothing and asks whether to stop offering it; unless the owner says to stop, the next visit offers it again, and once they have, later visits say nothing until the provider makes the machine ready again. A visit that finds a session open, or no terminal to type in, offers nothing.
+
+A paired machine keeps the provider's part running through its platform's `keep`: a script in the clone's state that sets the `PATH` and Node option this terminal has and runs the adapter's command, registered once and left alone after. On Sprites that is a second service beside the terminal's, which is paused with the machine and carries on when it wakes. A pairing that doesn't finish says so, opens the session without it, and is offered on the next visit.
+
+From then on the lead's session is started with what the adapter says the provider needs to see it (for the hub, where the companion's settings are and its adapter plugin), asked of the machine each time a session starts, whoever starts it: the terminal, the workflow's `start`, or the provider itself, which runs `cloud join --detached` on the machine to start the session with nobody attached. An answer that isn't an environment of plain names and values and a list of plain arguments is not used, and the session starts without it.
+
+**Acceptance**
+
+- Given `up --unattended --provider hub=https://hub.example`, then the machine's marker names that provider, and the run says its owner is offered the pairing on a first visit.
+- Given `--provider` with a name code-kit pairs no machine with, or an http address, then the command is refused and the marker is unchanged.
+- Given the owner's visit to a machine a provider asked for, when they answer no and don't say to stop, then nothing is installed, the session opens, and the next visit offers it again.
+- Given a yes, then npm installs the companion from the provider's address, its setup runs with the machine's name, the clone's parent folder and the repository, the platform keeps its `run` command, and the lead's session is started with the companion's environment and plugin folder.
+- Given a pairing that fails, then the visit says the machine isn't paired, no service is kept, and the session opens without the plugin.
+- Given a paired machine, then a later visit asks nothing and keeps one service, and the workflow's `start` and `cloud join --detached` start the session the same way.
 
 ## What was tried on a Sprite
 
@@ -388,6 +423,15 @@ Tried on 22 November 2026, first by hand on the spike's Sprite from the person's
 - A Sprite's service was given `PATH`, `HOME` and `LANG` as a command there is, and not the Node option the adapter sets, which is why the script sets it.
 - That session had been waiting at a question to the person for those seven hours, with the machine awake: a question is a tool call that stays open, and an open tool call counted as work. A question now waits `idleMinutes` at most (CLOUD-7).
 
+## What a paired provider needs, on a real Sprite
+
+Tried on 23 November 2026 on the spike's Sprite, with the hub's companion packed from its repository. The pairing itself needs a hub the machine can reach and its owner at the terminal, and hasn't been run.
+
+- A service made with `sprite-env services create` and no `--http-port` ran beside the terminal's. With nobody connected the Sprite was paused about a minute after the last command, and on the next command the same process carried on from where it was, with nothing starting it. A process that polls a provider doesn't keep the Sprite awake.
+- `sprite-env services get` exits with an error for a service that isn't there, which is how `keep` knows whether to make one.
+- `npm install -g` of the companion's package took two seconds and put its command in the folder of the Sprite's Node version, which isn't on the `PATH` there. The hub adapter finds the command by `npm prefix -g`.
+- The installed companion found Node, Claude Code, git and the code-kit plugin, and said the machine isn't set up. Its adapter plugin passed `claude plugin validate`.
+
 ## GitHub Codespaces, tried as a second platform
 
 Tried on 23 November 2026 with one 2-core codespace on a throwaway repository and a 5-minute idle timeout, the shortest GitHub allows.
@@ -423,3 +467,4 @@ So a codespace runs for as long as someone is connected to it by SSH or an edito
 | A person's own clone isn't told its project is on a machine a workflow made, so a lead could be started in both places (CLOUD-6). The marker could come from the remote, or from the hub                                                                                                                                                                                                                                                                                                                                                                                          | Warren | one place at a time, for machines made by a workflow |
 | A machine is named from the checkout's folder, which in a workflow is the repository's name. A person whose own clone is in a folder of another name would get a second machine from `cloud up`                                                                                                                                                                                                                                                                                                                                                                                   | Warren | a project moved both ways                            |
 | The machine workflow hasn't run in GitHub Actions yet: it installs code-kit by its released version, and this isn't released. Its commands were run by hand on a real Sprite                                                                                                                                                                                                                                                                                                                                                                                                      | Warren | CLOUD-15                                             |
+| The pairing hasn't been run on a real machine: it needs a hub the machine can reach, with the Cloud page's request passing its address, and the machine's owner at its terminal to confirm the code. Its parts were tried on a Sprite one by one                                                                                                                                                                                                                                                                                                                                  | Warren | CLOUD-16                                             |

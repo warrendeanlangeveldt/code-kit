@@ -27,6 +27,11 @@ on:
         required: false
         type: boolean
         default: false
+      provider:
+        description: "With up: the hosted team provider that asked, as name=address, so the machine's owner is offered to pair the machine with it. Not a secret."
+        required: false
+        type: string
+        default: ''
 
 permissions:
   contents: read
@@ -54,23 +59,3 @@ jobs:
         with:
           node-version: 22
       #{{steps}}
-      - name: Make the machine
-        if: inputs.act == 'up'
-        run: $CODE_KIT cloud up --unattended --platform {{key}} --stage machine
-      - name: Copy the repository there
-        if: inputs.act == 'up'
-        run: $CODE_KIT cloud up --unattended --platform {{key}} --stage clone
-      - name: Install code-kit and the terminal there
-        if: inputs.act == 'up'
-        run: $CODE_KIT cloud up --unattended --platform {{key}}
-      - name: Start the lead's session
-        if: inputs.act == 'start'
-        run: $CODE_KIT cloud open --unattended --platform {{key}}
-      - name: Stop the lead's session
-        if: inputs.act == 'stop'
-        run: $CODE_KIT cloud stop --unattended --platform {{key}}
-      - name: Remove the machine
-        if: inputs.act == 'down'
-        env:
-          DISCARD: ${{ inputs.discard && '--discard' || '' }}
-        run: $CODE_KIT cloud down --unattended --platform {{key}} $DISCARD

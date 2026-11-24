@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { globToRegExp, matchesAny } from '../hooks/lib/glob.mjs';
+import { limitOf } from '../hooks/lib/hook.mjs';
 import { loadConfig, validate, withDefaults } from '../hooks/lib/config.mjs';
 import { importsOf, layerProblems } from '../hooks/lib/layers.mjs';
 import { diffConfigs, ownershipMoves } from '../hooks/lib/diff.mjs';
@@ -4739,6 +4740,125 @@ test('CLOUD-11 a machine is named from the project and its remote, whichever for
   }
 });
 
+test('CLOUD-8 the lead’s session is working while anything runs, waiting on a question alone, idle otherwise', () => {
+  assert.equal(cloudLib.leadState({}), 'idle');
+  assert.equal(cloudLib.leadState({ asking: 2 }), 'waiting');
+  // A lane agent's test run beside a question is work, as the watcher counts it.
+  assert.equal(cloudLib.leadState({ asking: 1, open: 1 }), 'working');
+  assert.equal(cloudLib.leadState({ running: 1 }), 'working');
+  assert.equal(cloudLib.leadState({ merging: true }), 'working');
+  assert.equal(cloudLib.SIGN_IN_DAYS, 3);
+});
+
+test('CLOUD-8 a turn ended by Claude’s usage limit says when the limit resets, from the field Claude Code writes', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'code-kit-limit-'));
+  const now = Date.parse('2026-11-24T02:00:00Z');
+  const turn = (last) => {
+    const file = join(dir, 'turn.jsonl');
+    writeFileSync(
+      file,
+      [
+        { type: 'assistant', message: { content: [] } },
+        { type: 'assistant', ...last },
+      ]
+        .map((e) => JSON.stringify(e))
+        .join('\n') + '\n',
+    );
+    return { transcript_path: file };
+  };
+  const limited = (more) => turn({ isApiErrorMessage: true, error: 'rate_limit', ...more });
+  const at = (iso) => Date.parse(iso) / 1000;
+  try {
+    assert.deepEqual(
+      limitOf(limited({ quotaLimits: { resetsAt: at('2026-11-24T05:10:00Z') } }), now),
+      {
+        until: '2026-11-24T05:10:00.000Z',
+      },
+    );
+    // An older Claude Code wrote it under the error's own parameters.
+    assert.deepEqual(
+      limitOf(
+        limited({ apiErrorParams: { rate_limit_info: { resetsAt: at('2026-11-27T19:00:00Z') } } }),
+        now,
+      ),
+      { until: '2026-11-27T19:00:00.000Z' },
+    );
+    // No time, a time already past, one no limit runs to, another error, and a turn that ended well.
+    assert.equal(limitOf(limited({}), now), null);
+    assert.equal(limitOf(limited({ quotaLimits: { resetsAt: 'soon' } }), now), null);
+    assert.equal(
+      limitOf(limited({ quotaLimits: { resetsAt: at('2026-11-24T01:00:00Z') } }), now),
+      null,
+    );
+    assert.equal(
+      limitOf(limited({ quotaLimits: { resetsAt: at('2027-01-01T00:00:00Z') } }), now),
+      null,
+    );
+    assert.equal(
+      limitOf(
+        turn({
+          isApiErrorMessage: true,
+          error: 'overloaded',
+          quotaLimits: { resetsAt: at('2026-11-24T05:10:00Z') },
+        }),
+        now,
+      ),
+      null,
+    );
+    assert.equal(limitOf(turn({ message: { content: [] } }), now), null);
+    assert.equal(limitOf({}, now), null);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('CLOUD-8 the work on a machine waits for the usage limit while it lasts, and else for the first held story to be released', async () => {
+  const { deferStories } = await import('../hooks/lib/deferrals.mjs');
+  const dir = mkdtempSync(join(tmpdir(), 'code-kit-wait-'));
+  const now = Date.parse('2026-11-24T02:00:00Z');
+  try {
+    mkdirSync(join(dir, '.claude/state'), { recursive: true });
+    assert.equal(cloudLib.waitOf(dir, now), null);
+    // Off its machine a project keeps no limit: the computer's own session is the person's to see.
+    cloudLib.noteLimit(dir, '2026-11-24T05:10:00.000Z', now);
+    assert.equal(cloudLib.waitOf(dir, now), null);
+    writeFileSync(join(dir, cloudLib.CLOUD_FILE), JSON.stringify({ here: true, machine: 'ck-x' }));
+    // A story held with no date is no wait with a time on it; of two with one, the first to end.
+    deferStories(dir, ['ST-7'], { reason: 'until the partner answers' }, now);
+    assert.equal(cloudLib.waitOf(dir, now), null);
+    deferStories(
+      dir,
+      ['ST-4'],
+      { reason: 'after the venue', until: '2026-11-28T00:00:00.000Z' },
+      now,
+    );
+    deferStories(
+      dir,
+      ['ST-5'],
+      { reason: 'after the launch', until: '2026-11-26T00:00:00.000Z' },
+      now,
+    );
+    assert.deepEqual(cloudLib.waitOf(dir, now), {
+      for: 'hold',
+      until: '2026-11-26T00:00:00.000Z',
+      story: 'ST-5',
+    });
+    // The limit comes first while it lasts: nothing works until it resets.
+    cloudLib.noteLimit(dir, '2026-11-24T05:10:00.000Z', now);
+    assert.deepEqual(cloudLib.waitOf(dir, now), {
+      for: 'limit',
+      until: '2026-11-24T05:10:00.000Z',
+      story: null,
+    });
+    // Once it has reset, and once ST-5 is released, what is left.
+    assert.equal(cloudLib.waitOf(dir, Date.parse('2026-11-24T05:10:01Z')).story, 'ST-5');
+    assert.equal(cloudLib.waitOf(dir, Date.parse('2026-11-26T00:00:01Z')).story, 'ST-4');
+    assert.equal(cloudLib.waitOf(dir, Date.parse('2026-11-28T00:00:01Z')), null);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('CLOUD-7 a session is ended only when nothing runs and nothing has moved for idleMinutes', () => {
   const now = Date.parse('2026-11-20T12:00:00Z');
   const ago = (minutes) => now - minutes * 60_000;
@@ -4799,6 +4919,185 @@ test('CLOUD-15 the machine workflow is the same text for a platform and version,
   assert.ok(text.includes('contents: read'));
   // An adapter with no workflow has none.
   assert.equal(cloudLib.machineWorkflow({ key: 'x', label: 'X' }), null);
+});
+
+test('CLOUD-15 the workflow’s steps are listed in the file’s order, each with its acts and its stage', async () => {
+  const { default: sprites } = await import('../hooks/lib/adapters/sprites.mjs');
+  const facts = await import('../hooks/lib/cloudfacts.mjs');
+  const steps = facts.workflowSteps(sprites);
+  // Every step the file names is listed, in order, and nothing else.
+  const named = [...facts.machineWorkflow(sprites).matchAll(/^ {6}- name: (.+)$/gm)].map(
+    (m) => m[1],
+  );
+  assert.deepEqual(
+    steps.map((st) => st.name),
+    named,
+  );
+  const of = (act) => steps.filter((st) => st.acts.includes(act)).map((st) => st.stage);
+  assert.deepEqual(of('up'), [
+    'prepare',
+    'prepare',
+    'prepare',
+    'signin',
+    'machine',
+    'clone',
+    'ready',
+  ]);
+  assert.deepEqual(of('start').slice(-2), ['signin', 'start']);
+  assert.deepEqual(of('stop').slice(-2), ['signin', 'stop']);
+  assert.deepEqual(of('down').slice(-2), ['signin', 'remove']);
+  assert.equal(steps.find((st) => st.stage === 'signin').name, 'Sign in to Sprites');
+  // A step's act is the one the file runs it for.
+  for (const st of steps.filter((x) => x.acts.length === 1))
+    assert.ok(
+      facts
+        .machineWorkflow(sprites)
+        .includes(`      - name: ${st.name}\n        if: inputs.act == '${st.acts[0]}'\n`),
+      st.name,
+    );
+  assert.deepEqual(facts.workflowSteps({ key: 'x', label: 'X' }), []);
+});
+
+test('CLOUD-15 a repository’s file is told as this version’s, another version’s, or changed', async () => {
+  const { default: sprites } = await import('../hooks/lib/adapters/sprites.mjs');
+  const { machineWorkflow, workflowStanding } = await import('../hooks/lib/cloudfacts.mjs');
+  const text = machineWorkflow(sprites);
+  const version = text.match(/^# code-kit (\S+):/)[1];
+  assert.deepEqual(workflowStanding(text, sprites), { is: 'current', version });
+  // GitHub's editor may end the file differently, and Windows its lines.
+  assert.equal(workflowStanding(text.trimEnd(), sprites).is, 'current');
+  assert.equal(workflowStanding(text.replaceAll('\n', '\r\n'), sprites).is, 'current');
+  assert.deepEqual(workflowStanding(text.replaceAll(version, '0.1.2'), sprites), {
+    is: 'version',
+    version: '0.1.2',
+  });
+  // One version in the header and another in the command isn't code-kit's.
+  assert.equal(
+    workflowStanding(text.replace(`code-kit ${version}:`, 'code-kit 0.1.2:'), sprites).is,
+    'changed',
+  );
+  assert.equal(
+    workflowStanding(text.replace('contents: read', 'contents: write'), sprites).is,
+    'changed',
+  );
+  assert.equal(workflowStanding(null, sprites).is, 'changed');
+  assert.equal(workflowStanding(text, { key: 'x', label: 'X' }).is, 'changed');
+});
+
+test('CLOUD-15 a file an earlier version printed, from before the workflow changed, is still code-kit’s', async () => {
+  const { default: sprites } = await import('../hooks/lib/adapters/sprites.mjs');
+  const facts = await import('../hooks/lib/cloudfacts.mjs');
+  const file = (name) => readFileSync(join(dirname(fileURLToPath(import.meta.url)), name), 'utf8');
+  // What 0.40.0 printed for Sprites, as a repository that committed it then still holds it.
+  const old = file('machine-workflow-0.40.0.yml');
+  assert.deepEqual(facts.workflowStanding(old, sprites), { is: 'version', version: '0.40.0' });
+  assert.equal(facts.workflowStanding(old.replaceAll('\n', '\r\n'), sprites).is, 'version');
+  assert.equal(
+    facts.workflowStanding(old.replace('contents: read', 'contents: write'), sprites).is,
+    'changed',
+  );
+  // It takes the inputs it had then, and this version's file takes who asked as well.
+  assert.deepEqual(facts.workflowInputs(old), ['act', 'request', 'discard']);
+  const now = facts.machineWorkflow(sprites);
+  assert.deepEqual(facts.workflowInputs(now), ['act', 'request', 'discard', 'provider']);
+  assert.ok(now.includes('          PROVIDER: ${{ inputs.provider }}\n'));
+  assert.ok(now.includes('cloud up --unattended --platform sprites --provider "$PROVIDER"'));
+  assert.deepEqual(facts.workflowInputs('on:\n  push:\n'), []);
+  assert.deepEqual(
+    facts.workflowInputs(
+      'on:\n  workflow_dispatch:\n    inputs:\n      # why\n      act:\n        type: string\n\njobs:\n  inputs:\n',
+    ),
+    ['act'],
+  );
+  // The workflow as this version prints it, whatever its version: when this fails the file has changed,
+  // so the last released version's file is no longer the one this code prints for it. Add that version's
+  // hash (workflowHash of the file it printed) to its adapter's `workflow.printed`, then put the new hash
+  // here.
+  const version = now.match(/^# code-kit (\S+):/)[1];
+  assert.equal(
+    facts.workflowHash(now.replaceAll(version, '0.0.0')),
+    '4426f17573d56062c1dce04da0508f962c349162b3d41822c6d5a5132db1fe30',
+  );
+});
+
+test('CLOUD-16 the hosted provider’s part on a machine: what a session is started with, and what is never taken from it', async () => {
+  const { providerAdapterOf } = await import('../hooks/lib/adapters/index.mjs');
+  const { adapter, url } = providerAdapterOf({ hub: 'https://hub.example/' });
+  assert.equal(url, 'https://hub.example');
+  const { machine } = adapter;
+  // npm says where a global install's commands are; the machine's PATH may not hold that folder.
+  const at = '/opt/node/bin/code-kit-companion';
+  const asked = [];
+  const machineSays =
+    (stdout, status = 0) =>
+    (cmd) => {
+      asked.push(cmd);
+      return cmd.startsWith('npm prefix -g')
+        ? { status: 0, stdout: '/opt/node\n' }
+        : { status, stdout };
+    };
+  const says = (stdout, status) => machine.session(machineSays(stdout, status));
+  const good = {
+    env: { CODE_KIT_COMPANION_HOME: '/home/kim/.config/code-kit-companion' },
+    args: ['--plugin-dir', '/opt/companion/adapter'],
+  };
+  assert.deepEqual(says(JSON.stringify(good)), good);
+  assert.equal(asked.pop(), `'${at}' session-env 2>/dev/null`);
+  // Not paired, not installed, or an answer that isn't the one asked for: the session starts without it.
+  assert.equal(says('', 127), null);
+  assert.equal(says('not json'), null);
+  assert.equal(says(JSON.stringify({ env: { 'A B': 'x' }, args: [] })), null);
+  assert.equal(says(JSON.stringify({ env: { A: 'x\ny' }, args: [] })), null);
+  assert.equal(says(JSON.stringify({ env: {}, args: ['ok', 3] })), null);
+  assert.equal(
+    machine.session(() => ({ status: 1, stdout: '' })),
+    null,
+  );
+  assert.deepEqual(machine.service(machineSays('')), { command: at, args: ['run'] });
+  assert.equal(
+    machine.service(() => ({ status: 1, stdout: '' })),
+    null,
+  );
+  // Pairing installs the companion from the provider's own address, then runs its setup for this machine.
+  const ran = [];
+  const typed = (cmd, args) => (ran.push([cmd, ...args].join(' ')), 0);
+  const given = {
+    url,
+    name: 'ck-app-1a2b3c4d',
+    workspace: '/home/kim/projects',
+    remote: 'https://github.com/acme/app.git',
+    typed,
+    sh: machineSays(''),
+  };
+  assert.equal(machine.pair(given), true);
+  assert.deepEqual(ran, [
+    'npm install -g https://hub.example/companion/code-kit-companion.tgz',
+    `${at} setup --hub https://hub.example --workspace /home/kim/projects --name ck-app-1a2b3c4d --machine acme/app`,
+  ]);
+  // An install that fails pairs nothing.
+  ran.length = 0;
+  assert.equal(machine.pair({ ...given, typed: (cmd) => (ran.push(cmd), 1) }), false);
+  assert.deepEqual(ran, ['npm']);
+  assert.match(machine.offer(url), /installs the hub's companion from https:\/\/hub\.example/);
+});
+
+test('CLOUD-11 a workflow’s checkout and a computer’s clone name the same machine', async () => {
+  const { machineNameOf } = await import('../hooks/lib/cloudfacts.mjs');
+  const dir = mkdtempSync(join(tmpdir(), 'ck-name-'));
+  const clone = join(dir, 'Booking App');
+  mkdirSync(clone);
+  try {
+    assert.equal(
+      cloudLib.machineName(clone, 'git@github.com:acme/booking-app.git'),
+      machineNameOf('Booking App', 'https://github.com/Acme/Booking-App'),
+    );
+    assert.match(
+      machineNameOf('booking-app', 'https://github.com/acme/booking-app'),
+      /^ck-booking-app-[0-9a-f]{8}$/,
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test('CLOUD-8 awake time is added up from an uptime that stops while the machine sleeps', () => {
