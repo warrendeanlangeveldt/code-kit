@@ -2,6 +2,10 @@
 
 What changed in each release of code-kit, newest first. Versions follow the plugin manifest and the npm package `@warren-dean/code-kit`. Each release is also on [GitHub Releases](https://github.com/warrendeanlangeveldt/code-kit/releases).
 
+## 0.41.2 (2026-11-24)
+
+- **`cloud up` again on a machine that's already up.** Making a machine ready a second time, which is how a machine gets a newer code-kit, often stopped at "ttyd there didn't give its page", and a workflow's run failed there. `up` read the terminal's page from the machine through the platform's command, which keeps only the last of what a command printed, and a terminal that was already warm printed the page before the read began. The machine now makes its own page, and nothing that large crosses.
+
 ## 0.41.1 (2026-11-24)
 
 - **A sign-in on a cloud machine survives leaving the page.** The first visit to a machine's terminal shows GitHub's one-time code and sends you to github.com to enter it. On a phone, going there dropped the terminal's connection, which ended the sign-in that was waiting, so the code you entered was never picked up and coming back showed a new one. The sign-ins and a hub's pairing now run in a session of their own on the machine: leave the page, come back to the same address, and the same code is still waiting. The visit also says to press Enter before going, and that the page waits. A machine made by the workflow gets this when the workflow's `up` runs again with the new file (`code-kit cloud workflow --write`).
