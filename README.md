@@ -523,7 +523,7 @@ A machine can also be made with nobody at a computer, by a workflow in the repos
 1. Run `code-kit cloud workflow --write` and commit `.github/workflows/code-kit-machine.yml` to the default branch. A repository that isn't set up with code-kit yet names the platform: `code-kit cloud workflow --platform sprites`.
 2. Make a Sprites token for your Fly organisation and add it to the repository's Actions secrets as `SPRITES_TOKEN`.
 3. Run the workflow with `act: up`, from the Actions tab or with `gh workflow run code-kit-machine.yml -f act=up`. Its steps make the machine, copy the repository there, and install code-kit and the terminal. The run ends with the terminal's address.
-4. Open that address. Your first visit asks for GitHub's device sign-in and then Claude's own, each typed on the machine, and then opens the lead's session. Later visits join it.
+4. Open that address. Your first visit asks for GitHub's device sign-in and then Claude's own, each typed on the machine, and then opens the lead's session. Each sign-in sends you to another page, and a phone's browser drops the terminal when you go: the sign-in keeps waiting on the machine, with the same code, so come back to the address and carry on. Later visits join the lead's session.
 
 A hub that starts the workflow names itself in the `provider` input, by its address. That visit then says which hub asked and what pairing does, and asks whether to pair the machine with it. Nothing of the hub is installed until you say yes there, and after a no the next visit offers it again unless you say to stop. Paired, the hub's companion is kept running on the machine, and the lead's session is the same one whether the terminal, the workflow or the hub starts it.
 
